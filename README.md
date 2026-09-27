@@ -7,8 +7,10 @@ today's POS products and removes the failures that make merchants feel trapped, 
 offline.
 
 **Status: building the foundations.** The research, architecture, decision records, feature
-catalog and roadmap are in a v1 draft. The first kernel crate, [`keel-types`](./core/crates/keel-types/)
-(money, currencies, rounding, quantities, time, identifiers, business dates), is built and tested.
+catalog and roadmap are in a v1 draft. Two kernel crates are built and tested:
+[`keel-types`](./core/crates/keel-types/) (money, currencies, rounding, quantities, time,
+identifiers, business dates) and [`keel-events`](./core/crates/keel-events/) (the signed,
+hash-chained event log).
 
 ## What makes Keel different
 
@@ -90,7 +92,7 @@ first use.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features                      # add `-- --include-ignored` for the exhaustive sweeps
-cargo build -p keel-types --no-default-features --target wasm32-unknown-unknown
+cargo build -p keel-types -p keel-events --no-default-features --target wasm32-unknown-unknown
 ```
 
 Read [docs/engineering/conventions.md](./docs/engineering/conventions.md) before changing kernel code.
@@ -98,5 +100,5 @@ Read [docs/engineering/conventions.md](./docs/engineering/conventions.md) before
 ## Next step
 
 Phase 0 (Foundations) in the [roadmap](./docs/roadmap.md#8-first-engineering-milestones-the-next-build-steps):
-after `keel-types`, the event envelope (`keel-events`), then the order/pricing core, the SQLite store
-and the deterministic sync simulator.
+after `keel-types` and `keel-events`, the order/pricing core, then the SQLite store and the
+deterministic sync simulator.

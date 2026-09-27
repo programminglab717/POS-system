@@ -51,7 +51,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       - name: Build for wasm32
-        run: cargo build -p keel-types --no-default-features --target wasm32-unknown-unknown
+        run: cargo build -p keel-types -p keel-events --no-default-features --target wasm32-unknown-unknown
 
       - name: Generated currency table matches the ISO 4217 snapshot
         run: |
