@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 553f8b0bd827ab3d1636601d37acfe2f4761e609f3905b8f1d533b02c5ee40ce # shrinks to micros = -1, (from, to) = (Kilogram, Carat), mode = HalfAwayFromZero
+cc ad2afd3865561685ed4808ea2b94efcfb32ddbc6bf8a260e7d6cb8020fc09314 # shrinks to micros = 1, (from, to) = (Gram, Carat)
+cc 73983585e1c64248da417130fa222ac79e548d251d3e41de225b63ebc93eaf8c # shrinks to micros = 206791, (from, to) = (Each, Dozen), mode = HalfAwayFromZero
+cc d72f39b319788d558536d154b647ed12a4fe355f345b7bb9cdd1e70923b70d01 # shrinks to micros = 1, (coarse, fine) = (Ounce, Milligram), there = HalfAwayFromZero, back = HalfAwayFromZero
+cc 543b5aa675bea2a686970bcd8cc358a449e707bd692fb7a56bb01f5168cfe5d5 # shrinks to micros = 2468169392126415000, places = 2, mode = HalfAwayFromZero

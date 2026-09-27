@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d252c897a3c2ea3de22328ad35b620976bbb37e884403458aa6596008c878edb # shrinks to minor = -4696795095658528601, weights = [7, 18446744073709551615, 18446744073709551615, 85]
+cc 52259c8700a524dd0fd31a4da79c65730b2e6844404566f97a832c969fef8669 # shrinks to text = "+0", currency = Currency(AED)
+cc d9094ce91ab96aa5e679652ac822c9b6c2501c667b2794ca9a9b63a30fdf4838 # shrinks to amounts = [1, 9223372036854775807, -1]

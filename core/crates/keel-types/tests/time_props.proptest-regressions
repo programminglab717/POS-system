@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fb3e8e7086e21df8672f4e04c6c38fc61fe5a42a992cdbe539640c5a9e2cc702 # shrinks to readings = [0, 0], steps = [Tick, Observe { remote_offset_ms: 0, remote_logical: 2 }, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick]
+cc 60995b2fe8acb3b2268382e89dc577c31c2b1679921017c87515dd682609e928 # shrinks to readings = [1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000, 1790000000000], steps = [Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Observe { remote_offset_ms: 60001, remote_logical: 0 }, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick, Tick]

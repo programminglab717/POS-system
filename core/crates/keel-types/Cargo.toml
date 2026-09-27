@@ -1,0 +1,31 @@
+[package]
+name = "keel-types"
+version = "0.1.0"
+description = "Keel kernel value types: money, currencies, rounding, quantities, identifiers, time and business dates."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+default = ["os"]
+# Operating-system backed clock and entropy (`SystemClock`, `OsEntropy`).
+# Disable for wasm32 builds and deterministic simulation; hosts then inject their own
+# `Clock` and `Entropy` implementations.
+os = ["dep:getrandom"]
+
+[dependencies]
+rust_decimal.workspace = true
+uuid.workspace = true
+jiff.workspace = true
+thiserror.workspace = true
+getrandom = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+csv.workspace = true
+num-bigint.workspace = true
+num-integer.workspace = true
+
+[lints]
+workspace = true

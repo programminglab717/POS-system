@@ -1,0 +1,7 @@
+# Pinned toolchain: every developer, CI job and release build compiles the kernel with the same
+# compiler. Upgrades are deliberate, reviewed changes.
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

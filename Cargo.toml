@@ -1,0 +1,76 @@
+# Keel — Rust workspace.
+#
+# One workspace (one Cargo.lock) for every Rust component: kernel crates, and later the Store Hub
+# and cloud services. A single lockfile guarantees every tier links the exact same dependency
+# versions, which the kernel's determinism depends on.
+
+[workspace]
+resolver = "3"
+members = ["core/crates/*"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.94"
+publish = false
+repository = "https://github.com/programminglab717/POS-system"
+
+[workspace.dependencies]
+# Kernel dependencies. Every addition needs a justification in docs/engineering/conventions.md
+# (§ Dependency policy): pure Rust, permissive license, deterministic, well maintained.
+rust_decimal = { version = "1.43", default-features = false, features = ["std"] }
+uuid = { version = "1.26", default-features = false, features = ["std"] }
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
+thiserror = "2.0"
+getrandom = "0.4"
+
+# Test-only dependencies. num-bigint (with num-integer) is the exact-arithmetic oracle that
+# property tests check money and rounding against.
+proptest = "1.11"
+csv = "1.3"
+num-bigint = "0.5"
+num-integer = "0.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints we deliberately relax.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+similar_names = "allow"
+
+# Money-safe code: no panics, no silent overflow, no lossy casts, no floating point.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+float_arithmetic = "deny"
+float_cmp = "deny"
+lossy_float_literal = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+allow_attributes_without_reason = "warn"
+
+[profile.release]
+debug = "line-tables-only"
+# Defense in depth. Keel's own code can't overflow silently (the lints above forbid unchecked
+# arithmetic); this makes any unchecked overflow elsewhere, in dependencies or tests, panic
+# instead of wrapping to a wrong amount.
+overflow-checks = true

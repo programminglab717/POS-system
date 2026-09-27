@@ -1,0 +1,14 @@
+# Tests may unwrap, panic and index freely: a failing test *should* panic.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+# Arbitrary-precision integers cannot overflow: arithmetic on them has no hidden side effects.
+# (Test oracles only; kernel code uses checked primitive arithmetic.)
+arithmetic-side-effects-allowed = ["num_bigint::BigInt", "num_bigint::BigUint"]
+
+# Domain terms that read as code to the doc_markdown lint. ".." keeps clippy's defaults.
+doc-valid-idents = ["UUIDv7", "UUIDv7s", "SplitMix64", ".."]
