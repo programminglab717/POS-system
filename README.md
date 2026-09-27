@@ -6,9 +6,9 @@ Keel is a design for **the best POS system in the world**. It combines the stron
 today's POS products and removes the failures that make merchants feel trapped, stranded or
 offline.
 
-**Status: architecture and product design (v1 draft).** No production code yet. This repository
-holds the research, architecture, decision records, feature catalog and roadmap that the build will
-follow.
+**Status: building the foundations.** The research, architecture, decision records, feature
+catalog and roadmap are in a v1 draft. The first kernel crate, [`keel-types`](./core/crates/keel-types/)
+(money, currencies, rounding, quantities, time, identifiers, business dates), is built and tested.
 
 ## What makes Keel different
 
@@ -81,8 +81,22 @@ graph LR
 > only on well-corroborated patterns. Prices, dates and regulatory deadlines must be re-verified
 > before commercial or legal use.
 
+## Building
+
+The kernel is a Rust workspace; `rust-toolchain.toml` pins the toolchain, and rustup installs it on
+first use.
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features                      # add `-- --include-ignored` for the exhaustive sweeps
+cargo build -p keel-types --no-default-features --target wasm32-unknown-unknown
+```
+
+Read [docs/engineering/conventions.md](./docs/engineering/conventions.md) before changing kernel code.
+
 ## Next step
 
 Phase 0 (Foundations) in the [roadmap](./docs/roadmap.md#8-first-engineering-milestones-the-next-build-steps):
-scaffold the monorepo and build the kernel's value types, event envelope, order/pricing core, SQLite
-store and the deterministic sync simulator.
+after `keel-types`, the event envelope (`keel-events`), then the order/pricing core, the SQLite store
+and the deterministic sync simulator.

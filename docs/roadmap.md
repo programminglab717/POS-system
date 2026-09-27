@@ -227,10 +227,13 @@ Keel, and **never lose a sale to Keel**.
 
 ## 8. First engineering milestones (the next build steps)
 
-1. **Monorepo scaffold**: Rust workspace (`core/`), Android project (`apps/android/`), web workspace
-   (`apps/web/`), `schemas/`, CI with Rust targets and Android emulator jobs.
+1. **Monorepo scaffold**: Rust workspace (`core/crates/`), Android project (`apps/android/`), web
+   workspace (`apps/web/`), `schemas/`, CI with Rust targets and Android emulator jobs. *Status: the
+   Rust workspace and its CI are done; the Android, web and schema directories arrive with their
+   first code.*
 2. **`keel-types`**: Money with ISO 4217 exponents, Decimal, Quantity, UUIDv7, HLC, BusinessDate,
-   rounding rules, with property tests.
+   rounding rules, with property tests. *Status: done
+   ([`core/crates/keel-types`](../core/crates/keel-types/)); `Locale` follows with the first UI.*
 3. **`keel-events`**: the envelope, deterministic CBOR, hash chaining, signing (a software key first,
    hardware keys behind a trait), and a schema registry with compatibility checks.
 4. **`keel-domain` (order/check/payment) + `keel-pricing` (v0)**: lines, modifiers, checks and

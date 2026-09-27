@@ -221,7 +221,7 @@ workspace, compiled for iOS, Android, Windows, macOS, Linux, the browser (WASM) 
 
 | Crate (planned) | Responsibility |
 |---|---|
-| `keel-types` | Money, Decimal, Quantity, IDs (UUIDv7), HLC, BusinessDate, Locale |
+| `keel-types` | Money and ISO 4217 currencies, rounding, Rate, Decimal, Quantity and units, Timestamp and clocks, HLC, typed IDs (UUIDv7), BusinessDate; Locale to come |
 | `keel-events` | Event envelope, canonical CBOR, schemas and upcasters, hash chaining, signing |
 | `keel-domain` | Aggregates and fold functions: order, check, payment, kitchen ticket, stock, drawer session, booking, custody job, stored value, loyalty, membership, time entry |
 | `keel-pricing` | Price resolution, promotions optimizer, tax engine, allocation, rounding, trace |
@@ -406,7 +406,8 @@ cell, well within one Postgres primary with batching.
 ## 11. Repository layout (monorepo)
 
 ```text
-/core/                 Rust workspace: keel-* kernel crates (see §5)
+/Cargo.toml            Rust workspace root: one lockfile for every Rust component
+/core/crates/          Kernel crates, keel-* (see §5); keel-types is built
 /hub/                  Store Hub daemon and appliance image definitions
 /cloud/                Cloud services (Rust): core modular monolith, workers, sync ingest, gateway
 /connectors/           Integration runtime and connectors (TypeScript)

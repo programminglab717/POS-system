@@ -16,9 +16,9 @@
    aggregate in different configurations. Verticals are compositions, not forks.
 2. **Facts are immutable events.** Every commercial fact is an append-only, signed event. Current state
    is a projection. Nothing that touched money is ever updated in place or deleted.
-3. **Money is exact.** Integer minor units for amounts; arbitrary-precision decimals for rates and
-   quantities; explicit, jurisdiction-configured rounding at defined points only. No floating point
-   anywhere in the money path.
+3. **Money is exact.** Integer minor units for amounts; fixed-point integers (millionths) for
+   quantities; exact decimals for rates; explicit, jurisdiction-configured rounding at defined points
+   only. No floating point anywhere in the money path.
 4. **Snapshots at the moment of truth.** An order line snapshots the name, price, tax category and
    modifier prices at the moment it was rung up. Later catalog edits never silently change an open or
    historical order.
@@ -115,20 +115,20 @@ graph TD
 ## 4. Value types
 
 These are implemented once in the kernel and exposed through generated bindings, so every platform
-behaves the same way.
+behaves the same way. The first nine are built, in the `keel-types` crate (`core/crates/keel-types`).
 
 | Type | Definition | Notes |
 |---|---|---|
-| `Id<T>` | UUIDv7 (128-bit, time-ordered) | Minted on the creating device. Never reused. Opaque to clients. |
-| `Money` | `{ minor: i64, currency: CurrencyCode }` | Exponent from ISO 4217: JPY 0, USD 2, KWD/BHD/OMR/JOD/TND 3. Intermediate math in `i128`. |
-| `Decimal` | 96-bit scaled decimal | For rates, prices-per-unit, FX rates and quantities. Never `f32`/`f64`. |
-| `Quantity` | `{ value: Decimal, uom: UnitOfMeasure }` | Count, weight (g/kg/lb/oz), volume, length, time. Fractions allowed ("⅓ of a bottle" in a split). |
-| `Rate` | `Decimal` in basis-point precision or better | Tax rates, discount %, commission %. |
-| `Hlc` | Hybrid logical clock `{ wall_ms: u48, logical: u16, node: u16 }` | Total order for events across devices even with clock skew. See the sync doc. |
-| `Instant` | UTC timestamp, µs precision | Always stored in UTC; rendered in the location time zone. |
-| `BusinessDate` | `{ location_id, date }` | Assigned at origin from the location's cutoff. Immutable on the event. |
+| `Id<T>` | UUIDv7 (RFC 9562), tagged with the entity type | Minted on the creating device by a monotonic generator (12-bit counter, 62 random bits). Never reused. Opaque to clients. Reveals its creation time. |
+| `Money` | `{ minor: i64, currency: Currency }` | Minor units per ISO 4217 (JPY 0, USD 2, KWD/BHD/OMR/JOD/TND 3), from Keel's verified currency table. Checked arithmetic and no operators; currencies never mix. Products are computed exactly (up to 192 bits), then rounded once. |
+| `Decimal` | 96-bit scaled decimal | For rates, factors and prices per unit. Never `f32`/`f64`. |
+| `Quantity` | `{ micros: i64, unit: Unit }` | Fixed point: millionths of the unit, so arithmetic is exact and the value is an integer on every platform. Units cover count, mass, volume, length, area and duration, each exactly defined (1 lb = 453.59237 g); conversions round once, explicitly. Packaging ("case of 24", "750 ml bottle") is catalog data, not a unit. |
+| `Rate` | `Decimal` fraction | Tax rates, discount %, commission %. Built exactly from percentages or basis points. |
+| `Hlc` | `{ wall_ms: 48 bits, logical: 16 bits }`, packed in a `u64` | Causal order across devices despite clock skew. Ties between devices are broken by `(origin_device, origin_seq)`, so the HLC carries no node ID. A remote HLC too far ahead is rejected, never adopted. See the sync doc. |
+| `Timestamp` | UTC, µs since the Unix epoch (`i64`) | 0001-01-01 to 9999-12-29. Stored in UTC; rendered in the location time zone. Read through an injected `Clock`, never directly from the OS. |
+| `BusinessDate` | Calendar date | Assigned at origin by the location's `BusinessDayPolicy`: an IANA time zone (from the bundled database) and a local cutoff time. Daylight saving safe. Immutable on the event. |
+| `RoundingRule` | `{ mode, increment }` | Seven modes: half away from zero, half even, half toward zero, away from zero, toward zero, ceiling, floor. The increment covers cash rounding (0.05 CAD/AUD/CHF, 0.10 NZD). Where a rule applies (line, document or tender) is jurisdiction policy. |
 | `Locale` / `Language` | BCP-47 tags | Per staff member (UI), per customer (receipts), per station (kitchen). |
-| `RoundingRule` | `{ mode, increment, scope }` | Mode is half-up, half-even, up or down. The increment covers cash rounding (0.05 CHF/CAD/AUD, etc.). The scope is line, check or tender. |
 | `LocalizedText` | Map `Language → string` with fallback | Item names, modifiers, receipt text. |
 | `Address`, `Phone`, `Email` | Structured; E.164 phones | Always behind the PII vault when tied to a person (§14). |
 
