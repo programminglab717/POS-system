@@ -6,7 +6,8 @@
 ## Context
 
 Regulation changes often, differs by jurisdiction, and sometimes reverses:
-- France removed, then restored, self-attestation for cash software;
+- France reportedly removed, then restored, self-attestation for cash software (research sources
+  conflict on the current status);
 - Spain postponed VeriFactu twice;
 - US SNAP eligibility now varies by state and date;
 - Germany cut restaurant food VAT from 1 January 2026;

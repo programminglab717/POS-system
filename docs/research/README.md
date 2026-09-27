@@ -62,7 +62,8 @@ Six parallel research tracks covered the market:
    integrators and cap offline data at 10 GB. → **Enterprise-grade primitives with SMB-grade UX,
    explainable pricing, a kernel that runs everything locally.**
 7. **Compliance churn outpaces vendors, and sometimes reverses.**
-   - France removed, then restored, self-attestation for cash software.
+   - France reportedly removed, then restored, self-attestation for cash software. The tracks
+     conflict here; see §7.
    - Spain delayed VeriFactu to 2027.
    - The UAE extended its provider deadline.
    - Croatia changed its signature hash.
@@ -218,6 +219,9 @@ Every dossier ends with a verification backlog. The highest-impact items before 
 - exact offline limits of each certified payment connector;
 - fiscal details for launch-wave-2 markets (Germany, France, Spain), confirmed with local counsel;
 - the Australian surcharging decision;
+- **France NF525 (conflicting sources):** R03 reports self-attestation restored from 21 Feb 2026;
+  R04 and R06 report third-party certification mandatory since 1 Mar 2026. Until resolved, plan for
+  third-party certification, which satisfies either reading;
 - final passage of Czech EET 2.0;
 - pricing for vendors quoted from third-party sources;
 - direct operator interviews (Reddit and review mining couldn't be completed in this environment).

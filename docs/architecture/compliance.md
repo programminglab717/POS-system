@@ -13,9 +13,10 @@
 1. **Compliance is data, not code.** Rules that change with law ship as **signed rule packs**,
    independent of app releases. Protocols, cryptography and document formats are code in **country
    adapters**.
-2. **Rules reverse, not just change.** France removed and then restored self-attestation for cash
-   software. Spain postponed VeriFactu twice. The UAE extended its service-provider deadline. Croatia
-   switched hash algorithms. Everything is **effective-dated and rollback-able**.
+2. **Rules reverse, not just change.** France reportedly removed and then restored self-attestation
+   for cash software, and the research tracks disagree on its current status (see §4.3). Spain
+   postponed VeriFactu twice. The UAE extended its service-provider deadline. Croatia switched hash
+   algorithms. Everything is **effective-dated and rollback-able**.
 3. **One immutable journal, independent of any provider.** Keel's own signed, hash-chained event log
    is the evidence base. Fiscal providers can be swapped without breaking audit continuity.
 4. **Contingency everywhere.** Every regime that needs the network has a legal offline procedure, and
@@ -146,7 +147,7 @@ Condensed from [R03 §5](../research/03-payments-compliance.md). Status as of 20
 |---|---|---|---|---|
 | US, Canada, UK, Australia | No POS fiscalization. Tax engine, surcharging and junk-fee rules. Québec restaurants use a sales recording module. | — | Tax engine plus rule packs. Québec module when entering that market. | 1 |
 | Germany | TSE per transaction, DSFinV-K, POS registration with the tax authority (since 2025). B2B e-invoice issuance 2027/2028. | Live | Cloud-TSE partner + device agent for hardware TSEs | 2 |
-| France | ISCA conditions (NF525 certificate or restored self-attestation), 6-year retention, e-invoicing and e-reporting reform | Sep 2026 (large companies) / Sep 2027 (SMEs) | Own hash chain + certification + approved-platform connector | 2 |
+| France | ISCA conditions, 6-year retention, e-invoicing and e-reporting reform. ⚠️ Sources conflict on how compliance is proven: [R03](../research/03-payments-compliance.md) reports self-attestation **restored from 21 Feb 2026**; [R04](../research/04-technical-architecture.md) and [R06](../research/06-verticals-global.md) report **third-party NF525 certification mandatory since 1 Mar 2026**. Plan for third-party certification (it satisfies both) and verify with French counsel. | Sep 2026 (large companies) / Sep 2027 (SMEs) | Own hash chain + certification + approved-platform connector | 2 |
 | Spain | VeriFactu (hash chain, QR, optional real-time submission); TicketBAI in Basque territories | 1 Jan 2027 (corporate) / 1 Jul 2027 (others) | Own chain + AEAT connector | 2 |
 | Italy | RT or online procedure, daily totals, card terminals linked to RT from 2026 | Live | RT device agent / partner | 3 |
 | Portugal | Certified software, ATCUD, QR, SAF-T. Qualified e-signature on PDF invoices. | QES from 1 Jan 2027 | Own chain + certification | 3 |
