@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Property tests run 256 cases locally; CI runs more.
+  PROPTEST_CASES: "4096"
+
+jobs:
+  rust:
+    name: Rust kernel
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Lint (no default features, as on wasm32)
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+
+      - name: Test, including exhaustive sweeps
+        run: cargo test --workspace --all-features -- --include-ignored
+
+      - name: Test without default features
+        run: cargo test --workspace --no-default-features
+
+      - name: Documentation
+        run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: Build for wasm32
+        run: cargo build -p keel-types --no-default-features --target wasm32-unknown-unknown
+
+      - name: Generated currency table matches the ISO 4217 snapshot
+        run: |
+          python3 core/crates/keel-types/tools/gen_currency_table.py
+          git diff --exit-code -- core/crates/keel-types/src/currency/table.rs
