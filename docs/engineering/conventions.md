@@ -65,9 +65,12 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
 - **Unit tests** sit next to the code and cover known answers and edge cases. Every bug gets a
   named regression test. Proptest also saves the seed of every failure it finds in a
   `*.proptest-regressions` file beside the test and replays it on each run: commit these files.
-- **Property tests** (`proptest`, in `tests/`) compare the code with an independent oracle: exact
-  rational arithmetic with `num-bigint`, written from the definitions and structured differently
-  from the implementation, so the two are unlikely to share a mistake.
+- **Property tests** (`proptest`, in `tests/`) compare the code with an independent oracle, built
+  differently from the implementation so the two are unlikely to share a mistake: exact rational
+  arithmetic with `num-bigint`, written from the definitions; another implementation of a standard
+  (`ciborium` for CBOR); or a model of the rules written from the specification, such as which
+  envelope fields are valid and where a received event fits in a log. Known-answer tests pin
+  formats with bytes checked by outside tools (Python's `cbor2`, `hashlib` and `pycose`).
 - **Aim at the boundaries.** Uniformly random inputs almost never land where the bugs are. The
   double-rounding bug in the first version of `mul_decimal` passed 2,000 random cases, and a
   generator that puts products exactly on (and a hair either side of) rounding boundaries caught it
@@ -75,12 +78,18 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
 - **No `prop_assume!`.** Generate valid inputs directly, or filter inside the strategy. Rejected
   cases count against a global limit that aborts high case-count runs.
 - **Check that new tests can fail.** Plant the bug a test is meant to catch, and confirm the test
-  fails. (Restoring a file by moving a copy back keeps its old modification time: touch it, or
-  Cargo reuses the build of the planted bug.)
+  fails. Plant bugs a property test should catch on its own too, and run only that test: unit
+  tests often catch a bug that the property test's generators never reach. Two traps:
+  - Restoring a file by moving a copy back keeps its old modification time: touch it, or Cargo
+    reuses the build of the planted bug.
+  - Proptest saves the seed of every failure, including a planted bug's. Run planted bugs with
+    `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`, so only real failures reach the regression files.
 - **Exhaustive sweeps**, such as every time zone transition from 1970 to 2037, are `#[ignore]`d
   for quick local runs. CI runs them with `-- --include-ignored`.
 - **Case counts.** Locally, property tests run proptest's default of 256 cases. CI runs 4,096
-  (`PROPTEST_CASES`). Before a significant change, run 100,000.
+  (`PROPTEST_CASES`). Before a significant change, run 100,000. Don't set a case count in a test:
+  it would override these. Dependencies are compiled with optimizations even in test builds (the
+  workspace's dev profile), so property tests can afford thousands of signatures.
 - **Test code follows the same lints.** Integration test crates may allow `unwrap`, `expect`,
   indexing and arithmetic, with a reason, since a failed assumption there should fail loudly.
   `clippy.toml` allows arithmetic on `BigInt`, which can't overflow.
@@ -103,13 +112,17 @@ below, and must be:
 | `jiff` | keel-types | Calendar and time zone arithmetic, with the IANA database bundled (`tzdb-bundle-always`) so every platform applies the same rules. |
 | `thiserror` | all crates | Error types without boilerplate or runtime cost. |
 | `getrandom` | keel-types (`os` feature) | The operating system's secure random numbers, for identifiers. |
+| `sha2` | keel-events | SHA-256, for event hashes and key identifiers. Default features off. |
+| `p256`, `ecdsa` | keel-events | ECDSA on P-256 (ES256), the algorithm secure hardware supports: verification, low-S normalization, DER decoding of hardware signatures, and deterministic signing (RFC 6979) for software keys. Default features off. |
+| `ed25519-dalek` | keel-events | Ed25519, for devices without secure hardware, with strict verification. Default features off: keys come from injected entropy, never from the operating system directly. |
 
 Test-only dependencies must be permissively licensed, but need not build for `wasm32`:
 
 | Crate | Why |
 |---|---|
 | `proptest` | Property testing. |
-| `num-bigint`, `num-integer` | The exact arithmetic oracle. |
+| `num-bigint`, `num-integer` | The exact arithmetic oracle, and the scalar arithmetic that crafts invalid Ed25519 signatures. |
+| `ciborium` | An independent CBOR implementation, which the codec's property tests agree with. |
 | `csv` | Reads the ISO 4217 snapshot in the currency table test. |
 
 `Cargo.lock` is committed. Update dependencies deliberately (`cargo update -p <crate>`), read

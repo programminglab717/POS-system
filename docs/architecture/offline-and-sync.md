@@ -130,12 +130,18 @@ sequenceDiagram
 ```
 
 - Receivers verify, per event:
-  - the signature against the enrolled device's key;
-  - chain continuity (`prev_hash`);
+  - the signature against the enrolled device's key, and that the event is for the location the
+    device is enrolled at;
+  - chain continuity: the next sequence number, the previous event's hash (`prev_hash`), and an
+    HLC later than the previous event's;
   - schema validity;
-  - and that the origin device wasn't revoked before the event's HLC.
+  - and that the event isn't beyond the origin device's revocation. A revocation cuts a device's
+    log at a sequence number and pins the hash of the event there, rather than at a time, because
+    a stolen device can set its clock back ([ADR-0012](../adr/0012-event-wire-format.md)).
 
-  Anything that fails verification is **quarantined** and reported, never applied.
+  Anything that fails verification is **quarantined** and reported, never applied. Two different
+  events from one device at the same sequence number (a forked log, from a compromised device or
+  one restored from a backup) are reported, and the replica keeps the one it received first.
 - Delivery is idempotent. `event_id` and `(origin, seq)` dedupe, so replays, retries and duplicated
   relays are harmless.
 - Because the protocol only compares version vectors, the same code runs:

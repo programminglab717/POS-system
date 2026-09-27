@@ -39,17 +39,22 @@ runs on thousands of devices in places nobody guards overnight. Keel's security 
   4. It receives an X.509 certificate from the **Keel Device CA**, bound to `(org, location,
      device role)`.
 - **Use**: the certificate authenticates all LAN sync (mTLS) and cloud connections, and the device
-  key signs every event the device appends.
+  key signs every event the device appends. The key itself never rotates: a device that needs a
+  new key (after a repair or a reset of its secure hardware) is enrolled again as a new device,
+  with a new log ([ADR-0012](../adr/0012-event-wire-format.md)).
 - **Short-lived certificates** (24–72 h), rotated automatically. Hub-cached trust material covers
-  long offline periods. Revocation propagates through sync, and events signed after revocation are
-  quarantined.
+  long offline periods. Revocation propagates through sync. It cuts the device's log after the
+  last event the cloud trusts, by sequence number rather than time (a stolen device can set its
+  clock back), and replicas quarantine every event beyond the cut
+  ([ADR-0012](../adr/0012-event-wire-format.md)).
 - **Works without Google services.** Many Android all-in-ones lack them, so enrollment accepts
   **Android Key Attestation** and doesn't depend on Play Integrity or FCM push. Play Integrity and
   Apple App Attest add signal where available.
 - **Tokens are bound to the device** (mTLS- or DPoP-bound). No long-lived API keys live on devices.
 - **Offline staff authorization** uses cloud-signed role bundles with expiry, plus PIN hashes sealed
   with a hardware-held pepper and rate-limited. Every offline override is logged for review.
-- **Remote actions**: lock, wipe, move to a new location, or change role, all audited.
+- **Remote actions**: lock, wipe, move to a new location (which enrolls the device again, as a new
+  device), or change role, all audited.
 
 ### 2.2 Staff (on devices)
 - A fast PIN login, with optional NFC badge or on-device biometric (never uploaded) as a second

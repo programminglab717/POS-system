@@ -868,33 +868,39 @@ This is what makes these things work:
 
 ### 17.1 Envelope
 
-Every event, of every type, on every device, uses the same envelope:
+Every event, of every type, on every device, uses the same envelope (format 1; the exact encoding
+is in [ADR-0012](../adr/0012-event-wire-format.md), and `keel-events` implements it):
 
 ```text
 EventEnvelope {
   event_id        : UUIDv7         // globally unique; dedupe key
-  stream          : { type, id }   // aggregate, e.g. ("order", 0190…)
+  location        : LocationId     // where it happened: the device's enrolled location
+  stream          : { kind, id }   // aggregate, e.g. ("order", 0190…)
   schema          : "order.line_added/3"  // name + version
   origin_device   : DeviceId
-  origin_seq      : u64            // gapless per device
-  hlc             : Hlc            // causal/total ordering
+  origin_seq      : u64            // from 1, gapless per device
+  hlc             : Hlc            // causal/total ordering; increases along each device's log
   business_date   : BusinessDate
-  actor           : TeamMemberRef | CustomerRef | SystemRef | ExtensionRef
-  approval?       : ApprovalRef
-  causation_id?   : EventId        // command or event that caused this
-  correlation_id? : Id             // e.g. the user action spanning aggregates
+  actor           : TeamMemberRef | CustomerRef | IntegrationRef | ExtensionRef
+                  | System(component)  // e.g. the scheduler closing a business day
+  approval?       : EventId        // the event granting approval
+  causation?      : Id             // command or event that caused this
+  correlation?    : Id             // e.g. the user action spanning aggregates
   payload         : bytes          // canonical CBOR, schema-validated
   prev_hash       : [u8; 32]       // hash of previous event in this device's log
-  signature       : bytes          // device key: ECDSA P-256 in secure hardware
-                                   // (Secure Enclave / StrongBox / TPM); Ed25519 fallback
 }
 ```
 
-- **Canonical encoding** (deterministic CBOR) makes hashes and signatures reproducible on every
-  platform.
+- **Signature.** The device signs the encoded envelope as a COSE_Sign1 message (RFC 9052), with
+  ECDSA P-256 in secure hardware (Secure Enclave, StrongBox, TPM), or Ed25519 as a fallback. The
+  event's hash covers the envelope, not the signature, so an event's identity is its content.
+- **Canonical encoding** (a strict subset of deterministic CBOR) gives every event exactly one
+  encoding, so hashes and signatures are reproducible on every platform.
 - **Per-device hash chains** make any tampering, deletion or reordering detectable. This underpins
   fiscal inalterability requirements (e.g. France's NF525 and chained-signature regimes elsewhere) and
   loss-prevention audits.
+- **Location binding.** A device is enrolled at one location, and replicas reject its events for
+  any other.
 - **Schema evolution**: events are never rewritten. New versions are added, and *upcasters* in the
   kernel translate old versions when folding. Payload changes must be backward-compatible within a
   major version, and CI enforces compatibility against the full historical schema registry.

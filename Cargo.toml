@@ -22,13 +22,20 @@ uuid = { version = "1.26", default-features = false, features = ["std"] }
 jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
 thiserror = "2.0"
 getrandom = "0.4"
+sha2 = { version = "0.11", default-features = false }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
+ecdsa = { version = "0.17", default-features = false, features = ["der"] }
+ed25519-dalek = { version = "3.0", default-features = false, features = ["fast", "zeroize"] }
+keel-types = { path = "core/crates/keel-types", default-features = false }
 
 # Test-only dependencies. num-bigint (with num-integer) is the exact-arithmetic oracle that
-# property tests check money and rounding against.
+# property tests check money and rounding against; ciborium is the independent CBOR implementation
+# that the event codec's property tests check against.
 proptest = "1.11"
 csv = "1.3"
 num-bigint = "0.5"
 num-integer = "0.1"
+ciborium = "0.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -67,6 +74,12 @@ dbg_macro = "deny"
 print_stdout = "deny"
 print_stderr = "deny"
 allow_attributes_without_reason = "warn"
+
+# Dependencies (elliptic curves, hashing, time zones, big integers) are compiled optimized in dev
+# and test builds too, so property tests run thousands of signatures quickly. Keel's own crates
+# stay unoptimized for debugging, and overflow checks stay on everywhere.
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 debug = "line-tables-only"
