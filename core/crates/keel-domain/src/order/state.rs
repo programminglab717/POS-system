@@ -72,7 +72,7 @@ pub enum OrderStatus {
     Active,
     /// Voided as a whole.
     Voided(Reason),
-    /// Dropped before anything was ordered.
+    /// Dropped before anything in it was fired.
     Abandoned,
 }
 
@@ -99,6 +99,7 @@ pub struct Line {
     notes: Option<Note>,
     status: LineStatus,
     comp: Option<Reason>,
+    fired: bool,
 }
 
 /// Where a line is in its life.
@@ -164,6 +165,12 @@ impl Line {
     pub const fn is_live(&self) -> bool {
         matches!(self.status, LineStatus::Pending | LineStatus::Fired)
     }
+
+    /// Whether the line was ever sent to be prepared, even if it was removed or voided later, or
+    /// the fire arrived after it was taken off: whoever prepares it may have made it.
+    pub const fn was_fired(&self) -> bool {
+        self.fired
+    }
 }
 
 /// Something in an order's history that a person should look at.
@@ -208,7 +215,8 @@ pub enum ConflictKind {
     AddedToClosedOrder(Id<Line>),
     /// A line was fired on an order that was already voided or abandoned.
     FiredOnClosedOrder(Id<Line>),
-    /// The order was abandoned while it had live lines.
+    /// The order was abandoned although it had live lines, or lines that were fired, which may
+    /// have been made.
     AbandonedWithLines,
 }
 
@@ -354,6 +362,7 @@ impl Order {
             notes: added.notes.clone(),
             status: LineStatus::Pending,
             comp: None,
+            fired: false,
         });
         if self.is_closed() {
             self.conflict(meta, ConflictKind::AddedToClosedOrder(added.line));
@@ -418,6 +427,7 @@ impl Order {
         let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
             return self.conflict(meta, ConflictKind::UnknownLine(id));
         };
+        line.fired = true;
         match line.status {
             LineStatus::Pending => {
                 line.status = LineStatus::Fired;
@@ -457,8 +467,8 @@ impl Order {
         if self.is_closed() {
             return;
         }
-        let abandoned_with_lines =
-            status == OrderStatus::Abandoned && self.live_lines().next().is_some();
+        let abandoned_with_lines = status == OrderStatus::Abandoned
+            && self.lines.iter().any(|line| line.is_live() || line.fired);
         self.status = status;
         if abandoned_with_lines {
             self.conflict(meta, ConflictKind::AbandonedWithLines);

@@ -247,6 +247,7 @@ struct ModelLine {
     seat: Option<NonZeroU16>,
     course: Option<NonZeroU8>,
     notes: Option<Note>,
+    fired: bool,
 }
 
 impl ModelLine {
@@ -261,6 +262,7 @@ impl ModelLine {
             seat: added.seat,
             course: added.course,
             notes: added.notes.clone(),
+            fired: false,
         }
     }
 
@@ -303,6 +305,7 @@ fn lines_of(order: &Order) -> Vec<ModelLine> {
             seat: line.seat(),
             course: line.course(),
             notes: line.notes().cloned(),
+            fired: line.was_fired(),
         })
         .collect()
 }
@@ -431,7 +434,8 @@ impl Model {
                     && differs(current.owner.as_ref(), changed.owner.as_ref())
             }
             OrderCommand::Void(_) => true,
-            OrderCommand::Abandon => !self.lines.iter().any(ModelLine::live),
+            // Nothing may have been made: every line was removed before it was fired.
+            OrderCommand::Abandon => !self.lines.iter().any(|line| line.live() || line.fired),
         }
     }
 
@@ -461,7 +465,9 @@ impl Model {
             OrderCommand::RemoveLine(id) => self.line_mut(*id).status = LineStatus::Removed,
             OrderCommand::FireLines(lines) => {
                 for id in lines.iter() {
-                    self.line_mut(id).status = LineStatus::Fired;
+                    let line = self.line_mut(id);
+                    line.status = LineStatus::Fired;
+                    line.fired = true;
                 }
             }
             OrderCommand::VoidLine { line: id, reason } => {
@@ -577,8 +583,18 @@ fn priced_in(modifiers: &[ChosenModifier], currency: Currency) -> bool {
     })
 }
 
-/// What the model predicts for the line added at `birth`: its final state, and the position of
-/// the event that took it off, if any. The conflicts its events cause go into `conflicts`.
+/// What the model predicts for one line.
+struct History {
+    /// The line's final state.
+    line: ModelLine,
+    /// The position of the event that took it off, if any.
+    terminal: Option<usize>,
+    /// The position of the first event that fired it, even after it was taken off.
+    sent: Option<usize>,
+}
+
+/// What the model predicts for the line added at `birth`. The conflicts its events cause go into
+/// `conflicts`.
 ///
 /// `applying` lists the positions of the events that apply to the order: after its creation,
 /// and at its location.
@@ -589,7 +605,7 @@ fn expect_line(
     currency: Currency,
     close: Option<usize>,
     conflicts: &mut Vec<(Id<Event>, ConflictKind)>,
-) -> (Option<usize>, ModelLine) {
+) -> History {
     let at = |i: usize| events[i].0.event_id;
     let OrderEvent::LineAdded(added) = &events[birth].1 else { unreachable!() };
     let id = added.line;
@@ -603,11 +619,11 @@ fn expect_line(
         matches!(events[i].1, OrderEvent::LineRemoved { .. } | OrderEvent::LineVoided { .. })
     });
     let live = |i: usize| terminal.is_none_or(|terminal| i < terminal);
-    let first_fire = later
-        .iter()
-        .copied()
-        .find(|&i| live(i) && matches!(events[i].1, OrderEvent::LinesFired { .. }));
+    let fires = |i: &usize| matches!(events[*i].1, OrderEvent::LinesFired { .. });
+    let first_fire = later.iter().copied().find(|&i| live(i) && fires(&i));
+    let sent = later.iter().copied().find(fires);
     let mut line = ModelLine::new(added);
+    line.fired = sent.is_some();
     for &i in &later {
         let conflict = match &events[i].1 {
             OrderEvent::LineChanged(_) if !live(i) => Some(ConflictKind::ChangedAfterRemoval(id)),
@@ -656,7 +672,7 @@ fn expect_line(
     if let Some(fire) = first_fire.filter(|&fire| close.is_some_and(|close| close < fire)) {
         conflicts.push((at(fire), ConflictKind::FiredOnClosedOrder(id)));
     }
-    (terminal, line)
+    History { line, terminal, sent }
 }
 
 /// What the model predicts for `events`, folded in the order given.
@@ -724,20 +740,23 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
     }
 
     let mut lines = Vec::new();
-    let mut live_at_close = false;
+    // Whether, when the order closed, a line was live or had been fired: something was ordered.
+    let mut ordered_at_close = false;
     for &birth in &births {
-        let (terminal, line) =
-            expect_line(events, &applying, birth, currency, close, &mut conflicts);
-        live_at_close |= close
-            .is_some_and(|close| birth < close && terminal.is_none_or(|terminal| terminal > close));
-        lines.push(line);
+        let history = expect_line(events, &applying, birth, currency, close, &mut conflicts);
+        ordered_at_close |= close.is_some_and(|close| {
+            birth < close
+                && (history.terminal.is_none_or(|terminal| terminal > close)
+                    || history.sent.is_some_and(|sent| sent < close))
+        });
+        lines.push(history.line);
     }
     let status = match close.map(|close| &events[close].1) {
         Some(OrderEvent::Voided { reason }) => OrderStatus::Voided(reason.clone()),
         Some(_) => OrderStatus::Abandoned,
         None => OrderStatus::Active,
     };
-    if let Some(close) = close.filter(|_| status == OrderStatus::Abandoned && live_at_close) {
+    if let Some(close) = close.filter(|_| status == OrderStatus::Abandoned && ordered_at_close) {
         conflicts.push((at(close), ConflictKind::AbandonedWithLines));
     }
     Expected { info: Some(info), lines, status, conflicts }

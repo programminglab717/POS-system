@@ -366,6 +366,25 @@ fn closed_orders_report_new_work() {
     busy.apply(&OrderEvent::LineAdded(added(1, usd(100))));
     busy.apply(&OrderEvent::Abandoned);
     assert_eq!(busy.kinds(), [ConflictKind::AbandonedWithLines]);
+
+    // Lines that were fired may have been made, even once they are voided or removed, or when the
+    // fire came after the removal: abandoning the order hides that work, so it is reported.
+    let mut made = Script::created();
+    made.apply(&OrderEvent::LineAdded(added(1, usd(100))));
+    made.fire(&[1]);
+    made.apply(&OrderEvent::LineVoided { line: id(1), reason: reason("wrong_item") });
+    made.apply(&OrderEvent::Abandoned);
+    assert_eq!(made.kinds(), [ConflictKind::AbandonedWithLines]);
+    let mut late = Script::created();
+    late.apply(&OrderEvent::LineAdded(added(1, usd(100))));
+    late.apply(&OrderEvent::LineRemoved { line: id(1) });
+    late.fire(&[1]);
+    late.apply(&OrderEvent::Abandoned);
+    assert!(late.order.line(id(1)).unwrap().was_fired());
+    assert_eq!(
+        late.kinds(),
+        [ConflictKind::FiredAfterRemoval(id(1)), ConflictKind::AbandonedWithLines]
+    );
 }
 
 #[test]
@@ -599,12 +618,19 @@ fn attribute_changes_must_change_something() {
 }
 
 #[test]
-fn only_empty_orders_are_abandoned() {
+fn orders_are_abandoned_only_before_anything_is_fired() {
     let mut device = Device::with_line(false);
     assert_eq!(device.run(OrderCommand::Abandon), Err(CommandError::HasLiveLines));
     device.run(OrderCommand::RemoveLine(id(1))).unwrap();
     device.run(OrderCommand::Abandon).unwrap();
     assert_eq!(*device.order.status(), OrderStatus::Abandoned);
+
+    // Once a line was fired, the order was ordered: it is voided, not abandoned.
+    let mut fired = Device::with_line(true);
+    fired.run(OrderCommand::VoidLine { line: id(1), reason: reason("wrong_item") }).unwrap();
+    assert_eq!(fired.run(OrderCommand::Abandon), Err(CommandError::LineWasFired(id(1))));
+    fired.run(OrderCommand::Void(reason("walkout"))).unwrap();
+    assert_eq!(*fired.order.status(), OrderStatus::Voided(reason("walkout")));
 }
 
 #[test]

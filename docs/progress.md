@@ -102,6 +102,10 @@ Commits `fbd1507`, `1b6dd56`, `147870c`. Waiting for review.
     any depth, text lengths, identifier sets out of order) closed it. The 13 planted bugs added
     for the new models were all caught.
   - `provisional_order` had no test; it now has known answers and a property.
+- **After review:** abandoning an order needs that nothing in it was ever fired, so an order the
+  kitchen worked on always ends up voided. A line now remembers whether it was ever fired, and the
+  fold reports an order abandoned with fired lines. Seven planted bugs aimed at the rule are all
+  caught by the property tests alone.
 
 ### `keel-events`: the signed, hash-chained event log (2026-09-27)
 
@@ -154,8 +158,6 @@ design, the feature catalog and the roadmap. See the [README](../README.md).
 
 ## Waiting on a decision
 
-- Whether abandoning an order should need that nothing was ever fired. Today an order whose lines
-  were all voided can be abandoned, as well as voided.
 - Whether to keep the planted-bug lists in the repository (or adopt `cargo-mutants` in CI), so
   anyone can rerun the checks. They are scripts outside the repository today.
 - The license, and the product name ("Keel" is a codename).

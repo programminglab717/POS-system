@@ -48,7 +48,8 @@ pub enum OrderCommand {
     },
     /// Void the whole order.
     Void(Reason),
-    /// Drop an order with no live lines.
+    /// Drop an order before anything in it was fired: it has no lines, or every line was removed
+    /// before it was fired.
     Abandon,
 }
 
@@ -98,6 +99,9 @@ pub enum CommandError {
     /// The order still has live lines.
     #[error("the order has live lines")]
     HasLiveLines,
+    /// A line was sent to be prepared, so the order can't be abandoned: void it instead.
+    #[error("line {0} was fired: void the order instead")]
+    LineWasFired(Id<Line>),
     /// The event wouldn't satisfy its schema, such as a negative price or quantity.
     #[error("invalid event: {0}")]
     Invalid(PayloadError),
@@ -202,6 +206,9 @@ impl Order {
             OrderCommand::Abandon => {
                 if self.live_lines().next().is_some() {
                     return Err(CommandError::HasLiveLines);
+                }
+                if let Some(fired) = self.lines().iter().find(|line| line.was_fired()) {
+                    return Err(CommandError::LineWasFired(fired.id()));
                 }
                 Ok(OrderEvent::Abandoned)
             }

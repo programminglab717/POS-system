@@ -176,7 +176,7 @@ pub enum OrderEvent {
         /// Why.
         reason: Reason,
     },
-    /// An order with no lines was dropped.
+    /// The order was dropped before anything in it was fired.
     Abandoned,
 }
 

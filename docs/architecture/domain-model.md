@@ -388,7 +388,9 @@ stateDiagram-v2
 ```
 
 The stages up to Submitted are derived from the order's lines rather than stored (§6.5). An order
-whose lines were all removed or voided is back in Draft, and can still be voided.
+whose lines were all removed or voided is back in Draft. It can still be voided, but it can be
+abandoned only if none of its lines was ever fired: an order the kitchen worked on always ends up
+voided, so reports see it.
 
 Fulfillment state (kitchen, pickup, delivery or shipping) runs in **separate aggregates** that
 reference the order (§9). Order payment state and fulfillment state are independent: an online order
@@ -447,22 +449,24 @@ Reopened states come later. Payloads follow
 | `order.line_voided` | A fired line was voided, with a reason. |
 | `order.line_comped` | A line was given away, with a reason. |
 | `order.voided` | The whole order was voided, with a reason. |
-| `order.abandoned` | An order with no live lines was dropped. |
+| `order.abandoned` | An order was dropped before anything in it was fired. |
 
 - **A line's life.** A line is *pending* until it is fired, then *fired*. A pending line can be
-  removed; a fired line can only be voided. Removed and voided lines no longer count. A comp is a
-  mark on a live line, pending or fired, rather than a status: the line is still served, at no
-  charge. *Served* and *returned* arrive with fulfillment and returns.
+  removed; a fired line can only be voided. Removed and voided lines no longer count, but a line
+  remembers whether it was ever fired. A comp is a mark on a live line, pending or fired, rather
+  than a status: the line is still served, at no charge. *Served* and *returned* arrive with
+  fulfillment and returns.
 - **Stage** is derived from the lines: *Draft* with no live lines, *Open* while a live line is
-  pending, *Submitted* when every live line is fired. An active order can be voided at any stage,
-  and abandoned only when it has no live lines.
+  pending, *Submitted* when every live line is fired. An active order can be voided at any stage.
+  It can be abandoned only if nothing in it was ever fired: every line it had was removed first.
 - **Money and units.** An order has one currency, fixed when it is created. Every price in it,
   modifiers included, is in that currency, and a line's quantity keeps the unit it was added
   with. Quantities are positive and prices are zero or more; returns will have their own events.
 - **Commands** are checked against the device's view of the order. A command needs a created,
   active order at the device's location. Prices must be in the order's currency, and a change must
   change every field it gives. Removing or changing a line needs it pending; voiding needs it
-  fired; comping needs it live and not yet comped; abandoning needs no live lines.
+  fired; comping needs it live and not yet comped; abandoning needs every line removed before it
+  was fired.
 
 **Concurrent edits** fold by the rules of
 [offline-and-sync.md §5.2](./offline-and-sync.md#52-conflict-rules). Every event stays in the log;
@@ -483,7 +487,7 @@ the conflicts listed are derived by the fold, identically on every replica:
 | A line is removed or voided twice, or comped twice | The first wins | — |
 | Lines are added or fired after the order was closed | Applied | `AddedToClosedOrder`, `FiredOnClosedOrder` |
 | The order is voided or abandoned twice | The first wins | — |
-| The order is abandoned while it has live lines | Abandoned | `AbandonedWithLines` |
+| The order is abandoned although a line is live, or was ever fired | Abandoned | `AbandonedWithLines` |
 | Two devices change the same attribute | The later change in canonical order wins, field by field | — |
 
 Once checks exist, lines added after the order is closed will land in a post-close check, as
