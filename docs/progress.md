@@ -44,7 +44,7 @@ Slice 2, pricing v0, hasn't started: it waits for that review.
 
 ### `keel-domain` slice 1: payloads, the schema registry, and the order's lines (2026-09-28)
 
-Commits `fbd1507`, `1b6dd56`. Waiting for review.
+Commits `fbd1507`, `1b6dd56`, `147870c`. Waiting for review.
 
 - **Built:**
   - Payload codecs: strict maps with integer keys; money, quantity, identifier, text, code and
@@ -68,6 +68,7 @@ Commits `fbd1507`, `1b6dd56`. Waiting for review.
       and locations), and on devices acting concurrently on stale views;
     - a model of the command rules, checked with deliberately faulty commands.
   - 64 planted bugs, all caught, and the property tests alone catch every one.
+  - CI green.
 - **Decisions:** [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), proposed.
   - **Payloads** are canonical CBOR maps with small integer keys, decoded strictly. Money is
     `[minor units, currency code]`, and quantity `[millionths, unit code]`. Enumerations are
