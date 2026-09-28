@@ -69,7 +69,7 @@ Commits `fbd1507`, `1b6dd56`, `147870c`. Waiting for review.
     - a model of the command rules, checked with deliberately faulty commands.
   - 64 planted bugs, all caught, and the property tests alone catch every one.
   - CI green.
-- **Decisions:** [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), proposed.
+- **Decisions:** [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), accepted 2026-09-28.
   - **Payloads** are canonical CBOR maps with small integer keys, decoded strictly. Money is
     `[minor units, currency code]`, and quantity `[millionths, unit code]`. Enumerations are
     integer codes.
@@ -154,7 +154,6 @@ design, the feature catalog and the roadmap. See the [README](../README.md).
 
 ## Waiting on a decision
 
-- Review of `keel-domain` slice 1, and acceptance of ADR-0013.
 - Whether abandoning an order should need that nothing was ever fired. Today an order whose lines
   were all voided can be abandoned, as well as voided.
 - Whether to keep the planted-bug lists in the repository (or adopt `cargo-mutants` in CI), so

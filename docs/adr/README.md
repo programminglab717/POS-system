@@ -18,6 +18,6 @@ supersedes the old one.
 | [0010](./0010-hardware-abstraction-and-document-model.md) | Peripheral Service and KeelDoc document model | Accepted |
 | [0011](./0011-pii-vault-and-crypto-shredding.md) | PII vault with per-person keys and crypto-shredding | Accepted |
 | [0012](./0012-event-wire-format.md) | Event wire format: canonical CBOR, COSE_Sign1, and revocation by log position | Accepted |
-| [0013](./0013-event-payloads-and-schema-evolution.md) | Event payloads: integer-keyed canonical maps, strict versions, and total folds | Proposed |
+| [0013](./0013-event-payloads-and-schema-evolution.md) | Event payloads: integer-keyed canonical maps, strict versions, and total folds | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

@@ -1,6 +1,6 @@
 # ADR-0013: Event payloads: integer-keyed canonical maps, strict versions, and total folds
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-28)
 - **Date:** 2026-09-28
 
 ## Context
