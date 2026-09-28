@@ -1,6 +1,6 @@
 # ADR-0014: Pricing engine v0: snapshot prices, five rounding points, allocated discounts, US sales tax
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-28)
 - **Date:** 2026-09-28
 
 ## Context

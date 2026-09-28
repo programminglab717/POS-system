@@ -6,9 +6,8 @@
 
 ## Where we are
 
-**Phase 0 (Foundations), step 4 of 8:** `keel-domain` and `keel-pricing`. Slice 1 of 3 (payload
-codecs, the schema registry, and the order's lines) is reviewed. Slice 2, pricing v0, is built
-and verified, and waiting for review. Slice 3, checks and payments, starts after that review.
+**Phase 0 (Foundations), step 4 of 8:** `keel-domain` and `keel-pricing`. Slices 1 and 2 of 3
+(the order's lines, and pricing v0) are reviewed. Slice 3, checks and payments, is in progress.
 
 ## Phase 0 milestones
 
@@ -19,7 +18,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 1 | Monorepo scaffold | Rust workspace and CI done. The Android, web and schema directories arrive with their first code. | [`Cargo.toml`](../Cargo.toml), [CI](../.github/workflows/ci.yml) |
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
-| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slices 1 and 2 of 3 built; slice 2 waiting for review | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md) |
+| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slices 1 and 2 of 3 built and reviewed; slice 3 in progress | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Not started | |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
@@ -31,20 +30,20 @@ Step 4 is split into three slices, each ending with a review:
    and schema registry; the aggregate framework; order events, fold and commands for creating an
    order, adding, changing, removing, firing, voiding and comping lines, changing attributes, and
    voiding or abandoning the order.
-2. **Pricing v0** (built 2026-09-28, waiting for review): modifier pricing, discounts, US sales
-   tax, rounding and allocation, the calculation trace, and the golden-basket suite.
-3. **Checks and payments**: splits and allocations, and the payment aggregate.
+2. **Pricing v0** (built and reviewed 2026-09-28): modifier pricing, discounts, US sales tax,
+   rounding and allocation, the calculation trace, and the golden-basket suite.
+3. **Checks and payments** (in progress): splits and allocations, and the payment aggregate.
 
 ## Current slice
 
-Slice 2, pricing v0, is complete; see its entry under "Completed", which lists the decisions to
-review. Slice 3, checks and payments, waits for that review.
+Slice 3, checks and payments, is in progress. Slice 2 is reviewed; see its entry under
+"Completed".
 
 ## Completed
 
 ### `keel-pricing` v0: step 4, slice 2 (2026-09-28)
 
-Commit `7638563`. Waiting for review.
+Commit `7638563`. Reviewed 2026-09-28.
 
 - **Built:** a pure pricing function from a basket, the order's lines as rung up, and the
   location's rules to the totals ([ADR-0014](./adr/0014-pricing-engine-v0.md)):
@@ -78,7 +77,7 @@ Commit `7638563`. Waiting for review.
   - 45 planted bugs in `keel-pricing` and 5 in the order's basket, all caught; the property tests
     alone catch every one.
   - CI green.
-- **Decisions:** [ADR-0014](./adr/0014-pricing-engine-v0.md), proposed.
+- **Decisions:** [ADR-0014](./adr/0014-pricing-engine-v0.md), accepted 2026-09-28.
   - **Snapshot prices:** pricing uses the prices recorded when a line was rung up; price lists and
     the catalog's modifier rules apply then, and come with the catalog.
   - **Five rounding points**, each with an explicit mode (half away from zero by default):
@@ -231,7 +230,6 @@ design, the feature catalog and the roadmap. See the [README](../README.md).
 
 ## Waiting on a decision
 
-- Review of pricing v0, and acceptance of ADR-0014.
 - The license, and the product name ("Keel" is a codename).
 - The first payment processor (decision gate G2 in the roadmap).
 - Verifying the research's unverified claims, and interviews with merchants.
