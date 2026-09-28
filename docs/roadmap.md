@@ -241,8 +241,10 @@ Keel, and **never lose a sale to Keel**.
    events, in `keel-domain` ([ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md)).*
 4. **`keel-domain` (order/check/payment) + `keel-pricing` (v0)**: lines, modifiers, checks and
    allocations, discounts, a US sales-tax rule set, the calculation trace, and a golden-basket suite
-   of 100 baskets growing to 1,000. *Status: in progress, in three slices. The first (payload codecs,
-   the schema registry, and the order's lines) is built; see [progress](./progress.md).*
+   of 100 baskets growing to 1,000. *Status: in progress, in three slices. The first two are built:
+   payload codecs, the schema registry and the order's lines; then pricing v0
+   ([ADR-0014](./adr/0014-pricing-engine-v0.md)), with 109 golden baskets. Checks and payments come
+   third. See [progress](./progress.md).*
 5. **`keel-store`**: the SQLite event store, projections and outbox in a single transaction, with
    crash-safety tests.
 6. **`keel-sim` + `keel-sync` (v0)**: two devices, one hub and one cloud in simulation. Replication,

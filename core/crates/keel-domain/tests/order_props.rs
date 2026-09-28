@@ -36,6 +36,7 @@ use keel_events::envelope::{Actor, Device, Event, Location, StreamKind, StreamRe
 use keel_events::event::SignedEvent;
 use keel_events::keys::{SignatureAlgorithm, SoftwareSigner};
 use keel_events::log::{EventDraft, LogConfig, LogHead, LogWriter};
+use keel_pricing::Dining;
 use keel_types::{Currency, Hlc, Id, Money, Quantity, SeededEntropy, Timestamp, Unit};
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -799,7 +800,41 @@ fn invariants(order: &Order) -> Result<(), TestCaseError> {
         prop_assert_eq!(order.status(), &OrderStatus::Active);
     }
     prop_assert_eq!(order.stage() == Stage::Draft, order.live_lines().next().is_none());
+    basket_holds_the_live_lines(order)
+}
+
+/// Checks that the order's basket, which pricing prices, holds its live lines as they stand.
+fn basket_holds_the_live_lines(order: &Order) -> Result<(), TestCaseError> {
+    let Some(info) = order.info() else {
+        prop_assert!(order.basket().is_none());
+        return Ok(());
+    };
+    let basket = order.basket().unwrap();
+    prop_assert_eq!(basket.currency, info.currency);
+    prop_assert_eq!(basket.dining == Dining::OnPremises, info.mode == Mode::DineIn);
+    prop_assert!(basket.discounts.is_empty() && basket.exemptions.is_empty());
+    let live: Vec<&Line> = order.live_lines().collect();
+    prop_assert_eq!(basket.lines.len(), live.len());
+    for (priced, line) in basket.lines.iter().zip(live) {
+        prop_assert_eq!(priced.unit_price, line.item().unit_price);
+        prop_assert_eq!(priced.quantity, line.quantity());
+        prop_assert_eq!(priced.tax_category, line.item().tax_category.cast());
+        prop_assert_eq!(priced.comped, line.comp().is_some());
+        prop_assert!(priced.discounts.is_empty());
+        prop_assert!(same_modifiers(&priced.modifiers, line.modifiers()));
+    }
     Ok(())
+}
+
+/// Whether pricing's modifiers are the chosen ones: the same prices and quantities, all the way
+/// down.
+fn same_modifiers(priced: &[keel_pricing::Modifier], chosen: &[ChosenModifier]) -> bool {
+    priced.len() == chosen.len()
+        && priced.iter().zip(chosen).all(|(priced, chosen)| {
+            priced.unit_price == chosen.unit_price
+                && priced.quantity.get() == u32::from(chosen.quantity.get())
+                && same_modifiers(&priced.modifiers, &chosen.modifiers)
+        })
 }
 
 /// Folds `events` in the order given, after checking that each is one a kernel could decode:

@@ -15,6 +15,7 @@ os = ["keel-types/os", "keel-events/os"]
 [dependencies]
 keel-types.workspace = true
 keel-events.workspace = true
+keel-pricing.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

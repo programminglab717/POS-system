@@ -1,0 +1,21 @@
+[package]
+name = "keel-pricing"
+version = "0.1.0"
+description = "Keel's pricing engine: line amounts, discounts and their allocation, sales tax, rounding, and the calculation trace."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+keel-types.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+num-bigint.workspace = true
+num-integer.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

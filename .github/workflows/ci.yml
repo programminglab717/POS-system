@@ -51,9 +51,14 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       - name: Build for wasm32
-        run: cargo build -p keel-types -p keel-events -p keel-domain --no-default-features --target wasm32-unknown-unknown
+        run: cargo build -p keel-types -p keel-events -p keel-domain -p keel-pricing --no-default-features --target wasm32-unknown-unknown
 
       - name: Generated currency table matches the ISO 4217 snapshot
         run: |
           python3 core/crates/keel-types/tools/gen_currency_table.py
           git diff --exit-code -- core/crates/keel-types/src/currency/table.rs
+
+      - name: Golden baskets match the Python pricing oracle
+        run: |
+          python3 core/crates/keel-pricing/tests/golden/generate.py
+          git diff --exit-code -- core/crates/keel-pricing/tests/golden/baskets.json

@@ -10,9 +10,11 @@ offline.
 catalog and roadmap are in a v1 draft. Two kernel crates are built and tested:
 [`keel-types`](./core/crates/keel-types/) (money, currencies, rounding, quantities, time,
 identifiers, business dates) and [`keel-events`](./core/crates/keel-events/) (the signed,
-hash-chained event log). A third, [`keel-domain`](./core/crates/keel-domain/) (event schemas and
-the business aggregates), has its first slice built: orders and their lines.
-[docs/progress.md](./docs/progress.md) tracks the build step by step.
+hash-chained event log). Two more are under way: [`keel-domain`](./core/crates/keel-domain/)
+(event schemas and the business aggregates) has orders and their lines, and
+[`keel-pricing`](./core/crates/keel-pricing/) prices them: line amounts, discounts, US sales tax,
+rounding and the calculation trace. [docs/progress.md](./docs/progress.md) tracks the build step
+by step.
 
 ## What makes Keel different
 
@@ -94,7 +96,7 @@ first use.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features                      # add `-- --include-ignored` for the exhaustive sweeps
-cargo build -p keel-types -p keel-events -p keel-domain --no-default-features --target wasm32-unknown-unknown
+cargo build -p keel-types -p keel-events -p keel-domain -p keel-pricing --no-default-features --target wasm32-unknown-unknown
 ```
 
 Read [docs/engineering/conventions.md](./docs/engineering/conventions.md) before changing kernel code.
@@ -102,5 +104,5 @@ Read [docs/engineering/conventions.md](./docs/engineering/conventions.md) before
 ## Next step
 
 Phase 0 (Foundations) in the [roadmap](./docs/roadmap.md#8-first-engineering-milestones-the-next-build-steps):
-after `keel-types` and `keel-events`, the order/pricing core (in progress: pricing v0 is next), then
-the SQLite store and the deterministic sync simulator.
+after `keel-types` and `keel-events`, the order/pricing core (in progress: pricing v0 is built;
+checks and payments are next), then the SQLite store and the deterministic sync simulator.

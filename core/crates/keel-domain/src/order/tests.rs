@@ -388,6 +388,56 @@ fn closed_orders_report_new_work() {
 }
 
 #[test]
+fn an_order_is_priced_from_its_live_lines() {
+    let mut script = Script::new();
+    assert!(script.order.basket().is_none());
+    script.apply(&OrderEvent::Created(created()));
+    // Two lattes at 4.50, each with two oat milks at 0.50 that each have a syrup at 0.25:
+    // 4.50 + 2 × (0.50 + 0.25) = 6.00 a latte, 12.00 for two.
+    let mut latte = added(1, usd(450));
+    latte.quantity = each(2);
+    latte.modifiers = vec![ChosenModifier {
+        quantity: NonZeroU8::new(2).unwrap(),
+        modifiers: vec![modifier(0x601, usd(25))],
+        ..modifier(0x600, usd(50))
+    }];
+    script.apply(&OrderEvent::LineAdded(latte));
+    script.apply(&OrderEvent::LineAdded(added(2, usd(325))));
+    script.apply(&OrderEvent::LineAdded(added(3, usd(999))));
+    script.apply(&OrderEvent::LineComped { line: id(2), reason: reason("birthday") });
+    script.apply(&OrderEvent::LineRemoved { line: id(3) });
+
+    let basket = script.order.basket().unwrap();
+    assert_eq!(basket.dining, keel_pricing::Dining::OnPremises);
+    let live: Vec<Id<Line>> = script.order.live_lines().map(Line::id).collect();
+    assert_eq!(live, [id(1), id(2)]);
+    assert_eq!(basket.lines.len(), live.len());
+    assert!(basket.lines[1].comped);
+
+    let rules = keel_pricing::Rules {
+        taxes: vec![keel_pricing::Tax {
+            id: id(0x900),
+            name: "Ten percent".to_owned(),
+            rate: keel_types::Rate::from_basis_points(1_000),
+            categories: vec![id(0x500)],
+            dining: None,
+        }],
+        ..keel_pricing::Rules::untaxed()
+    };
+    let totals = keel_pricing::price(&basket, &rules).unwrap();
+    // The latte is 12.00 with 1.20 of tax; the comped bagel costs nothing.
+    assert_eq!(totals.lines[0].gross, usd(1_200));
+    assert_eq!(totals.lines[1].comp, usd(325));
+    assert_eq!(totals.total, usd(1_320));
+
+    script.apply(&OrderEvent::AttributesChanged(AttributesChanged {
+        mode: Some(Mode::Takeout),
+        ..AttributesChanged::default()
+    }));
+    assert_eq!(script.order.basket().unwrap().dining, keel_pricing::Dining::ToGo);
+}
+
+#[test]
 fn undecodable_events_are_skipped_and_reported() {
     let mut order = Script::created().order;
     let meta = Script::new().meta_at(location());

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 18bd5888a1dd0621841207b75a72e355de2749535cb2dfba3fa182632213568a # shrinks to (basket, rules) = (Basket { currency: Currency(USD), lines: [], discounts: [], dining: OnPremises, exemptions: [Id<Tax>(0192f0c1-0000-7000-8000-000000000101)] }, Rules { extension: HalfAwayFromZero, discounts: HalfAwayFromZero, taxes: [Tax { id: Id<Tax>(0192f0c1-0000-7000-8000-000000000100), name: "tax 0", rate: Rate(0.0001), categories: [], dining: None }, Tax { id: Id<Tax>(0192f0c1-0000-7000-8000-000000000101), name: "tax 1", rate: Rate(0.2134), categories: [], dining: None }], tax_rounding: TaxRounding { scope: Line, mode: AwayFromZero } })

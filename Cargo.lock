@@ -581,6 +581,7 @@ name = "keel-domain"
 version = "0.1.0"
 dependencies = [
  "keel-events",
+ "keel-pricing",
  "keel-types",
  "proptest",
  "thiserror",
@@ -598,6 +599,18 @@ dependencies = [
  "p256",
  "proptest",
  "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "keel-pricing"
+version = "0.1.0"
+dependencies = [
+ "keel-types",
+ "num-bigint",
+ "num-integer",
+ "proptest",
+ "serde_json",
  "thiserror",
 ]
 

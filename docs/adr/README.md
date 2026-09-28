@@ -19,5 +19,6 @@ supersedes the old one.
 | [0011](./0011-pii-vault-and-crypto-shredding.md) | PII vault with per-person keys and crypto-shredding | Accepted |
 | [0012](./0012-event-wire-format.md) | Event wire format: canonical CBOR, COSE_Sign1, and revocation by log position | Accepted |
 | [0013](./0013-event-payloads-and-schema-evolution.md) | Event payloads: integer-keyed canonical maps, strict versions, and total folds | Accepted |
+| [0014](./0014-pricing-engine-v0.md) | Pricing engine v0: snapshot prices, five rounding points, allocated discounts, US sales tax | Proposed |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

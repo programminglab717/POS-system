@@ -132,13 +132,15 @@ behaves the same way. The first nine are built, in the `keel-types` crate (`core
 | `LocalizedText` | Map `Language → string` with fallback | Item names, modifiers, receipt text. |
 | `Address`, `Phone`, `Email` | Structured; E.164 phones | Always behind the PII vault when tied to a person (§14). |
 
-**Rounding happens in exactly three places**, each governed by a `RoundingRule` from the jurisdiction
-profile:
+**Rounding happens in exactly five places**, each with an explicit rounding mode from the location's
+pricing rules or the jurisdiction profile ([ADR-0014](../adr/0014-pricing-engine-v0.md)):
 
-1. tax calculation (per line or per document, as the jurisdiction requires);
-2. allocation of order-level amounts to lines, using largest-remainder so the parts always sum to the
-   whole;
-3. cash tender rounding.
+1. extension: a unit price times a fractional quantity, for items sold by weight or measure;
+2. percentage discounts;
+3. allocation of order-level amounts (discounts, and tax rounded per document) to lines, using
+   largest remainder so the parts always sum to the whole;
+4. tax calculation (per line or per document, as the jurisdiction requires);
+5. cash tender rounding.
 
 Anywhere else, rounding is a bug.
 
@@ -462,6 +464,8 @@ Reopened states come later. Payloads follow
 - **Money and units.** An order has one currency, fixed when it is created. Every price in it,
   modifiers included, is in that currency, and a line's quantity keeps the unit it was added
   with. Quantities are positive and prices are zero or more; returns will have their own events.
+- **Pricing:** an order's *basket*, its live lines with the prices they were rung up with, is what
+  the pricing engine prices (§8.1). A comped line is in the basket at no charge.
 - **Commands** are checked against the device's view of the order. A command needs a created,
   active order at the device's location. Prices must be in the order's currency, and a change must
   change every field it gives. Removing or changing a line needs it pending; voiding needs it
@@ -617,6 +621,34 @@ same result everywhere.
 The output **trace** is a compact structured log, for example: "Line 3: base $9.00 (location price
 list 'Downtown') + modifier 'extra shot' $0.75 − promo 'Happy Hour 20%' $1.95 → $7.80; tax 'NYC
 combined 8.875%' $0.69". The trace is stored alongside the check totals.
+
+### 8.1 As built: pricing v0
+
+`keel-pricing` implements the first version of this pipeline for counter service at one US
+location ([ADR-0014](../adr/0014-pricing-engine-v0.md)). Pricing is a pure function from a
+*basket*, the order's live lines as they were rung up, and the location's rules to the totals.
+
+- **Prices come from the line's snapshot.** Base price resolution (step 1) and the modifier
+  group's rules (free selections, half pricing) happen when a line is rung up, with the catalog,
+  and aren't repeated when totals are computed.
+- **Extension:** the item's price plus its modifiers', each modifier counting its quantity times
+  its own price plus its nested modifiers', times the line's quantity. Only a fractional quantity,
+  for an item sold by weight or measure, needs rounding.
+- **Comps and discounts** stand in for manual overrides and promotions (steps 3 and 4). A comp
+  takes the whole line. Line discounts, then order discounts, each take from what is left: a
+  percentage is rounded, and an amount is never more than what is left. Each order discount is
+  allocated to the lines by largest remainder, so the shares add up to it exactly.
+- **Tax** (step 6): each tax applies to lines in its categories, optionally only when the order is
+  eaten on the premises or only when it is taken away, on the line's net. It is added to the
+  price, and rounded per line or once per document; a per-document tax is allocated to the lines.
+  Taxes don't compound, and a customer can be exempt from some of them.
+- **Cash rounding** (step 7) is a separate function, which the tender calls on the amount paid in
+  cash.
+- **The totals** give every line's gross, comp, discounts, share of each order discount, net and
+  taxes, and the order's totals. The **trace** records every step with its inputs and result.
+- **Not yet built:** price lists, the catalog's modifier rules, promotions, service charges, fees
+  and surcharges, tips, tax-inclusive (VAT) prices and compound taxes, per-item thresholds, tax
+  holidays, the SNAP portion, manufacturer coupons, destination-based tax, and returns.
 
 ---
 

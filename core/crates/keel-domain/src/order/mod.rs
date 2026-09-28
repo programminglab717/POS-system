@@ -10,7 +10,10 @@
 //!   edits from different devices as the offline and sync design describes.
 //! - [`OrderCommand`] is what a device asks to do; [`Order::decide`] checks it against the
 //!   device's view and returns the event to record.
+//! - [`Order::basket`] is what `keel-pricing` prices: the order's live lines as they were rung
+//!   up.
 
+mod basket;
 mod commands;
 mod events;
 mod state;

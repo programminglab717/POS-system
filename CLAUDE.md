@@ -30,15 +30,17 @@ cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 cargo test --workspace --all-features                   # quick
 cargo test --workspace --all-features -- --include-ignored  # with the exhaustive sweeps, as CI runs
 PROPTEST_CASES=100000 cargo test --workspace            # soak before significant changes
-cargo build -p keel-types -p keel-events -p keel-domain --no-default-features --target wasm32-unknown-unknown
+cargo build -p keel-types -p keel-events -p keel-domain -p keel-pricing --no-default-features --target wasm32-unknown-unknown
 python3 tools/planted-bugs/run.py <crate> [--props]    # plant the crate's known bugs, one at a time
+python3 core/crates/keel-pricing/tests/golden/generate.py  # after changing how pricing works
 python3 core/crates/keel-types/tools/gen_currency_table.py  # after changing the ISO 4217 snapshot
 ```
 
 ## Testing expectations
 
-Test new behavior with unit tests for known answers and with property tests against the exact
-`num-bigint` oracle in `core/crates/keel-types/tests/support/`. Add generators that aim at
-boundaries (ties, range ends, time zone transitions). Confirm a new test fails when you plant the
-bug it targets, and add the bug to the crate's list in `tools/planted-bugs/`. Turn every failure a
-property test finds into a named regression test.
+Test new behavior with unit tests for known answers and with property tests against an exact
+`num-bigint` oracle, such as those in `core/crates/keel-types/tests/support/` and
+`core/crates/keel-pricing/tests/support/`. Add generators that aim at boundaries (ties, range
+ends, time zone transitions). Confirm a new test fails when you plant the bug it targets, and add
+the bug to the crate's list in `tools/planted-bugs/`. Turn every failure a property test finds
+into a named regression test.

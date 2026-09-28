@@ -103,6 +103,9 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
     `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`, so a planted bug's failures never reach the
     regression files. Don't edit or build the crate while it runs, or give it a separate worktree
     with `--root`.
+- **Golden baskets** check the pricing engine against an independent oracle in Python, with exact
+  fractions (`core/crates/keel-pricing/tests/golden/generate.py`). CI regenerates the baskets and
+  fails if they change, so the committed expectations always come from the oracle.
 - **Exhaustive sweeps**, such as every time zone transition from 1970 to 2037, are `#[ignore]`d
   for quick local runs. CI runs them with `-- --include-ignored`.
 - **Case counts.** Locally, property tests run proptest's default of 256 cases. CI runs 4,096
@@ -143,6 +146,7 @@ Test-only dependencies must be permissively licensed, but need not build for `wa
 | `proptest` | Property testing. |
 | `num-bigint`, `num-integer` | The exact arithmetic oracle, and the scalar arithmetic that crafts invalid Ed25519 signatures. |
 | `ciborium` | An independent CBOR implementation, which the codec's property tests agree with. |
+| `serde_json` | Reads the golden baskets, which the Python oracle writes as JSON. |
 | `csv` | Reads the ISO 4217 snapshot in the currency table test. |
 
 `Cargo.lock` is committed. Update dependencies deliberately (`cargo update -p <crate>`), read

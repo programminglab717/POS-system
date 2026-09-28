@@ -475,4 +475,38 @@ BUGS = [
         "self.lines.iter().any(|line| line.is_live() || line.fired);",
         "self.lines.iter().any(|line| line.is_live());",
     ),
+    # Pricing an order.
+    (
+        "baskets include removed lines",
+        "src/order/basket.rs",
+        """            .live_lines()
+            .map(|line| keel_pricing::Line {""",
+        """            .lines()
+            .iter()
+            .map(|line| keel_pricing::Line {""",
+    ),
+    (
+        "baskets forget comps",
+        "src/order/basket.rs",
+        "comped: line.comp().is_some(),",
+        "comped: false,",
+    ),
+    (
+        "baskets drop nested modifiers",
+        "src/order/basket.rs",
+        "modifiers: chosen.modifiers.iter().map(modifier).collect(),",
+        "modifiers: Vec::new(),",
+    ),
+    (
+        "baskets ignore modifier quantities",
+        "src/order/basket.rs",
+        "quantity: NonZeroU32::from(chosen.quantity),",
+        "quantity: NonZeroU32::MIN,",
+    ),
+    (
+        "baskets eat everything on the premises",
+        "src/order/basket.rs",
+        "let dining = if info.mode == Mode::DineIn { Dining::OnPremises } else { Dining::ToGo };",
+        "let dining = if info.mode == Mode::DineIn { Dining::OnPremises } else { Dining::OnPremises };",
+    ),
 ]
