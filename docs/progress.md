@@ -38,11 +38,12 @@ Step 4 is split into three slices, each ending with a review:
 
 | Work | Status |
 |---|---|
-| Payload codecs: strict field maps; money, quantity, identifier, text, code and set encodings | In progress |
-| Schema registry and the fold entry point (unknown and malformed payloads skipped and flagged) | Not started |
-| Order events v1, order state, and a total fold with the sync design's conflict rules | Not started |
-| Order commands, validated against the device's current view | Not started |
-| Tests: payload round trips and validity model, golden payloads, fold totality, commands against a reference model, concurrent devices against a model of the conflict rules, planted bugs | Not started |
+| Payload codecs: strict field maps; money, quantity, identifier, text, code and set encodings | Done, with unit tests |
+| Schema registry and the fold entry point (unknown and malformed payloads skipped and flagged) | Done, with unit tests |
+| Order events v1 (ten schemas), order state, and a total fold with the sync design's conflict rules | Done, with a known-answer test for each conflict rule |
+| Order commands, validated against the device's current view | Done, with unit tests for each check |
+| Property tests: payload round trips and a validity model per schema, golden payloads checked by an outside tool, fold totality, commands against a reference model, concurrent devices against a model of the conflict rules | In progress |
+| Planted-bug checks | Not started |
 | Docs: ADR-0013 (payload conventions and schema evolution), domain model, progress | Not started |
 
 Design decisions in this slice, to review when it ships:
@@ -56,6 +57,13 @@ Design decisions in this slice, to review when it ships:
   never stalls, but the fold skips them and flags the aggregate ("needs update" or "malformed").
 - **Text** in names and notes can't contain control characters, which could otherwise drive
   receipt printers and kitchen displays.
+- **Invalid-in-context events aren't applied** when applying them would break the order's
+  consistency: a line in another currency, a quantity in another unit, an event before the
+  order's creation or from another location. They leave a conflict instead, so every price in an
+  order can always be added up.
+- **Commands** turn into exactly one event each, and every event a command produces must decode
+  under its own schema before it is returned, so a device never writes a payload other kernels
+  reject.
 
 ## Completed
 

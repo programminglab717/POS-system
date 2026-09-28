@@ -78,6 +78,12 @@ impl<T> Id<T> {
         *self.uuid.as_bytes()
     }
 
+    /// The same ID, tagged with another entity type. For the few entities identified by another
+    /// entity's ID, such as an aggregate identified by its event stream's ID.
+    pub const fn cast<U>(self) -> Id<U> {
+        Id { uuid: self.uuid, entity: PhantomData }
+    }
+
     /// The creation time embedded in the ID, in milliseconds since the Unix epoch.
     pub const fn timestamp_ms(self) -> u64 {
         let [t0, t1, t2, t3, t4, t5, ..] = *self.uuid.as_bytes();
@@ -318,6 +324,8 @@ mod tests {
 
     #[derive(Debug)]
     struct Order;
+    #[derive(Debug)]
+    struct Customer;
 
     fn ms(millis: i64) -> Timestamp {
         Timestamp::from_millis(millis).unwrap()
@@ -422,6 +430,9 @@ mod tests {
     fn debug_names_the_entity() {
         let id: Id<Order> = Id::from_fields(0, 0, 0);
         assert_eq!(format!("{id:?}"), "Id<Order>(00000000-0000-7000-8000-000000000000)");
+        let cast: Id<Customer> = id.cast();
+        assert_eq!(cast.to_bytes(), id.to_bytes());
+        assert_eq!(format!("{cast:?}"), "Id<Customer>(00000000-0000-7000-8000-000000000000)");
     }
 
     #[cfg(feature = "os")]

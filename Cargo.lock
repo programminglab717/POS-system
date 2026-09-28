@@ -577,6 +577,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-domain"
+version = "0.1.0"
+dependencies = [
+ "keel-events",
+ "keel-types",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "keel-events"
 version = "0.1.0"
 dependencies = [

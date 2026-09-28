@@ -92,7 +92,7 @@ first use.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features                      # add `-- --include-ignored` for the exhaustive sweeps
-cargo build -p keel-types -p keel-events --no-default-features --target wasm32-unknown-unknown
+cargo build -p keel-types -p keel-events -p keel-domain --no-default-features --target wasm32-unknown-unknown
 ```
 
 Read [docs/engineering/conventions.md](./docs/engineering/conventions.md) before changing kernel code.

@@ -28,7 +28,7 @@ cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 cargo test --workspace --all-features                   # quick
 cargo test --workspace --all-features -- --include-ignored  # with the exhaustive sweeps, as CI runs
 PROPTEST_CASES=100000 cargo test --workspace            # soak before significant changes
-cargo build -p keel-types -p keel-events --no-default-features --target wasm32-unknown-unknown
+cargo build -p keel-types -p keel-events -p keel-domain --no-default-features --target wasm32-unknown-unknown
 python3 core/crates/keel-types/tools/gen_currency_table.py  # after changing the ISO 4217 snapshot
 ```
 
