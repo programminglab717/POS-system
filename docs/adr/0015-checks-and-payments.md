@@ -1,6 +1,6 @@
 # ADR-0015: Checks and payments: line shares, per-check pricing, closing snapshots, and the payment aggregate
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-28)
 - **Date:** 2026-09-28
 
 ## Context

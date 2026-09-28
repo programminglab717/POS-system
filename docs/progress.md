@@ -6,9 +6,9 @@
 
 ## Where we are
 
-**Phase 0 (Foundations), step 4 of 8:** `keel-domain` and `keel-pricing`. Slices 1 and 2 of 4
-(the order's lines, and pricing v0) are reviewed. Slice 3, checks and splits, is built and
-verified, and waiting for review. Slice 4, payments and closing, starts after that review.
+**Phase 0 (Foundations), step 4 of 8:** `keel-domain` and `keel-pricing`. Slices 1 to 3 of 4
+(the order's lines, pricing v0, and checks and splits) are built and reviewed. Slice 4, payments
+and closing, is in progress.
 
 ## Phase 0 milestones
 
@@ -19,7 +19,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 1 | Monorepo scaffold | Rust workspace and CI done. The Android, web and schema directories arrive with their first code. | [`Cargo.toml`](../Cargo.toml), [CI](../.github/workflows/ci.yml) |
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
-| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slices 1 to 3 of 4 built, and 1 and 2 reviewed; slice 3 waiting for review | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
+| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slices 1 to 3 of 4 built and reviewed; slice 4 in progress | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Not started | |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
@@ -34,22 +34,29 @@ checks and payments, was split in two, so that the payment design is reviewed be
    voiding or abandoning the order.
 2. **Pricing v0** (built and reviewed 2026-09-28): modifier pricing, discounts, US sales tax,
    rounding and allocation, the calculation trace, and the golden-basket suite.
-3. **Checks and splits** (built 2026-09-28, waiting for review): every order's main check,
+3. **Checks and splits** (built and reviewed 2026-09-28): every order's main check,
    opening checks, allocating lines to checks in whole shares, and pricing each check as its own
    sale.
-4. **Payments and closing**: the payment aggregate, balances, closing checks with their totals,
-   and closing and reopening orders.
+4. **Payments and closing** (in progress): the payment aggregate, balances, closing checks with
+   their totals, and closing and reopening orders.
 
 ## Current slice
 
-Slice 3, checks and splits, is complete; see its entry under "Completed", which lists the
-decisions to review, including the payment design that slice 4 builds.
+Slice 4, payments and closing, builds decisions 5 to 9 of
+[ADR-0015](./adr/0015-checks-and-payments.md):
+
+| Piece | Status |
+|---|---|
+| Closing a check, with the snapshot of what it was charged; closed checks frozen; post-close checks | Not started |
+| Closing and reopening the order | Not started |
+| The payment aggregate, with cash and card | Not started |
+| Checkout: each check's balance, and the rules that span an order and its payments | Not started |
 
 ## Completed
 
 ### Checks and splits: step 4, slice 3 (2026-09-28)
 
-Commit `fdd6d6f`. Waiting for review.
+Commit `fdd6d6f`. Reviewed 2026-09-28.
 
 - **Built** ([ADR-0015](./adr/0015-checks-and-payments.md)):
   - every order's main check, whose identifier is the order's own, and `order.check_opened` for
@@ -84,7 +91,7 @@ Commit `fdd6d6f`. Waiting for review.
     22 of them aimed at checks and splits, and 51 in `keel-pricing`, 6 of them aimed at shares.
   - Every crate's property tests also passed 100,000 cases each.
   - CI green.
-- **Decisions:** [ADR-0015](./adr/0015-checks-and-payments.md), proposed.
+- **Decisions:** [ADR-0015](./adr/0015-checks-and-payments.md), accepted 2026-09-28.
   - **Checks are part of the order's stream**, and every order has a main check with the order's
     identifier, so a one-check order needs no check events.
   - **Lines are split among checks in whole shares**, in lowest terms: exact, and the parts add
@@ -294,7 +301,6 @@ design, the feature catalog and the roadmap. See the [README](../README.md).
 
 ## Waiting on a decision
 
-- Review of checks and splits, and of ADR-0015, including the payment design slice 4 builds.
 - The license, and the product name ("Keel" is a codename).
 - The first payment processor (decision gate G2 in the roadmap).
 - Verifying the research's unverified claims, and interviews with merchants.
