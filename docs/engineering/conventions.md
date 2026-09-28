@@ -91,12 +91,18 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
 - **No `prop_assume!`.** Generate valid inputs directly, or filter inside the strategy. Rejected
   cases count against a global limit that aborts high case-count runs.
 - **Check that new tests can fail.** Plant the bug a test is meant to catch, and confirm the test
-  fails. Plant bugs a property test should catch on its own too, and run only that test: unit
-  tests often catch a bug that the property test's generators never reach. Two traps:
-  - Restoring a file by moving a copy back keeps its old modification time: touch it, or Cargo
-    reuses the build of the planted bug.
-  - Proptest saves the seed of every failure, including a planted bug's. Run planted bugs with
-    `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`, so only real failures reach the regression files.
+  fails. Plant bugs a property test should catch on its own too, and run only the property tests:
+  unit tests often catch a bug that the property test's generators never reach.
+  - Each crate's planted bugs are listed in `tools/planted-bugs/<crate>.py`, and
+    `tools/planted-bugs/run.py` plants them one at a time: `run.py keel-domain` against every
+    test, `--props` against the property tests alone, `--ignored` with the exhaustive sweeps. Add
+    the bugs a new test targets to the list.
+  - The runner reports a bug whose text no longer matches the code as stale, and one that doesn't
+    compile as proving nothing; a compile error is never counted as a caught bug.
+  - It restores each file by rewriting it, so Cargo sees a new modification time, and runs with
+    `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`, so a planted bug's failures never reach the
+    regression files. Don't edit or build the crate while it runs, or give it a separate worktree
+    with `--root`.
 - **Exhaustive sweeps**, such as every time zone transition from 1970 to 2037, are `#[ignore]`d
   for quick local runs. CI runs them with `-- --include-ignored`.
 - **Case counts.** Locally, property tests run proptest's default of 256 cases. CI runs 4,096

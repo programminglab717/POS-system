@@ -300,6 +300,40 @@ proptest! {
         }
     }
 
+    /// Each field in turn, set to a value aimed at it, is accepted exactly when the documented
+    /// rules allow it. Every case tries all seventeen fields, so each field's edge values, such
+    /// as a sequence number of 0 or a padded date, come up in every run.
+    #[test]
+    fn every_field_takes_exactly_its_valid_values(
+        body in any_body(),
+        values in (0_u64..=16).map(near_miss_for).collect::<Vec<_>>(),
+    ) {
+        for (key, value) in (0_u64..).zip(values) {
+            let change = FieldChange::Set { key: Value::Unsigned(key), value: value.clone() };
+            let bytes = changed(&body, &change);
+            let valid = valid_for(key, &value);
+            match EventBody::decode(&bytes) {
+                Ok(decoded) => {
+                    prop_assert!(valid, "accepted {:?} as field {}", value, key);
+                    prop_assert_eq!(decoded.encode(), bytes);
+                }
+                Err(error) => prop_assert!(!valid, "rejected {:?} as field {}: {}", value, key, error),
+            }
+        }
+        // A field under the negative of its key is an unknown key, not the field.
+        let entries = cbor::decode(&body.encode()).unwrap().as_map().unwrap().clone().into_entries();
+        for (key, _) in &entries {
+            let Some(key) = key.as_u64().filter(|&key| key > 0) else { continue };
+            let negative = Value::integer(-i64::try_from(key).unwrap());
+            let renamed = entries.iter().map(|(existing, value)| {
+                let existing = if existing.as_u64() == Some(key) { negative.clone() } else { existing.clone() };
+                (existing, value.clone())
+            });
+            let bytes = Value::Map(Map::from_entries(renamed.collect::<Vec<(Value, Value)>>()).unwrap()).encode();
+            prop_assert!(EventBody::decode(&bytes).is_err(), "read key -{} as field {}", key, key);
+        }
+    }
+
     /// The same, for small changes to the bytes; the decoder never panics.
     #[test]
     fn changed_bytes_are_rejected_or_canonical(body in any_body(), mutation in any_mutation()) {

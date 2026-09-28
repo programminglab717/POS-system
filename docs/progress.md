@@ -6,9 +6,9 @@
 
 ## Where we are
 
-**Phase 0 (Foundations), step 4 of 8:** `keel-domain`. Slice 1 of 3 (payload codecs, the schema
-registry, and the order's lines) is built and verified, and waiting for review. Slice 2, pricing
-v0, starts after that review.
+**Phase 0 (Foundations), step 4 of 8:** `keel-domain` and `keel-pricing`. Slice 1 of 3 (payload
+codecs, the schema registry, and the order's lines) is reviewed. Slice 2, pricing v0, is in
+progress.
 
 ## Phase 0 milestones
 
@@ -19,7 +19,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 1 | Monorepo scaffold | Rust workspace and CI done. The Android, web and schema directories arrive with their first code. | [`Cargo.toml`](../Cargo.toml), [CI](../.github/workflows/ci.yml) |
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
-| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slice 1 of 3 built, waiting for review | [`core/crates/keel-domain`](../core/crates/keel-domain/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md) |
+| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slice 1 of 3 built and reviewed; slice 2 in progress | [`core/crates/keel-domain`](../core/crates/keel-domain/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Not started | |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
@@ -27,24 +27,24 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 
 Step 4 is split into three slices, each ending with a review:
 
-1. **Foundations and the order's lines** (built 2026-09-28, waiting for review): payload codecs
+1. **Foundations and the order's lines** (built and reviewed 2026-09-28): payload codecs
    and schema registry; the aggregate framework; order events, fold and commands for creating an
    order, adding, changing, removing, firing, voiding and comping lines, changing attributes, and
    voiding or abandoning the order.
-2. **Pricing v0**: modifier pricing, discounts, US sales tax, rounding and allocation, the
-   calculation trace, and the golden-basket suite.
+2. **Pricing v0** (in progress): modifier pricing, discounts, US sales tax, rounding and
+   allocation, the calculation trace, and the golden-basket suite.
 3. **Checks and payments**: splits and allocations, and the payment aggregate.
 
 ## Current slice
 
-Slice 1 is complete; see its entry under "Completed", which lists the decisions to review.
-Slice 2, pricing v0, hasn't started: it waits for that review.
+Slice 2, pricing v0, is in progress. Slice 1 is reviewed; see its entry under "Completed".
 
 ## Completed
 
 ### `keel-domain` slice 1: payloads, the schema registry, and the order's lines (2026-09-28)
 
-Commits `fbd1507`, `1b6dd56`, `147870c`. Waiting for review.
+Commits `fbd1507`, `1b6dd56`, `147870c`, and after review `0188d4d`, `13a2847`. Reviewed
+2026-09-28.
 
 - **Built:**
   - Payload codecs: strict maps with integer keys; money, quantity, identifier, text, code and
@@ -104,8 +104,14 @@ Commits `fbd1507`, `1b6dd56`, `147870c`. Waiting for review.
   - `provisional_order` had no test; it now has known answers and a property.
 - **After review:** abandoning an order needs that nothing in it was ever fired, so an order the
   kitchen worked on always ends up voided. A line now remembers whether it was ever fired, and the
-  fold reports an order abandoned with fired lines. Seven planted bugs aimed at the rule are all
-  caught by the property tests alone.
+  fold reports an order abandoned with fired lines. Seven planted bugs aimed at the rule, three of
+  them new, are all caught by the property tests alone, which makes 67 for the slice.
+- **After review:** every crate's planted bugs now live in `tools/planted-bugs/`, with a runner
+  that anyone can rerun. Running them all again found a bug in the record: an old script counted a
+  bug that didn't compile as caught (in `keel-events`). It also showed that `keel-events`'
+  property tests reached three envelope edge cases too rarely: a sequence number of 0, a padded
+  date, and a field under the negative of its key. A new property tries a near miss for every
+  field of the envelope, and every field under its negative key, and catches all three every time.
 
 ### `keel-events`: the signed, hash-chained event log (2026-09-27)
 
@@ -120,8 +126,11 @@ Commits `34fda99`, `f79e701`.
   - 38 unit tests and 26 property tests, which also passed 100,000 cases each.
   - Interoperability both ways with Python's `pycose`; a pinned reference event checked
     independently with `cbor2`, `hashlib` and `pycose`.
-  - 59 planted bugs, all caught; the property tests alone catch the 43 in the envelope, event,
-    log and registry code.
+  - 58 planted bugs, all caught; the property tests alone catch 53. The other 5 are the
+    byte-level checks of COSE messages and keys, which known-answer tests catch. (Recounted on
+    2026-09-28 with the planted-bug runner, which found that one listed bug had never compiled:
+    the earlier scripts counted a compile error as a caught bug. The lists hold 58 bugs; the
+    earlier record said 59.)
   - CI green.
 - **Decisions:** [ADR-0012](./adr/0012-event-wire-format.md), accepted 2026-09-28: a location
   field in every event, revocation by log position rather than time, one key per device for life,
@@ -144,6 +153,8 @@ Commits `2bb1c68`, `493dd3b`, `de45ce0`.
   cutoffs.
 - **Verified:** 110 tests and 2 doctests, with property tests against an exact `num-bigint`
   oracle and an exhaustive sweep of every time zone transition from 1970 to 2037. CI green.
+  16 planted bugs, all caught; the property tests alone, with the exhaustive sweep, catch 13, and
+  unit tests the other 3 (counted on 2026-09-28).
 - **Found and fixed during the build:** double rounding in `Money::mul_decimal` (caught by a
   generator aimed at rounding boundaries after 2,000 uniform cases missed it); parsing of
   `i64::MIN`; an order-dependent sum; a naive business-date algorithm that failed on real time
@@ -158,8 +169,6 @@ design, the feature catalog and the roadmap. See the [README](../README.md).
 
 ## Waiting on a decision
 
-- Whether to keep the planted-bug lists in the repository (or adopt `cargo-mutants` in CI), so
-  anyone can rerun the checks. They are scripts outside the repository today.
 - The license, and the product name ("Keel" is a codename).
 - The first payment processor (decision gate G2 in the roadmap).
 - Verifying the research's unverified claims, and interviews with merchants.
