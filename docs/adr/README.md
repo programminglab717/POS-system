@@ -17,6 +17,6 @@ supersedes the old one.
 | [0009](./0009-compliance-as-data-and-fiscal-adapters.md) | Compliance as signed rule packs, plus pluggable fiscal adapters | Accepted |
 | [0010](./0010-hardware-abstraction-and-document-model.md) | Peripheral Service and KeelDoc document model | Accepted |
 | [0011](./0011-pii-vault-and-crypto-shredding.md) | PII vault with per-person keys and crypto-shredding | Accepted |
-| [0012](./0012-event-wire-format.md) | Event wire format: canonical CBOR, COSE_Sign1, and revocation by log position | Proposed |
+| [0012](./0012-event-wire-format.md) | Event wire format: canonical CBOR, COSE_Sign1, and revocation by log position | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

@@ -10,7 +10,7 @@ offline.
 catalog and roadmap are in a v1 draft. Two kernel crates are built and tested:
 [`keel-types`](./core/crates/keel-types/) (money, currencies, rounding, quantities, time,
 identifiers, business dates) and [`keel-events`](./core/crates/keel-events/) (the signed,
-hash-chained event log).
+hash-chained event log). [docs/progress.md](./docs/progress.md) tracks the build step by step.
 
 ## What makes Keel different
 

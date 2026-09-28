@@ -16,6 +16,8 @@ Read `docs/engineering/conventions.md`. In short:
   `Clock` or `Entropy`.
 - New dependencies need an entry in the conventions' dependency policy.
 - Update the architecture docs in the same change when code makes them outdated.
+- Keep [`docs/progress.md`](docs/progress.md) current: update it as each piece of work lands, and
+  record each finished slice there with how it was verified.
 
 ## Commands
 

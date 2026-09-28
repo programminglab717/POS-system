@@ -143,6 +143,8 @@ matches.
 
 - Public API documentation says what an item does, why it exists and when it fails (`# Errors`).
 - Architecture documents change in the same commit as code that makes them outdated.
+- [`docs/progress.md`](../progress.md) records where the build stands. Update it as work lands,
+  and record each finished slice with what it built, how it was verified and its commits.
 - Write plain, precise English: short sentences, active voice, no hype.
 
 ## 7. Commits

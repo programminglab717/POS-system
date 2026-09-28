@@ -1,6 +1,6 @@
 # ADR-0012: Event wire format: canonical CBOR, COSE_Sign1, and revocation by log position
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-28)
 - **Date:** 2026-09-27
 
 ## Context
