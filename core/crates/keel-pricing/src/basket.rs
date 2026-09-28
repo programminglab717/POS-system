@@ -45,6 +45,23 @@ pub struct Line {
     pub comped: bool,
     /// Discounts on this line, applied in turn.
     pub discounts: Vec<Discount>,
+    /// The part of the line this basket holds, when the line is shared among several baskets,
+    /// such as the checks a bottle of wine is split between. `None` for the whole line.
+    pub share: Option<Share>,
+}
+
+/// One basket's part of a line shared among several, such as one check's third of a bottle of
+/// wine split three ways.
+///
+/// The line's gross is split among all the parts by largest remainder, in proportion to their
+/// weights, so the parts always add up to the line. Every basket holding a part of the line
+/// gives the same weights in the same order, and its own index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Share {
+    /// The weight of every part of the line, in order: each 1 or more.
+    pub weights: Vec<u64>,
+    /// Which part this basket holds, counted from zero.
+    pub index: usize,
 }
 
 /// A modifier chosen for a line, or for another modifier.

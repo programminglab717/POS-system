@@ -6,8 +6,8 @@ use core::num::{NonZeroU8, NonZeroU16};
 
 use keel_domain::codec::{CatalogVersion, Change, IdSet, Name, Note, ReasonCode};
 use keel_domain::order::{
-    AttributesChanged, Channel, ChosenModifier, ItemSnapshot, LineAdded, LineChanged, Mode,
-    OrderCreated, OrderEvent, Placement, Prefix, Reason,
+    Allocation, AttributesChanged, Channel, ChosenModifier, ItemSnapshot, LineAdded, LineChanged,
+    LinesAllocated, Mode, OrderCreated, OrderEvent, Placement, Prefix, Reason,
 };
 use keel_types::{Currency, Id, Money, Quantity, Unit};
 use proptest::prelude::*;
@@ -196,6 +196,25 @@ pub(crate) fn any_id_set<T: 'static>() -> impl Strategy<Value = IdSet<T>> {
         .prop_map(|ids| IdSet::new(ids.into_iter().map(id)).unwrap())
 }
 
+/// Allocations of lines to checks: sometimes of one line to several checks, among few lines
+/// and checks, and sometimes of any lines to any checks; shares mostly small, sometimes large.
+pub(crate) fn any_lines_allocated() -> impl Strategy<Value = LinesAllocated> {
+    let shares = prop_oneof![4 => 1_u16..=4, 1 => 1_u16..=u16::MAX]
+        .prop_map(|shares| NonZeroU16::new(shares).unwrap());
+    let few = (0_u64..4, 0_u64..4);
+    let any = (0_u64..0xFFFF_FFFF, 0_u64..0xFFFF_FFFF);
+    prop::collection::btree_map(prop_oneof![3 => few, 1 => any], shares, 1..8).prop_map(
+        |allocations| {
+            let allocations = allocations.into_iter().map(|((line, check), shares)| Allocation {
+                line: id(line),
+                check: id(0x10 + check),
+                shares,
+            });
+            LinesAllocated::new(allocations).unwrap()
+        },
+    )
+}
+
 /// Any order event, of any kind.
 pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
     prop_oneof![
@@ -209,5 +228,7 @@ pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
         (any_id(), any_reason()).prop_map(|(line, reason)| OrderEvent::LineComped { line, reason }),
         any_reason().prop_map(|reason| OrderEvent::Voided { reason }),
         Just(OrderEvent::Abandoned),
+        any_id().prop_map(|check| OrderEvent::CheckOpened { check }),
+        any_lines_allocated().prop_map(OrderEvent::LinesAllocated),
     ]
 }

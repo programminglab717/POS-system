@@ -39,6 +39,21 @@ fn reason(code: &str) -> Reason {
     Reason { code: ReasonCode::new(code).unwrap(), note: None }
 }
 
+/// `shares` shares of `line` on `check`.
+fn allocation(line: u64, check: u64, shares: u16) -> Allocation {
+    Allocation { line: id(line), check: id(check), shares: NonZeroU16::new(shares).unwrap() }
+}
+
+/// `shares` shares of a line on `check`, as the line records them.
+fn share(check: u64, shares: u16) -> CheckShare {
+    CheckShare { check: id(check), shares: NonZeroU16::new(shares).unwrap() }
+}
+
+/// The lines numbered `lines`.
+fn lines(lines: &[u64]) -> IdSet<Line> {
+    IdSet::new(lines.iter().map(|&n| id(n))).unwrap()
+}
+
 fn created() -> OrderCreated {
     OrderCreated {
         channel: Channel::Pos,
@@ -438,6 +453,108 @@ fn an_order_is_priced_from_its_live_lines() {
 }
 
 #[test]
+fn a_table_is_split_among_checks() {
+    let mut script = Script::created();
+    // The main check comes with the order, and has its identifier.
+    assert_eq!(script.order.main_check(), id(0xA));
+    script.apply(&OrderEvent::LineAdded(added(1, usd(1450))));
+    script.apply(&OrderEvent::LineAdded(added(2, usd(495))));
+    script.apply(&OrderEvent::LineAdded(added(3, usd(3000))));
+    assert_eq!(script.order.line(id(3)).unwrap().allocation(), [share(0xA, 1)]);
+
+    // Seat 1's burger goes to check 2 and seat 2's fries to check 3, and the three checks share
+    // the wine.
+    script.apply(&OrderEvent::CheckOpened { check: id(0xC2) });
+    script.apply(&OrderEvent::CheckOpened { check: id(0xC3) });
+    let split = LinesAllocated::new([
+        allocation(1, 0xC2, 1),
+        allocation(2, 0xC3, 1),
+        allocation(3, 0xA, 1),
+        allocation(3, 0xC2, 1),
+        allocation(3, 0xC3, 1),
+    ])
+    .unwrap();
+    script.apply(&OrderEvent::LinesAllocated(split));
+    assert_eq!(script.kinds(), []);
+    let numbers: Vec<(Id<Check>, u32)> =
+        script.order.checks().iter().map(|check| (check.id(), check.number().get())).collect();
+    assert_eq!(numbers, [(id(0xA), 1), (id(0xC2), 2), (id(0xC3), 3)]);
+    assert_eq!(
+        script.order.line(id(3)).unwrap().allocation(),
+        [share(0xA, 1), share(0xC2, 1), share(0xC3, 1)]
+    );
+
+    // Each check is priced as its own sale, with an 8.875% tax: a third of the wine is 10.00.
+    // Check 1 is 10.00, taxed 0.8875, so 0.89; check 2 is 14.50 + 10.00 = 24.50, taxed 2.174375,
+    // so 2.17; check 3 is 4.95 + 10.00 = 14.95, taxed 1.3268125, so 1.33.
+    let rules = keel_pricing::Rules {
+        taxes: vec![keel_pricing::Tax {
+            id: id(0x900),
+            name: "Sales tax".to_owned(),
+            rate: keel_types::Rate::from_percent("8.875".parse().unwrap()).unwrap(),
+            categories: vec![id(0x500)],
+            dining: None,
+        }],
+        ..keel_pricing::Rules::untaxed()
+    };
+    let totals: Vec<(Money, Money)> = [0xA, 0xC2, 0xC3]
+        .into_iter()
+        .map(|check| {
+            let basket = script.order.check_basket(id(check)).unwrap();
+            let totals = keel_pricing::price(&basket, &rules).unwrap();
+            (totals.gross, totals.total)
+        })
+        .collect();
+    assert_eq!(totals, [(usd(1000), usd(1089)), (usd(2450), usd(2667)), (usd(1495), usd(1628))]);
+    assert!(script.order.check_basket(id(0xC4)).is_none());
+
+    // A new line goes to the main check.
+    script.apply(&OrderEvent::LineAdded(added(4, usd(895))));
+    assert_eq!(script.order.line(id(4)).unwrap().allocation(), [share(0xA, 1)]);
+}
+
+#[test]
+fn concurrent_splits_resolve_by_the_rules() {
+    let mut script = Script::created();
+    script.apply(&OrderEvent::LineAdded(added(1, usd(1000))));
+    script.apply(&OrderEvent::LineAdded(added(2, usd(500))));
+
+    // An allocation to a check that doesn't exist yet doesn't apply to the lines it names, and
+    // the check is reported once.
+    let early = script
+        .apply(&OrderEvent::LinesAllocated(LinesAllocated::moving(&lines(&[1, 2]), id(0xC2))));
+    assert_eq!(script.kinds(), [ConflictKind::UnknownCheck(id(0xC2))]);
+    assert_eq!(script.order.conflicts()[0].event, early);
+    assert_eq!(script.order.line(id(1)).unwrap().allocation(), [share(0xA, 1)]);
+
+    // A check opened twice keeps its first opening; the main check can't be opened again.
+    script.apply(&OrderEvent::CheckOpened { check: id(0xC2) });
+    script.apply(&OrderEvent::CheckOpened { check: id(0xC2) });
+    script.apply(&OrderEvent::CheckOpened { check: id(0xA) });
+    assert_eq!(script.order.checks().len(), 2);
+
+    // Two devices split the same line differently: the later allocation wins.
+    script.apply(&OrderEvent::LinesAllocated(LinesAllocated::moving(&lines(&[1]), id(0xC2))));
+    let both = IdSet::new([id(0xA), id(0xC2)]).unwrap();
+    script.apply(&OrderEvent::LinesAllocated(LinesAllocated::splitting(&lines(&[1]), &both)));
+    assert_eq!(script.order.line(id(1)).unwrap().allocation(), [share(0xA, 1), share(0xC2, 1)]);
+
+    // Allocating a removed line changes nothing; a line the order doesn't have is reported.
+    script.apply(&OrderEvent::LineRemoved { line: id(2) });
+    script.apply(&OrderEvent::LinesAllocated(LinesAllocated::moving(&lines(&[2, 9]), id(0xC2))));
+    assert_eq!(script.order.line(id(2)).unwrap().allocation(), [share(0xA, 1)]);
+    assert_eq!(
+        script.kinds(),
+        [
+            ConflictKind::UnknownCheck(id(0xC2)),
+            ConflictKind::DuplicateCheck(id(0xC2)),
+            ConflictKind::DuplicateCheck(id(0xA)),
+            ConflictKind::UnknownLine(id(9)),
+        ]
+    );
+}
+
+#[test]
 fn undecodable_events_are_skipped_and_reported() {
     let mut order = Script::created().order;
     let meta = Script::new().meta_at(location());
@@ -684,6 +801,91 @@ fn orders_are_abandoned_only_before_anything_is_fired() {
 }
 
 #[test]
+fn checks_are_opened_once_and_lines_allocated_to_them() {
+    let mut device = Device::with_line(false);
+    let open = OrderCommand::OpenCheck;
+    assert_eq!(device.run(open(id(0xA))), Err(CommandError::CheckExists(id(0xA))));
+    device.run(open(id(0xC2))).unwrap();
+    assert_eq!(device.run(open(id(0xC2))), Err(CommandError::CheckExists(id(0xC2))));
+
+    let to = |numbers: &[u64], check: u64| {
+        OrderCommand::AllocateLines(LinesAllocated::moving(&lines(numbers), id(check)))
+    };
+    assert_eq!(device.run(to(&[1], 0xA)), Err(CommandError::NoChange));
+    assert_eq!(device.run(to(&[1], 0xC3)), Err(CommandError::UnknownCheck(id(0xC3))));
+    assert_eq!(device.run(to(&[7], 0xC2)), Err(CommandError::UnknownLine(id(7))));
+    device.run(to(&[1], 0xC2)).unwrap();
+    assert_eq!(device.order.line(id(1)).unwrap().allocation(), [share(0xC2, 1)]);
+
+    // Split evenly, or two parts to one: each line listed must get a new allocation.
+    let both = IdSet::new([id(0xA), id(0xC2)]).unwrap();
+    let evenly = OrderCommand::AllocateLines(LinesAllocated::splitting(&lines(&[1]), &both));
+    device.run(evenly.clone()).unwrap();
+    assert_eq!(device.run(evenly), Err(CommandError::NoChange));
+    let thirds = LinesAllocated::new([allocation(1, 0xA, 2), allocation(1, 0xC2, 1)]).unwrap();
+    device.run(OrderCommand::AllocateLines(thirds)).unwrap();
+    assert_eq!(device.order.line(id(1)).unwrap().allocation(), [share(0xA, 2), share(0xC2, 1)]);
+
+    // Removed and voided lines aren't allocated.
+    device.run(OrderCommand::AddLine(added(2, usd(100)))).unwrap();
+    device.run(OrderCommand::RemoveLine(id(2))).unwrap();
+    assert_eq!(device.run(to(&[2], 0xC2)), Err(CommandError::LineNotLive(id(2))));
+}
+
+#[test]
+fn allocations_have_one_form() {
+    // In order of line, then check, each line's shares in lowest terms.
+    let allocated = LinesAllocated::new([
+        allocation(2, 0xC2, 3),
+        allocation(1, 0xC3, 4),
+        allocation(1, 0xC2, 2),
+    ])
+    .unwrap();
+    let kept: Vec<Allocation> = allocated.iter().copied().collect();
+    assert_eq!(kept, [allocation(1, 0xC2, 1), allocation(1, 0xC3, 2), allocation(2, 0xC2, 1)]);
+    let grouped: Vec<(Id<Line>, Vec<CheckShare>)> = allocated.lines().collect();
+    assert_eq!(
+        grouped,
+        [(id(1), vec![share(0xC2, 1), share(0xC3, 2)]), (id(2), vec![share(0xC2, 1)])]
+    );
+    assert!(LinesAllocated::new([]).is_err());
+    assert!(LinesAllocated::new([allocation(1, 0xC2, 1), allocation(1, 0xC2, 2)]).is_err());
+
+    // A payload's allocations decode only in that form.
+    let payload = |entries: &[(u64, u64, u64)]| {
+        let items = entries
+            .iter()
+            .map(|&(line, check, shares)| {
+                Value::Map(
+                    keel_events::cbor::Map::from_entries([
+                        (Value::Unsigned(1), Value::Bytes(id::<()>(line).to_bytes().to_vec())),
+                        (Value::Unsigned(2), Value::Bytes(id::<()>(check).to_bytes().to_vec())),
+                        (Value::Unsigned(3), Value::Unsigned(shares)),
+                    ])
+                    .unwrap(),
+                )
+            })
+            .collect();
+        let map = keel_events::cbor::Map::from_entries([(Value::Unsigned(1), Value::Array(items))]);
+        Value::Map(map.unwrap())
+    };
+    let schema = OrderEvent::CheckOpened { check: id(1) }.schema();
+    let schema = SchemaRef {
+        name: SchemaName::new("order.lines_allocated").unwrap(),
+        version: schema.to_ref().unwrap().version,
+    };
+    let decode = |entries: &[(u64, u64, u64)]| OrderEvent::from_value(&schema, &payload(entries));
+    assert!(decode(&[(1, 0xC2, 1), (1, 0xC3, 2)]).is_ok());
+    let invalid = Err(DecodeError::Malformed(PayloadError::Invalid("allocations")));
+    assert_eq!(decode(&[(1, 0xC3, 2), (1, 0xC2, 1)]), invalid);
+    assert_eq!(decode(&[(1, 0xC2, 2), (1, 0xC3, 4)]), invalid);
+    assert_eq!(decode(&[(1, 0xC2, 2)]), invalid);
+    assert_eq!(decode(&[(1, 0xC2, 1), (1, 0xC2, 1)]), invalid);
+    assert_eq!(decode(&[(1, 0xC2, 0)]), invalid);
+    assert_eq!(decode(&[]), invalid);
+}
+
+#[test]
 fn too_deep_modifiers_are_refused() {
     let mut deep = modifier(0x600, usd(0));
     for _ in 0..20 {
@@ -756,6 +958,15 @@ fn golden_events() -> Vec<OrderEvent> {
         OrderEvent::LineComped { line: id(2), reason: reason("birthday") },
         OrderEvent::Voided { reason: reason("walkout") },
         OrderEvent::Abandoned,
+        OrderEvent::CheckOpened { check: id(0xC1) },
+        OrderEvent::LinesAllocated(
+            LinesAllocated::new([
+                Allocation { line: id(2), check: id(0xC1), shares: NonZeroU16::MIN },
+                Allocation { line: id(1), check: id(0xC1), shares: NonZeroU16::MIN },
+                Allocation { line: id(1), check: id(0xA), shares: NonZeroU16::new(2).unwrap() },
+            ])
+            .unwrap(),
+        ),
     ]
 }
 
@@ -799,8 +1010,8 @@ fn bytes(hex: &str) -> Vec<u8> {
 
 /// The order payloads, pinned forever: one example of each schema. Python's `cbor2` decoded
 /// each one, confirmed it is canonical, and matched it field by field against the documented
-/// key tables. If this test fails, a payload format changed, and stored events would no longer
-/// decode.
+/// key tables; it encoded the check payloads itself, from the key tables. If this test fails, a
+/// payload format changed, and stored events would no longer decode.
 #[test]
 fn the_payload_formats_are_pinned() {
     let pinned = [
@@ -829,6 +1040,11 @@ fn the_payload_formats_are_pinned() {
         ("order.line_comped", "a201500192f0c100007000800000000000000202686269727468646179"),
         ("order.voided", "a1016777616c6b6f7574"),
         ("order.abandoned", "a0"),
+        ("order.check_opened", "a101500192f0c10000700080000000000000c1"),
+        (
+            "order.lines_allocated",
+            "a10183a301500192f0c100007000800000000000000102500192f0c100007000800000000000000a0302a301500192f0c100007000800000000000000102500192f0c10000700080000000000000c10301a301500192f0c100007000800000000000000202500192f0c10000700080000000000000c10301",
+        ),
     ];
     let events = golden_events();
     assert_eq!(events.len(), pinned.len());

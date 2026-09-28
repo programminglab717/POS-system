@@ -2,7 +2,7 @@
 //! payloads round-trip; a payload with a field changed, removed or added is accepted exactly
 //! when the model says it is valid, and then has exactly one encoding; and the rules that span
 //! fields or sit at a boundary (one currency per payload, text lengths, identifier sets in
-//! ascending order) are aimed at directly.
+//! ascending order, allocations in order and in lowest terms) are aimed at directly.
 
 #![allow(
     clippy::unwrap_used,
@@ -20,7 +20,7 @@ use keel_events::cbor::{Map, Value};
 use keel_events::envelope::{SchemaName, SchemaRef};
 use keel_types::{Currency, Unit};
 use proptest::prelude::*;
-use support::{any_event, any_line_added, any_line_changed, modifiers};
+use support::{any_event, any_line_added, any_line_changed, any_lines_allocated, modifiers};
 
 /// How a field may appear in a payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +48,8 @@ enum Kind {
     CatalogVersion,
     IdSet,
     Modifiers,
+    /// Allocations of lines to checks.
+    Allocations,
 }
 
 use Kind::*;
@@ -95,13 +97,14 @@ fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
             (5, Count8, Clearable),
             (6, Note, Clearable),
         ],
-        "order.line_removed" => vec![(1, Id, Required)],
+        "order.line_removed" | "order.check_opened" => vec![(1, Id, Required)],
         "order.lines_fired" => vec![(1, IdSet, Required)],
         "order.line_voided" | "order.line_comped" => {
             vec![(1, Id, Required), (2, Reason, Required), (3, Note, Optional)]
         }
         "order.voided" => vec![(1, Reason, Required), (2, Note, Optional)],
         "order.abandoned" => vec![],
+        "order.lines_allocated" => vec![(1, Allocations, Required)],
         other => panic!("no rules for {other}"),
     }
 }
@@ -158,6 +161,45 @@ fn modifier_prices(value: &Value, prices: &mut Vec<(i64, Currency)>) -> bool {
     })
 }
 
+/// An allocation's line, check and shares, if it is a well-formed one.
+fn allocation(value: &Value) -> Option<(Vec<u8>, Vec<u8>, u64)> {
+    let map = value.as_map()?;
+    let keys: Vec<u64> = map.iter().filter_map(|(key, _)| key.as_u64()).collect();
+    if keys != [1, 2, 3] || map.len() != 3 {
+        return None;
+    }
+    let get = |key: u64| map.get(&Value::Unsigned(key)).unwrap();
+    let valid = valid_value(Id, get(1)) && valid_value(Id, get(2)) && valid_value(Count16, get(3));
+    valid.then(|| {
+        (
+            get(1).as_bytes().unwrap().to_vec(),
+            get(2).as_bytes().unwrap().to_vec(),
+            get(3).as_u64().unwrap(),
+        )
+    })
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// Whether allocations are well formed, not empty, in strictly ascending order of line then
+/// check, with each line's shares in lowest terms.
+fn allocations_valid(value: &Value) -> bool {
+    let Some(items) = value.as_array() else { return false };
+    let Some(parsed) = items.iter().map(allocation).collect::<Option<Vec<_>>>() else {
+        return false;
+    };
+    let ascending =
+        parsed.windows(2).all(|pair| (&pair[0].0, &pair[0].1) < (&pair[1].0, &pair[1].1));
+    let mut divisors: std::collections::BTreeMap<Vec<u8>, u64> = std::collections::BTreeMap::new();
+    for (line, _, shares) in &parsed {
+        let divisor = divisors.entry(line.clone()).or_insert(0);
+        *divisor = gcd(*divisor, *shares);
+    }
+    !parsed.is_empty() && ascending && divisors.values().all(|&divisor| divisor == 1)
+}
+
 /// Whether the prices are all zero or more, and all in one currency (or `currency`, if given).
 fn prices_consistent(prices: &[(i64, Currency)], currency: Option<Currency>) -> bool {
     let currency = currency.or_else(|| prices.first().map(|&(_, currency)| currency));
@@ -202,6 +244,7 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
                         && prices_consistent(&own, None)
                 })
         }
+        Allocations => allocations_valid(value),
     }
 }
 
@@ -324,6 +367,15 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
                 }),
         ]
         .boxed(),
+        Allocations => prop_oneof![
+            3 => any_lines_allocated().prop_map(|allocated| allocations_value(&allocated)),
+            // Valid allocations spoiled: out of order, repeated, not in lowest terms, a share of
+            // zero, or a field missing.
+            4 => (any_lines_allocated(), 0_u8..5, any::<prop::sample::Index>())
+                .prop_map(|(allocated, how, at)| spoil(&allocations_value(&allocated), how, at)),
+            1 => Just(Value::Array(Vec::new())),
+        ]
+        .boxed(),
     };
     let anything = prop_oneof![
         Just(Value::Null),
@@ -332,6 +384,39 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
         Just(Value::Map(Map::new())),
     ];
     prop_oneof![4 => aimed, 1 => anything].boxed()
+}
+
+/// The payload encoding of allocations.
+fn allocations_value(allocated: &keel_domain::order::LinesAllocated) -> Value {
+    let payload = OrderEvent::LinesAllocated(allocated.clone()).to_value();
+    payload.as_map().unwrap().get(&Value::Unsigned(1)).unwrap().clone()
+}
+
+/// Allocations with one thing wrong, or right after all: the entry at `at` swapped with the
+/// next, repeated, with its shares doubled, with no shares, or with its check removed.
+fn spoil(value: &Value, how: u8, at: prop::sample::Index) -> Value {
+    let mut items = value.as_array().unwrap().to_vec();
+    let (i, count) = (at.index(items.len()), items.len());
+    let set = |item: &Value, key: u64, new: Option<Value>| {
+        let mut entries = item.as_map().unwrap().clone().into_entries();
+        entries.retain(|(existing, _)| existing.as_u64() != Some(key));
+        if let Some(new) = new {
+            entries.push((Value::Unsigned(key), new));
+        }
+        Value::Map(Map::from_entries(entries).unwrap())
+    };
+    match how {
+        0 if count > 1 => items.swap(i, (i + 1) % count),
+        1 => items.insert(i, items[i].clone()),
+        2 => {
+            let shares =
+                items[i].as_map().unwrap().get(&Value::Unsigned(3)).unwrap().as_u64().unwrap();
+            items[i] = set(&items[i], 3, Some(Value::Unsigned(shares * 2)));
+        }
+        3 => items[i] = set(&items[i], 3, Some(Value::Unsigned(0))),
+        _ => items[i] = set(&items[i], 2, None),
+    }
+    Value::Array(items)
 }
 
 fn support_id_value(n: u64) -> Value {
@@ -655,6 +740,32 @@ proptest! {
         );
     }
 
+    /// Reason codes are 1 to 32 bytes: a lowercase letter, then lowercase letters, digits and
+    /// underscores. A code decoded from a payload follows the same rules.
+    #[test]
+    fn reason_codes_hold_exactly_their_limits(
+        length in prop_oneof![Just(0_usize), 1_usize..3, 30_usize..=34],
+        first in prop::sample::select(vec!['a', 'z', 'A', '0', '_']),
+        rest in prop::sample::select(vec!['a', '9', '_']),
+        odd in prop::option::weighted(0.3, (prop::sample::select(vec!['-', 'B', 'é', ' ']), any::<prop::sample::Index>())),
+    ) {
+        let mut chars: Vec<char> = (0..length).map(|at| if at == 0 { first } else { rest }).collect();
+        if let Some((odd, at)) = odd
+            && !chars.is_empty()
+        {
+            let at = at.index(chars.len());
+            chars[at] = odd;
+        }
+        let text: String = chars.into_iter().collect();
+        let value = Value::from(text.as_str());
+        prop_assert_eq!(keel_domain::codec::ReasonCode::new(&text).is_ok(), valid_value(Reason, &value));
+        let voided = Map::from_entries(vec![(Value::Unsigned(1), value.clone())]).unwrap();
+        prop_assert_eq!(
+            OrderEvent::from_value(&schema_named("order.voided"), &Value::Map(voided)).is_ok(),
+            valid_value(Reason, &value)
+        );
+    }
+
     /// Identifier sets are built from any identifiers that are distinct and not empty, and hold
     /// them in ascending byte order. A payload's set decodes only if its identifiers come in
     /// strictly ascending byte order.
@@ -677,6 +788,56 @@ proptest! {
         prop_assert_eq!(
             OrderEvent::from_value(&schema_named("order.lines_fired"), &Value::Map(fired)).is_ok(),
             ascending
+        );
+    }
+
+    /// Allocations are built from any lines, checks and shares with no line allocated to the
+    /// same check twice, and are kept in order of line then check, each line's shares reduced to
+    /// lowest terms without changing their proportions. A payload's allocations decode only in
+    /// that form.
+    #[test]
+    fn allocations_have_one_form(
+        triples in prop::collection::vec((0_u64..3, 0_u64..3, 1_u16..=6), 0..6),
+    ) {
+        let allocations: Vec<keel_domain::order::Allocation> = triples
+            .iter()
+            .map(|&(line, check, shares)| keel_domain::order::Allocation {
+                line: support::id(line),
+                check: support::id(0x10 + check),
+                shares: core::num::NonZeroU16::new(shares).unwrap(),
+            })
+            .collect();
+        let pairs: std::collections::BTreeSet<(u64, u64)> =
+            triples.iter().map(|&(line, check, _)| (line, check)).collect();
+        match keel_domain::order::LinesAllocated::new(allocations.clone()) {
+            Ok(allocated) => {
+                prop_assert!(!triples.is_empty() && pairs.len() == triples.len());
+                prop_assert!(allocations_valid(&allocations_value(&allocated)));
+                // Each line keeps its proportions: shares scaled by one factor per line.
+                for given in &allocations {
+                    let kept = allocated.iter().find(|a| a.line == given.line && a.check == given.check).unwrap();
+                    for other in allocations.iter().filter(|a| a.line == given.line) {
+                        let other_kept = allocated.iter().find(|a| a.line == other.line && a.check == other.check).unwrap();
+                        prop_assert_eq!(
+                            u64::from(given.shares.get()) * u64::from(other_kept.shares.get()),
+                            u64::from(other.shares.get()) * u64::from(kept.shares.get())
+                        );
+                    }
+                }
+            }
+            Err(_) => prop_assert!(triples.is_empty() || pairs.len() < triples.len()),
+        }
+        let raw = Value::Array(allocations.iter().map(|a| {
+            Value::Map(Map::from_entries(vec![
+                (Value::Unsigned(1), Value::Bytes(a.line.to_bytes().to_vec())),
+                (Value::Unsigned(2), Value::Bytes(a.check.to_bytes().to_vec())),
+                (Value::Unsigned(3), Value::Unsigned(u64::from(a.shares.get()))),
+            ]).unwrap())
+        }).collect());
+        let payload = Map::from_entries(vec![(Value::Unsigned(1), raw.clone())]).unwrap();
+        prop_assert_eq!(
+            OrderEvent::from_value(&schema_named("order.lines_allocated"), &Value::Map(payload)).is_ok(),
+            allocations_valid(&raw)
         );
     }
 

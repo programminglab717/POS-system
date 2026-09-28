@@ -137,8 +137,9 @@ pricing rules or the jurisdiction profile ([ADR-0014](../adr/0014-pricing-engine
 
 1. extension: a unit price times a fractional quantity, for items sold by weight or measure;
 2. percentage discounts;
-3. allocation of order-level amounts (discounts, and tax rounded per document) to lines, using
-   largest remainder so the parts always sum to the whole;
+3. allocation of order-level amounts (discounts, and tax rounded per document) to lines, and of
+   a shared line to the checks sharing it, using largest remainder so the parts always sum to the
+   whole;
 4. tax calculation (per line or per document, as the jurisdiction requires);
 5. cash tender rounding.
 
@@ -323,7 +324,7 @@ classDiagram
   }
   class Check {
     id, number
-    allocations: (line_id, fraction)[]
+    allocations: (line_id, shares)[]
     totals snapshot + calculation trace
     state: open|paid|closed|voided
   }
@@ -347,9 +348,9 @@ Key decisions:
   - A `Check` is a payment partition of the order's lines. Quick service has 1 order = 1 check.
   - Full service can split by seat, by item, evenly, by arbitrary amount, or by fraction of a line
     ("split the wine three ways").
-  - A split never duplicates lines. Checks hold **allocations** (`line_id`, exact rational
-    fraction). The kernel allocates money with largest-remainder rounding so the parts always sum to
-    the line total to the cent.
+  - A split never duplicates lines. Lines are **allocated** to checks in whole shares, an exact
+    fraction of the line (§6.5). The kernel allocates money with largest-remainder rounding so the
+    parts always sum to the line total to the cent.
   - Re-splitting after partial payment is allowed. Paid allocations are frozen and the rest can be
     re-partitioned.
 - **Removed vs voided.** Before a line is fired or committed (sent to the kitchen, or inventory
@@ -435,8 +436,9 @@ returns and channels.
 ### 6.5 As built: order events v1
 
 `keel-domain` implements the first part of this section: creating an order, changing its
-attributes, and its lines. Adjustments, checks, payments, ownership, and the Paid, Closed and
-Reopened states come later. Payloads follow
+attributes, its lines, and splitting them among checks
+([ADR-0015](../adr/0015-checks-and-payments.md)). Adjustments, payments, closing checks and
+orders, ownership, and the Paid, Closed and Reopened states come later. Payloads follow
 [ADR-0013](../adr/0013-event-payloads-and-schema-evolution.md), and their key tables are in
 `core/crates/keel-domain/src/order/events.rs`.
 
@@ -452,6 +454,8 @@ Reopened states come later. Payloads follow
 | `order.line_comped` | A line was given away, with a reason. |
 | `order.voided` | The whole order was voided, with a reason. |
 | `order.abandoned` | An order was dropped before anything in it was fired. |
+| `order.check_opened` | A check was opened, besides the main check every order has. |
+| `order.lines_allocated` | Lines were allocated to checks: each line listed now belongs to the checks listed for it, in whole shares. |
 
 - **A line's life.** A line is *pending* until it is fired, then *fired*. A pending line can be
   removed; a fired line can only be voided. Removed and voided lines no longer count, but a line
@@ -464,13 +468,21 @@ Reopened states come later. Payloads follow
 - **Money and units.** An order has one currency, fixed when it is created. Every price in it,
   modifiers included, is in that currency, and a line's quantity keeps the unit it was added
   with. Quantities are positive and prices are zero or more; returns will have their own events.
-- **Pricing:** an order's *basket*, its live lines with the prices they were rung up with, is what
-  the pricing engine prices (§8.1). A comped line is in the basket at no charge.
+- **Checks.** Every order has a *main check*, number 1, whose identifier is the order's own;
+  more are opened as needed, numbered in the order they were opened. Each live line belongs to
+  one or more checks in whole shares, in lowest terms: one share on one check for a line one
+  party pays for, one share on each of three checks for a bottle of wine split three ways. A
+  new line goes to the main check, and `order.lines_allocated` moves or splits lines.
+- **Pricing:** each check is priced as its own sale (§8.1). Its *basket* holds the live lines
+  allocated to it, with the prices they were rung up with; a shared line contributes the check's
+  part of it. A comped line is in the basket at no charge. The whole order's basket prices it as
+  one sale, as a one-check order is paid.
 - **Commands** are checked against the device's view of the order. A command needs a created,
   active order at the device's location. Prices must be in the order's currency, and a change must
   change every field it gives. Removing or changing a line needs it pending; voiding needs it
   fired; comping needs it live and not yet comped; abandoning needs every line removed before it
-  was fired.
+  was fired. A check is opened with an identifier not yet in use; an allocation needs live lines
+  and existing checks, and must change each line's allocation.
 
 **Concurrent edits** fold by the rules of
 [offline-and-sync.md §5.2](./offline-and-sync.md#52-conflict-rules). Every event stays in the log;
@@ -493,6 +505,10 @@ the conflicts listed are derived by the fold, identically on every replica:
 | The order is voided or abandoned twice | The first wins | — |
 | The order is abandoned although a line is live, or was ever fired | Abandoned | `AbandonedWithLines` |
 | Two devices change the same attribute | The later change in canonical order wins, field by field | — |
+| Two devices split a line differently | The later allocation in canonical order wins | — |
+| An allocation names a check that doesn't exist yet | Not applied to the lines it names | `UnknownCheck` |
+| A check is opened twice, or with the main check's identifier | The first opening wins | `DuplicateCheck` |
+| A removed or voided line is allocated | No effect | — |
 
 Once checks exist, lines added after the order is closed will land in a post-close check, as
 offline-and-sync §5.2 describes.
@@ -634,10 +650,15 @@ location ([ADR-0014](../adr/0014-pricing-engine-v0.md)). Pricing is a pure funct
 - **Extension:** the item's price plus its modifiers', each modifier counting its quantity times
   its own price plus its nested modifiers', times the line's quantity. Only a fractional quantity,
   for an item sold by weight or measure, needs rounding.
+- **Shares:** a line split among checks is priced in each check's basket as that check's part:
+  the line's gross is split by largest remainder in proportion to the checks' shares, in the
+  order of their identifiers, so the parts add up to the line
+  ([ADR-0015](../adr/0015-checks-and-payments.md)). Each check is then taxed as its own sale.
 - **Comps and discounts** stand in for manual overrides and promotions (steps 3 and 4). A comp
-  takes the whole line. Line discounts, then order discounts, each take from what is left: a
-  percentage is rounded, and an amount is never more than what is left. Each order discount is
-  allocated to the lines by largest remainder, so the shares add up to it exactly.
+  takes the whole line, or the whole part. Line discounts, then order discounts, each take from
+  what is left: a percentage is rounded, and an amount is never more than what is left. Each
+  order discount is allocated to the lines by largest remainder, so the shares add up to it
+  exactly.
 - **Tax** (step 6): each tax applies to lines in its categories, optionally only when the order is
   eaten on the premises or only when it is taken away, on the line's net. It is added to the
   price, and rounded per line or once per document; a per-document tax is allocated to the lines.

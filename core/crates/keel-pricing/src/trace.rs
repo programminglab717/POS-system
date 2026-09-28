@@ -30,6 +30,19 @@ pub enum Step {
         /// The result.
         gross: Money,
     },
+    /// A shared line's gross was split among its parts, and the basket took its own.
+    Shared {
+        /// The line.
+        line: usize,
+        /// The whole line's gross.
+        whole: Money,
+        /// The weight of every part of the line.
+        weights: Vec<u64>,
+        /// Which part the basket holds, counted from zero.
+        index: usize,
+        /// The basket's part: the line's gross from here on.
+        part: Money,
+    },
     /// A comped line: the comp took all of it.
     Comped {
         /// The line.
@@ -176,6 +189,14 @@ impl fmt::Display for Step {
                 Nth(*line),
                 describe(*mode)
             ),
+            Step::Shared { line, whole, weights, index, part } => {
+                write!(f, "line {}: part {} of {whole} split ", Nth(*line), Nth(*index))?;
+                for (position, weight) in weights.iter().enumerate() {
+                    let separator = if position == 0 { "" } else { ":" };
+                    write!(f, "{separator}{weight}")?;
+                }
+                write!(f, " = {part}")
+            }
             Step::Comped { line, amount } => write!(f, "line {}: comped, {amount}", Nth(*line)),
             Step::LineDiscounted { line, discount, value, base, mode, amount, limited } => {
                 write!(f, "line {}, discount {}: ", Nth(*line), Nth(*discount))?;

@@ -83,6 +83,11 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
   double-rounding bug in the first version of `mul_decimal` passed 2,000 random cases, and a
   generator that puts products exactly on (and a hair either side of) rounding boundaries caught it
   at once. Write such generators for ties, range ends and time zone transitions.
+- **Measure what the generators reach.** A property can pass without ever meeting the case it is
+  about. Count, with a throwaway probe over the same strategies, how often each targeted case
+  occurs (a tie, a limited discount, a line shared among checks), and aim the generators until
+  each is common. The first split generators ended with a line shared among checks in 1 order in
+  100; a generator aimed at splits reaches it in nearly 1 in 4.
 - **Generate faulty inputs on purpose.** A generator that only makes valid commands can't catch a
   missing check. Give command generators faulty variants, such as an identifier already in use, a
   price in another currency, a zero quantity or another location, and require the code and the

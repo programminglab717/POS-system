@@ -12,16 +12,20 @@
 //! - The first removal, void or comp of a line wins; later ones change nothing.
 //! - An event that would put money in another currency, or a quantity in another unit, into the
 //!   order isn't applied, so every price in an order can be added up.
+//! - For each line, the later allocation to checks wins. An allocation naming a check that
+//!   doesn't exist yet doesn't apply to that line; one of a removed or voided line changes
+//!   nothing.
 //!
 //! Events recorded before the order was created, or by a device at another location, aren't
 //! applied either. Nothing is lost: every event stays in the log, and every one that isn't
 //! applied, or applies with surprising effect, leaves a conflict.
 
-use core::num::{NonZeroU8, NonZeroU16};
+use core::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 
 use keel_events::envelope::{self, Customer, Event, Location, SchemaRef, TeamMember};
 use keel_types::{Currency, Id, Quantity};
 
+use super::checks::{Check, CheckShare, LinesAllocated};
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
 use super::types::{Channel, ChosenModifier, ItemSnapshot, Mode, Reason, modifier_currency};
 use crate::aggregate::{Aggregate, EventMeta};
@@ -35,6 +39,7 @@ pub struct Order {
     id: Id<Order>,
     info: Option<OrderInfo>,
     lines: Vec<Line>,
+    checks: Vec<Check>,
     status: OrderStatus,
     conflicts: Vec<Conflict>,
     skipped: Vec<Skipped>,
@@ -100,6 +105,7 @@ pub struct Line {
     status: LineStatus,
     comp: Option<Reason>,
     fired: bool,
+    allocation: Vec<CheckShare>,
 }
 
 /// Where a line is in its life.
@@ -171,6 +177,12 @@ impl Line {
     pub const fn was_fired(&self) -> bool {
         self.fired
     }
+
+    /// The checks the line belongs to, in ascending order of identifier, with each one's shares
+    /// of it: never empty.
+    pub fn allocation(&self) -> &[CheckShare] {
+        &self.allocation
+    }
 }
 
 /// Something in an order's history that a person should look at.
@@ -218,6 +230,10 @@ pub enum ConflictKind {
     /// The order was abandoned although it had live lines, or lines that were fired, which may
     /// have been made.
     AbandonedWithLines,
+    /// A check was opened with an identifier already in use; it wasn't opened again.
+    DuplicateCheck(Id<Check>),
+    /// An event refers to a check the order doesn't have; it didn't apply to the lines it named.
+    UnknownCheck(Id<Check>),
 }
 
 /// An event that wasn't applied because it couldn't be decoded.
@@ -238,6 +254,7 @@ impl Order {
             id,
             info: None,
             lines: Vec::new(),
+            checks: Vec::new(),
             status: OrderStatus::Active,
             conflicts: Vec::new(),
             skipped: Vec::new(),
@@ -286,6 +303,22 @@ impl Order {
         self.lines.iter().filter(|line| line.is_live())
     }
 
+    /// The order's checks, in the order they were opened: the main check first, once the order
+    /// is created.
+    pub fn checks(&self) -> &[Check] {
+        &self.checks
+    }
+
+    /// The check with identifier `id`.
+    pub fn check(&self, id: Id<Check>) -> Option<&Check> {
+        self.checks.iter().find(|check| check.id == id)
+    }
+
+    /// The identifier of the main check: the order's own.
+    pub const fn main_check(&self) -> Id<Check> {
+        self.id.cast()
+    }
+
     /// Everything in the order's history that a person should look at.
     pub fn conflicts(&self) -> &[Conflict] {
         &self.conflicts
@@ -326,6 +359,7 @@ impl Order {
             customer: created.customer,
             owner: created.owner,
         });
+        self.checks.push(Check { id: self.main_check(), number: NonZeroU32::MIN });
     }
 
     fn apply_attributes(info: &mut OrderInfo, changed: &AttributesChanged) {
@@ -363,6 +397,7 @@ impl Order {
             status: LineStatus::Pending,
             comp: None,
             fired: false,
+            allocation: vec![CheckShare { check: self.main_check(), shares: NonZeroU16::MIN }],
         });
         if self.is_closed() {
             self.conflict(meta, ConflictKind::AddedToClosedOrder(added.line));
@@ -463,6 +498,44 @@ impl Order {
         }
     }
 
+    fn apply_check_opened(&mut self, meta: &EventMeta, id: Id<Check>) {
+        if self.check(id).is_some() {
+            return self.conflict(meta, ConflictKind::DuplicateCheck(id));
+        }
+        let opened = u32::try_from(self.checks.len()).ok().and_then(|n| n.checked_add(1));
+        let number = opened.and_then(NonZeroU32::new).unwrap_or(NonZeroU32::MAX);
+        self.checks.push(Check { id, number });
+    }
+
+    fn apply_lines_allocated(&mut self, meta: &EventMeta, allocated: &LinesAllocated) {
+        let mut unknown_checks: Vec<Id<Check>> = Vec::new();
+        for (id, shares) in allocated.lines() {
+            let unknown = shares
+                .iter()
+                .map(|share| share.check)
+                .find(|&check| !self.checks.iter().any(|known| known.id == check));
+            let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
+                self.conflict(meta, ConflictKind::UnknownLine(id));
+                continue;
+            };
+            if !line.is_live() {
+                continue;
+            }
+            match unknown {
+                Some(check) => {
+                    if !unknown_checks.contains(&check) {
+                        unknown_checks.push(check);
+                    }
+                }
+                None => line.allocation = shares,
+            }
+        }
+        unknown_checks.sort_by_key(|check| check.to_bytes());
+        for check in unknown_checks {
+            self.conflict(meta, ConflictKind::UnknownCheck(check));
+        }
+    }
+
     fn apply_closed(&mut self, meta: &EventMeta, status: OrderStatus) {
         if self.is_closed() {
             return;
@@ -515,6 +588,8 @@ impl Aggregate for Order {
                 self.apply_closed(meta, OrderStatus::Voided(reason.clone()));
             }
             OrderEvent::Abandoned => self.apply_closed(meta, OrderStatus::Abandoned),
+            OrderEvent::CheckOpened { check } => self.apply_check_opened(meta, *check),
+            OrderEvent::LinesAllocated(allocated) => self.apply_lines_allocated(meta, allocated),
         }
     }
 

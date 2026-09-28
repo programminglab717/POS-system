@@ -10,6 +10,7 @@
 use keel_events::envelope::Location;
 use keel_types::Id;
 
+use super::checks::{Check, LinesAllocated};
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
 use super::state::{Line, LineStatus, Order, OrderInfo, OrderStatus};
 use super::types::Reason;
@@ -51,6 +52,10 @@ pub enum OrderCommand {
     /// Drop an order before anything in it was fired: it has no lines, or every line was removed
     /// before it was fired.
     Abandon,
+    /// Open a check.
+    OpenCheck(Id<Check>),
+    /// Allocate live lines to existing checks. Every line listed must get a new allocation.
+    AllocateLines(LinesAllocated),
 }
 
 /// Why a command was refused.
@@ -102,6 +107,12 @@ pub enum CommandError {
     /// A line was sent to be prepared, so the order can't be abandoned: void it instead.
     #[error("line {0} was fired: void the order instead")]
     LineWasFired(Id<Line>),
+    /// A check with that identifier already exists.
+    #[error("check {0} already exists")]
+    CheckExists(Id<Check>),
+    /// No check has that identifier.
+    #[error("no check {0}")]
+    UnknownCheck(Id<Check>),
     /// The event wouldn't satisfy its schema, such as a negative price or quantity.
     #[error("invalid event: {0}")]
     Invalid(PayloadError),
@@ -211,6 +222,29 @@ impl Order {
                     return Err(CommandError::LineWasFired(fired.id()));
                 }
                 Ok(OrderEvent::Abandoned)
+            }
+            OrderCommand::OpenCheck(check) => {
+                if self.check(check).is_some() {
+                    return Err(CommandError::CheckExists(check));
+                }
+                Ok(OrderEvent::CheckOpened { check })
+            }
+            OrderCommand::AllocateLines(allocated) => {
+                for (id, shares) in allocated.lines() {
+                    let line = self.line(id).ok_or(CommandError::UnknownLine(id))?;
+                    if !line.is_live() {
+                        return Err(CommandError::LineNotLive(id));
+                    }
+                    if let Some(share) =
+                        shares.iter().find(|share| self.check(share.check).is_none())
+                    {
+                        return Err(CommandError::UnknownCheck(share.check));
+                    }
+                    if line.allocation() == shares.as_slice() {
+                        return Err(CommandError::NoChange);
+                    }
+                }
+                Ok(OrderEvent::LinesAllocated(allocated))
             }
         }
     }

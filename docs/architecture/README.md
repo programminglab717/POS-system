@@ -223,8 +223,8 @@ workspace, compiled for iOS, Android, Windows, macOS, Linux, the browser (WASM) 
 |---|---|
 | `keel-types` | Money and ISO 4217 currencies, rounding, Rate, Decimal, Quantity and units, Timestamp and clocks, HLC, typed IDs (UUIDv7), BusinessDate; Locale to come |
 | `keel-events` | Event envelope, canonical CBOR, COSE signatures, hash chaining, log writing and chain verification, device registry and revocation |
-| `keel-domain` | Event payload schemas and the schema registry; aggregates, their total fold functions and command checks: order (creation, attributes and lines built so far), check, payment, kitchen ticket, stock, drawer session, booking, custody job, stored value, loyalty, membership, time entry |
-| `keel-pricing` | Price resolution, promotions optimizer, tax engine, allocation, rounding, trace (v0 built: line amounts, discounts and their allocation, US sales tax, rounding, trace) |
+| `keel-domain` | Event payload schemas and the schema registry; aggregates, their total fold functions and command checks: order (creation, attributes, lines, and their split among checks built so far), check, payment, kitchen ticket, stock, drawer session, booking, custody job, stored value, loyalty, membership, time entry |
+| `keel-pricing` | Price resolution, promotions optimizer, tax engine, allocation, rounding, trace (v0 built: line amounts, shares of split lines, discounts and their allocation, US sales tax, rounding, trace) |
 | `keel-policy` | ABAC permissions, approvals, rule-pack evaluation with explanations |
 | `keel-store` | SQLite event store, projections, snapshots, outbox, retention |
 | `keel-sync` | Replication protocol, version vectors, leases, escrow, hub election |

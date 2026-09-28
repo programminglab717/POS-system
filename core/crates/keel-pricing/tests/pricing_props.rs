@@ -5,6 +5,8 @@
 //!   of its exact share;
 //! - the trace explains the totals: replaying it gives every line's amounts;
 //! - the order of the lines doesn't change what the order costs, where it can't;
+//! - the parts of a shared line add up to the line, each within one minor unit of its exact
+//!   share;
 //! - every kind of invalid input is refused with the error that names it.
 
 #![allow(
@@ -20,7 +22,7 @@ mod support;
 use core::num::NonZeroU32;
 
 use keel_pricing::{
-    Basket, Discount, DiscountRef, MAX_MODIFIER_DEPTH, Modifier, PricingError, Rules, Step,
+    Basket, Discount, DiscountRef, MAX_MODIFIER_DEPTH, Modifier, PricingError, Rules, Share, Step,
     TaxScope, Totals, price, round_cash,
 };
 use keel_types::{Currency, Decimal, Money, Quantity, Rate, RoundingRule};
@@ -37,14 +39,23 @@ fn minors(amounts: &[Money]) -> Vec<BigInt> {
     amounts.iter().copied().map(minor).collect()
 }
 
-/// The engine's totals, in the oracle's terms.
+/// The engine's totals, in the oracle's terms. The whole line's gross, before a share of it is
+/// taken, is only in the trace.
 fn observed(totals: &Totals) -> Expected {
+    let whole = |at: usize| {
+        totals.trace.iter().find_map(|step| match step {
+            Step::Extended { line, gross, .. } if *line == at => Some(minor(*gross)),
+            _ => None,
+        })
+    };
     Expected {
         lines: totals
             .lines
             .iter()
-            .map(|line| ExpectedLine {
+            .enumerate()
+            .map(|(at, line)| ExpectedLine {
                 unit_price: minor(line.unit_price),
+                whole: whole(at).unwrap_or_default(),
                 gross: minor(line.gross),
                 comp: minor(line.comp),
                 discounts: minors(&line.discounts),
@@ -79,11 +90,16 @@ fn sum(amounts: impl IntoIterator<Item = Money>) -> BigInt {
 
 /// Whether `share` is within one minor unit of `amount × weight / total`.
 fn near_exact_share(share: Money, amount: Money, weight: Money, total: &BigInt) -> bool {
+    near_exact(share, amount, &minor(weight), total)
+}
+
+/// Whether `share` is within one minor unit of `amount × weight / total`, for any weights.
+fn near_exact(share: Money, amount: Money, weight: &BigInt, total: &BigInt) -> bool {
     if *total == BigInt::ZERO {
         return share.is_zero();
     }
     // |share × total − amount × weight| < total
-    let gap = minor(share) * total - minor(amount) * minor(weight);
+    let gap = minor(share) * total - minor(amount) * weight;
     gap < *total && -gap < *total
 }
 
@@ -99,6 +115,7 @@ enum Fault {
     RepeatedTax(Index),
     OtherCurrency(Index),
     TooDeep(Index),
+    InvalidShare(Index, Share),
 }
 
 fn any_fault() -> impl Strategy<Value = Fault> {
@@ -123,6 +140,22 @@ fn any_fault() -> impl Strategy<Value = Fault> {
         any::<Index>().prop_map(Fault::RepeatedTax),
         any::<Index>().prop_map(Fault::OtherCurrency),
         any::<Index>().prop_map(Fault::TooDeep),
+        (any::<Index>(), any_invalid_share()).prop_map(|(i, s)| Fault::InvalidShare(i, s)),
+    ]
+}
+
+/// A share with no weights, a weight of zero, or an index past its weights.
+fn any_invalid_share() -> impl Strategy<Value = Share> {
+    let weights = || prop::collection::vec(1_u64..=3, 1..=4);
+    prop_oneof![
+        Just(Share { weights: Vec::new(), index: 0 }),
+        (weights(), any::<Index>(), any::<Index>()).prop_map(|(mut weights, zero, index)| {
+            let parts = weights.len();
+            weights[zero.index(parts)] = 0;
+            Share { weights, index: index.index(parts) }
+        }),
+        (weights(), 0_usize..3)
+            .prop_map(|(weights, past)| Share { index: weights.len() + past, weights }),
     ]
 }
 
@@ -186,6 +219,11 @@ fn plant(fault: &Fault, basket: &mut Basket, rules: &mut Rules) -> Option<Pricin
             basket.lines[line].modifiers.push(deep(MAX_MODIFIER_DEPTH + 1));
             Some(PricingError::ModifiersTooDeep { line })
         }
+        Fault::InvalidShare(at, share) if lines > 0 => {
+            let line = at.index(lines);
+            basket.lines[line].share = Some(share.clone());
+            Some(PricingError::InvalidShare { line })
+        }
         _ => None,
     }
 }
@@ -244,6 +282,8 @@ struct Replay<'a> {
     gross: Vec<Option<Money>>,
     /// What is left of each line.
     rest: Vec<Money>,
+    /// Whether each line's share was taken.
+    shared: Vec<bool>,
     comp: Vec<Money>,
     discounts: Vec<Vec<Money>>,
     shares: Vec<Vec<Money>>,
@@ -265,6 +305,7 @@ impl<'a> Replay<'a> {
             rules,
             gross: vec![None; lines],
             rest: vec![zero; lines],
+            shared: vec![false; lines],
             comp: vec![zero; lines],
             discounts: vec![Vec::new(); lines],
             shares: vec![Vec::new(); lines],
@@ -296,6 +337,20 @@ impl<'a> Replay<'a> {
                 prop_assert!(self.gross[*line].is_none());
                 self.gross[*line] = Some(*gross);
                 self.rest[*line] = *gross;
+            }
+            Step::Shared { line, whole, weights, index, part } => {
+                let share = basket.lines[*line].share.as_ref();
+                prop_assert_eq!(
+                    share.map(|share| (&share.weights, share.index)),
+                    Some((weights, *index))
+                );
+                prop_assert_eq!(Some(*whole), self.gross[*line], "the share follows the extension");
+                prop_assert!(!self.shared[*line] && self.comp[*line].is_zero());
+                let total: BigInt = weights.iter().map(|&weight| BigInt::from(weight)).sum();
+                prop_assert!(near_exact(*part, *whole, &BigInt::from(weights[*index]), &total));
+                self.shared[*line] = true;
+                self.gross[*line] = Some(*part);
+                self.rest[*line] = *part;
             }
             Step::Comped { line, amount } => {
                 prop_assert!(basket.lines[*line].comped);
@@ -381,6 +436,7 @@ impl<'a> Replay<'a> {
     /// Checks that the replayed amounts are the totals'.
     fn finish(self, totals: &Totals) -> Result<(), TestCaseError> {
         for (line, amounts) in totals.lines.iter().enumerate() {
+            prop_assert_eq!(self.shared[line], self.basket.lines[line].share.is_some());
             prop_assert_eq!(self.gross[line], Some(amounts.gross));
             prop_assert_eq!(self.comp[line], amounts.comp);
             prop_assert_eq!(&self.discounts[line], &amounts.discounts);
@@ -488,6 +544,37 @@ proptest! {
             prop_assert_eq!(&other.taxes, &totals.taxes);
             prop_assert_eq!(other.total, totals.total);
         }
+    }
+
+    /// Splitting a line among baskets conserves it: the parts' gross, and their comps, add up to
+    /// the whole line's, and each part is within one minor unit of its exact share.
+    #[test]
+    fn the_parts_of_a_shared_line_add_up(
+        (basket, rules) in any_case(),
+        at in any::<Index>(),
+        weights in prop::collection::vec(prop_oneof![4 => 1_u64..=3, 1 => 1_u64..1_000], 1..=5),
+    ) {
+        if basket.lines.is_empty() {
+            return Ok(());
+        }
+        let line = at.index(basket.lines.len());
+        let mut unshared = basket.clone();
+        unshared.lines[line].share = None;
+        let Ok(whole) = price(&unshared, &rules) else { return Ok(()) };
+        let whole = &whole.lines[line];
+        let total: BigInt = weights.iter().map(|&weight| BigInt::from(weight)).sum();
+        let (mut gross, mut comp) = (BigInt::ZERO, BigInt::ZERO);
+        for (index, &weight) in weights.iter().enumerate() {
+            let mut shared = basket.clone();
+            shared.lines[line].share = Some(Share { weights: weights.clone(), index });
+            let totals = price(&shared, &rules).unwrap();
+            let part = &totals.lines[line];
+            prop_assert!(near_exact(part.gross, whole.gross, &BigInt::from(weight), &total));
+            gross += minor(part.gross);
+            comp += minor(part.comp);
+        }
+        prop_assert_eq!(gross, minor(whole.gross));
+        prop_assert_eq!(comp, minor(whole.comp));
     }
 
     /// Each kind of invalid input is refused, with the error that names it.

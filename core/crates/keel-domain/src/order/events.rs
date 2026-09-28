@@ -15,14 +15,19 @@
 //! | `order.line_comped` | 1 line, 2 reason code, 3 note (optional) |
 //! | `order.voided` | 1 reason code, 2 note (optional) |
 //! | `order.abandoned` | no keys: an empty map |
+//! | `order.check_opened` | 1 check |
+//! | `order.lines_allocated` | 1 allocations: an array, not empty |
 //!
 //! A chosen modifier is a map: 1 modifier, 2 name, 3 prefix, 4 quantity, 5 placement, 6 unit
-//! price, 7 modifiers (an array, possibly empty).
+//! price, 7 modifiers (an array, possibly empty). An allocation is a map: 1 line, 2 check, 3
+//! shares (a count up to 65,535).
 //!
 //! Beyond the types, payloads must satisfy these rules:
 //! - quantities are positive, and prices are zero or more;
 //! - all the prices in one payload are in the same currency;
-//! - a change changes at least one field.
+//! - a change changes at least one field;
+//! - allocations are in strictly ascending order of line, then check, and each line's shares
+//!   are in lowest terms.
 
 use core::num::{NonZeroU8, NonZeroU16};
 
@@ -30,6 +35,7 @@ use keel_events::cbor::Value;
 use keel_events::envelope::{Customer, SchemaRef, TeamMember};
 use keel_types::{Currency, Id, Quantity};
 
+use super::checks::{Check, LinesAllocated};
 use super::state::Line;
 use super::types::{Channel, ChosenModifier, ItemSnapshot, Mode, Reason, modifier_currency};
 use crate::codec::{Change, Fields, IdSet, PayloadError, Record};
@@ -178,6 +184,13 @@ pub enum OrderEvent {
     },
     /// The order was dropped before anything in it was fired.
     Abandoned,
+    /// A check was opened.
+    CheckOpened {
+        /// The new check's identifier, minted by the device that opened it.
+        check: Id<Check>,
+    },
+    /// Lines were allocated to checks.
+    LinesAllocated(LinesAllocated),
 }
 
 /// The schemas, in the order of `OrderEvent`'s variants.
@@ -191,6 +204,8 @@ const LINE_VOIDED: SchemaId = SchemaId { name: "order.line_voided", version: 1 }
 const LINE_COMPED: SchemaId = SchemaId { name: "order.line_comped", version: 1 };
 const VOIDED: SchemaId = SchemaId { name: "order.voided", version: 1 };
 const ABANDONED: SchemaId = SchemaId { name: "order.abandoned", version: 1 };
+const CHECK_OPENED: SchemaId = SchemaId { name: "order.check_opened", version: 1 };
+const LINES_ALLOCATED: SchemaId = SchemaId { name: "order.lines_allocated", version: 1 };
 
 impl DomainEvent for OrderEvent {
     const STREAM: &'static str = "order";
@@ -206,6 +221,8 @@ impl DomainEvent for OrderEvent {
         LINE_COMPED,
         VOIDED,
         ABANDONED,
+        CHECK_OPENED,
+        LINES_ALLOCATED,
     ];
 
     fn schema(&self) -> SchemaId {
@@ -220,6 +237,8 @@ impl DomainEvent for OrderEvent {
             OrderEvent::LineComped { .. } => LINE_COMPED,
             OrderEvent::Voided { .. } => VOIDED,
             OrderEvent::Abandoned => ABANDONED,
+            OrderEvent::CheckOpened { .. } => CHECK_OPENED,
+            OrderEvent::LinesAllocated(_) => LINES_ALLOCATED,
         }
     }
 
@@ -270,6 +289,8 @@ impl DomainEvent for OrderEvent {
                 record.field(1, &reason.code).optional(2, reason.note.as_ref())
             }
             OrderEvent::Abandoned => record,
+            OrderEvent::CheckOpened { check } => record.field(1, check),
+            OrderEvent::LinesAllocated(allocated) => record.field(1, allocated),
         }
         .build()
     }
@@ -306,6 +327,10 @@ impl DomainEvent for OrderEvent {
             OrderEvent::Voided { reason }
         } else if ABANDONED.matches(schema) {
             OrderEvent::Abandoned
+        } else if CHECK_OPENED.matches(schema) {
+            OrderEvent::CheckOpened { check: fields.required(1, "check")? }
+        } else if LINES_ALLOCATED.matches(schema) {
+            OrderEvent::LinesAllocated(fields.required(1, "allocations")?)
         } else {
             return Err(DecodeError::UnknownSchema);
         };

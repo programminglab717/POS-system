@@ -37,6 +37,7 @@ fn line(price: &str, quantity: Quantity) -> Line {
         tax_category: id(FOOD),
         comped: false,
         discounts: Vec::new(),
+        share: None,
     }
 }
 
@@ -144,6 +145,63 @@ fn nested_modifiers_count_per_unit_of_what_they_modify() {
     let totals = price(&basket(vec![steak]), &Rules::untaxed()).unwrap();
     assert_eq!(totals.lines[0].unit_price, usd("25.50"));
     assert_eq!(totals.gross, usd("51.00"));
+}
+
+/// The same line, shared among `weights.len()` baskets: the one holding each part.
+fn shared(line: &Line, weights: &[u64]) -> Vec<Line> {
+    (0..weights.len())
+        .map(|index| Line {
+            share: Some(Share { weights: weights.to_vec(), index }),
+            ..line.clone()
+        })
+        .collect()
+}
+
+#[test]
+fn a_shared_line_is_split_by_largest_remainder() {
+    // 10.00 split three ways is 3.333... each: the floors make 9.99, and the spare cent goes to
+    // the first part, since every remainder is the same.
+    let parts: Vec<Totals> = shared(&line("10.00", each(1)), &[1, 1, 1])
+        .into_iter()
+        .map(|line| price(&basket(vec![line]), &Rules::untaxed()).unwrap())
+        .collect();
+    let gross: Vec<Money> = parts.iter().map(|totals| totals.gross).collect();
+    assert_eq!(gross, amounts(&["3.34", "3.33", "3.33"]));
+    assert_eq!(parts[0].trace[1].to_string(), "line 1: part 1 of USD 10.00 split 1:1:1 = USD 3.34");
+
+    // 5.88 of cheese by weight, split one part to two: 1.96 and 3.92.
+    let cheese = line("12.99", kg("0.453"));
+    let parts: Vec<Money> = shared(&cheese, &[1, 2])
+        .into_iter()
+        .map(|line| price(&basket(vec![line]), &Rules::untaxed()).unwrap().gross)
+        .collect();
+    assert_eq!(parts, amounts(&["1.96", "3.92"]));
+
+    // A comp takes each part whole.
+    let mut platter = line("24.00", each(1));
+    platter.comped = true;
+    for held in shared(&platter, &[1, 1]) {
+        let totals = price(&basket(vec![held]), &Rules::untaxed()).unwrap();
+        assert_eq!((totals.lines[0].gross, totals.lines[0].comp), (usd("12.00"), usd("12.00")));
+        assert_eq!(totals.total, usd("0.00"));
+    }
+}
+
+#[test]
+fn each_check_is_taxed_on_its_own_part() {
+    // A 30.00 bottle of wine split three ways, with an 8.875% tax: each check's 10.00 is taxed
+    // 0.8875, so 0.89, and the three checks pay 2.67 of tax. The whole bottle on one check would
+    // pay 2.6625, so 2.66: each check is a separate sale (ADR-0015).
+    let taxes = rules(vec![tax(1, "8.875", &[FOOD])], TaxScope::Document);
+    for held in shared(&line("30.00", each(1)), &[1, 1, 1]) {
+        let totals = price(&basket(vec![held]), &taxes).unwrap();
+        assert_eq!(
+            (totals.net, totals.tax, totals.total),
+            (usd("10.00"), usd("0.89"), usd("10.89"))
+        );
+    }
+    let whole = price(&basket(vec![line("30.00", each(1))]), &taxes).unwrap();
+    assert_eq!(whole.tax, usd("2.66"));
 }
 
 #[test]
@@ -334,6 +392,12 @@ fn invalid_baskets_and_rules_are_refused() {
     let mut nested = basket(vec![line("1.00", each(1))]);
     nested.lines[0].modifiers = vec![deep];
     assert_eq!(refused(&nested, &untaxed), PricingError::ModifiersTooDeep { line: 0 });
+
+    for (weights, index) in [(vec![], 0), (vec![1, 0], 0), (vec![1, 1], 2)] {
+        let mut odd = basket(vec![line("1.00", each(1))]);
+        odd.lines[0].share = Some(Share { weights, index });
+        assert_eq!(refused(&odd, &untaxed), PricingError::InvalidShare { line: 0 });
+    }
 
     let huge = basket(vec![line("90000000000000000.00", each(2))]);
     assert_eq!(refused(&huge, &untaxed), PricingError::Overflow);

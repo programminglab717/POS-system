@@ -11,7 +11,9 @@
 //! rounding mode (ADR-0014):
 //!
 //! 1. **Extension**: a line's unit price, the item's plus its modifiers', times its quantity,
-//!    rounded when the quantity is fractional (weighed or measured items).
+//!    rounded when the quantity is fractional (weighed or measured items). A line shared among
+//!    several baskets, such as the checks a bottle of wine is split between, is split by largest
+//!    remainder, and the basket holds its part ([`Share`]).
 //! 2. **Comps and line discounts**, each taking from what is left of the line; a percentage is
 //!    rounded.
 //! 3. **Order discounts**, each taking from what is left of the order, a percentage rounded once,
@@ -46,6 +48,7 @@
 //!         tax_category: food,
 //!         comped: false,
 //!         discounts: vec![Discount::Percent(Rate::from_basis_points(1000))],
+//!         share: None,
 //!     }],
 //!     discounts: Vec::new(),
 //!     dining: Dining::ToGo,
@@ -72,7 +75,7 @@ mod tests;
 mod totals;
 mod trace;
 
-pub use basket::{Basket, Dining, Discount, Line, Modifier, TaxCategory};
+pub use basket::{Basket, Dining, Discount, Line, Modifier, Share, TaxCategory};
 pub use cash::{CashDue, round_cash};
 pub use engine::{DiscountRef, MAX_MODIFIER_DEPTH, PricingError, price};
 pub use rules::{Rules, Tax, TaxRounding, TaxScope};

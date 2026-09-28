@@ -6,8 +6,9 @@
 
 ## Where we are
 
-**Phase 0 (Foundations), step 4 of 8:** `keel-domain` and `keel-pricing`. Slices 1 and 2 of 3
-(the order's lines, and pricing v0) are reviewed. Slice 3, checks and payments, is in progress.
+**Phase 0 (Foundations), step 4 of 8:** `keel-domain` and `keel-pricing`. Slices 1 and 2 of 4
+(the order's lines, and pricing v0) are reviewed. Slice 3, checks and splits, is built, and its
+verification is finishing. Slice 4, payments and closing, starts after its review.
 
 ## Phase 0 milestones
 
@@ -18,13 +19,14 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 1 | Monorepo scaffold | Rust workspace and CI done. The Android, web and schema directories arrive with their first code. | [`Cargo.toml`](../Cargo.toml), [CI](../.github/workflows/ci.yml) |
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
-| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slices 1 and 2 of 3 built and reviewed; slice 3 in progress | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md) |
+| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slices 1 to 3 of 4 built, and 1 and 2 reviewed; slice 3 being verified | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Not started | |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
-Step 4 is split into three slices, each ending with a review:
+Step 4 is split into four slices, each ending with a review. It was planned as three; the third,
+checks and payments, was split in two, so that the payment design is reviewed before it is built:
 
 1. **Foundations and the order's lines** (built and reviewed 2026-09-28): payload codecs
    and schema registry; the aggregate framework; order events, fold and commands for creating an
@@ -32,14 +34,76 @@ Step 4 is split into three slices, each ending with a review:
    voiding or abandoning the order.
 2. **Pricing v0** (built and reviewed 2026-09-28): modifier pricing, discounts, US sales tax,
    rounding and allocation, the calculation trace, and the golden-basket suite.
-3. **Checks and payments** (in progress): splits and allocations, and the payment aggregate.
+3. **Checks and splits** (built 2026-09-28, being verified): every order's main check,
+   opening checks, allocating lines to checks in whole shares, and pricing each check as its own
+   sale.
+4. **Payments and closing**: the payment aggregate, balances, closing checks with their totals,
+   and closing and reopening orders.
 
 ## Current slice
 
-Slice 3, checks and payments, is in progress. Slice 2 is reviewed; see its entry under
-"Completed".
+Slice 3, checks and splits, is built; its verification is finishing. See its entry under
+"Completed", which lists the decisions to review, including the payment design that slice 4
+builds.
 
 ## Completed
+
+### Checks and splits: step 4, slice 3 (2026-09-28)
+
+Built; verification is finishing.
+
+- **Built** ([ADR-0015](./adr/0015-checks-and-payments.md)):
+  - every order's main check, whose identifier is the order's own, and `order.check_opened` for
+    more checks, numbered in the order they are opened;
+  - `order.lines_allocated`, which moves or splits lines among checks in whole shares, kept in
+    lowest terms so each split has one encoding;
+  - the fold's rules for concurrent splits: for each line, the later allocation wins; one naming
+    a check that doesn't exist yet doesn't apply, and is reported; a check opened twice keeps
+    its first opening; allocating a removed or voided line changes nothing;
+  - commands to open checks and allocate lines, checked against the device's view;
+  - each check's basket, which prices the check as its own sale;
+  - in `keel-pricing`, a line's *share*: a basket holds its part of a line split among several,
+    by largest remainder, and the trace records the split.
+- **Verified:**
+  - Known-answer tests, with the arithmetic worked out: 4 more in `keel-domain` (28 in all),
+    among them a table split by seat with the wine shared three ways and each check taxed on its
+    own; 2 more in `keel-pricing` (18 in all).
+  - The two new schemas' pinned payloads were encoded independently by Python's `cbor2`, from
+    the documented key tables, and the kernel's encoding matches them byte for byte.
+  - The payload model covers allocations: out of order, repeated, not in lowest terms, empty, or
+    with a share of zero, each accepted exactly when valid. A new property checks that
+    allocations have one form, whatever order they are given in.
+  - The fold model, written as queries over the events' positions, covers checks and splits,
+    and a new property aims at splits. The command model covers opening checks and allocating
+    lines, faulty commands included. Invariants check that every live line belongs to existing
+    checks, in lowest terms; that each check's basket holds its part of each line allocated to
+    it; and that the checks' parts of a line add up to the line.
+  - In `keel-pricing`, the exact oracle and the independent Python oracle price shares, with 31
+    new golden baskets (140 in all). A new property checks that a shared line's parts add up to
+    it, each within one minor unit of its exact share, and invalid shares are refused.
+  - 51 planted bugs in `keel-pricing`, 6 of them aimed at shares, all caught by the property
+    tests alone. Still running: `keel-domain`'s 94 (22 of them aimed at checks and splits), and
+    100,000 cases of every property.
+- **Decisions:** [ADR-0015](./adr/0015-checks-and-payments.md), proposed.
+  - **Checks are part of the order's stream**, and every order has a main check with the order's
+    identifier, so a one-check order needs no check events.
+  - **Lines are split among checks in whole shares**, in lowest terms: exact, and the parts add
+    up by construction.
+  - **Each check is priced as its own sale**, so its tax is computed on it. A split order's
+    checks can pay a cent or so more or less tax than the order would unsplit.
+  - **Concurrent splits:** the later allocation of a line wins.
+  - **Payments and closing**, designed now and built in slice 4: a snapshot of what each check
+    was charged when it closes; closed checks frozen; post-close checks for lines added
+    concurrently; the payment aggregate, with five events for cash and card; and checkout rules
+    that keep a check from being charged twice.
+- **Found and fixed during the build:**
+  - The first generators rarely split a line among checks: a probe of 2,000 cases found only 20
+    orders ending with a line shared by several checks. A new property with generators aimed
+    at splits reaches that in nearly a quarter of its cases, with over a thousand allocations
+    applied per 2,000 cases.
+  - An old planted bug, reason codes of 33 bytes, escaped the property tests: with two more kinds
+    of event, the wide generators reached a 33-byte code too rarely. A new property tries reason
+    codes at every length around the limit.
 
 ### `keel-pricing` v0: step 4, slice 2 (2026-09-28)
 
@@ -230,6 +294,8 @@ design, the feature catalog and the roadmap. See the [README](../README.md).
 
 ## Waiting on a decision
 
+- Review of checks and splits, once verified, and of ADR-0015, including the payment design slice
+  4 builds.
 - The license, and the product name ("Keel" is a codename).
 - The first payment processor (decision gate G2 in the roadmap).
 - Verifying the research's unverified claims, and interviews with merchants.
@@ -249,8 +315,10 @@ Work deliberately left for later, so it isn't forgotten:
 - **`keel-types`:** `Locale`, with the first UI.
 - **Orders:**
   - Permissions, approvals and ownership leases aren't checked yet (`keel-policy`, `keel-sync`).
-  - Lines added after an order is closed should go to a post-close check, once checks exist
-    (slice 3).
+  - Lines added after an order is closed should go to a post-close check, once orders close
+    (slice 4).
+  - Check names, and putting a new line straight onto the check it is for (a new version of
+    `order.line_added`); re-splitting a line after part of it was paid (ADR-0015).
   - Events for a person's resolution of a conflict.
   - A tool that labels payload fields, for auditors and support.
 - **Pricing:** everything ADR-0014 defers: price lists and the catalog's modifier rules,

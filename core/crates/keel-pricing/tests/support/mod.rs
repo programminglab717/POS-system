@@ -10,7 +10,9 @@
 use core::cmp::Ordering;
 use core::num::NonZeroU32;
 
-use keel_pricing::{Basket, Dining, Discount, Line, Modifier, Rules, Tax, TaxRounding, TaxScope};
+use keel_pricing::{
+    Basket, Dining, Discount, Line, Modifier, Rules, Share, Tax, TaxRounding, TaxScope,
+};
 use keel_types::{Currency, Decimal, Id, Money, Quantity, Rate, RoundingMode, Unit};
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -95,6 +97,9 @@ pub(crate) fn largest_remainder(amount: &BigInt, weights: &[BigInt]) -> Vec<BigI
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExpectedLine {
     pub(crate) unit_price: BigInt,
+    /// The whole line's gross, before the basket takes its share of it.
+    pub(crate) whole: BigInt,
+    /// The basket's gross: the whole line's, or its share of it.
     pub(crate) gross: BigInt,
     pub(crate) comp: BigInt,
     pub(crate) discounts: Vec<BigInt>,
@@ -129,7 +134,8 @@ impl Expected {
             all.extend([taxable, tax]);
         }
         for line in &self.lines {
-            all.extend([&line.unit_price, &line.gross, &line.comp, &line.net, &line.tax]);
+            all.extend([&line.unit_price, &line.whole, &line.gross, &line.comp, &line.net]);
+            all.push(&line.tax);
             all.push(&line.total);
             all.extend(&line.discounts);
             all.extend(&line.order_discounts);
@@ -167,41 +173,48 @@ fn take(rest: &BigInt, discount: Discount, mode: RoundingMode) -> BigInt {
     }
 }
 
+/// A line's extension, its share, its comp and its own discounts.
+fn expected_line(line: &Line, rules: &Rules) -> ExpectedLine {
+    let unit_price = BigInt::from(line.unit_price.minor()) + modifiers_price(&line.modifiers);
+    let whole = round_rational(
+        &(&unit_price * line.quantity.micros()),
+        &BigInt::from(1_000_000),
+        rules.extension,
+    );
+    let gross = match &line.share {
+        None => whole.clone(),
+        Some(share) => {
+            let weights: Vec<BigInt> =
+                share.weights.iter().map(|&weight| BigInt::from(weight)).collect();
+            largest_remainder(&whole, &weights)[share.index].clone()
+        }
+    };
+    let comp = if line.comped { gross.clone() } else { BigInt::ZERO };
+    let mut rest = &gross - &comp;
+    let mut discounts = Vec::new();
+    for &discount in &line.discounts {
+        let taken = take(&rest, discount, rules.discounts);
+        rest -= &taken;
+        discounts.push(taken);
+    }
+    ExpectedLine {
+        unit_price,
+        whole,
+        gross,
+        comp,
+        discounts,
+        order_discounts: Vec::new(),
+        net: rest,
+        taxes: Vec::new(),
+        tax: BigInt::ZERO,
+        total: BigInt::ZERO,
+    }
+}
+
 /// What ADR-0014 says a valid basket costs.
 pub(crate) fn expected(basket: &Basket, rules: &Rules) -> Expected {
-    // Extension, comps and line discounts.
-    let mut lines: Vec<ExpectedLine> = basket
-        .lines
-        .iter()
-        .map(|line| {
-            let unit_price =
-                BigInt::from(line.unit_price.minor()) + modifiers_price(&line.modifiers);
-            let gross = round_rational(
-                &(&unit_price * line.quantity.micros()),
-                &BigInt::from(1_000_000),
-                rules.extension,
-            );
-            let comp = if line.comped { gross.clone() } else { BigInt::ZERO };
-            let mut rest = &gross - &comp;
-            let mut discounts = Vec::new();
-            for &discount in &line.discounts {
-                let taken = take(&rest, discount, rules.discounts);
-                rest -= &taken;
-                discounts.push(taken);
-            }
-            ExpectedLine {
-                unit_price,
-                gross,
-                comp,
-                discounts,
-                order_discounts: Vec::new(),
-                net: rest,
-                taxes: Vec::new(),
-                tax: BigInt::ZERO,
-                total: BigInt::ZERO,
-            }
-        })
-        .collect();
+    let mut lines: Vec<ExpectedLine> =
+        basket.lines.iter().map(|line| expected_line(line, rules)).collect();
 
     // Order discounts, each allocated by what is left of each line.
     let mut discounts = Vec::new();
@@ -364,6 +377,20 @@ fn any_modifier(currency: Currency, depth: u32) -> BoxedStrategy<Modifier> {
         .boxed()
 }
 
+/// A share of a line: up to four parts, mostly of small weights, which tie often, and sometimes
+/// of huge ones.
+pub(crate) fn any_share() -> impl Strategy<Value = Share> {
+    let weight = prop_oneof![
+        8 => 1_u64..=3,
+        1 => 1_u64..1_000_000,
+        1 => prop::sample::select(vec![u64::MAX, u64::MAX / 3, 1_u64 << 40]),
+    ];
+    prop::collection::vec(weight, 1..=4).prop_flat_map(|weights| {
+        let parts = weights.len();
+        (Just(weights), 0..parts).prop_map(|(weights, index)| Share { weights, index })
+    })
+}
+
 /// A line in one of three tax categories.
 pub(crate) fn any_line(currency: Currency) -> impl Strategy<Value = Line> {
     prop_oneof![9 => any_rung_up_line(currency), 1 => any_exactly_discounted_line(currency)]
@@ -379,14 +406,18 @@ fn any_rung_up_line(currency: Currency) -> impl Strategy<Value = Line> {
         prop::bool::weighted(0.1),
         prop_oneof![6 => Just(0_usize), 3 => Just(1_usize), 1 => Just(2_usize)]
             .prop_flat_map(move |count| prop::collection::vec(any_discount(currency), count)),
+        prop::option::weighted(0.2, any_share()),
     )
-        .prop_map(move |(minor, modifiers, quantity, category, comped, discounts)| Line {
-            unit_price: Money::from_minor(minor, currency),
-            modifiers,
-            quantity,
-            tax_category: id(category),
-            comped,
-            discounts,
+        .prop_map(move |(minor, modifiers, quantity, category, comped, discounts, share)| {
+            Line {
+                unit_price: Money::from_minor(minor, currency),
+                modifiers,
+                quantity,
+                tax_category: id(category),
+                comped,
+                discounts,
+                share,
+            }
         })
 }
 
@@ -405,6 +436,7 @@ fn any_exactly_discounted_line(currency: Currency) -> impl Strategy<Value = Line
                 tax_category: id(category),
                 comped: false,
                 discounts,
+                share: None,
             }
         },
     )

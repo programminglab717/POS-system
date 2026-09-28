@@ -5,14 +5,14 @@ BUGS = [
     (
         "extension rounds with the discount mode",
         "src/engine.rs",
-        "let gross = unit_price.mul_decimal(line.quantity.to_decimal(), rules.extension)?;",
-        "let gross = unit_price.mul_decimal(line.quantity.to_decimal(), rules.discounts)?;",
+        "let whole = unit_price.mul_decimal(line.quantity.to_decimal(), rules.extension)?;",
+        "let whole = unit_price.mul_decimal(line.quantity.to_decimal(), rules.discounts)?;",
     ),
     (
         "extension always truncates",
         "src/engine.rs",
-        "let gross = unit_price.mul_decimal(line.quantity.to_decimal(), rules.extension)?;",
-        "let gross = unit_price.mul_decimal(line.quantity.to_decimal(), RoundingMode::TowardZero)?;",
+        "let whole = unit_price.mul_decimal(line.quantity.to_decimal(), rules.extension)?;",
+        "let whole = unit_price.mul_decimal(line.quantity.to_decimal(), RoundingMode::TowardZero)?;",
     ),
     (
         "modifier quantities ignored",
@@ -30,8 +30,57 @@ BUGS = [
     (
         "modifiers counted once per line, not per unit",
         "src/engine.rs",
-        "let gross = unit_price.mul_decimal(line.quantity.to_decimal(), rules.extension)?;",
-        "let gross = line.unit_price.mul_decimal(line.quantity.to_decimal(), rules.extension)?.checked_add(modifiers)?;",
+        "let whole = unit_price.mul_decimal(line.quantity.to_decimal(), rules.extension)?;",
+        "let whole = line.unit_price.mul_decimal(line.quantity.to_decimal(), rules.extension)?.checked_add(modifiers)?;",
+    ),
+    # Shares of a line (ADR-0015).
+    (
+        "shares take the whole line",
+        "src/engine.rs",
+        "let part = part_of(whole, share, index)?;",
+        "let part = whole;",
+    ),
+    (
+        "shares always take the first part",
+        "src/engine.rs",
+        "parts.get(share.index).copied().ok_or(PricingError::InvalidShare { line })",
+        "parts.first().copied().ok_or(PricingError::InvalidShare { line })",
+    ),
+    (
+        "shares give the spare units to the last parts",
+        "src/engine.rs",
+        """    let parts = whole.allocate(&share.weights)?;
+    parts.get(share.index).copied().ok_or(PricingError::InvalidShare { line })""",
+        """    let mut weights = share.weights.clone();
+    weights.reverse();
+    let parts = whole.allocate(&weights)?;
+    let from_end = parts.len().checked_sub(1).and_then(|last| last.checked_sub(share.index));
+    from_end.and_then(|at| parts.get(at)).copied().ok_or(PricingError::InvalidShare { line })""",
+    ),
+    (
+        "zero weights accepted",
+        "src/engine.rs",
+        "share.index < share.weights.len() && share.weights.iter().all(|&weight| weight > 0)",
+        "share.index < share.weights.len()",
+    ),
+    (
+        "a comp takes the whole shared line",
+        "src/engine.rs",
+        "let (comp, mut net) = if line.comped { (gross, zero) } else { (zero, gross) };",
+        "let (comp, mut net) = if line.comped { (whole, zero) } else { (zero, gross) };",
+    ),
+    (
+        "shares leave no trace",
+        "src/engine.rs",
+        """            trace.push(Step::Shared {
+                line: index,
+                whole,
+                weights: share.weights.clone(),
+                index: share.index,
+                part,
+            });
+""",
+        "",
     ),
     # Comps and line discounts.
     (
@@ -304,9 +353,9 @@ BUGS = [
         "trace records the extension mode wrongly",
         "src/engine.rs",
         """        mode: rules.extension,
-        gross,""",
+        gross: whole,""",
         """        mode: rules.discounts,
-        gross,""",
+        gross: whole,""",
     ),
     # Cash rounding.
     (

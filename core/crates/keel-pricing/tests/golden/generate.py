@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The golden baskets: baskets and pricing rules, with the totals ADR-0014 gives them.
+"""The golden baskets: baskets and pricing rules, with the totals ADR-0014 gives them, and
+ADR-0015's shared lines.
 
 The totals are computed here, with exact fractions, from the ADR's description of the pipeline.
 Nothing is shared with the Rust engine, so the two can only agree if both follow the ADR.
@@ -83,9 +84,11 @@ def price(basket, rules):
     lines = []
     for line in basket["lines"]:
         unit_price = line["unit_price"] + modifiers_price(line["modifiers"])
-        gross = round_to_integer(
+        whole = round_to_integer(
             Fraction(unit_price * line["quantity"]["micros"], 1_000_000), rules["extension"]
         )
+        share = line["share"]
+        gross = whole if share is None else largest_remainder(whole, share["weights"])[share["index"]]
         comp = gross if line["comped"] else 0
         rest = gross - comp
         discounts = []
@@ -95,6 +98,7 @@ def price(basket, rules):
             discounts.append(taken)
         lines.append({
             "unit_price": unit_price,
+            "whole": whole,
             "gross": gross,
             "comp": comp,
             "discounts": discounts,
@@ -200,7 +204,7 @@ def modifier(unit_price, qty=1, modifiers=()):
     return {"unit_price": unit_price, "quantity": qty, "modifiers": list(modifiers)}
 
 
-def line(unit_price, qty, category, modifiers=(), comped=False, discounts=()):
+def line(unit_price, qty, category, modifiers=(), comped=False, discounts=(), share=None):
     return {
         "unit_price": unit_price,
         "quantity": qty,
@@ -208,7 +212,18 @@ def line(unit_price, qty, category, modifiers=(), comped=False, discounts=()):
         "comped": comped,
         "modifiers": list(modifiers),
         "discounts": list(discounts),
+        "share": share,
     }
+
+
+def part(index, *weights):
+    """The share of a line split in proportion to `weights` that one basket holds."""
+    return {"weights": list(weights), "index": index}
+
+
+def split(shared_line, weights):
+    """The line as each basket sharing it holds it: one line per part."""
+    return [dict(shared_line, share=part(index, *weights)) for index in range(len(weights))]
 
 
 def decimal_string(value):
@@ -410,6 +425,49 @@ def edges():
     return cases
 
 
+def shared_lines():
+    """Lines split among checks (ADR-0015): each case is one check's basket."""
+    cases = []
+    wine = line(3000, count(1), ALCOHOL)
+    for index, held in enumerate(split(wine, [1, 1, 1]), start=1):
+        cases.append((basket([held]), rules(ALCOHOL_SURTAX, "document"),
+                      f"a 30.00 bottle of wine split three ways: part {index}, taxed on its own"))
+    for index, held in enumerate(split(line(1000, count(1), GENERAL), [1, 1, 1]), start=1):
+        cases.append((basket([held]), rules(ONE_RATE, "line"),
+                      f"10.00 split three ways: part {index}; the spare cent goes to the first"))
+    for index, held in enumerate(split(line(1299, quantity(453_000, "kg"), GROCERY), [1, 2]), start=1):
+        cases.append((basket([held]), rules(GROCERY_STATE, "line"),
+                      f"5.88 of cheese by weight split 1:2: part {index}"))
+    for index, held in enumerate(split(line(100, count(1), GENERAL), [1, 2, 3]), start=1):
+        cases.append((basket([held]), rules([]), f"1.00 split 1:2:3: part {index}"))
+    for index, held in enumerate(split(line(1, count(1), GENERAL), [1, 1]), start=1):
+        cases.append((basket([held]), rules(ONE_RATE), f"one cent split two ways: part {index}"))
+    for index, held in enumerate(split(line(2400, count(1), PREPARED, comped=True), [1, 1]), start=1):
+        cases.append((basket([held, line(895, count(1), PREPARED)]), rules(STATE_AND_CITY),
+                      f"a comped platter shared by two checks, with a dessert: part {index}"))
+    return cases
+
+
+def splits(rng):
+    """A table's check: some lines its own, some shared with other checks."""
+    lines, notes = [], []
+    for _ in range(rng.between(1, 5)):
+        name, unit_price, category, extras = rng.choice(KITCHEN)
+        mods = [m for m in extras if rng.chance(30)]
+        share = None
+        if rng.chance(60):
+            weights = [rng.between(1, 3) for _ in range(rng.between(2, 4))]
+            share = part(rng.below(len(weights)), *weights)
+            name += " (part {} of {})".format(share["index"] + 1, ":".join(map(str, weights)))
+        comped = rng.chance(8)
+        lines.append(line(unit_price, count(rng.between(1, 3)), category, mods, comped, share=share))
+        notes.append(name)
+    setup = rng.choice([("state and city", STATE_AND_CITY), ("alcohol surtax", ALCOHOL_SURTAX)])
+    scope = rng.choice(["line", "document"])
+    title = f"a check of a split table, {setup[0]}, tax per {scope}: " + ", ".join(notes)
+    return basket(lines), rules(setup[1], scope), title
+
+
 def worked_examples():
     """The examples the unit tests and the ADR explain step by step."""
     latte = line(450, count(2), PREPARED, [modifier(50)])
@@ -449,6 +507,10 @@ def main():
     families = [(cafe, 20), (restaurant, 20), (grocery, 16), (exempt, 8), (currencies, 8)]
     for family, n in families:
         cases += [family(rng) for _ in range(n)]
+    cases += shared_lines()
+    families = [(splits, 16)]
+    for family, n in families:
+        cases += [family(rng) for _ in range(n)]
     out = []
     for number, (shopped, chosen, title) in enumerate(cases, start=1):
         out.append({
@@ -459,7 +521,7 @@ def main():
             "expected": price(shopped, chosen),
         })
     document = {
-        "format": 1,
+        "format": 2,
         "about": "Golden baskets for keel-pricing, generated by generate.py: do not edit.",
         "baskets": out,
     }

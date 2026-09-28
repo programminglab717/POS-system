@@ -1,6 +1,6 @@
 //! The golden baskets: over a hundred baskets and pricing rules, with the totals an independent
-//! Python oracle computed for them with exact fractions (`golden/generate.py`). The engine must
-//! match every amount exactly, on every platform.
+//! Python oracle computed for them with exact fractions (`golden/generate.py`), including checks
+//! that hold shares of lines. The engine must match every amount exactly, on every platform.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,7 +12,8 @@
 use core::num::NonZeroU32;
 
 use keel_pricing::{
-    Basket, Dining, Discount, Line, Modifier, Rules, Tax, TaxRounding, TaxScope, Totals, price,
+    Basket, Dining, Discount, Line, Modifier, Rules, Share, Step, Tax, TaxRounding, TaxScope,
+    Totals, price,
 };
 use keel_types::{Currency, Decimal, Id, Money, Quantity, Rate, RoundingMode, Unit};
 use serde_json::Value;
@@ -99,6 +100,14 @@ fn line(value: &Value, currency: Currency) -> Line {
             .iter()
             .map(|d| discount(d, currency))
             .collect(),
+        share: (!value["share"].is_null()).then(|| share(&value["share"])),
+    }
+}
+
+fn share(value: &Value) -> Share {
+    Share {
+        weights: value["weights"].as_array().unwrap().iter().map(number).collect(),
+        index: usize::try_from(number(&value["index"])).unwrap(),
     }
 }
 
@@ -204,6 +213,14 @@ impl Differences {
         }
         for (index, (expected, actual)) in lines.iter().zip(&totals.lines).enumerate() {
             let at = |field: &str| format!("lines[{index}].{field}");
+            let whole = totals.trace.iter().find_map(|step| match step {
+                Step::Extended { line, gross, .. } if *line == index => Some(*gross),
+                _ => None,
+            });
+            match whole {
+                Some(whole) => self.amount(&at("whole"), &expected["whole"], whole),
+                None => self.0.push(format!("{}: no extension in the trace", at("whole"))),
+            }
             for (field, amount) in [
                 ("unit_price", actual.unit_price),
                 ("gross", actual.gross),
@@ -244,7 +261,7 @@ impl Differences {
 #[test]
 fn golden_baskets_match_the_oracle_exactly() {
     let golden: Value = serde_json::from_str(GOLDEN).unwrap();
-    assert_eq!(golden["format"], 1);
+    assert_eq!(golden["format"], 2);
     let baskets = golden["baskets"].as_array().unwrap();
     assert!(baskets.len() >= 100, "the suite has {} baskets", baskets.len());
     let mut failures = Vec::new();

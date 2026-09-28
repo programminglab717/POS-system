@@ -7,7 +7,9 @@
 //!   rules allows them, and an accepted command never causes a conflict and has the effect the
 //!   model predicts;
 //! - when devices act concurrently on stale views, the merged order is what the fold model
-//!   predicts.
+//!   predicts;
+//! - every check's basket holds its share of each line it is allocated, and the checks' shares
+//!   of a line add up to the line.
 
 #![allow(
     clippy::unwrap_used,
@@ -27,16 +29,17 @@ use std::collections::BTreeSet;
 use keel_domain::aggregate::{Aggregate, EventMeta, fold};
 use keel_domain::codec::{CatalogVersion, Change, IdSet, Name, Note, ReasonCode};
 use keel_domain::order::{
-    AttributesChanged, Channel, ChosenModifier, ConflictKind, ItemSnapshot, Line, LineAdded,
-    LineChanged, LineStatus, Mode, Order, OrderCommand, OrderCreated, OrderEvent, OrderInfo,
-    OrderStatus, Placement, Prefix, Reason, Stage,
+    Allocation, AttributesChanged, Channel, Check, CheckShare, ChosenModifier, ConflictKind,
+    ItemSnapshot, Line, LineAdded, LineChanged, LineStatus, LinesAllocated, Mode, Order,
+    OrderCommand, OrderCreated, OrderEvent, OrderInfo, OrderStatus, Placement, Prefix, Reason,
+    Stage,
 };
 use keel_domain::schema::{DecodeError, DomainEvent};
 use keel_events::envelope::{Actor, Device, Event, Location, StreamKind, StreamRef};
 use keel_events::event::SignedEvent;
 use keel_events::keys::{SignatureAlgorithm, SoftwareSigner};
 use keel_events::log::{EventDraft, LogConfig, LogHead, LogWriter};
-use keel_pricing::Dining;
+use keel_pricing::{Dining, Rules, price};
 use keel_types::{Currency, Hlc, Id, Money, Quantity, SeededEntropy, Timestamp, Unit};
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -52,6 +55,16 @@ fn other_location() -> Id<Location> {
 
 fn order_id() -> Id<Order> {
     id(0xA)
+}
+
+/// The main check: its identifier is the order's.
+fn main_check() -> Id<Check> {
+    order_id().cast()
+}
+
+/// One share of a line, on `check`.
+fn whole(check: Id<Check>) -> CheckShare {
+    CheckShare { check, shares: NonZeroU16::MIN }
 }
 
 fn eur() -> Currency {
@@ -202,16 +215,58 @@ fn attributes(step: &Step) -> AttributesChanged {
     changed
 }
 
+/// An allocation of one or two of the lines the device knows among one to three of its checks,
+/// in shares of one or two. Fault 1 allocates a line it doesn't know, or to a check it doesn't
+/// know.
+fn allocation(
+    view: &Order,
+    step: &Step,
+    fresh: Id<Line>,
+    fresh_check: Id<Check>,
+) -> LinesAllocated {
+    let lines: Vec<Id<Line>> = view.lines().iter().map(Line::id).collect();
+    let known: Vec<Id<Check>> = view.checks().iter().map(Check::id).collect();
+    let mut chosen: Vec<Id<Line>> = if lines.is_empty() || (step.fault == 1 && step.flag) {
+        vec![fresh]
+    } else {
+        vec![lines[step.pick.index(lines.len())]]
+    };
+    if step.amount.is_multiple_of(5) && lines.len() > 1 {
+        chosen.push(lines[step.other.index(lines.len())]);
+    }
+    let first = step.other.index(known.len().max(1));
+    let mut checks: BTreeSet<Id<Check>> = (0..=usize::from(step.amount % 3))
+        .filter_map(|k| known.get((first + k) % known.len().max(1)).copied())
+        .collect();
+    if step.fault == 1 && !step.flag {
+        checks.insert(fresh_check);
+    }
+    let allocations = chosen.iter().collect::<BTreeSet<_>>().into_iter().flat_map(|&line| {
+        checks.iter().enumerate().map(move |(k, &check)| Allocation {
+            line,
+            check,
+            shares: NonZeroU16::new(1 + u16::from((step.amount >> k) & 1)).unwrap(),
+        })
+    });
+    LinesAllocated::new(allocations).unwrap()
+}
+
 /// The command a step stands for on the device's view, and the location it comes from: mostly
-/// line work, sometimes the attributes, rarely closing the order. Lines are picked among those
-/// the device knows, or a fresh identifier when it knows none. Fault 1 adds a line that exists,
-/// or works on one that doesn't; fault 5 sends the command from another location.
-fn command(view: &Order, step: &Step, fresh: Id<Line>) -> (OrderCommand, Id<Location>) {
+/// line work, sometimes the attributes or the checks, rarely closing the order. Lines are
+/// picked among those the device knows, or a fresh identifier when it knows none. Fault 1 adds
+/// a line that exists, opens a check that exists, or works on a line or check that doesn't;
+/// fault 5 sends the command from another location.
+fn command(
+    view: &Order,
+    step: &Step,
+    fresh: Id<Line>,
+    fresh_check: Id<Check>,
+) -> (OrderCommand, Id<Location>) {
     let lines: Vec<Id<Line>> = view.lines().iter().map(Line::id).collect();
     let known =
         |index: &Index| if lines.is_empty() { fresh } else { lines[index.index(lines.len())] };
     let pick = |index: &Index| if step.fault == 1 { fresh } else { known(index) };
-    let command = match (step.kind % 40, step.fault) {
+    let command = match (step.kind % 48, step.fault) {
         (0..=9, 1) => OrderCommand::AddLine(line_added(known(&step.pick), step)),
         (0..=9, _) => OrderCommand::AddLine(line_added(fresh, step)),
         (10..=13, _) => OrderCommand::ChangeLine(line_changed(known(&step.pick), step)),
@@ -228,7 +283,14 @@ fn command(view: &Order, step: &Step, fresh: Id<Line>) -> (OrderCommand, Id<Loca
         }
         (32..=37, _) => OrderCommand::ChangeAttributes(attributes(step)),
         (38, _) => OrderCommand::Void(reason(step.amount)),
-        _ => OrderCommand::Abandon,
+        (39, _) => OrderCommand::Abandon,
+        (40..=41, 1) => {
+            let checks = view.checks();
+            let known = checks.get(step.pick.index(checks.len().max(1))).map(Check::id);
+            OrderCommand::OpenCheck(known.unwrap_or(fresh_check))
+        }
+        (40..=41, _) => OrderCommand::OpenCheck(fresh_check),
+        _ => OrderCommand::AllocateLines(allocation(view, step, fresh, fresh_check)),
     };
     let from = if step.fault == 5 { other_location() } else { location() };
     (command, from)
@@ -249,6 +311,7 @@ struct ModelLine {
     course: Option<NonZeroU8>,
     notes: Option<Note>,
     fired: bool,
+    allocation: Vec<CheckShare>,
 }
 
 impl ModelLine {
@@ -264,6 +327,7 @@ impl ModelLine {
             course: added.course,
             notes: added.notes.clone(),
             fired: false,
+            allocation: vec![whole(main_check())],
         }
     }
 
@@ -307,8 +371,28 @@ fn lines_of(order: &Order) -> Vec<ModelLine> {
             course: line.course(),
             notes: line.notes().cloned(),
             fired: line.was_fired(),
+            allocation: line.allocation().to_vec(),
         })
         .collect()
+}
+
+/// The order's checks: each one's identifier and number.
+fn checks_of(order: &Order) -> Vec<(Id<Check>, u32)> {
+    order.checks().iter().map(|check| (check.id(), check.number().get())).collect()
+}
+
+/// Each line an allocation names, with its new shares: grouped here from the allocations
+/// themselves.
+fn allocated_lines(allocated: &LinesAllocated) -> Vec<(Id<Line>, Vec<CheckShare>)> {
+    let mut lines: Vec<(Id<Line>, Vec<CheckShare>)> = Vec::new();
+    for allocation in allocated.iter() {
+        let share = CheckShare { check: allocation.check, shares: allocation.shares };
+        match lines.iter_mut().find(|(line, _)| *line == allocation.line) {
+            Some((_, shares)) => shares.push(share),
+            None => lines.push((allocation.line, vec![share])),
+        }
+    }
+    lines
 }
 
 fn stage_of(lines: &[ModelLine]) -> Stage {
@@ -364,6 +448,7 @@ struct Model {
     info: OrderInfo,
     lines: Vec<ModelLine>,
     status: OrderStatus,
+    checks: Vec<Id<Check>>,
 }
 
 /// Whether a price can go into the order: in its currency (always US dollars here), and not
@@ -389,7 +474,7 @@ fn differs<T: PartialEq>(current: Option<&T>, change: Option<&Change<T>>) -> boo
 
 impl Model {
     fn new(info: OrderInfo) -> Model {
-        Model { info, lines: Vec::new(), status: OrderStatus::Active }
+        Model { info, lines: Vec::new(), status: OrderStatus::Active, checks: vec![main_check()] }
     }
 
     fn line(&self, id: Id<Line>) -> Option<&ModelLine> {
@@ -437,6 +522,14 @@ impl Model {
             OrderCommand::Void(_) => true,
             // Nothing may have been made: every line was removed before it was fired.
             OrderCommand::Abandon => !self.lines.iter().any(|line| line.live() || line.fired),
+            OrderCommand::OpenCheck(check) => !self.checks.contains(check),
+            // Every line named is live and gets a new allocation, to checks that exist.
+            OrderCommand::AllocateLines(allocated) => {
+                allocated_lines(allocated).iter().all(|(id, shares)| {
+                    self.line(*id).is_some_and(|line| line.live() && line.allocation != *shares)
+                        && shares.iter().all(|share| self.checks.contains(&share.check))
+                })
+            }
         }
     }
 
@@ -480,6 +573,12 @@ impl Model {
             OrderCommand::ChangeAttributes(changed) => change_attributes(&mut self.info, changed),
             OrderCommand::Void(reason) => self.status = OrderStatus::Voided(reason.clone()),
             OrderCommand::Abandon => self.status = OrderStatus::Abandoned,
+            OrderCommand::OpenCheck(check) => self.checks.push(*check),
+            OrderCommand::AllocateLines(allocated) => {
+                for (id, shares) in allocated_lines(allocated) {
+                    self.line_mut(id).allocation = shares;
+                }
+            }
         }
     }
 }
@@ -508,12 +607,13 @@ struct Working {
     seq: u64,
     hlc: u64,
     lines_minted: u64,
+    checks_minted: u64,
     log: Vec<(EventMeta, OrderEvent)>,
 }
 
 impl Working {
     fn new(device: u64, view: Order, hlc: u64) -> Working {
-        Working { device, view, seq: 0, hlc, lines_minted: 0, log: Vec::new() }
+        Working { device, view, seq: 0, hlc, lines_minted: 0, checks_minted: 0, log: Vec::new() }
     }
 
     /// An identifier for the device's next line, which no other device uses.
@@ -521,17 +621,26 @@ impl Working {
         id((self.device << 16) + 0x1000 + self.lines_minted)
     }
 
+    /// An identifier for the device's next check, which no other device uses.
+    fn fresh_check(&self) -> Id<Check> {
+        id((self.device << 16) + 0x2000 + self.checks_minted)
+    }
+
     /// Runs a step; returns whether its command was accepted.
     fn step(&mut self, step: &Step) -> bool {
-        let (command, from) = command(&self.view, step, self.fresh());
+        let (command, from) = command(&self.view, step, self.fresh(), self.fresh_check());
         self.run(command, from, u64::from(step.amount % 3))
     }
 
     fn run(&mut self, command: OrderCommand, from: Id<Location>, delay: u64) -> bool {
         let adds = matches!(command, OrderCommand::AddLine(_));
+        let opens = matches!(command, OrderCommand::OpenCheck(_));
         let Ok(event) = self.view.decide(from, command) else { return false };
         if adds {
             self.lines_minted += 1;
+        }
+        if opens {
+            self.checks_minted += 1;
         }
         self.seq += 1;
         self.hlc += 1 + delay;
@@ -562,6 +671,7 @@ struct Expected {
     info: Option<OrderInfo>,
     lines: Vec<ModelLine>,
     status: OrderStatus,
+    checks: Vec<(Id<Check>, u32)>,
     conflicts: Vec<(Id<Event>, ConflictKind)>,
 }
 
@@ -573,6 +683,9 @@ fn referred(event: &OrderEvent) -> Vec<Id<Line>> {
         | OrderEvent::LineVoided { line, .. }
         | OrderEvent::LineComped { line, .. } => vec![*line],
         OrderEvent::LinesFired { lines } => lines.iter().collect(),
+        OrderEvent::LinesAllocated(allocated) => {
+            allocated_lines(allocated).into_iter().map(|(line, _)| line).collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -592,6 +705,9 @@ struct History {
     terminal: Option<usize>,
     /// The position of the first event that fired it, even after it was taken off.
     sent: Option<usize>,
+    /// The allocations of the line that didn't apply, by position, each with the first check
+    /// it named that didn't exist yet.
+    unknown_checks: Vec<(usize, Id<Check>)>,
 }
 
 /// What the model predicts for the line added at `birth`. The conflicts its events cause go into
@@ -599,12 +715,16 @@ struct History {
 ///
 /// `applying` lists the positions of the events that apply to the order: after its creation,
 /// and at its location.
+///
+/// `opened` gives the position at which each check was opened.
+#[allow(clippy::too_many_arguments, reason = "the model's queries need every part of it")]
 fn expect_line(
     events: &[(EventMeta, OrderEvent)],
     applying: &[usize],
     birth: usize,
     currency: Currency,
     close: Option<usize>,
+    opened: &[(Id<Check>, usize)],
     conflicts: &mut Vec<(Id<Event>, ConflictKind)>,
 ) -> History {
     let at = |i: usize| events[i].0.event_id;
@@ -673,7 +793,19 @@ fn expect_line(
     if let Some(fire) = first_fire.filter(|&fire| close.is_some_and(|close| close < fire)) {
         conflicts.push((at(fire), ConflictKind::FiredOnClosedOrder(id)));
     }
-    History { line, terminal, sent }
+    // Its allocation: the last one naming it while it is live, to checks opened by then.
+    let exists = |check: Id<Check>, i: usize| opened.iter().any(|&(c, at)| c == check && at < i);
+    let mut unknown_checks = Vec::new();
+    for &i in later.iter().filter(|&&i| live(i)) {
+        let OrderEvent::LinesAllocated(allocated) = &events[i].1 else { continue };
+        let (_, shares) =
+            allocated_lines(allocated).into_iter().find(|(line, _)| *line == id).unwrap();
+        match shares.iter().map(|share| share.check).find(|&check| !exists(check, i)) {
+            Some(check) => unknown_checks.push((i, check)),
+            None => line.allocation = shares,
+        }
+    }
+    History { line, terminal, sent, unknown_checks }
 }
 
 /// What the model predicts for `events`, folded in the order given.
@@ -685,7 +817,8 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
     else {
         // Nothing applies to an order that hasn't been created.
         conflicts.extend((0..events.len()).map(|i| (at(i), ConflictKind::BeforeCreation)));
-        return Expected { info: None, lines: Vec::new(), status: OrderStatus::Active, conflicts };
+        let status = OrderStatus::Active;
+        return Expected { info: None, lines: Vec::new(), status, checks: Vec::new(), conflicts };
     };
     let (meta, OrderEvent::Created(created)) = &events[creation] else { unreachable!() };
     let (location, currency) = (meta.location, created.currency);
@@ -740,11 +873,28 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
         }
     }
 
+    // Checks: the main check comes with the creation, and each other with its first opening.
+    let mut opened: Vec<(Id<Check>, usize)> = vec![(main_check(), creation)];
+    for &i in &applying {
+        if let OrderEvent::CheckOpened { check } = &events[i].1 {
+            if opened.iter().any(|(opened, _)| opened == check) {
+                conflicts.push((at(i), ConflictKind::DuplicateCheck(*check)));
+            } else {
+                opened.push((*check, i));
+            }
+        }
+    }
+    let checks = (1..).zip(&opened).map(|(number, &(check, _))| (check, number)).collect();
+
     let mut lines = Vec::new();
     // Whether, when the order closed, a line was live or had been fired: something was ordered.
     let mut ordered_at_close = false;
+    // Allocations that named checks that didn't exist yet: each check once per event.
+    let mut unknown_checks = BTreeSet::new();
     for &birth in &births {
-        let history = expect_line(events, &applying, birth, currency, close, &mut conflicts);
+        let history =
+            expect_line(events, &applying, birth, currency, close, &opened, &mut conflicts);
+        unknown_checks.extend(history.unknown_checks.iter().copied());
         ordered_at_close |= close.is_some_and(|close| {
             birth < close
                 && (history.terminal.is_none_or(|terminal| terminal > close)
@@ -760,7 +910,10 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
     if let Some(close) = close.filter(|_| status == OrderStatus::Abandoned && ordered_at_close) {
         conflicts.push((at(close), ConflictKind::AbandonedWithLines));
     }
-    Expected { info: Some(info), lines, status, conflicts }
+    conflicts.extend(
+        unknown_checks.into_iter().map(|(i, check)| (at(i), ConflictKind::UnknownCheck(check))),
+    );
+    Expected { info: Some(info), lines, status, checks, conflicts }
 }
 
 fn sorted(conflicts: Vec<(Id<Event>, ConflictKind)>) -> Vec<(Id<Event>, String)> {
@@ -777,6 +930,7 @@ fn check(order: &Order, events: &[(EventMeta, OrderEvent)]) -> Result<(), TestCa
     prop_assert_eq!(lines_of(order), expected.lines.clone());
     prop_assert_eq!(order.status(), &expected.status);
     prop_assert_eq!(order.stage(), stage_of(&expected.lines));
+    prop_assert_eq!(checks_of(order), expected.checks);
     let actual = order.conflicts().iter().map(|conflict| (conflict.event, conflict.kind)).collect();
     prop_assert_eq!(sorted(actual), sorted(expected.conflicts));
     Ok(())
@@ -800,7 +954,77 @@ fn invariants(order: &Order) -> Result<(), TestCaseError> {
         prop_assert_eq!(order.status(), &OrderStatus::Active);
     }
     prop_assert_eq!(order.stage() == Stage::Draft, order.live_lines().next().is_none());
-    basket_holds_the_live_lines(order)
+    basket_holds_the_live_lines(order)?;
+    checks_hold_the_lines(order)
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// Checks the order's checks: numbered from 1, the main check first; every live line allocated
+/// to checks that exist, in ascending order of check, in shares in lowest terms; and each
+/// check's basket holding its share of each line allocated to it, the checks' shares of a line
+/// adding up to the whole line.
+fn checks_hold_the_lines(order: &Order) -> Result<(), TestCaseError> {
+    let checks = checks_of(order);
+    let ids: BTreeSet<Id<Check>> = checks.iter().map(|&(check, _)| check).collect();
+    prop_assert_eq!(ids.len(), checks.len());
+    let numbers: Vec<u32> = checks.iter().map(|&(_, number)| number).collect();
+    prop_assert_eq!(numbers, (1..).take(checks.len()).collect::<Vec<u32>>());
+    prop_assert!(order.check_basket(id(0xFFFF_FFFF)).is_none());
+    if order.info().is_none() {
+        prop_assert!(checks.is_empty() && order.check_basket(main_check()).is_none());
+        return Ok(());
+    }
+    prop_assert_eq!(checks.first().map(|&(check, _)| check), Some(main_check()));
+    let live: Vec<&Line> = order.live_lines().collect();
+    for line in &live {
+        let allocation = line.allocation();
+        prop_assert!(!allocation.is_empty());
+        prop_assert!(
+            allocation.windows(2).all(|pair| pair[0].check.to_bytes() < pair[1].check.to_bytes())
+        );
+        prop_assert!(allocation.iter().all(|share| ids.contains(&share.check)));
+        prop_assert_eq!(
+            allocation.iter().fold(0, |d, share| gcd(d, u64::from(share.shares.get()))),
+            1
+        );
+    }
+    let rules = Rules::untaxed();
+    let mut parts = vec![0_i128; live.len()];
+    for &(check, _) in &checks {
+        let basket = order.check_basket(check).unwrap();
+        let held: Vec<(usize, &Line)> = live
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.allocation().iter().any(|share| share.check == check))
+            .map(|(k, line)| (k, *line))
+            .collect();
+        prop_assert_eq!(basket.lines.len(), held.len());
+        for (priced, (_, line)) in basket.lines.iter().zip(&held) {
+            let allocation = line.allocation();
+            let share = (allocation.len() > 1).then(|| keel_pricing::Share {
+                weights: allocation.iter().map(|share| u64::from(share.shares.get())).collect(),
+                index: allocation.iter().position(|share| share.check == check).unwrap(),
+            });
+            prop_assert_eq!(&priced.share, &share);
+            prop_assert_eq!(priced.unit_price, line.item().unit_price);
+            prop_assert_eq!(priced.quantity, line.quantity());
+            prop_assert_eq!(priced.comped, line.comp().is_some());
+        }
+        if let Ok(totals) = price(&basket, &rules) {
+            for (priced, &(k, _)) in totals.lines.iter().zip(&held) {
+                parts[k] += i128::from(priced.gross.minor());
+            }
+        }
+    }
+    if let Ok(whole) = price(&order.basket().unwrap(), &rules) {
+        let wholes: Vec<i128> =
+            whole.lines.iter().map(|line| i128::from(line.gross.minor())).collect();
+        prop_assert_eq!(parts, wholes);
+    }
+    Ok(())
 }
 
 /// Checks that the order's basket, which pricing prices, holds its live lines as they stand.
@@ -963,6 +1187,27 @@ fn fold_attributes() -> impl Strategy<Value = AttributesChanged> {
         })
 }
 
+/// The main check, or one of three others.
+fn fold_check() -> impl Strategy<Value = Id<Check>> {
+    prop_oneof![2 => Just(main_check()), 3 => (1_u64..=3).prop_map(|n| id(0xC0 + n))]
+}
+
+/// Allocations of one or two of the few lines, each among one to three of the few checks, in
+/// shares of one to three: mostly splits.
+fn fold_allocated() -> impl Strategy<Value = LinesAllocated> {
+    let checks = prop::collection::btree_map(fold_check(), 1_u16..=3, 1..=3);
+    prop::collection::btree_map(fold_line(), checks, 1..=2).prop_map(|lines| {
+        let allocations = lines.into_iter().flat_map(|(line, checks)| {
+            checks.into_iter().map(move |(check, shares)| Allocation {
+                line,
+                check,
+                shares: NonZeroU16::new(shares).unwrap(),
+            })
+        });
+        LinesAllocated::new(allocations).unwrap()
+    })
+}
+
 /// An event, and whether it was recorded at another location.
 fn any_fold_event() -> impl Strategy<Value = (bool, OrderEvent)> {
     let event = prop_oneof![
@@ -979,8 +1224,26 @@ fn any_fold_event() -> impl Strategy<Value = (bool, OrderEvent)> {
         2 => fold_attributes().prop_map(OrderEvent::AttributesChanged),
         1 => any::<u8>().prop_map(|n| OrderEvent::Voided { reason: reason(n) }),
         1 => Just(OrderEvent::Abandoned),
+        3 => fold_check().prop_map(|check| OrderEvent::CheckOpened { check }),
+        4 => fold_allocated().prop_map(OrderEvent::LinesAllocated),
     ];
     (prop::bool::weighted(0.08), event)
+}
+
+/// An event aimed at splits: mostly allocations, with checks opened, and lines added, removed,
+/// voided, fired and comped between them.
+fn any_split_event() -> impl Strategy<Value = OrderEvent> {
+    prop_oneof![
+        8 => fold_allocated().prop_map(OrderEvent::LinesAllocated),
+        2 => fold_check().prop_map(|check| OrderEvent::CheckOpened { check }),
+        1 => fold_added().prop_map(OrderEvent::LineAdded),
+        1 => fold_line().prop_map(|line| OrderEvent::LineRemoved { line }),
+        1 => (fold_line(), any::<u8>())
+            .prop_map(|(line, n)| OrderEvent::LineVoided { line, reason: reason(n) }),
+        1 => fold_line().prop_map(|line| OrderEvent::LinesFired { lines: IdSet::new([line]).unwrap() }),
+        1 => (fold_line(), any::<u8>())
+            .prop_map(|(line, n)| OrderEvent::LineComped { line, reason: reason(n) }),
+    ]
 }
 
 /// Events numbered in the order given, recorded by one device at `location()`, or at another
@@ -1056,6 +1319,27 @@ proptest! {
         invariants(&order)?;
     }
 
+    /// The same for splits: an order with lines and checks, then allocations of its lines among
+    /// its checks, some naming checks opened later or never, between openings, removals, voids,
+    /// fires and comps.
+    #[test]
+    fn the_fold_matches_the_model_on_splits(
+        added in prop::collection::vec(fold_added(), 1..=4),
+        opened in prop::collection::btree_set((1_u64..=3).prop_map(|n| id::<Check>(0xC0 + n)), 0..=3),
+        after in prop::collection::vec(any_split_event(), 0..24),
+    ) {
+        let created = OrderEvent::Created(OrderCreated { currency: usd(), ..created() });
+        let events: Vec<OrderEvent> = core::iter::once(created)
+            .chain(added.into_iter().map(OrderEvent::LineAdded))
+            .chain(opened.into_iter().map(|check| OrderEvent::CheckOpened { check }))
+            .chain(after)
+            .collect();
+        let events = numbered(events.into_iter().map(|event| (false, event)).collect());
+        let order = folded(&events)?;
+        check(&order, &events)?;
+        invariants(&order)?;
+    }
+
     /// Signed events fold into their own aggregate only: the events of another order, or of
     /// another kind of stream with the same identifier, are skipped, and the order is exactly
     /// what its own events make it.
@@ -1085,6 +1369,7 @@ proptest! {
         prop_assert_eq!(order.info(), own.info());
         prop_assert_eq!(order.lines(), own.lines());
         prop_assert_eq!(order.status(), own.status());
+        prop_assert_eq!(order.checks(), own.checks());
         prop_assert_eq!(order.conflicts(), own.conflicts());
         let skipped: Vec<Id<Event>> = order.skipped().iter().map(|skipped| skipped.event).collect();
         prop_assert_eq!(skipped, others);
@@ -1100,7 +1385,8 @@ proptest! {
         prop_assert!(device.run(OrderCommand::Create(created()), location(), 0));
         let mut model = Model::new(info_of(&device.log[0].0, &created()));
         for step in &steps {
-            let (command, from) = command(&device.view, step, device.fresh());
+            let (command, from) =
+                command(&device.view, step, device.fresh(), device.fresh_check());
             let allowed = model.allows(&command, from);
             let accepted = device.run(command.clone(), from, 0);
             prop_assert_eq!(accepted, allowed, "{:?} from {:?}", command, from);
@@ -1112,6 +1398,8 @@ proptest! {
             prop_assert_eq!(lines_of(&device.view), model.lines.clone());
             prop_assert_eq!(device.view.status(), &model.status);
             prop_assert_eq!(device.view.stage(), stage_of(&model.lines));
+            let checks: Vec<Id<Check>> = checks_of(&device.view).into_iter().map(|(check, _)| check).collect();
+            prop_assert_eq!(checks, model.checks.clone());
         }
     }
 

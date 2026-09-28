@@ -479,11 +479,8 @@ BUGS = [
     (
         "baskets include removed lines",
         "src/order/basket.rs",
-        """            .live_lines()
-            .map(|line| keel_pricing::Line {""",
-        """            .lines()
-            .iter()
-            .map(|line| keel_pricing::Line {""",
+        "let lines = self.live_lines().map(|line| priced(line, None)).collect();",
+        "let lines = self.lines().iter().map(|line| priced(line, None)).collect();",
     ),
     (
         "baskets forget comps",
@@ -508,5 +505,161 @@ BUGS = [
         "src/order/basket.rs",
         "let dining = if info.mode == Mode::DineIn { Dining::OnPremises } else { Dining::ToGo };",
         "let dining = if info.mode == Mode::DineIn { Dining::OnPremises } else { Dining::OnPremises };",
+    ),
+    # Checks and splits (ADR-0015).
+    (
+        "orders come without a main check",
+        "src/order/state.rs",
+        """        self.checks.push(Check { id: self.main_check(), number: NonZeroU32::MIN });
+""",
+        "",
+    ),
+    (
+        "check numbers count from zero",
+        "src/order/state.rs",
+        "let opened = u32::try_from(self.checks.len()).ok().and_then(|n| n.checked_add(1));",
+        "let opened = u32::try_from(self.checks.len()).ok();",
+    ),
+    (
+        "checks opened twice",
+        "src/order/state.rs",
+        """        if self.check(id).is_some() {
+            return self.conflict(meta, ConflictKind::DuplicateCheck(id));
+        }""",
+        "",
+    ),
+    (
+        "allocations to unknown checks applied",
+        "src/order/state.rs",
+        """            let unknown = shares
+                .iter()
+                .map(|share| share.check)
+                .find(|&check| !self.checks.iter().any(|known| known.id == check));""",
+        "            let unknown: Option<Id<Check>> = None;",
+    ),
+    (
+        "unknown checks reported for every line",
+        "src/order/state.rs",
+        "if !unknown_checks.contains(&check) {",
+        "if true {",
+    ),
+    (
+        "allocations of removed lines applied",
+        "src/order/state.rs",
+        """            if !line.is_live() {
+                continue;
+            }
+            match unknown {""",
+        """            match unknown {""",
+    ),
+    (
+        "allocations add to the old shares",
+        "src/order/state.rs",
+        "None => line.allocation = shares,",
+        "None => line.allocation.extend(shares),",
+    ),
+    (
+        "new lines on no check",
+        "src/order/state.rs",
+        "allocation: vec![CheckShare { check: self.main_check(), shares: NonZeroU16::MIN }],",
+        "allocation: Vec::new(),",
+    ),
+    (
+        "checks opened again by command",
+        "src/order/commands.rs",
+        """                if self.check(check).is_some() {
+                    return Err(CommandError::CheckExists(check));
+                }""",
+        "",
+    ),
+    (
+        "allocation commands name unknown checks",
+        "src/order/commands.rs",
+        "shares.iter().find(|share| self.check(share.check).is_none())",
+        "shares.iter().find(|_| false)",
+    ),
+    (
+        "allocation commands take removed lines",
+        "src/order/commands.rs",
+        """                    if !line.is_live() {
+                        return Err(CommandError::LineNotLive(id));
+                    }""",
+        "",
+    ),
+    (
+        "allocation commands change nothing",
+        "src/order/commands.rs",
+        """                    if line.allocation() == shares.as_slice() {
+                        return Err(CommandError::NoChange);
+                    }""",
+        "",
+    ),
+    (
+        "check baskets ignore shares",
+        "src/order/basket.rs",
+        "let share = (allocation.len() > 1).then(|| Share {",
+        "let share = (allocation.len() > usize::MAX).then(|| Share {",
+    ),
+    (
+        "check baskets weigh shares in reverse",
+        "src/order/basket.rs",
+        "weights: allocation.iter().map(|share| u64::from(share.shares.get())).collect(),",
+        "weights: allocation.iter().rev().map(|share| u64::from(share.shares.get())).collect(),",
+    ),
+    (
+        "check baskets hold every live line",
+        "src/order/basket.rs",
+        "let index = allocation.iter().position(|share| share.check == check)?;",
+        "let index = allocation.iter().position(|share| share.check == check).unwrap_or(0);",
+    ),
+    (
+        "check baskets include removed lines",
+        "src/order/basket.rs",
+        """        let lines = self
+            .live_lines()
+            .filter_map(|line| {""",
+        """        let lines = self
+            .lines()
+            .iter()
+            .filter_map(|line| {""",
+    ),
+    (
+        "check baskets for checks the order doesn't have",
+        "src/order/basket.rs",
+        """        self.check(check)?;
+""",
+        "",
+    ),
+    (
+        "allocations decoded out of order",
+        "src/order/checks.rs",
+        "!allocations.is_empty() && ascending && lowest_terms",
+        "!allocations.is_empty() && lowest_terms",
+    ),
+    (
+        "allocations decoded in higher terms",
+        "src/order/checks.rs",
+        "!allocations.is_empty() && ascending && lowest_terms",
+        "!allocations.is_empty() && ascending",
+    ),
+    (
+        "empty allocations decoded",
+        "src/order/checks.rs",
+        "!allocations.is_empty() && ascending && lowest_terms",
+        "ascending && lowest_terms",
+    ),
+    (
+        "allocations not reduced to lowest terms",
+        "src/order/checks.rs",
+        """            let divisor = group.iter().fold(0, |divisor, allocation| {
+                greatest_common_divisor(divisor, allocation.shares.get())
+            });""",
+        "            let divisor = 1;",
+    ),
+    (
+        "allocations built with a line on a check twice",
+        "src/order/checks.rs",
+        "if allocations.is_empty() || repeats {",
+        "if allocations.is_empty() {",
     ),
 ]

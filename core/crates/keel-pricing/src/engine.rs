@@ -5,7 +5,7 @@ use core::fmt;
 
 use keel_types::{Currency, Decimal, Id, Money, MoneyError, RoundingMode};
 
-use crate::basket::{Basket, Discount, Line, Modifier, TaxCategory};
+use crate::basket::{Basket, Discount, Line, Modifier, Share, TaxCategory};
 use crate::rules::{Rules, TaxRounding, TaxScope};
 use crate::totals::{LineTax, LineTotals, TaxTotal, Totals};
 use crate::trace::Step;
@@ -40,6 +40,12 @@ pub enum PricingError {
     /// Modifiers nest more deeply than [`MAX_MODIFIER_DEPTH`].
     #[error("line {}: modifiers nest more than {MAX_MODIFIER_DEPTH} deep", Nth(*.line))]
     ModifiersTooDeep {
+        /// The line, counted from zero.
+        line: usize,
+    },
+    /// A line's share has no weights, a weight of zero, or an index past its weights.
+    #[error("line {}: the share is invalid", Nth(*.line))]
+    InvalidShare {
         /// The line, counted from zero.
         line: usize,
     },
@@ -180,7 +186,7 @@ fn modifiers_price(modifiers: &[Modifier], currency: Currency) -> Result<Money, 
     Ok(total)
 }
 
-/// Extends a line, then applies its comp and its discounts.
+/// Extends a line and takes the basket's share of it, then applies its comp and its discounts.
 fn price_line(
     index: usize,
     line: &Line,
@@ -190,15 +196,29 @@ fn price_line(
     let currency = line.unit_price.currency();
     let modifiers = modifiers_price(&line.modifiers, currency)?;
     let unit_price = line.unit_price.checked_add(modifiers)?;
-    let gross = unit_price.mul_decimal(line.quantity.to_decimal(), rules.extension)?;
+    let whole = unit_price.mul_decimal(line.quantity.to_decimal(), rules.extension)?;
     trace.push(Step::Extended {
         line: index,
         item: line.unit_price,
         modifiers,
         quantity: line.quantity,
         mode: rules.extension,
-        gross,
+        gross: whole,
     });
+    let gross = match &line.share {
+        None => whole,
+        Some(share) => {
+            let part = part_of(whole, share, index)?;
+            trace.push(Step::Shared {
+                line: index,
+                whole,
+                weights: share.weights.clone(),
+                index: share.index,
+                part,
+            });
+            part
+        }
+    };
 
     let zero = Money::zero(currency);
     let (comp, mut net) = if line.comped { (gross, zero) } else { (zero, gross) };
@@ -230,6 +250,13 @@ fn price_line(
         net,
         taxes: Vec::new(),
     })
+}
+
+/// The part of line `line`'s `whole` gross that `share` holds: `whole` split by largest remainder
+/// in proportion to the share's weights.
+fn part_of(whole: Money, share: &Share, line: usize) -> Result<Money, PricingError> {
+    let parts = whole.allocate(&share.weights)?;
+    parts.get(share.index).copied().ok_or(PricingError::InvalidShare { line })
 }
 
 /// Splits `amount` among parts in proportion to `weights`, by largest remainder. The weights are
@@ -409,6 +436,9 @@ fn check(basket: &Basket, rules: &Rules) -> Result<(), PricingError> {
         if !line.quantity.is_positive() {
             return Err(PricingError::QuantityNotPositive { line: index });
         }
+        if line.share.as_ref().is_some_and(|share| !is_valid(share)) {
+            return Err(PricingError::InvalidShare { line: index });
+        }
         for (position, &discount) in line.discounts.iter().enumerate() {
             let at = DiscountRef::Line { line: index, discount: position };
             check_discount(discount, at, &same_currency)?;
@@ -427,6 +457,11 @@ fn check(basket: &Basket, rules: &Rules) -> Result<(), PricingError> {
         }
     }
     Ok(())
+}
+
+/// Whether a share has weights, none of them zero, and an index among them.
+fn is_valid(share: &Share) -> bool {
+    share.index < share.weights.len() && share.weights.iter().all(|&weight| weight > 0)
 }
 
 fn check_modifiers(
