@@ -270,6 +270,9 @@ island mode or overrides, resolve deterministically:
 | Order split differently on two devices | The allocation made later in total order wins for unpaid lines. Paid allocations are immutable. | Notice |
 | Order voided on one device while another took a payment | Payment stands. The void becomes *void requested* pending refund. | Manager task |
 
+The order rules built so far, with every case the fold handles, are in
+[domain-model.md §6.5](./domain-model.md#65-as-built-order-events-v1).
+
 ## 6. Consistency classes
 
 Each aggregate type declares one class (see the domain model §18). The class determines how writes are
@@ -494,7 +497,9 @@ tier**:
 
 - Fleets always run **mixed versions** during rollouts. The sync handshake negotiates the protocol
   version.
-- Events carry schema versions, and kernels ship upcasters for every historical schema.
+- Events carry schema versions, and kernels ship upcasters for every historical schema. Writers
+  use a new schema version only once every kernel at their location knows it, which the sync
+  handshake establishes ([ADR-0013](../adr/0013-event-payloads-and-schema-evolution.md)).
 - A new event type unknown to an older kernel is stored and relayed but folded as a no-op, with a
   "needs update" indicator if it matters for display.
 - **Update windows**: devices install updates only outside the location's trading hours plus a buffer,

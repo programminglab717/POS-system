@@ -6,8 +6,9 @@
 
 ## Where we are
 
-**Phase 0 (Foundations), step 4 of 8:** `keel-domain`, slice 1 of 3. This slice builds the payload
-codecs, the schema registry, and the order aggregate's lines.
+**Phase 0 (Foundations), step 4 of 8:** `keel-domain`. Slice 1 of 3 (payload codecs, the schema
+registry, and the order's lines) is built and verified, and waiting for review. Slice 2, pricing
+v0, starts after that review.
 
 ## Phase 0 milestones
 
@@ -17,8 +18,8 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 |---|---|---|---|
 | 1 | Monorepo scaffold | Rust workspace and CI done. The Android, web and schema directories arrive with their first code. | [`Cargo.toml`](../Cargo.toml), [CI](../.github/workflows/ci.yml) |
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
-| 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry is being built with the first domain events (step 4). | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
-| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slice 1 of 3 | `core/crates/keel-domain` |
+| 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
+| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slice 1 of 3 built, waiting for review | [`core/crates/keel-domain`](../core/crates/keel-domain/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Not started | |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
@@ -26,46 +27,80 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 
 Step 4 is split into three slices, each ending with a review:
 
-1. **Foundations and the order's lines** (in progress): payload codecs and schema registry; the
-   aggregate framework; order events, fold and commands for creating an order, adding, changing,
-   removing, firing, voiding and comping lines, changing attributes, and voiding or abandoning
-   the order.
+1. **Foundations and the order's lines** (built 2026-09-28, waiting for review): payload codecs
+   and schema registry; the aggregate framework; order events, fold and commands for creating an
+   order, adding, changing, removing, firing, voiding and comping lines, changing attributes, and
+   voiding or abandoning the order.
 2. **Pricing v0**: modifier pricing, discounts, US sales tax, rounding and allocation, the
    calculation trace, and the golden-basket suite.
 3. **Checks and payments**: splits and allocations, and the payment aggregate.
 
-## Current slice: `keel-domain` foundations and the order's lines
+## Current slice
 
-| Work | Status |
-|---|---|
-| Payload codecs: strict field maps; money, quantity, identifier, text, code and set encodings | Done, with unit tests |
-| Schema registry and the fold entry point (unknown and malformed payloads skipped and flagged) | Done, with unit tests |
-| Order events v1 (ten schemas), order state, and a total fold with the sync design's conflict rules | Done, with a known-answer test for each conflict rule |
-| Order commands, validated against the device's current view | Done, with unit tests for each check |
-| Property tests: payload round trips and a validity model per schema, golden payloads checked by an outside tool, fold totality, commands against a reference model, concurrent devices against a model of the conflict rules | In progress |
-| Planted-bug checks | Not started |
-| Docs: ADR-0013 (payload conventions and schema evolution), domain model, progress | Not started |
-
-Design decisions in this slice, to review when it ships:
-
-- **Payloads** are canonical CBOR maps with small integer keys, decoded strictly, like the
-  envelope. Money is `[minor units, currency code]`, quantity `[millionths, unit code]`.
-- **Schema evolution:** a kernel decodes every version it knows, strictly. Writers only emit a
-  version that every kernel at the location supports (negotiated by sync), so a newer version
-  never meets an older kernel in normal operation.
-- **Unknown or malformed payloads** from a trusted device stay in the log, so the device's chain
-  never stalls, but the fold skips them and flags the aggregate ("needs update" or "malformed").
-- **Text** in names and notes can't contain control characters, which could otherwise drive
-  receipt printers and kitchen displays.
-- **Invalid-in-context events aren't applied** when applying them would break the order's
-  consistency: a line in another currency, a quantity in another unit, an event before the
-  order's creation or from another location. They leave a conflict instead, so every price in an
-  order can always be added up.
-- **Commands** turn into exactly one event each, and every event a command produces must decode
-  under its own schema before it is returned, so a device never writes a payload other kernels
-  reject.
+Slice 1 is complete; see its entry under "Completed", which lists the decisions to review.
+Slice 2, pricing v0, hasn't started: it waits for that review.
 
 ## Completed
+
+### `keel-domain` slice 1: payloads, the schema registry, and the order's lines (2026-09-28)
+
+Commits `fbd1507`, `1b6dd56`. Waiting for review.
+
+- **Built:**
+  - Payload codecs: strict maps with integer keys; money, quantity, identifier, text, code and
+    identifier-set encodings.
+  - The schema registry, with a pinned example payload for every schema. The fold entry point
+    skips events of unknown schemas, malformed payloads and other streams, and reports them.
+  - The canonical order of provisional events: by clock, then device, then log position.
+  - The order aggregate: ten version-1 event schemas; the order's state, with a total fold that
+    applies the sync design's conflict rules and reports 15 kinds of conflict; and commands
+    checked against the device's view, each producing one event that must decode under its own
+    schema before it is recorded.
+- **Verified:**
+  - 24 known-answer tests and 12 property tests. The property tests also passed 100,000 cases
+    each.
+  - The pinned payloads of all ten schemas were decoded independently with Python's `cbor2`, and
+    match the documented key tables.
+  - Independent models:
+    - a validity model of every schema, against payloads with fields changed, removed or added;
+    - a model of the fold, written as queries over the events' positions. It is checked on any
+      events, on events aimed at the conflict rules (colliding lines, other currencies, units
+      and locations), and on devices acting concurrently on stale views;
+    - a model of the command rules, checked with deliberately faulty commands.
+  - 64 planted bugs, all caught, and the property tests alone catch every one.
+- **Decisions:** [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), proposed.
+  - **Payloads** are canonical CBOR maps with small integer keys, decoded strictly. Money is
+    `[minor units, currency code]`, and quantity `[millionths, unit code]`. Enumerations are
+    integer codes.
+  - **Schema evolution:** every payload change is a new version. Writers use a version only once
+    every kernel at the location knows it (negotiated by sync), so a newer version never meets
+    an older kernel in normal operation.
+  - **Undecodable events** from a trusted device stay in the log, so the device's chain never
+    stalls, but the fold skips them and the order reports them ("needs update", or malformed).
+  - **Text** in names and notes can't contain control characters, which could otherwise drive
+    receipt printers and kitchen displays.
+  - **Events that would break the order don't apply:** a line or modifiers in another currency,
+    a quantity in another unit, an event from before the order's creation or from another
+    location. They stay in the log and leave a conflict, so every price in an order can always
+    be added up. Conflicts are derived by the fold, not recorded as events.
+  - **Commands** refuse no-op changes. A void needs a fired line (a pending line is removed). The
+    first removal or void of a line wins, and so do the first comp and the first close.
+  - **Flags** for a fired line removed rather than voided, and for lines added or fired after
+    the order was closed.
+  - **Stage** (Draft, Open, Submitted) is derived from the lines, not stored.
+  - **A line records** the item's variant, name, tax category, unit price and the catalog
+    version it was priced from.
+  - **Version 1 is positive:** quantities above zero and prices of zero or more. Returns will
+    have their own events.
+  - `Id::cast`, to use an order's identifier as its event stream's.
+- **Found and fixed during the build:**
+  - Planted bugs found gaps twice. At first, 3 of 51 escaped every test: payload rules that span
+    fields. A unit test and sharper generators closed that gap. The property tests alone then
+    still missed 18 that unit tests caught. A full model of the fold, faulty commands, and
+    generators aimed at rules that span fields or sit on a boundary (one currency per payload at
+    any depth, text lengths, identifier sets out of order) closed it. The 13 planted bugs added
+    for the new models were all caught.
+  - `provisional_order` had no test; it now has known answers and a property.
 
 ### `keel-events`: the signed, hash-chained event log (2026-09-27)
 
@@ -118,6 +153,11 @@ design, the feature catalog and the roadmap. See the [README](../README.md).
 
 ## Waiting on a decision
 
+- Review of `keel-domain` slice 1, and acceptance of ADR-0013.
+- Whether abandoning an order should need that nothing was ever fired. Today an order whose lines
+  were all voided can be abandoned, as well as voided.
+- Whether to keep the planted-bug lists in the repository (or adopt `cargo-mutants` in CI), so
+  anyone can rerun the checks. They are scripts outside the repository today.
 - The license, and the product name ("Keel" is a codename).
 - The first payment processor (decision gate G2 in the roadmap).
 - Verifying the research's unverified claims, and interviews with merchants.
@@ -135,6 +175,12 @@ Work deliberately left for later, so it isn't forgotten:
   - Hardware signers, which the platform apps provide through the `Signer` trait.
   - Negotiating schema versions between kernels, in `keel-sync`.
 - **`keel-types`:** `Locale`, with the first UI.
+- **Orders:**
+  - Permissions, approvals and ownership leases aren't checked yet (`keel-policy`, `keel-sync`).
+  - Lines added after an order is closed should go to a post-close check, once checks exist
+    (slice 3).
+  - Events for a person's resolution of a conflict.
+  - A tool that labels payload fields, for auditors and support.
 - **Pricing:** multiplying a unit price by a fractional quantity (weighed items) must round. The
   domain model lists only three places where rounding happens, so pricing v0 has to settle where
   this one belongs.

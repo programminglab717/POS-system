@@ -55,6 +55,11 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
 - **Identifiers** are UUIDv7s from an `IdGenerator`, typed as `Id<T>`.
 - **Stable codes.** Currency codes, unit codes and every serialized form end up in signed events, so
   they never change. Tests pin them.
+- **Event schemas** follow [ADR-0013](../adr/0013-event-payloads-and-schema-evolution.md).
+  Decoding is strict, so any change to a payload, even a new optional field, is a new schema
+  version: list it in the aggregate's `SCHEMAS`, pin an example payload, and upcast the older
+  versions. Never change what an existing version decodes. Every event a command produces must
+  decode under its own schema before it is recorded.
 - **Errors.** Each module has one `thiserror` error enum, marked `#[non_exhaustive]`, with lowercase
   messages and no trailing period.
 - **Text.** Parsing is strict (APIs, imports and tests). `Display` is canonical and
@@ -69,12 +74,20 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
   differently from the implementation so the two are unlikely to share a mistake: exact rational
   arithmetic with `num-bigint`, written from the definitions; another implementation of a standard
   (`ciborium` for CBOR); or a model of the rules written from the specification, such as which
-  envelope fields are valid and where a received event fits in a log. Known-answer tests pin
-  formats with bytes checked by outside tools (Python's `cbor2`, `hashlib` and `pycose`).
+  envelope fields are valid, where a received event fits in a log, or what a fold makes of any
+  sequence of events. Give a model a different shape from the code: the order fold is a state
+  machine, and its model is a set of queries over the events' positions ("the first removal after
+  the line was added"). Known-answer tests pin formats with bytes checked by outside tools
+  (Python's `cbor2`, `hashlib` and `pycose`).
 - **Aim at the boundaries.** Uniformly random inputs almost never land where the bugs are. The
   double-rounding bug in the first version of `mul_decimal` passed 2,000 random cases, and a
   generator that puts products exactly on (and a hair either side of) rounding boundaries caught it
   at once. Write such generators for ties, range ends and time zone transitions.
+- **Generate faulty inputs on purpose.** A generator that only makes valid commands can't catch a
+  missing check. Give command generators faulty variants, such as an identifier already in use, a
+  price in another currency, a zero quantity or another location, and require the code and the
+  model to agree on every one. Folds get events no single device would write, such as a change to
+  a line that was never added.
 - **No `prop_assume!`.** Generate valid inputs directly, or filter inside the strategy. Rejected
   cases count against a global limit that aborts high case-count runs.
 - **Check that new tests can fail.** Plant the bug a test is meant to catch, and confirm the test
@@ -91,7 +104,8 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
   it would override these. Dependencies are compiled with optimizations even in test builds (the
   workspace's dev profile), so property tests can afford thousands of signatures.
 - **Test code follows the same lints.** Integration test crates may allow `unwrap`, `expect`,
-  indexing and arithmetic, with a reason, since a failed assumption there should fail loudly.
+  `panic`, `unreachable`, indexing and arithmetic, with a reason, since a failed assumption there
+  should fail loudly.
   `clippy.toml` allows arithmetic on `BigInt`, which can't overflow.
 
 ## 4. Dependency policy

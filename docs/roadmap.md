@@ -237,11 +237,12 @@ Keel, and **never lose a sale to Keel**.
 3. **`keel-events`**: the envelope, deterministic CBOR, hash chaining, signing (a software key first,
    hardware keys behind a trait), and a schema registry with compatibility checks. *Status: done
    ([`core/crates/keel-events`](../core/crates/keel-events/)), with the wire format in
-   [ADR-0012](./adr/0012-event-wire-format.md), except the schema registry, which follows with the
-   first domain events in `keel-domain`.*
+   [ADR-0012](./adr/0012-event-wire-format.md). The schema registry was built with the first domain
+   events, in `keel-domain` ([ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md)).*
 4. **`keel-domain` (order/check/payment) + `keel-pricing` (v0)**: lines, modifiers, checks and
    allocations, discounts, a US sales-tax rule set, the calculation trace, and a golden-basket suite
-   of 100 baskets growing to 1,000.
+   of 100 baskets growing to 1,000. *Status: in progress, in three slices. The first (payload codecs,
+   the schema registry, and the order's lines) is built; see [progress](./progress.md).*
 5. **`keel-store`**: the SQLite event store, projections and outbox in a single transaction, with
    crash-safety tests.
 6. **`keel-sim` + `keel-sync` (v0)**: two devices, one hub and one cloud in simulation. Replication,

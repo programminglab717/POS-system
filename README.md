@@ -10,7 +10,9 @@ offline.
 catalog and roadmap are in a v1 draft. Two kernel crates are built and tested:
 [`keel-types`](./core/crates/keel-types/) (money, currencies, rounding, quantities, time,
 identifiers, business dates) and [`keel-events`](./core/crates/keel-events/) (the signed,
-hash-chained event log). [docs/progress.md](./docs/progress.md) tracks the build step by step.
+hash-chained event log). A third, [`keel-domain`](./core/crates/keel-domain/) (event schemas and
+the business aggregates), has its first slice built: orders and their lines.
+[docs/progress.md](./docs/progress.md) tracks the build step by step.
 
 ## What makes Keel different
 
@@ -100,5 +102,5 @@ Read [docs/engineering/conventions.md](./docs/engineering/conventions.md) before
 ## Next step
 
 Phase 0 (Foundations) in the [roadmap](./docs/roadmap.md#8-first-engineering-milestones-the-next-build-steps):
-after `keel-types` and `keel-events`, the order/pricing core, then the SQLite store and the
-deterministic sync simulator.
+after `keel-types` and `keel-events`, the order/pricing core (in progress: pricing v0 is next), then
+the SQLite store and the deterministic sync simulator.

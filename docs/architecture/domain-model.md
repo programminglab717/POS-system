@@ -305,7 +305,8 @@ classDiagram
     quantity: Quantity
     modifiers: ModifierSelection tree
     seat?, course?
-    status: pending|fired|served|voided|comped|returned
+    status: pending|fired|removed|voided (served, returned to come)
+    comp? (reason)
     kitchen_notes
     price_override? (reason, approver)
     serials/lots?, return_of_line?
@@ -378,12 +379,16 @@ stateDiagram-v2
   Closed --> Reopened: manager reopen (audited)
   Reopened --> Paid
   Draft --> Abandoned
+  Draft --> Voided
   Open --> Voided: void whole order (audited)
   Submitted --> Voided
   Closed --> [*]
   Voided --> [*]
   Abandoned --> [*]
 ```
+
+The stages up to Submitted are derived from the order's lines rather than stored (§6.5). An order
+whose lines were all removed or voided is back in Draft, and can still be voided.
 
 Fulfillment state (kitchen, pickup, delivery or shipping) runs in **separate aggregates** that
 reference the order (§9). Order payment state and fulfillment state are independent: an online order
@@ -422,6 +427,67 @@ Return policies are data. They are evaluated by the kernel so they work offline:
 Every return records the original sale reference when known. This protects against over-refunds:
 a line can never be refunded beyond its originally paid net amount, across any number of partial
 returns and channels.
+
+### 6.5 As built: order events v1
+
+`keel-domain` implements the first part of this section: creating an order, changing its
+attributes, and its lines. Adjustments, checks, payments, ownership, and the Paid, Closed and
+Reopened states come later. Payloads follow
+[ADR-0013](../adr/0013-event-payloads-and-schema-evolution.md), and their key tables are in
+`core/crates/keel-domain/src/order/events.rs`.
+
+| Schema (version 1) | What happened |
+|---|---|
+| `order.created` | The order was opened, with its channel, mode and currency, and optionally its revenue center, table, guest count, customer and owner. |
+| `order.attributes_changed` | Its mode, revenue center, table, guest count, customer or owner changed. |
+| `order.line_added` | A line was added: the item as the catalog priced it (variant, catalog version, name, tax category and unit price), its quantity and modifiers, and optionally its seat, course and notes. |
+| `order.line_changed` | A pending line's quantity, modifiers, seat, course or notes changed. |
+| `order.line_removed` | A line was taken off before it was fired. |
+| `order.lines_fired` | Lines were sent to be prepared. |
+| `order.line_voided` | A fired line was voided, with a reason. |
+| `order.line_comped` | A line was given away, with a reason. |
+| `order.voided` | The whole order was voided, with a reason. |
+| `order.abandoned` | An order with no live lines was dropped. |
+
+- **A line's life.** A line is *pending* until it is fired, then *fired*. A pending line can be
+  removed; a fired line can only be voided. Removed and voided lines no longer count. A comp is a
+  mark on a live line, pending or fired, rather than a status: the line is still served, at no
+  charge. *Served* and *returned* arrive with fulfillment and returns.
+- **Stage** is derived from the lines: *Draft* with no live lines, *Open* while a live line is
+  pending, *Submitted* when every live line is fired. An active order can be voided at any stage,
+  and abandoned only when it has no live lines.
+- **Money and units.** An order has one currency, fixed when it is created. Every price in it,
+  modifiers included, is in that currency, and a line's quantity keeps the unit it was added
+  with. Quantities are positive and prices are zero or more; returns will have their own events.
+- **Commands** are checked against the device's view of the order. A command needs a created,
+  active order at the device's location. Prices must be in the order's currency, and a change must
+  change every field it gives. Removing or changing a line needs it pending; voiding needs it
+  fired; comping needs it live and not yet comped; abandoning needs no live lines.
+
+**Concurrent edits** fold by the rules of
+[offline-and-sync.md §5.2](./offline-and-sync.md#52-conflict-rules). Every event stays in the log;
+the conflicts listed are derived by the fold, identically on every replica:
+
+| Situation | Outcome | Conflict |
+|---|---|---|
+| The order is created twice | The first creation wins | `DuplicateCreation` |
+| An event comes before the creation, or from another location | Not applied | `BeforeCreation`, `WrongLocation` |
+| A line is added twice | The first wins | `DuplicateLine` |
+| An event refers to a line the order doesn't have | Not applied | `UnknownLine` |
+| A line or modifiers in another currency, or a quantity in another unit | Not applied | `CurrencyMismatch`, `UnitMismatch` |
+| A line is changed after it was fired | Applied | `ChangedAfterFire` |
+| A line is changed after it was removed or voided | Not applied: the removal wins | `ChangedAfterRemoval` |
+| A fired line is removed rather than voided | Removed | `RemovedAfterFire` |
+| A removed or voided line is fired | It stays off, and the kitchen should be told | `FiredAfterRemoval` |
+| A removed or voided line is comped | No effect | `CompedAfterRemoval` |
+| A line is removed or voided twice, or comped twice | The first wins | — |
+| Lines are added or fired after the order was closed | Applied | `AddedToClosedOrder`, `FiredOnClosedOrder` |
+| The order is voided or abandoned twice | The first wins | — |
+| The order is abandoned while it has live lines | Abandoned | `AbandonedWithLines` |
+| Two devices change the same attribute | The later change in canonical order wins, field by field | — |
+
+Once checks exist, lines added after the order is closed will land in a post-close check, as
+offline-and-sync §5.2 describes.
 
 ---
 
@@ -901,15 +967,19 @@ EventEnvelope {
   loss-prevention audits.
 - **Location binding.** A device is enrolled at one location, and replicas reject its events for
   any other.
-- **Schema evolution**: events are never rewritten. New versions are added, and *upcasters* in the
-  kernel translate old versions when folding. Payload changes must be backward-compatible within a
-  major version, and CI enforces compatibility against the full historical schema registry.
+- **Payloads** are canonical CBOR maps with small integer keys, decoded strictly
+  ([ADR-0013](../adr/0013-event-payloads-and-schema-evolution.md)).
+- **Schema evolution**: events are never rewritten. Every payload change is a new schema version.
+  Kernels decode every version they know, and *upcasters* translate old versions when folding.
+  Writers use a new version only once every kernel at their location knows it. Each version in
+  the schema registry has a pinned example payload that tests decode, so no release can break a
+  stored event.
 
 ### 17.2 Core event catalog (initial)
 
 | Stream | Events |
 |---|---|
-| `order` | `OrderCreated`, `OrderAttributesChanged` (mode, table, guests, customer, owner), `LineAdded`, `LineChanged`, `LineRemoved`, `LinesFired`, `CourseFired`, `LineVoided`, `LineComped`, `AdjustmentApplied`, `AdjustmentRemoved`, `CheckCreated`, `LinesAllocated`, `ChecksMerged`, `OrderTransferred`, `OrderSubmitted`, `OrderClosed`, `OrderReopened`, `OrderVoided`, `OrderAbandoned`, `ConflictFlagged` |
+| `order` | `OrderCreated`, `OrderAttributesChanged` (mode, table, guests, customer, owner), `LineAdded`, `LineChanged`, `LineRemoved`, `LinesFired`, `CourseFired`, `LineVoided`, `LineComped`, `AdjustmentApplied`, `AdjustmentRemoved`, `CheckCreated`, `LinesAllocated`, `ChecksMerged`, `OrderTransferred`, `OrderSubmitted`, `OrderClosed`, `OrderReopened`, `OrderVoided`, `OrderAbandoned` |
 | `payment` | `PaymentInitiated`, `PaymentAuthorized`, `PaymentIncremented`, `TipAdjusted`, `PaymentCaptured`, `PaymentFailed`, `PaymentStoredOffline`, `PaymentForwarded`, `PaymentOfflineDeclined`, `PaymentVoided`, `RefundInitiated`, `RefundCompleted`, `DisputeOpened`, `DisputeResolved` |
 | `kitchen_ticket` | `TicketCreated`, `TicketItemStarted`, `TicketItemReady`, `TicketBumped`, `TicketRecalled`, `TicketRushed`, `TicketRerouted` |
 | `handoff`, `pick_task`, `shipment` | stage transition events |
@@ -922,6 +992,10 @@ EventEnvelope {
 | `availability` | `ItemAvailabilityChanged` (86 / un-86 / countdown set) |
 | `fiscal_document` | `FiscalDocumentIssued`, `FiscalSignatureObtained`, `FiscalSubmissionAccepted`, `FiscalSubmissionRejected` |
 | `audit` | `SignedIn`, `SignedOut`, `ApprovalGranted`, `PermissionChanged`, `SettingChanged`, `DataExported` |
+
+Conflicts aren't events: each replica's fold derives them from the events
+([ADR-0013](../adr/0013-event-payloads-and-schema-evolution.md)). The order events built so far,
+and their schema names, are listed in §6.5.
 
 ### 17.3 Commands
 Clients never write events directly. They send **commands** (`AddLine`, `ApplyDiscount`,

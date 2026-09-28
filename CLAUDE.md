@@ -15,6 +15,8 @@ Read `docs/engineering/conventions.md`. In short:
 - Never read the system clock or random number generator in kernel code: take a `Timestamp`,
   `Clock` or `Entropy`.
 - New dependencies need an entry in the conventions' dependency policy.
+- Event payloads follow ADR-0013: any payload change, even a new optional field, is a new schema
+  version with a pinned example payload. Never change what an existing version decodes.
 - Update the architecture docs in the same change when code makes them outdated.
 - Keep [`docs/progress.md`](docs/progress.md) current: update it as each piece of work lands, and
   record each finished slice there with how it was verified.
