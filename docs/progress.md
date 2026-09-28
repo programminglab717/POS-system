@@ -44,7 +44,7 @@ review. Slice 3, checks and payments, waits for that review.
 
 ### `keel-pricing` v0: step 4, slice 2 (2026-09-28)
 
-Waiting for review.
+Commit `7638563`. Waiting for review.
 
 - **Built:** a pure pricing function from a basket, the order's lines as rung up, and the
   location's rules to the totals ([ADR-0014](./adr/0014-pricing-engine-v0.md)):
@@ -77,6 +77,7 @@ Waiting for review.
     the tax.
   - 45 planted bugs in `keel-pricing` and 5 in the order's basket, all caught; the property tests
     alone catch every one.
+  - CI green.
 - **Decisions:** [ADR-0014](./adr/0014-pricing-engine-v0.md), proposed.
   - **Snapshot prices:** pricing uses the prices recorded when a line was rung up; price lists and
     the catalog's modifier rules apply then, and come with the catalog.
@@ -104,8 +105,8 @@ Waiting for review.
 
 ### `keel-domain` slice 1: payloads, the schema registry, and the order's lines (2026-09-28)
 
-Commits `fbd1507`, `1b6dd56`, `147870c`, and after review `0188d4d`, `13a2847`. Reviewed
-2026-09-28.
+Commits `fbd1507`, `1b6dd56`, `147870c`, and after review `0188d4d`, `13a2847`, `16df799`.
+Reviewed 2026-09-28.
 
 - **Built:**
   - Payload codecs: strict maps with integer keys; money, quantity, identifier, text, code and
