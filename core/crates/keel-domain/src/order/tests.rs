@@ -647,3 +647,120 @@ fn the_registry_lists_every_schema_once() {
     };
     assert_eq!(OrderEvent::from_value(&newer, &Value::Null), Err(DecodeError::UnknownSchema));
 }
+
+/// One example of each schema, for the pinned known-answer test.
+fn golden_events() -> Vec<OrderEvent> {
+    let mut line = added(1, usd(450));
+    line.seat = NonZeroU16::new(1);
+    line.course = NonZeroU8::new(2);
+    line.notes = Some(Note::new("no salt").unwrap());
+    vec![
+        OrderEvent::Created(created()),
+        OrderEvent::AttributesChanged(AttributesChanged {
+            mode: Some(Mode::Takeout),
+            table: Some(Change::Clear),
+            guest_count: Some(Change::Set(NonZeroU16::new(4).unwrap())),
+            ..AttributesChanged::default()
+        }),
+        OrderEvent::LineAdded(line),
+        OrderEvent::LineChanged(LineChanged {
+            quantity: Some(each(2)),
+            notes: Some(Change::Clear),
+            ..LineChanged::to(id(1))
+        }),
+        OrderEvent::LineRemoved { line: id(1) },
+        OrderEvent::LinesFired { lines: IdSet::new([id(2), id(1)]).unwrap() },
+        OrderEvent::LineVoided {
+            line: id(1),
+            reason: Reason {
+                code: ReasonCode::new("kitchen_error").unwrap(),
+                note: Some(Note::new("burnt").unwrap()),
+            },
+        },
+        OrderEvent::LineComped { line: id(2), reason: reason("birthday") },
+        OrderEvent::Voided { reason: reason("walkout") },
+        OrderEvent::Abandoned,
+    ]
+}
+
+/// Payload rules that span fields, which a device's own commands already respect, so only a
+/// faulty or hostile kernel would write such payloads.
+#[test]
+fn payload_rules_across_fields_are_enforced() {
+    let decode = |event: &OrderEvent| {
+        let schema = event.schema().to_ref().unwrap();
+        OrderEvent::from_value(&schema, &event.to_value())
+    };
+    let invalid = |field| Err(DecodeError::Malformed(PayloadError::Invalid(field)));
+
+    let mut euro_modifier = added(1, usd(100));
+    euro_modifier.modifiers = vec![modifier(0x600, eur(0))];
+    assert_eq!(decode(&OrderEvent::LineAdded(euro_modifier)), invalid("modifiers"));
+    let mut nested = modifier(0x600, usd(0));
+    nested.modifiers.push(modifier(0x601, eur(0)));
+    let mut euro_nested = added(1, usd(100));
+    euro_nested.modifiers = vec![nested];
+    assert_eq!(decode(&OrderEvent::LineAdded(euro_nested)), invalid("modifiers"));
+    let mut negative = added(1, usd(100));
+    negative.modifiers = vec![modifier(0x600, usd(-1))];
+    assert_eq!(decode(&OrderEvent::LineAdded(negative)), invalid("modifiers"));
+    let mixed = LineChanged {
+        modifiers: Some(vec![modifier(0x600, usd(0)), modifier(0x601, eur(0))]),
+        ..LineChanged::to(id(1))
+    };
+    assert_eq!(decode(&OrderEvent::LineChanged(mixed)), invalid("modifiers"));
+    let empty = Err(DecodeError::Malformed(PayloadError::EmptyChange));
+    assert_eq!(decode(&OrderEvent::AttributesChanged(AttributesChanged::default())), empty);
+    assert_eq!(decode(&OrderEvent::LineChanged(LineChanged::to(id(1)))), empty);
+}
+
+fn bytes(hex: &str) -> Vec<u8> {
+    hex.as_bytes()
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(core::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect()
+}
+
+/// The order payloads, pinned forever: one example of each schema. Python's `cbor2` decoded
+/// each one, confirmed it is canonical, and matched it field by field against the documented
+/// key tables. If this test fails, a payload format changed, and stored events would no longer
+/// decode.
+#[test]
+fn the_payload_formats_are_pinned() {
+    let pinned = [
+        (
+            "order.created",
+            "a601000200036355534405500192f0c1000070008000000000000200060208500192f0c1000070008000000000000300",
+        ),
+        ("order.attributes_changed", "a3010103f60404"),
+        (
+            "order.line_added",
+            "ab01500192f0c100007000800000000000000102500192f0c10000700080000000000004000358200707070707070707070707070707070707070707070707070707070707070707046a466c617420776869746505500192f0c100007000800000000000050006821901c26355534407821a000f424064656163680881a701500192f0c100007000800000000000060002684f6174206d696c6b03000401050006820063555344078009010a020b676e6f2073616c74",
+        ),
+        (
+            "order.line_changed",
+            "a301500192f0c100007000800000000000000102821a001e8480646561636806f6",
+        ),
+        ("order.line_removed", "a101500192f0c1000070008000000000000001"),
+        (
+            "order.lines_fired",
+            "a10182500192f0c1000070008000000000000001500192f0c1000070008000000000000002",
+        ),
+        (
+            "order.line_voided",
+            "a301500192f0c1000070008000000000000001026d6b69746368656e5f6572726f7203656275726e74",
+        ),
+        ("order.line_comped", "a201500192f0c100007000800000000000000202686269727468646179"),
+        ("order.voided", "a1016777616c6b6f7574"),
+        ("order.abandoned", "a0"),
+    ];
+    let events = golden_events();
+    assert_eq!(events.len(), pinned.len());
+    assert_eq!(events.len(), OrderEvent::SCHEMAS.len());
+    for (event, (name, hex)) in events.into_iter().zip(pinned) {
+        let (schema, payload) = event.encode().unwrap();
+        assert_eq!(schema.name.as_str(), name);
+        assert_eq!(payload.as_bytes(), bytes(hex).as_slice(), "{name}");
+        assert_eq!(OrderEvent::decode(&schema, &payload), Ok(event), "{name}");
+    }
+}
