@@ -1,6 +1,7 @@
 # ADR-0016: The device store: SQLite through rusqlite, one transaction per write, crash-tested
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-29), with the details settled in building slice 1, under "As
+  built (slice 1)", accepted after review
 - **Date:** 2026-09-29
 
 ## Context

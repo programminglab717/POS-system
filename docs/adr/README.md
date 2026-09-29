@@ -21,6 +21,6 @@ supersedes the old one.
 | [0013](./0013-event-payloads-and-schema-evolution.md) | Event payloads: integer-keyed canonical maps, strict versions, and total folds | Accepted |
 | [0014](./0014-pricing-engine-v0.md) | Pricing engine v0: snapshot prices, five rounding points, allocated discounts, US sales tax | Accepted |
 | [0015](./0015-checks-and-payments.md) | Checks and payments: line shares, per-check pricing, closing snapshots, and the payment aggregate | Accepted |
-| [0016](./0016-device-store.md) | The device store: SQLite through rusqlite, one transaction per write, crash-tested | Proposed |
+| [0016](./0016-device-store.md) | The device store: SQLite through rusqlite, one transaction per write, crash-tested | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

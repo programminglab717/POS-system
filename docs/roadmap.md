@@ -248,8 +248,8 @@ Keel, and **never lose a sale to Keel**.
    [progress](./progress.md).*
 5. **`keel-store`**: the SQLite event store, projections and outbox in a single transaction, with
    crash-safety tests. *Status: in progress, in three slices
-   ([ADR-0016](./adr/0016-device-store.md), proposed). Slice 1, the event log store, is built and
-   waiting for review; projections and the outbox, then encryption at rest, follow. See
+   ([ADR-0016](./adr/0016-device-store.md)). Slice 1, the event log store, is built and reviewed;
+   projections and the outbox are being designed, and encryption at rest follows. See
    [progress](./progress.md).*
 6. **`keel-sim` + `keel-sync` (v0)**: two devices, one hub and one cloud in simulation. Replication,
    hub sequencing, ownership leases, failover. The invariant suite runs in CI.
