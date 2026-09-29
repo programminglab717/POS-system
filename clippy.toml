@@ -13,5 +13,5 @@ arithmetic-side-effects-allowed = ["num_bigint::BigInt", "num_bigint::BigUint"]
 # Domain terms that read as code to the doc_markdown lint. ".." keeps clippy's defaults.
 doc-valid-idents = [
     "UUIDv7", "UUIDv7s", "SplitMix64", "COSE_Sign1", "COSE_Key", "Sig_structure", "EdDSA",
-    "StrongBox", ".."
+    "StrongBox", "SQLite", "SQLCipher", ".."
 ]

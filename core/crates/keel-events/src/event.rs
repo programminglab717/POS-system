@@ -3,7 +3,8 @@
 //! On the wire and at rest, an event is a COSE_Sign1 message whose payload is the encoded
 //! [`EventBody`]. Bytes received from elsewhere become an [`UnverifiedEvent`]; only verifying
 //! its signature with the origin device's key turns it into a [`SignedEvent`], so nothing can
-//! use an event's content before its signature has been checked.
+//! use an event's content before its signature has been checked. The one exception, behind the
+//! `stored` feature, reads back events that a device's store verified before storing them.
 
 use keel_types::Id;
 
@@ -50,6 +51,18 @@ impl SignedEvent {
     /// The event as stored and transmitted: a COSE_Sign1 message.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.message.encode()
+    }
+
+    /// Decodes an event that a store verified before storing it, without checking its
+    /// signature again. Use it only for bytes read back from that store: bytes from anywhere
+    /// else go through [`UnverifiedEvent::verify`].
+    ///
+    /// # Errors
+    /// [`EventError`] if the bytes aren't a well-formed event.
+    #[cfg(feature = "stored")]
+    pub fn from_stored(bytes: &[u8]) -> Result<SignedEvent, EventError> {
+        let UnverifiedEvent { body, hash, message } = UnverifiedEvent::decode(bytes)?;
+        Ok(SignedEvent { body, hash, message })
     }
 }
 
@@ -204,6 +217,20 @@ mod tests {
         let other = SoftwareSigner::from_secret(SignatureAlgorithm::EdDsa, &[8; 32]).unwrap();
         assert_eq!(received.clone().verify(other.public_key()), Err(CoseError::KeyMismatch));
         assert_eq!(received.verify(signer().public_key()), Ok(event));
+    }
+
+    #[cfg(feature = "stored")]
+    #[test]
+    fn stored_events_read_back_without_a_signature_check() {
+        let event = SignedEvent::sign(body(), &signer()).unwrap();
+        let bytes = event.to_bytes();
+        assert_eq!(SignedEvent::from_stored(&bytes), Ok(event));
+        // It trusts the store: a message signed by another key still reads back.
+        let other = SoftwareSigner::from_secret(SignatureAlgorithm::EdDsa, &[8; 32]).unwrap();
+        let forged = SignedEvent::sign(body(), &other).unwrap();
+        assert_eq!(SignedEvent::from_stored(&forged.to_bytes()), Ok(forged));
+        // But not bytes that aren't an event.
+        assert!(SignedEvent::from_stored(&bytes[1..]).is_err());
     }
 
     #[test]

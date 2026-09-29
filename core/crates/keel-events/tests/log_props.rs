@@ -1,7 +1,8 @@
 //! Property tests: devices write their logs by the rules; a replica accepts a log exactly as its
 //! device wrote it, and catches any change on the way (a flipped bit, a missing or reordered
 //! event), anything a device signs that breaks the rules, forked logs, and events beyond a
-//! revocation. The registry of devices behaves the same whatever order changes reach it in.
+//! revocation. The registry of devices behaves the same whatever order changes reach it in. A
+//! writer restored to a stored log and clock carries on as a new writer resumed from them would.
 
 #![allow(
     clippy::unwrap_used,
@@ -163,8 +164,7 @@ fn run(
                 }
             }
             Step::Observe { offset_ms, logical } => {
-                let wall = u64::try_from((now.as_millis() + offset_ms).max(0)).unwrap();
-                let remote = Hlc::new(wall, *logical).unwrap();
+                let remote = remote_hlc(*now, *offset_ms, *logical);
                 writer.observe(remote, *now).unwrap();
                 seen = seen.max(remote);
             }
@@ -401,6 +401,56 @@ fn revocation_hash(seq: u64, choice: u8) -> EventHash {
         0 => EventHash::ZERO,
         _ => EventHash::of(&[&seq.to_be_bytes()[..], &[choice]].concat()),
     }
+}
+
+/// Where a writer is restored to: a log's head and a clock, as a store keeps them.
+#[derive(Clone, Debug)]
+enum Target {
+    /// The head and clock the writer had after one of its steps: a transaction that stored what
+    /// came after failed.
+    Back { at: Index },
+    /// Past `count` of the device's own later events, written elsewhere `ahead_ms` after the last
+    /// reading, keeping the writer's clock: they arrived from another replica.
+    Forward { count: usize, ahead_ms: i64 },
+    /// A head the writer had, with a clock `offset_ms` from the head's, before or after it.
+    Anywhere { at: Index, offset_ms: i64 },
+}
+
+fn any_target() -> impl Strategy<Value = Target> {
+    prop_oneof![
+        any::<Index>().prop_map(|at| Target::Back { at }),
+        (1_usize..4, 0_i64..7_200_000)
+            .prop_map(|(count, ahead_ms)| Target::Forward { count, ahead_ms }),
+        (any::<Index>(), -120_000_i64..120_000)
+            .prop_map(|(at, offset_ms)| Target::Anywhere { at, offset_ms }),
+    ]
+}
+
+/// What a restored writer does next: records an event, or observes a remote HLC `offset_ms` from
+/// physical time, which may be beyond the drift limit.
+#[derive(Clone, Debug)]
+enum Then {
+    Record(EventDraft),
+    Observe { offset_ms: i64, logical: u16 },
+}
+
+fn any_then(len: Range<usize>) -> impl Strategy<Value = Vec<(Then, Timestamp)>> {
+    let then = prop_oneof![
+        3 => any_draft().prop_map(Then::Record),
+        1 => (-120_000_i64..120_000, any::<u16>())
+            .prop_map(|(offset_ms, logical)| Then::Observe { offset_ms, logical }),
+    ];
+    prop::collection::vec(then, len).prop_flat_map(|thens| {
+        let len = thens.len();
+        (Just(thens), clock_readings(len))
+            .prop_map(|(thens, readings)| thens.into_iter().zip(readings).collect())
+    })
+}
+
+/// The remote HLC `offset_ms` from physical time `now`.
+fn remote_hlc(now: Timestamp, offset_ms: i64, logical: u16) -> Hlc {
+    let wall = u64::try_from((now.as_millis() + offset_ms).max(0)).unwrap();
+    Hlc::new(wall, logical).unwrap()
 }
 
 proptest! {
@@ -657,6 +707,98 @@ proptest! {
             let record = registry.get(devices[usize::from(device)]).unwrap();
             prop_assert_eq!(record.location(), locations[usize::from(location)]);
             prop_assert_eq!(record.key(), &key(seed));
+        }
+    }
+
+    /// A writer restored to a head and a clock, as a store keeps them, carries on exactly as a
+    /// new writer resumed from them would, whatever it did before: back to an earlier state
+    /// after a failed transaction, on past the device's own events from elsewhere, or to any head
+    /// with any clock. Its latest HLC is always the last it issued or observed.
+    #[test]
+    fn a_restored_writer_carries_on_as_a_resumed_one(
+        key in any_key(),
+        steps in any_steps(1..10),
+        target in any_target(),
+        elsewhere_draft in any_draft(),
+        then in any_then(1..6),
+    ) {
+        let mut writer =
+            LogWriter::new(config(LogHead::EMPTY, Hlc::ZERO), key.signer(), SeededEntropy::new(1));
+        // The head and latest HLC before and after each step.
+        let mut states = vec![(LogHead::EMPTY, Hlc::ZERO)];
+        for (step, now) in &steps {
+            let last = match step {
+                Step::Record { draft, abandon } => {
+                    let pending = writer.prepare(draft.clone(), *now).unwrap();
+                    let hlc = pending.event().body().hlc;
+                    if !abandon {
+                        pending.commit();
+                    }
+                    hlc
+                }
+                Step::Observe { offset_ms, logical } => {
+                    writer.observe(remote_hlc(*now, *offset_ms, *logical), *now).unwrap()
+                }
+                // Restoring the writer to where it is changes nothing.
+                Step::Restart => {
+                    let (head, latest) = (writer.head(), writer.latest_hlc());
+                    writer.restore(head, latest);
+                    prop_assert_eq!(writer.head(), head);
+                    latest
+                }
+            };
+            prop_assert_eq!(writer.latest_hlc(), last, "the latest HLC is the last issued or seen");
+            states.push((writer.head(), writer.latest_hlc()));
+        }
+        let (head, latest) = match target {
+            Target::Back { at } => states[at.index(states.len())],
+            Target::Forward { count, ahead_ms } => {
+                let config = config(writer.head(), Hlc::ZERO);
+                let mut elsewhere = LogWriter::new(config, key.signer(), SeededEntropy::new(2));
+                let start = steps.last().unwrap().1.as_millis() + ahead_ms;
+                let mut head = writer.head();
+                for k in 0..count {
+                    let now = Timestamp::from_millis(start + i64::try_from(k).unwrap()).unwrap();
+                    let event = elsewhere.prepare(elsewhere_draft.clone(), now).unwrap().commit();
+                    // The head as a store keeps it.
+                    let body = event.body();
+                    head = LogHead::from_parts(body.origin_seq.get(), event.hash(), body.hlc);
+                    prop_assert_eq!(head, LogHead::of(&event));
+                }
+                (head, writer.latest_hlc())
+            }
+            Target::Anywhere { at, offset_ms } => {
+                let (head, _) = states[at.index(states.len())];
+                let wall = i64::try_from(head.hlc().wall_ms()).unwrap() + offset_ms;
+                (head, Hlc::new(u64::try_from(wall.max(0)).unwrap(), 0).unwrap())
+            }
+        };
+        writer.restore(head, latest);
+        let mut resumed = LogWriter::new(config(head, latest), key.signer(), SeededEntropy::new(3));
+        prop_assert_eq!(writer.head(), resumed.head());
+        prop_assert_eq!(writer.latest_hlc(), resumed.latest_hlc());
+        for (then, now) in &then {
+            match then {
+                Then::Record(draft) => {
+                    let (restored_head, fresh_head) = (writer.head(), resumed.head());
+                    let restored = writer.prepare(draft.clone(), *now).unwrap().commit();
+                    let fresh = resumed.prepare(draft.clone(), *now).unwrap().commit();
+                    // Each links to its own writer's log, and it is the same event but for its
+                    // identifier, which each writer draws from its own entropy, and so for the
+                    // hashes it links to after the first.
+                    prop_assert_eq!(restored.body().prev_hash, restored_head.hash());
+                    prop_assert_eq!(fresh.body().prev_hash, fresh_head.hash());
+                    let mut body = restored.body().clone();
+                    body.event_id = fresh.body().event_id;
+                    body.prev_hash = fresh.body().prev_hash;
+                    prop_assert_eq!(&body, fresh.body());
+                }
+                Then::Observe { offset_ms, logical } => {
+                    let remote = remote_hlc(*now, *offset_ms, *logical);
+                    prop_assert_eq!(writer.observe(remote, *now), resumed.observe(remote, *now));
+                }
+            }
+            prop_assert_eq!(writer.latest_hlc(), resumed.latest_hlc());
         }
     }
 }

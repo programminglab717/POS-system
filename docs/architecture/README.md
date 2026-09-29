@@ -226,7 +226,7 @@ workspace, compiled for iOS, Android, Windows, macOS, Linux, the browser (WASM) 
 | `keel-domain` | Event payload schemas and the schema registry; aggregates, their total fold functions and command checks: order (built so far: creation, attributes, lines, their split among checks, and closing checks and orders), payment (built so far: cash and card), and checkout across them; kitchen ticket, stock, drawer session, booking, custody job, stored value, loyalty, membership, time entry |
 | `keel-pricing` | Price resolution, promotions optimizer, tax engine, allocation, rounding, trace (v0 built: line amounts, shares of split lines, discounts and their allocation, US sales tax, rounding, trace) |
 | `keel-policy` | ABAC permissions, approvals, rule-pack evaluation with explanations |
-| `keel-store` | SQLite event store, projections, snapshots, outbox, retention |
+| `keel-store` | SQLite event store, projections, snapshots, outbox, retention (built so far: the event log, with the device's own and received events, the quarantine and the version vector, in crash-tested transactions; a platform crate, not built for `wasm32`, [ADR-0016](../adr/0016-device-store.md)) |
 | `keel-sync` | Replication protocol, version vectors, leases, escrow, hub election |
 | `keel-pay` | Payment orchestrator, tender plugins, risk envelope, connector trait |
 | `keel-fiscal` | Fiscal adapter trait and jurisdiction adapters |
@@ -407,7 +407,8 @@ cell, well within one Postgres primary with batching.
 
 ```text
 /Cargo.toml            Rust workspace root: one lockfile for every Rust component
-/core/crates/          Kernel crates, keel-* (see §5); keel-types and keel-events are built
+/core/crates/          Kernel crates, keel-* (see §5); keel-types, keel-events, keel-domain,
+                       keel-pricing and keel-store are built, in part
 /hub/                  Store Hub daemon and appliance image definitions
 /cloud/                Cloud services (Rust): core modular monolith, workers, sync ingest, gateway
 /connectors/           Integration runtime and connectors (TypeScript)

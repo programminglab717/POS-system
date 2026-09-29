@@ -7,8 +7,9 @@
 ## Where we are
 
 **Phase 0 (Foundations), step 5 of 8:** `keel-store`, the SQLite event store, projections and
-outbox. Its design is under way. Step 4, `keel-domain` and `keel-pricing` v0, is done: built in
-four slices, each reviewed.
+outbox, in three slices ([ADR-0016](./adr/0016-device-store.md), proposed). Slice 1, the event
+log store, is built and verified, and waiting for review. Step 4, `keel-domain` and
+`keel-pricing` v0, is done: built in four slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -20,7 +21,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
-| 5 | `keel-store`: SQLite events, projections and outbox | In progress: design | |
+| 5 | `keel-store`: SQLite events, projections and outbox | In progress: slice 1 of 3 built, waiting for review | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md) (proposed) |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
@@ -41,14 +42,122 @@ built:
 4. **Payments and closing** (built 2026-09-28, reviewed 2026-09-29): the payment aggregate,
    balances, closing checks with their totals, and closing and reopening orders.
 
+Step 5 comes in three slices, each ending with a review
+([ADR-0016](./adr/0016-device-store.md), decision 8):
+
+1. **The event log store** (built 2026-09-29, waiting for review): the device's own events and
+   those it receives from other replicas, in one SQLite database; the quarantine and the version
+   vector; one transaction per write; crash tests at every point of a write.
+2. **Projections and the outbox**, updated in the same transaction as the events.
+3. **Encryption at rest and integrity checks**: SQLCipher-class encryption with its key from the
+   platform keystore, and checks when the store opens.
+
+Retention, snapshots and backups follow the sync engine (step 6).
+
 ## Current slice
 
-Step 5 begins with its design: what the store holds, and how. That means the SQLite binding
-and its settings, the schema, writing an event with its projections and outbox entries in one
-transaction, and how to test that a crash at any point loses nothing and half-writes nothing. It
-will be recorded in a proposed ADR, with step 5 split into slices, each ending with a review.
+Slice 1, the event log store, is built and verified: see "Completed". It waits for review, with
+[ADR-0016](./adr/0016-device-store.md), which is proposed. Slice 2, projections and the outbox,
+follows.
 
 ## Completed
+
+### The event log store: step 5, slice 1 (2026-09-29)
+
+Commit to follow. Waiting for review.
+
+- **Built** ([ADR-0016](./adr/0016-device-store.md), decisions 1 to 7):
+  - `keel-store`, the kernel's first platform crate: each device's events in one SQLite
+    database, through `rusqlite` with SQLite compiled in, in WAL mode, with every commit on disk
+    before it returns, and a versioned schema;
+  - writes: `Store::write` runs a closure whose appended and received events commit together or
+    not at all. Appended events leave the store only once their write has committed, and a
+    failed write puts the device's log writer back to its log and clock as stored;
+  - received events: verified with the device registry, and for the store's location. The next
+    event of its device's log is stored, and the device's clock observes it within the drift
+    limit; a duplicate changes nothing; after a gap, the caller learns where the log ends; and
+    anything else goes to the quarantine, once, with one of 13 reasons. The device's own events
+    from another replica move its writer and clock forward;
+  - reads: a device's log from a position, each device's head, the version vector, an event by
+    identifier, a stream's events in canonical order, and the quarantine;
+  - opening refuses another device or location, a key that didn't sign the device's events,
+    and a database a newer kernel wrote;
+  - fault points (`Migrating`, `Began`, `Stored`, `Committing`, `Committed`) for crash tests and
+    the simulator;
+  - in `keel-events`: `LogWriter::restore` and `LogWriter::latest_hlc`, `LogHead::from_parts`,
+    and `SignedEvent::from_stored`, behind a `stored` feature that only the store enables.
+- **Verified:**
+  - Known-answer tests: 15 in `keel-store`, each rule worked through with a few devices,
+    among them the durability settings as SQLite reports them, each refusal quarantined once
+    with the first event kept, a row changed on disk read back as corrupt, and the failure the
+    property test found; 3 in `keel-events`.
+  - A property test against a model of the store's rules. A case is up to nine writes and
+    reopenings. Each write appends events and receives messages of 16 kinds: the next event of
+    a log (sometimes beyond the drift limit), one received before, a fork, one after a gap,
+    one that doesn't link or whose clock went back, one signed with another key, from an
+    unknown, revoked or foreign device, naming another location, with a used identifier, at the
+    last position a store holds or beyond, garbage, a quarantined message again, and the
+    device's own events from elsewhere. Steps may share a physical time, so that devices' HLCs
+    tie. A write commits, fails, or is interrupted at a point; some reopenings first open the
+    store as another device, at another location, or with another key. After every step,
+    everything the store reads back is checked against the model, and so is the device's clock:
+    after everything it must follow, no later than it had to be, and given back by a failed
+    write. The model decides each message's fate from how the test made it, never by calling
+    the verifier.
+  - A new property in `keel-events`: a writer restored to a stored head and clock carries on
+    exactly as a new writer resumed from them, back after a failed write, on past the device's
+    own events from elsewhere, or anywhere with any clock.
+  - Crash tests, in a child process: an abort at every point of a six-write workload in turn,
+    37 crashes; and 32 kills, each a moment after a chosen write's acknowledgement. After each,
+    the store holds every acknowledged write and nothing half-written, every log verifies, the
+    clock came back, the device's writer carries on, and a crash in a migration left nothing of
+    it.
+  - Coverage probes, over 1,000 cases: every fate of a received message in 140 to 890 cases
+    (but the two catch-all reasons, which nothing reaches today);
+    every ending of a write in 137 to 874; a quarantined message whose fate has changed since,
+    received again, in 75; ties between devices' HLCs in a stream in 55; the last position a
+    store holds and the first beyond it in 80 and 67; and each kind of stranger, with and
+    without the device's own events, in 65 to 91. In the restored-writer property, 40% of
+    cases restore behind the head and half behind the writer's clock, and a quarter of the
+    observations are beyond the drift limit. The kills landed up to four writes after the
+    chosen acknowledgement, two of 32 between a commit and its acknowledgement.
+  - Planted bugs, all caught: 51 in `keel-store`, 46 of them by the property and crash tests
+    alone. The other 5, three settings, a newer kernel's database and a row changed on disk,
+    only the unit tests can reach. In `keel-events`, 6 new ones, in restoring a writer, caught
+    by its property tests alone. The runner now skips, under `--props`, a bug marked `"unit"`,
+    which only unit tests can catch; `keel-events`' five known-answer-only bugs (byte-level
+    checks of COSE messages and keys) are marked so.
+  - The store's property test and the restored-writer property each passed 100,000 cases. A
+    larger crash run, not kept, passed too: an abort at every point of a 24-write workload
+    (145 crashes), and 300 kills.
+  - The CI-equivalent run passed locally; CI on the commit to follow.
+- **Decisions:** [ADR-0016](./adr/0016-device-store.md), proposed, with the details the build
+  settled under "As built":
+  - the checks on a received event run in a fixed order, each refusal with a stable code;
+  - the quarantine keeps a message's first reason, even when its fate has changed since;
+  - a failed write gives back the clock as well as the log;
+  - reading an event back checks its stored hash, not its signature.
+- **Found and fixed during the build:**
+  - The property test found that an interrupted write could leave the device's clock an hour
+    ahead: the write had received the device's own event from elsewhere, stamped an hour
+    ahead, and the rollback put back the log but not the clock. `LogWriter::restore` now takes
+    both, the store restores both after any failed write, and the test checks the clock after
+    every write.
+  - A unit test that reopened a store with the same entropy at the same millisecond minted an
+    identifier the store already held, and its write failed. The tests now reopen with new
+    entropy; the simulator must give each restart its own (see "Known gaps").
+  - The first kill test slept fixed delays, 5 to 405 ms, against a workload that takes 330 ms
+    in a debug build, so where its kills landed depended on the machine. It now kills a moment
+    after a chosen write's acknowledgement.
+  - The child's first acknowledgement shared a line with the test harness's own output, and was
+    missed; the parent now looks for acknowledgements anywhere in a line.
+  - A quarantined message whose fate had changed came up in 2.5% of cases; aiming the
+    generator at them raised it to 7.5%.
+  - The first run of the planted bugs found one that no test caught: a migration committing
+    before its fault point. The unit test only checked that the store opened afterwards, which
+    an empty store also does. It and the crash test now check that nothing of the migration was
+    kept. Three checks on opening were first unit-only; the property test now opens stores as
+    strangers, so they are its to catch.
 
 ### Payments and closing: step 4, slice 4 (2026-09-28)
 
@@ -427,6 +536,17 @@ Work deliberately left for later, so it isn't forgotten:
   - Hardware signers, which the platform apps provide through the `Signer` trait.
   - Negotiating schema versions between kernels, in `keel-sync`.
 - **`keel-types`:** `Locale`, with the first UI.
+- **`keel-store`:**
+  - Power-loss tests, which need keel-sim's simulated disk; until then the durability settings
+    are checked as SQLite reports them.
+  - Projections and the outbox (slice 2); encryption at rest and integrity checks (slice 3);
+    retention, snapshots and backups, after the sync engine.
+  - Releasing or discarding quarantined messages: they are kept for a person to look at, with
+    no tools yet.
+  - The simulator must give each restart of a device fresh entropy: a store reopened with the
+    same entropy in the same millisecond mints identifiers it already holds, and its writes fail.
+  - Two processes opening one store at once: a store is one process's. Opening re-checks the
+    schema version inside its transaction, but no test races two openers.
 - **Orders:**
   - Permissions, approvals and ownership leases aren't checked yet (`keel-policy`, `keel-sync`).
   - An order with payments on its open checks can be voided, and checkout reports the payments:

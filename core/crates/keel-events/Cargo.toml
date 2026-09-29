@@ -11,6 +11,9 @@ repository.workspace = true
 default = ["os"]
 # Operating-system backed clock and entropy, passed through to keel-types.
 os = ["keel-types/os"]
+# Reading back events a device's store verified before storing them, without checking their
+# signatures again: for keel-store only.
+stored = []
 
 [dependencies]
 keel-types.workspace = true

@@ -71,11 +71,17 @@ BUGS = [
             }
             SigningKey::EdDsa""",
     ),
+    # Five byte-level checks of COSE messages and keys are the known-answer tests' to catch
+    # (marked "unit"). The property tests sign and verify with the same code, so they can't see
+    # a Sig_structure or a key identifier computed wrongly on both sides; only vectors that
+    # Python's pycose checked can. A key identifier that doesn't match is refused anyway, for its
+    # signature; and no generator makes an unprotected header or a weak Ed25519 key.
     (
         "COSE verify ignores the key identifier",
         "src/cose.rs",
         "if key.algorithm() != self.algorithm || key.key_id() != self.key_id {",
         "if key.algorithm() != self.algorithm {",
+        "unit",
     ),
     (
         "Sig_structure omits the protected header",
@@ -84,18 +90,21 @@ BUGS = [
         Value::Bytes(Vec::new()),""",
         """        Value::Bytes(Vec::new()),
         Value::Bytes(Vec::new()),""",
+        "unit",
     ),
     (
         "decoder tolerates an unprotected header",
         "src/cose.rs",
         "        if !unprotected.as_map().is_some_and(Map::is_empty) {",
         "        if unprotected.as_map().is_none() {",
+        "unit",
     ),
     (
         "key id hashes the raw key bytes, not the COSE_Key",
         "src/keys.rs",
         "KeyId(sha256(&Value::Map(self.cose_key()).encode()))",
         "KeyId(sha256(&self.to_bytes()))",
+        "unit",
     ),
     (
         "Ed25519 uses lax verification",
@@ -111,6 +120,7 @@ BUGS = [
         }
 """,
         "",
+        "unit",
     ),
     # The envelope.
     (
@@ -426,5 +436,45 @@ BUGS = [
         "src/verify.rs",
         "            Some(_) => Err(RegistryError::AlreadyEnrolled(device)),",
         "            Some(_) => { self.devices.insert(device, DeviceRecord { location, key, revocation: None }); Ok(()) }",
+    ),
+    # The writer, restored and resumed as a store keeps it.
+    (
+        "restore leaves the clock behind the head",
+        "src/log.rs",
+        "self.clock = HlcClock::resume(latest_hlc.max(head.hlc), self.max_forward_drift);",
+        "self.clock = HlcClock::resume(latest_hlc, self.max_forward_drift);",
+    ),
+    (
+        "restore keeps the writer's clock",
+        "src/log.rs",
+        "self.clock = HlcClock::resume(latest_hlc.max(head.hlc), self.max_forward_drift);",
+        "self.clock = HlcClock::resume(self.clock.last().max(head.hlc), self.max_forward_drift);",
+    ),
+    (
+        "restore keeps the writer's head",
+        "src/log.rs",
+        """        self.head = head;
+        self.clock = HlcClock::resume""",
+        "        self.clock = HlcClock::resume",
+    ),
+    (
+        "restore forgets the drift limit",
+        "src/log.rs",
+        "self.clock = HlcClock::resume(latest_hlc.max(head.hlc), self.max_forward_drift);",
+        "self.clock = HlcClock::resume(latest_hlc.max(head.hlc), Duration::MAX);",
+    ),
+    (
+        "the latest HLC is the head's",
+        "src/log.rs",
+        """    pub const fn latest_hlc(&self) -> Hlc {
+        self.clock.last()""",
+        """    pub const fn latest_hlc(&self) -> Hlc {
+        self.head.hlc""",
+    ),
+    (
+        "a head rebuilt from its parts loses its HLC",
+        "src/log.rs",
+        "        LogHead { seq, hash, hlc }",
+        "        LogHead { seq, hash, hlc: Hlc::ZERO }",
     ),
 ]

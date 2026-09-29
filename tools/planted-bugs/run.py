@@ -9,10 +9,13 @@ restores the file, and reports:
 - CAUGHT    some test failed, as it should (the failing tests are listed);
 - MISSED    every test passed with the bug in place;
 - STALE     `old` isn't in the file exactly once: the list needs updating;
-- NO BUILD  the planted bug doesn't compile, so it proves nothing: fix the bug's text.
+- NO BUILD  the planted bug doesn't compile, so it proves nothing: fix the bug's text;
+- SKIPPED   with `--props`, a bug only unit tests can catch.
 
 With `--props`, only the crate's property tests run (the integration tests in `tests/`): unit
 tests often catch a bug that a property test's generators never reach, so each is checked alone.
+A bug that only a unit test can catch, such as a database setting nothing outside the crate can
+observe, ends with a fifth element, "unit", and a comment saying why; `--props` skips it.
 With `--ignored`, tests marked `#[ignore]`, such as exhaustive sweeps, run too, as they do in CI.
 
 The runner edits source files in place and restores them from memory, even when interrupted.
@@ -67,8 +70,13 @@ def failing_tests(output):
     return sorted({match.group(1) for match in re.finditer(r"^---- (\S+) stdout ----$", output, re.M)})
 
 
+def unit_only(bug):
+    """Whether only unit tests can catch `bug`: it ends with "unit"."""
+    return len(bug) == 5 and bug[4] == "unit"
+
+
 def run_bug(root, crate_dir, command, env, bug):
-    name, file, old, new = bug
+    name, file, old, new = bug[:4]
     path = crate_dir / file
     source = path.read_text()
     count = source.count(old)
@@ -100,6 +108,10 @@ def main():
     if not bug_file.is_file():
         sys.exit(f"no bug list at {bug_file}")
     bugs = runpy.run_path(str(bug_file))["BUGS"]
+    malformed = [bug[0] for bug in bugs if len(bug) != 4 and not unit_only(bug)]
+    if malformed:
+        sys.exit(f"a bug is (name, file, old, new), with \"unit\" after if only unit tests can "
+                 f"catch it: {malformed}")
     names = [bug[0] for bug in bugs]
     repeated = {name for name in names if names.count(name) > 1}
     if repeated:
@@ -124,12 +136,15 @@ def main():
     print(f"{len(bugs)} planted bugs in {args.crate}, against {scope}", flush=True)
     tally = {}
     for bug in bugs:
-        status, detail = run_bug(root, crate_dir, command, env, bug)
+        if args.props and unit_only(bug):
+            status, detail = "SKIPPED", "only unit tests can catch it"
+        else:
+            status, detail = run_bug(root, crate_dir, command, env, bug)
         tally[status] = tally.get(status, 0) + 1
         print(f"{status:8} {bug[0]}" + (f": {detail}" if detail else ""), flush=True)
     summary = ", ".join(f"{count} {status.lower()}" for status, count in sorted(tally.items()))
     print(f"{summary or 'no bugs'}", flush=True)
-    return 0 if set(tally) <= {"CAUGHT"} else 1
+    return 0 if set(tally) <= {"CAUGHT", "SKIPPED"} else 1
 
 
 if __name__ == "__main__":

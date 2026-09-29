@@ -7,14 +7,16 @@ today's POS products and removes the failures that make merchants feel trapped, 
 offline.
 
 **Status: building the foundations.** The research, architecture, decision records, feature
-catalog and roadmap are in a v1 draft. Four kernel crates are built and tested:
+catalog and roadmap are in a v1 draft. Five kernel crates are built and tested, the last in part:
 [`keel-types`](./core/crates/keel-types/) (money, currencies, rounding, quantities, time,
 identifiers, business dates), [`keel-events`](./core/crates/keel-events/) (the signed,
 hash-chained event log), [`keel-domain`](./core/crates/keel-domain/) (event schemas and the first
 business aggregates: orders, their lines and their split among checks, payments in cash and by
 card, and closing checks and orders) and [`keel-pricing`](./core/crates/keel-pricing/) v0, which
 prices each check: line amounts, shares of split lines, discounts, US sales tax, rounding and the
-calculation trace. The next, `keel-store`, keeps events on the device in SQLite.
+calculation trace. [`keel-store`](./core/crates/keel-store/) keeps events on the device in SQLite:
+so far the event log, with the device's own events and those it receives from other replicas,
+written in crash-tested transactions.
 [docs/progress.md](./docs/progress.md) tracks the build step by step.
 
 ## What makes Keel different

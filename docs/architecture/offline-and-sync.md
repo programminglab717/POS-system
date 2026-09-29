@@ -455,8 +455,10 @@ workflow, not a surprise on a statement.
 
 - **Local store**: SQLite in WAL mode. The event tables, projection tables and outbox are all in one
   database, so *event append + projection update + outbox enqueue* is a single atomic transaction.
-  Money-affecting commits are fsynced. The database is encrypted at rest with a key protected by the
-  platform keystore.
+  Every commit is fsynced (`synchronous = FULL`), so none can pass for durable when it isn't. The
+  database is encrypted at rest with a key protected by the platform keystore. See
+  [ADR-0016](../adr/0016-device-store.md): the event log is built; projections, the outbox and
+  encryption follow.
 - **Retention**:
   - Hub: 90 days of full events (configurable).
   - Terminals: 14 days.

@@ -113,6 +113,10 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
     `tools/planted-bugs/run.py` plants them one at a time: `run.py keel-domain` against every
     test, `--props` against the property tests alone, `--ignored` with the exhaustive sweeps. Add
     the bugs a new test targets to the list.
+  - A bug only a unit test can catch, such as a database setting that nothing outside the crate
+    can read, is marked `"unit"` in the list, with a comment saying why, and `--props` skips it.
+    Before marking one, try to make it observable: `keel-store`'s property test opens stores as
+    other devices so that the checks on opening are its to catch.
   - The runner reports a bug whose text no longer matches the code as stale, and one that doesn't
     compile as proving nothing; a compile error is never counted as a caught bug.
   - A planted bug that can't change what the code does isn't a bug, such as removing a check that
@@ -125,6 +129,11 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
 - **Golden baskets** check the pricing engine against an independent oracle in Python, with exact
   fractions (`core/crates/keel-pricing/tests/golden/generate.py`). CI regenerates the baskets and
   fails if they change, so the committed expectations always come from the oracle.
+- **Crash tests** (`keel-store/tests/crash.rs`) run the test binary again as a child process that
+  works through a fixed sequence of writes and dies partway: at each fault point in turn, or
+  killed. The parent reopens the store and checks that every acknowledged write is there, whole.
+  The parent kills a child only after reading a chosen write's acknowledgement, not after a fixed
+  sleep, so that kills land among the writes on a fast machine and a slow one alike.
 - **Exhaustive sweeps**, such as every time zone transition from 1970 to 2037, are `#[ignore]`d
   for quick local runs. CI runs them with `-- --include-ignored`.
 - **Case counts.** Locally, property tests run proptest's default of 256 cases. CI runs 4,096
@@ -147,6 +156,11 @@ below, and must be:
 - **well maintained and widely used**, with a stable API;
 - **minimal**: default features off unless they are needed.
 
+**Platform crates** are the exception to "pure Rust". `keel-store`, and later the bindings and
+drivers, do I/O, and may use a native library that an ADR chooses. They aren't built for
+`wasm32`, and the portable kernel crates (`keel-types`, `keel-events`, `keel-domain`,
+`keel-pricing`) never depend on them.
+
 | Crate | Used by | Why |
 |---|---|---|
 | `rust_decimal` | keel-types | Exact 96-bit decimals for rates, factors and prices per unit. Default features off. Its multiplication rounds silently beyond 96 bits, so money math uses the exact paths in `keel-types` (§2.2). |
@@ -157,6 +171,7 @@ below, and must be:
 | `sha2` | keel-events | SHA-256, for event hashes and key identifiers. Default features off. |
 | `p256`, `ecdsa` | keel-events | ECDSA on P-256 (ES256), the algorithm secure hardware supports: verification, low-S normalization, DER decoding of hardware signatures, and deterministic signing (RFC 6979) for software keys. Default features off. |
 | `ed25519-dalek` | keel-events | Ed25519, for devices without secure hardware, with strict verification. Default features off: keys come from injected entropy, never from the operating system directly. |
+| `rusqlite` (and `libsqlite3-sys`) | keel-store | SQLite, compiled in (`bundled`, SQLite 3.53.2 today), so every platform runs the same version ([ADR-0016](../adr/0016-device-store.md)). A platform dependency: it builds C code with `cc`. Default features off. MIT; SQLite itself is in the public domain. Its other dependencies (`bitflags`, `fallible-iterator`, `fallible-streaming-iterator`, `smallvec`) and build tools (`cc`, `pkg-config`, `vcpkg`, with theirs) are MIT or Apache-2.0. |
 
 Test-only dependencies must be permissively licensed, but need not build for `wasm32`:
 

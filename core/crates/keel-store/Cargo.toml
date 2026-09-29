@@ -1,0 +1,20 @@
+[package]
+name = "keel-store"
+version = "0.1.0"
+description = "Keel's device store: the event log in SQLite, one transaction per write, with crash-tested durability."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+keel-types.workspace = true
+keel-events = { workspace = true, features = ["stored"] }
+rusqlite.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

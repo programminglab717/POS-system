@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7f871140321609608c7422b9368fb8d4f9e97779df72279dfa330ad3bf42fc85 # shrinks to ops = [Write([Receive(Own { variant: 0, late: true })], Interrupt(Stored, 1)), Write([Append { stream: 1, note: 0 }], Commit)]

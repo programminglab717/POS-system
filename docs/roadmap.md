@@ -247,7 +247,10 @@ Keel, and **never lose a sale to Keel**.
    and payments and closing ([ADR-0015](./adr/0015-checks-and-payments.md)). See
    [progress](./progress.md).*
 5. **`keel-store`**: the SQLite event store, projections and outbox in a single transaction, with
-   crash-safety tests. *Status: in progress, starting with its design.*
+   crash-safety tests. *Status: in progress, in three slices
+   ([ADR-0016](./adr/0016-device-store.md), proposed). Slice 1, the event log store, is built and
+   waiting for review; projections and the outbox, then encryption at rest, follow. See
+   [progress](./progress.md).*
 6. **`keel-sim` + `keel-sync` (v0)**: two devices, one hub and one cloud in simulation. Replication,
    hub sequencing, ownership leases, failover. The invariant suite runs in CI.
 7. **Android register shell**: ring an order with modifiers, pay cash, print a receipt (ESC/POS over

@@ -35,6 +35,12 @@ impl LogHead {
     /// [`EventHash::ZERO`].
     pub const EMPTY: LogHead = LogHead { seq: 0, hash: EventHash::ZERO, hlc: Hlc::ZERO };
 
+    /// The head of a log as a store keeps it: its last event's sequence number, hash and HLC.
+    /// A sequence number of 0 is an empty log, whose hash is [`EventHash::ZERO`].
+    pub const fn from_parts(seq: u64, hash: EventHash, hlc: Hlc) -> LogHead {
+        LogHead { seq, hash, hlc }
+    }
+
     /// The head of a log whose last event is `event`.
     pub fn of(event: &SignedEvent) -> LogHead {
         let body = event.body();
@@ -183,6 +189,7 @@ pub struct LogWriter<S, E> {
     signer: S,
     ids: IdGenerator<E>,
     clock: HlcClock,
+    max_forward_drift: Duration,
     head: LogHead,
 }
 
@@ -197,6 +204,7 @@ impl<S: Signer, E: Entropy> LogWriter<S, E> {
             signer,
             ids: IdGenerator::new(entropy),
             clock: HlcClock::resume(latest, config.max_forward_drift),
+            max_forward_drift: config.max_forward_drift,
             head: config.head,
         }
     }
@@ -209,6 +217,22 @@ impl<S: Signer, E: Entropy> LogWriter<S, E> {
     /// The last committed event.
     pub const fn head(&self) -> LogHead {
         self.head
+    }
+
+    /// The latest HLC the writer has issued or observed. Store it with the log, and pass it as
+    /// [`LogConfig::latest_hlc`] when resuming, so the device's HLCs keep increasing.
+    pub const fn latest_hlc(&self) -> Hlc {
+        self.clock.last()
+    }
+
+    /// Resets the writer to its log as stored: `head`, the log's last event, and `latest_hlc`,
+    /// the latest HLC stored with it, as [`LogWriter::new`] resumes them. After a transaction
+    /// that stored the writer's events failed, both go back, since nothing the writer made in it
+    /// was kept or sent; after the device's own events arrived from another replica, both move
+    /// forward.
+    pub fn restore(&mut self, head: LogHead, latest_hlc: Hlc) {
+        self.head = head;
+        self.clock = HlcClock::resume(latest_hlc.max(head.hlc), self.max_forward_drift);
     }
 
     /// Takes in the HLC of an event received from another device at physical time `now`, so the
@@ -413,6 +437,44 @@ mod tests {
         assert!(next.body().hlc > config.latest_hlc);
         let too_far = Hlc::new(u64::try_from(at(3600).as_millis()).unwrap(), 0).unwrap();
         assert!(matches!(resumed.observe(too_far, at(0)), Err(HlcError::ClockDrift { .. })));
+    }
+
+    #[test]
+    fn a_restored_writer_continues_from_the_stored_head() {
+        let mut writer = writer(LogHead::EMPTY);
+        let first = writer.prepare(draft(), at(0)).unwrap().commit();
+        let stored_hlc = writer.latest_hlc();
+        let lost = writer.prepare(draft(), at(10)).unwrap().commit();
+        // The transaction storing the second event failed: back to the first, clock included.
+        writer.restore(LogHead::of(&first), stored_hlc);
+        assert_eq!(writer.head(), LogHead::of(&first));
+        assert_eq!(writer.latest_hlc(), first.body().hlc);
+        let second = writer.prepare(draft(), at(1)).unwrap().commit();
+        assert_eq!(LogHead::of(&first).link(&second), Ok(Link::Next));
+        assert!(second.body().hlc < lost.body().hlc, "the lost event's time was given back");
+
+        // The device's own later events arrive from another replica, with an HLC far ahead of
+        // this writer's clock: the writer continues after them, without a drift check.
+        let mut elsewhere =
+            LogWriter::new(config(LogHead::of(&second)), golden::signer(), SeededEntropy::new(5));
+        let third = elsewhere.prepare(draft(), at(7_200)).unwrap().commit();
+        writer.restore(LogHead::of(&third), writer.latest_hlc());
+        assert_eq!(writer.latest_hlc(), third.body().hlc);
+        let fourth = writer.prepare(draft(), at(0)).unwrap().commit();
+        assert_eq!(LogHead::of(&third).link(&fourth), Ok(Link::Next));
+        // A stored clock later than the head is kept.
+        let later = Hlc::new(u64::try_from(at(9_000).as_millis()).unwrap(), 0).unwrap();
+        writer.restore(LogHead::of(&fourth), later);
+        assert_eq!(writer.latest_hlc(), later);
+    }
+
+    #[test]
+    fn a_head_rebuilds_from_its_parts() {
+        let mut writer = writer(LogHead::EMPTY);
+        let event = writer.prepare(draft(), at(0)).unwrap().commit();
+        let head = LogHead::of(&event);
+        assert_eq!(LogHead::from_parts(head.seq(), head.hash(), head.hlc()), head);
+        assert_eq!(LogHead::from_parts(0, EventHash::ZERO, Hlc::ZERO), LogHead::EMPTY);
     }
 
     #[test]
