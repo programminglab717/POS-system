@@ -1,6 +1,7 @@
 # ADR-0015: Checks and payments: line shares, per-check pricing, closing snapshots, and the payment aggregate
 
-- **Status:** Accepted (2026-09-28)
+- **Status:** Accepted (2026-09-28); the details settled in building it, under "As built",
+  accepted after review (2026-09-29)
 - **Date:** 2026-09-28
 
 ## Context
@@ -119,7 +120,8 @@ The work is built in two slices: checks and splits (decisions 1 to 4), then paym
 
 ### As built
 
-Building decisions 5 to 9 settled details the decisions left open, or refined:
+Building decisions 5 to 9 settled details the decisions left open, or refined. They were
+reviewed and accepted on 2026-09-29:
 
 - **What a closed check freezes** is what its lines cost and where they are paid: their
   quantity, modifiers, removal, void, comp and allocation. Their seat, course and notes can still

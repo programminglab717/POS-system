@@ -241,13 +241,13 @@ Keel, and **never lose a sale to Keel**.
    events, in `keel-domain` ([ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md)).*
 4. **`keel-domain` (order/check/payment) + `keel-pricing` (v0)**: lines, modifiers, checks and
    allocations, discounts, a US sales-tax rule set, the calculation trace, and a golden-basket suite
-   of 100 baskets growing to 1,000. *Status: built in four slices, the fourth waiting for review:
-   payload codecs, the schema registry and the order's lines; pricing v0
+   of 100 baskets growing to 1,000. *Status: done, in four slices, each reviewed: payload
+   codecs, the schema registry and the order's lines; pricing v0
    ([ADR-0014](./adr/0014-pricing-engine-v0.md)), with 140 golden baskets; checks and splits;
    and payments and closing ([ADR-0015](./adr/0015-checks-and-payments.md)). See
    [progress](./progress.md).*
 5. **`keel-store`**: the SQLite event store, projections and outbox in a single transaction, with
-   crash-safety tests.
+   crash-safety tests. *Status: in progress, starting with its design.*
 6. **`keel-sim` + `keel-sync` (v0)**: two devices, one hub and one cloud in simulation. Replication,
    hub sequencing, ownership leases, failover. The invariant suite runs in CI.
 7. **Android register shell**: ring an order with modifiers, pay cash, print a receipt (ESC/POS over

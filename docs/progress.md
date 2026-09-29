@@ -6,10 +6,9 @@
 
 ## Where we are
 
-**Phase 0 (Foundations), step 4 of 8:** `keel-domain` and `keel-pricing`. All four slices are
-built. Slices 1 to 3 (the order's lines, pricing v0, and checks and splits) are reviewed; slice 4,
-payments and closing, is built and verified, and waiting for review. Step 5, `keel-store`, starts
-after that review.
+**Phase 0 (Foundations), step 5 of 8:** `keel-store`, the SQLite event store, projections and
+outbox. Its design is under way. Step 4, `keel-domain` and `keel-pricing` v0, is done: built in
+four slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -20,14 +19,15 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 1 | Monorepo scaffold | Rust workspace and CI done. The Android, web and schema directories arrive with their first code. | [`Cargo.toml`](../Cargo.toml), [CI](../.github/workflows/ci.yml) |
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
-| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Built in four slices, 2026-09-28: 1 to 3 reviewed, 4 waiting for review | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
-| 5 | `keel-store`: SQLite events, projections and outbox | Not started | |
+| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
+| 5 | `keel-store`: SQLite events, projections and outbox | In progress: design | |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
-Step 4 is split into four slices, each ending with a review. It was planned as three; the third,
-checks and payments, was split in two, so that the payment design is reviewed before it is built:
+Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
+checks and payments, was split in two, so that the payment design was reviewed before it was
+built:
 
 1. **Foundations and the order's lines** (built and reviewed 2026-09-28): payload codecs
    and schema registry; the aggregate framework; order events, fold and commands for creating an
@@ -38,19 +38,21 @@ checks and payments, was split in two, so that the payment design is reviewed be
 3. **Checks and splits** (built and reviewed 2026-09-28): every order's main check,
    opening checks, allocating lines to checks in whole shares, and pricing each check as its own
    sale.
-4. **Payments and closing** (built 2026-09-28, waiting for review): the payment aggregate,
+4. **Payments and closing** (built 2026-09-28, reviewed 2026-09-29): the payment aggregate,
    balances, closing checks with their totals, and closing and reopening orders.
 
 ## Current slice
 
-Slice 4, payments and closing, is complete, and with it step 4; see its entry under
-"Completed", which lists the decisions to review.
+Step 5 begins with its design: what the store holds, and how. That means the SQLite binding
+and its settings, the schema, writing an event with its projections and outbox entries in one
+transaction, and how to test that a crash at any point loses nothing and half-writes nothing. It
+will be recorded in a proposed ADR, with step 5 split into slices, each ending with a review.
 
 ## Completed
 
 ### Payments and closing: step 4, slice 4 (2026-09-28)
 
-Commit `c78bc15`. Waiting for review.
+Commit `c78bc15`. Reviewed 2026-09-29.
 
 - **Built** ([ADR-0015](./adr/0015-checks-and-payments.md), decisions 5 to 9):
   - closing a check: `order.check_closed` records what pricing charged the check, line by line
@@ -106,7 +108,7 @@ Commit `c78bc15`. Waiting for review.
   - Every property test in `keel-domain` also passed 100,000 cases.
   - CI green.
 - **Decisions:** [ADR-0015](./adr/0015-checks-and-payments.md), accepted 2026-09-28, with the
-  details the build settled recorded under "As built":
+  details the build settled recorded under "As built", accepted after review on 2026-09-29:
   - **A closed check freezes what its lines cost and where they are paid.** Their seat, course
     and notes can change, and they are still fired, so an order paid first is still prepared.
   - **An allocation doesn't move a frozen line**, even from a device acting concurrently, since
@@ -408,8 +410,6 @@ design, the feature catalog and the roadmap. See the [README](../README.md).
 
 ## Waiting on a decision
 
-- Review of payments and closing (slice 4), and of the details ADR-0015's "As built" section
-  records.
 - The license, and the product name ("Keel" is a codename).
 - The first payment processor (decision gate G2 in the roadmap).
 - Verifying the research's unverified claims, and interviews with merchants.
