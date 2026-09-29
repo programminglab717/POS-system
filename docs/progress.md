@@ -50,7 +50,7 @@ Slice 4, payments and closing, is complete, and with it step 4; see its entry un
 
 ### Payments and closing: step 4, slice 4 (2026-09-28)
 
-Built and verified; waiting for review. The commit and its CI run are recorded once CI finishes.
+Commit `c78bc15`. Waiting for review.
 
 - **Built** ([ADR-0015](./adr/0015-checks-and-payments.md), decisions 5 to 9):
   - closing a check: `order.check_closed` records what pricing charged the check, line by line
@@ -104,6 +104,7 @@ Built and verified; waiting for review. The commit and its CI run are recorded o
   - Planted bugs, all caught, and all caught by the property tests alone: 220 in
     `keel-domain`, 126 of them new, aimed at closing, freezing, payments and checkout.
   - Every property test in `keel-domain` also passed 100,000 cases.
+  - CI green.
 - **Decisions:** [ADR-0015](./adr/0015-checks-and-payments.md), accepted 2026-09-28, with the
   details the build settled recorded under "As built":
   - **A closed check freezes what its lines cost and where they are paid.** Their seat, course
