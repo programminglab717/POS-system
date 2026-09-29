@@ -37,7 +37,7 @@ impl Order {
         let info = self.info()?;
         self.check(check)?;
         let lines = self
-            .live_lines()
+            .lines_on(check)
             .filter_map(|line| {
                 let allocation = line.allocation();
                 let index = allocation.iter().position(|share| share.check == check)?;
@@ -49,6 +49,13 @@ impl Order {
             })
             .collect();
         Some(sale(info, lines))
+    }
+
+    /// The live lines with a part on `check`, in the order's order: the lines its basket holds,
+    /// so `order.lines_on(check).zip(&totals.lines)` pairs each with its amounts.
+    pub fn lines_on(&self, check: Id<Check>) -> impl Iterator<Item = &Line> {
+        self.live_lines()
+            .filter(move |line| line.allocation().iter().any(|share| share.check == check))
     }
 }
 

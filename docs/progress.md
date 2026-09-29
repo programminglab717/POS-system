@@ -2,13 +2,14 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-09-28.
+> Last updated: 2026-09-29.
 
 ## Where we are
 
-**Phase 0 (Foundations), step 4 of 8:** `keel-domain` and `keel-pricing`. Slices 1 to 3 of 4
-(the order's lines, pricing v0, and checks and splits) are built and reviewed. Slice 4, payments
-and closing, is in progress.
+**Phase 0 (Foundations), step 4 of 8:** `keel-domain` and `keel-pricing`. All four slices are
+built. Slices 1 to 3 (the order's lines, pricing v0, and checks and splits) are reviewed; slice 4,
+payments and closing, is built and verified, and waiting for review. Step 5, `keel-store`, starts
+after that review.
 
 ## Phase 0 milestones
 
@@ -19,7 +20,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 1 | Monorepo scaffold | Rust workspace and CI done. The Android, web and schema directories arrive with their first code. | [`Cargo.toml`](../Cargo.toml), [CI](../.github/workflows/ci.yml) |
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
-| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | In progress: slices 1 to 3 of 4 built and reviewed; slice 4 in progress | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
+| 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Built in four slices, 2026-09-28: 1 to 3 reviewed, 4 waiting for review | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Not started | |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
@@ -37,22 +38,127 @@ checks and payments, was split in two, so that the payment design is reviewed be
 3. **Checks and splits** (built and reviewed 2026-09-28): every order's main check,
    opening checks, allocating lines to checks in whole shares, and pricing each check as its own
    sale.
-4. **Payments and closing** (in progress): the payment aggregate, balances, closing checks with
-   their totals, and closing and reopening orders.
+4. **Payments and closing** (built 2026-09-28, waiting for review): the payment aggregate,
+   balances, closing checks with their totals, and closing and reopening orders.
 
 ## Current slice
 
-Slice 4, payments and closing, builds decisions 5 to 9 of
-[ADR-0015](./adr/0015-checks-and-payments.md):
-
-| Piece | Status |
-|---|---|
-| Closing a check, with the snapshot of what it was charged; closed checks frozen; post-close checks | Not started |
-| Closing and reopening the order | Not started |
-| The payment aggregate, with cash and card | Not started |
-| Checkout: each check's balance, and the rules that span an order and its payments | Not started |
+Slice 4, payments and closing, is complete, and with it step 4; see its entry under
+"Completed", which lists the decisions to review.
 
 ## Completed
+
+### Payments and closing: step 4, slice 4 (2026-09-28)
+
+Built and verified; waiting for review. The commit and its CI run are recorded once CI finishes.
+
+- **Built** ([ADR-0015](./adr/0015-checks-and-payments.md), decisions 5 to 9):
+  - closing a check: `order.check_closed` records what pricing charged the check, line by line
+    and tax by tax, the version of the pricing rules, and the payments that settled it;
+  - the fold's rules for closed checks: the snapshot stands; a closed check freezes what its
+    lines cost and where they are paid; a line a close left off moves to an open check, or to a
+    post-close check opened for it; and a conflict for each surprise;
+  - closing and reopening the order: `order.closed` and `order.reopened`, and commands that
+    refuse to change a frozen line, or to void or abandon an order with a closed check;
+  - the payment aggregate, whose identifier is the idempotency key: `payment.initiated`,
+    `payment.authorized`, `payment.captured`, `payment.failed` and `payment.voided`, for cash
+    and card; a state machine that keeps money that may have moved when events arrive out of
+    turn; and commands that record a payment's outcome;
+  - checkout, across an order and its payments: each check's balance, starting a payment,
+    closing a check, and the issues it reports.
+- **Verified:**
+  - Known-answer tests, with the arithmetic worked out: 21 more in `keel-domain` (49 in all),
+    among them a table paying check by check (a tip, a split tender, change from a note, and
+    each check's tax shared among its lines by largest remainder); a closed check freezing its
+    lines; lines a close left off; post-close checks; and the payment state machine.
+  - The eight new schemas' pinned payloads were encoded independently by Python's `cbor2`, from
+    the documented key tables, and the kernel's encoding matches them byte for byte.
+  - The payload model covers the eight new schemas. Three new properties aim at processor
+    references at their length limits; snapshots with one rule broken and the others kept (a
+    gross below its net, a net, tax or taxable amount at or below zero with the sums still
+    adding up, lines or taxes out of order or repeated, no lines, an amount in another
+    currency, a sum a unit or two off); and cash a unit or two short of what is paid.
+  - The fold model follows the checks and the lines' allocations in one pass over the events,
+    and queries the rest; a new property aims at closing, forged check identifiers included.
+    The command model covers closing checks through checkout, with real payments, closing and
+    reopening orders, and every refusal the freeze adds, and now says why a command is refused,
+    not only whether. Commands are also checked against it on merged orders, and on every state
+    a merge passes through, from the order's location and another: a new property races devices
+    closing checks against others removing, firing or moving lines, and then a device carries
+    on with the merged order.
+  - The payment fold against a model written as queries (the first capture, and runs of
+    outcomes before it); the payment commands against a model of their rules, which also says
+    why a command is refused, with commands at the edges of the rules (a unit over the
+    authorization, say) tried at every state; devices acting concurrently on one payment.
+  - Checkout against a model of its rules: starting payments and closing checks refused exactly
+    when the model refuses them, and for the same reason; every balance and issue after every
+    action, with payments given twice and another order's payment left out; each close
+    recording exactly what pricing charged and who paid; and the issues of devices working a
+    table concurrently, merged and in each device's partial view.
+  - Coverage probes, over 1,000 or 2,000 cases each: every new conflict in the closing
+    property in 170 to 850 cases; all eight out-of-turn payment outcomes in 170 to 550; checks
+    closed about 1,800 times in 1,000 runs of checkout; every issue, a payment after a close in
+    240 of 1,000 concurrent tables, an underpaid check in 440 partial views; and in the race, a
+    closed check whose lines were all removed in 6% of cases, and an order abandoned after its
+    only line was fired in 2%.
+  - Planted bugs, all caught, and all caught by the property tests alone: 220 in
+    `keel-domain`, 126 of them new, aimed at closing, freezing, payments and checkout.
+  - Every property test in `keel-domain` also passed 100,000 cases.
+- **Decisions:** [ADR-0015](./adr/0015-checks-and-payments.md), accepted 2026-09-28, with the
+  details the build settled recorded under "As built":
+  - **A closed check freezes what its lines cost and where they are paid.** Their seat, course
+    and notes can change, and they are still fired, so an order paid first is still prepared.
+  - **An allocation doesn't move a frozen line**, even from a device acting concurrently, since
+    that would charge its paid part twice; every other change to it applies, and is reported.
+  - **Lines a close left off** move to the first open check that doesn't already hold part of
+    them; a new line goes to the first open check. Otherwise a post-close check opens, named
+    after the event that opened it, so every replica opens the same one.
+  - **Reopening** reopens every closed check with the order; a voided or abandoned order is
+    final.
+  - **A capture always stands.** After it, nothing changes the payment; an authorization or a
+    capture after a failure or a void applies, since the card may be held or charged.
+  - **Checkout also reports** a payment after its check closed, and a closed check its payments
+    no longer cover.
+  - **Voiding or abandoning an order with a closed check** is refused: reopen it first.
+- **Found and fixed during the build:**
+  - The first checkout generators closed a check only 82 times in 1,000 runs, so a payment
+    after a close came up 8 times in 1,000 concurrent tables. A "settle" action, which pays a
+    check in full and closes it, each step still checked against the model, raised that to about
+    1,800 closes and 240 cases.
+  - Two rules were out of the property tests' reach: forged check identifiers, which only a
+    hostile device writes, never met the new-check fallback, and checkout never saw a payment
+    given twice or another order's payment. A forgery aimed at the next event that opens a
+    check, and noisy payment lists, now reach both.
+  - A payment a cent short of its check came up too rarely to test the close rule's boundary;
+    the generators now pay a cent short on purpose.
+  - The first full run of the planted bugs found 20 that the property tests alone missed, and
+    the rerun a 21st that the first had caught only by luck. The tests were strengthened until
+    all were caught:
+    - eight of the snapshot's rules. The snapshot property only moved an amount, which broke a
+      sum as well, and never reordered or emptied a list; the property that changes any payload
+      rarely reached a snapshot. The snapshot property now breaks one rule at a time, and moves
+      the sums to match;
+    - five refusals that a second rule backs up, such as a payment in another currency, which
+      also fails the limit it can't be compared with, and closing an empty check, whose snapshot
+      also fails its schema. The models of order, payment and checkout commands now say why a
+      command is refused, not only whether;
+    - a capture for more than was authorized came up too rarely: the payment tests now try
+      commands at the edges of the rules at every state;
+    - sorting a check's lines for its snapshot never mattered, because new lines always had
+      rising identifiers: the checkout tests now hand them out in no particular order;
+    - reopening a closed order from another location came up too rarely: commands on merged
+      orders are now tried from the order's location and another;
+    - abandoning an order with a closed check, and abandoning one whose only line was fired
+      and then removed, happen only when devices race. The second came up often enough until
+      this slice's events joined the generators. The new race property reaches both. Only a
+      concurrent removal can empty a closed check, so no single device's commands reach the
+      first, and a known-answer test covers it too;
+    - three planted bugs couldn't change what the code does. Two removed checks that another
+      rule backs up with the same result (a line's amount, and a cash rounding, in another
+      currency), and are no longer listed; one targeted code that moved into `lines_on`, and
+      was re-aimed.
+  - 17 planted bugs no longer matched the code they target, rewritten for closing; their
+    anchors were refreshed.
 
 ### Checks and splits: step 4, slice 3 (2026-09-28)
 
@@ -301,6 +407,8 @@ design, the feature catalog and the roadmap. See the [README](../README.md).
 
 ## Waiting on a decision
 
+- Review of payments and closing (slice 4), and of the details ADR-0015's "As built" section
+  records.
 - The license, and the product name ("Keel" is a codename).
 - The first payment processor (decision gate G2 in the roadmap).
 - Verifying the research's unverified claims, and interviews with merchants.
@@ -320,12 +428,20 @@ Work deliberately left for later, so it isn't forgotten:
 - **`keel-types`:** `Locale`, with the first UI.
 - **Orders:**
   - Permissions, approvals and ownership leases aren't checked yet (`keel-policy`, `keel-sync`).
-  - Lines added after an order is closed should go to a post-close check, once orders close
-    (slice 4).
+  - An order with payments on its open checks can be voided, and checkout reports the payments:
+    refusing it needs the payments, and refunds come with returns.
   - Check names, and putting a new line straight onto the check it is for (a new version of
     `order.line_added`); re-splitting a line after part of it was paid (ADR-0015).
   - Events for a person's resolution of a conflict.
   - A tool that labels payload fields, for auditors and support.
+- **Payments:** everything ADR-0015 defers: refunds, returns and disputes; store-and-forward
+  and asynchronous rails; tip adjustment and incremental authorization; stored value, house
+  accounts and external accounts; surcharges; receipt details such as card brand, entry mode and
+  EMV data, which come with the first connector. A check that closes again after a reopening is
+  priced by the rules then in force. Starting a payment checks its identifier against the
+  order's own payments only: one that another order's payment already has (which only a bug or
+  a forgery could produce, since identifiers are random) is left to that payment's fold, which
+  reports a second initiation.
 - **Pricing:** everything ADR-0014 defers: price lists and the catalog's modifier rules,
   promotions, service charges, fees and surcharges, tips, tax-inclusive prices and compound
   taxes, per-item thresholds, tax holidays, the SNAP portion, manufacturer coupons,

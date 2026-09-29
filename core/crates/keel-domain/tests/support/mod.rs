@@ -1,13 +1,20 @@
-//! Shared support for property tests: identifiers, and strategies for order events.
+//! Shared support for property tests: identifiers, and strategies for order and payment events.
 
 #![allow(dead_code, reason = "each test crate uses a different subset")]
 
 use core::num::{NonZeroU8, NonZeroU16};
 
-use keel_domain::codec::{CatalogVersion, Change, IdSet, Name, Note, ReasonCode};
+use keel_domain::codec::{
+    CatalogVersion, Change, IdSet, Name, Note, ProcessorRef, ReasonCode, RulesVersion,
+};
 use keel_domain::order::{
-    Allocation, AttributesChanged, Channel, ChosenModifier, ItemSnapshot, LineAdded, LineChanged,
-    LinesAllocated, Mode, OrderCreated, OrderEvent, Placement, Prefix, Reason,
+    Allocation, AttributesChanged, Channel, CheckClosed, ChosenModifier, ItemSnapshot, LineAdded,
+    LineChanged, LineCharge, LinesAllocated, Mode, OrderCreated, OrderEvent, Placement, Prefix,
+    Reason, TaxCharge,
+};
+use keel_domain::payment::{
+    CashTendered, PaymentAuthorized, PaymentCaptured, PaymentEnded, PaymentEvent, PaymentInitiated,
+    Tender,
 };
 use keel_types::{Currency, Id, Money, Quantity, Unit};
 use proptest::prelude::*;
@@ -215,6 +222,132 @@ pub(crate) fn any_lines_allocated() -> impl Strategy<Value = LinesAllocated> {
     )
 }
 
+/// An amount of zero or more: mostly small, sometimes large enough that the rules' sums must be
+/// done carefully, but never so large that four of them overflow.
+fn amount() -> impl Strategy<Value = i64> {
+    prop_oneof![1 => Just(0_i64), 6 => 0_i64..10_000, 1 => 0_i64..=(i64::MAX / 16)]
+}
+
+/// A closed check's snapshot that satisfies the payload rules: one to four lines in ascending
+/// order, each with a net between zero and its gross; taxes that add up to the lines' tax, in
+/// ascending order, each taxing more than zero; a total that adds up; and payments whenever
+/// there is something to pay.
+pub(crate) fn any_check_closed() -> impl Strategy<Value = CheckClosed> {
+    let line = (amount(), 0_i64..=4, amount());
+    let lines = prop::collection::btree_map(0_u64..0xFFFF_FFFF, line, 1..=4);
+    let taxes = prop::collection::btree_map(0_u64..0xFFFF_FFFF, (1_u64..=5, 1_i64..100_000), 0..=3);
+    let payments = prop::option::of(any_id_set());
+    (any_currency(), any_id(), any::<[u8; 32]>(), lines, taxes, payments).prop_map(
+        |(currency, check, version, lines, taxes, payments)| {
+            let money = |minor| Money::from_minor(minor, currency);
+            // With no taxes, the lines have no tax either.
+            let untaxed = taxes.is_empty();
+            let lines: Vec<LineCharge> = lines
+                .into_iter()
+                .map(|(line, (gross, quarters, tax))| LineCharge {
+                    line: id(line),
+                    gross: money(gross),
+                    net: money(gross / 4 * quarters),
+                    tax: money(if untaxed { 0 } else { tax }),
+                })
+                .collect();
+            let tax = Money::sum(currency, lines.iter().map(|line| line.tax)).unwrap();
+            let net = Money::sum(currency, lines.iter().map(|line| line.net)).unwrap();
+            // The lines' tax, shared among the taxes.
+            let weights: Vec<u64> = taxes.values().map(|&(weight, _)| weight).collect();
+            let parts = if untaxed { Vec::new() } else { tax.allocate(&weights).unwrap() };
+            let taxes = taxes
+                .into_iter()
+                .zip(parts)
+                .map(|((tax, (_, taxable)), amount)| TaxCharge {
+                    tax: id(tax),
+                    taxable: money(taxable),
+                    amount,
+                })
+                .collect();
+            let total = net.checked_add(tax).unwrap();
+            CheckClosed {
+                check,
+                rules_version: RulesVersion::from_bytes(version),
+                lines,
+                taxes,
+                total,
+                payments: if total.is_positive() {
+                    payments.or_else(|| Some(IdSet::new([id(0xB1)]).unwrap()))
+                } else {
+                    payments
+                },
+            }
+        },
+    )
+}
+
+pub(crate) fn any_reference() -> impl Strategy<Value = ProcessorRef> {
+    prop_oneof!["[a-z]{2}_[A-Za-z0-9]{1,24}", "[!-~]{1,100}", "[!-~]{100}"]
+        .prop_map(|text| ProcessorRef::new(&text).unwrap())
+}
+
+/// An amount more than zero in `currency`.
+pub(crate) fn positive(currency: Currency) -> impl Strategy<Value = Money> {
+    prop_oneof![4 => 1_i64..10_000, 1 => 1_i64..=(i64::MAX / 16)]
+        .prop_map(move |minor| Money::from_minor(minor, currency))
+}
+
+fn any_ended() -> impl Strategy<Value = PaymentEnded> {
+    (any_reason(), prop::option::of(any_reference()))
+        .prop_map(|(reason, reference)| PaymentEnded { reason, reference })
+}
+
+/// A capture that satisfies the payload rules: for cash, what was tendered covers the amount,
+/// the tip and the rounding.
+pub(crate) fn any_captured() -> impl Strategy<Value = PaymentCaptured> {
+    any_currency().prop_flat_map(|currency| {
+        let cash = prop::option::of((0_i64..10_000, prop::option::of(1_i64..=100), any::<bool>()));
+        (
+            positive(currency),
+            prop::option::of(positive(currency)),
+            prop::option::of(any_reference()),
+            cash,
+        )
+            .prop_map(move |(amount, tip, reference, cash)| {
+                let due = tip.map_or(amount, |tip| amount.checked_add(tip).unwrap());
+                let cash = cash.map(|(extra, rounding, down)| {
+                    // Rounded down by no more than what is due.
+                    let rounding = rounding
+                        .map(|r| {
+                            let r = if down { -r.min(due.minor()) } else { r };
+                            Money::from_minor(r, currency)
+                        })
+                        .filter(|rounding| !rounding.is_zero());
+                    let paid = rounding.map_or(due, |r| due.checked_add(r).unwrap());
+                    CashTendered {
+                        tendered: paid.checked_add(Money::from_minor(extra, currency)).unwrap(),
+                        rounding,
+                    }
+                });
+                PaymentCaptured { amount, tip, reference, cash }
+            })
+    })
+}
+
+/// Any payment event, of any kind.
+pub(crate) fn any_payment_event() -> impl Strategy<Value = PaymentEvent> {
+    prop_oneof![
+        (any_id(), any_id(), any_code(Tender::ALL), any_currency().prop_flat_map(positive))
+            .prop_map(|(order, check, tender, amount)| {
+                PaymentEvent::Initiated(PaymentInitiated { order, check, tender, amount })
+            }),
+        (any_currency().prop_flat_map(positive), prop::option::of(any_reference())).prop_map(
+            |(amount, reference)| {
+                PaymentEvent::Authorized(PaymentAuthorized { amount, reference })
+            }
+        ),
+        any_captured().prop_map(PaymentEvent::Captured),
+        any_ended().prop_map(PaymentEvent::Failed),
+        any_ended().prop_map(PaymentEvent::Voided),
+    ]
+}
+
 /// Any order event, of any kind.
 pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
     prop_oneof![
@@ -230,5 +363,8 @@ pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
         Just(OrderEvent::Abandoned),
         any_id().prop_map(|check| OrderEvent::CheckOpened { check }),
         any_lines_allocated().prop_map(OrderEvent::LinesAllocated),
+        any_check_closed().prop_map(OrderEvent::CheckClosed),
+        Just(OrderEvent::Closed),
+        any_reason().prop_map(|reason| OrderEvent::Reopened { reason }),
     ]
 }

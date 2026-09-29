@@ -15,6 +15,12 @@
 //! - For each line, the later allocation to checks wins. An allocation naming a check that
 //!   doesn't exist yet doesn't apply to that line; one of a removed or voided line changes
 //!   nothing.
+//! - A closed check's snapshot stands: the money moved. A line with a part on a closed check
+//!   still follows a change, removal, void or comp (the kitchen must know), but not a new
+//!   allocation, and the order reports it. A line on a check that closed without it, because a
+//!   device added or moved it there concurrently, moves to an open check, unpaid.
+//! - A new line goes to the first open check. When every check is closed, it goes to a new
+//!   check, opened for it: a post-close check.
 //!
 //! Events recorded before the order was created, or by a device at another location, aren't
 //! applied either. Nothing is lost: every event stays in the log, and every one that isn't
@@ -26,9 +32,10 @@ use keel_events::envelope::{self, Customer, Event, Location, SchemaRef, TeamMemb
 use keel_types::{Currency, Id, Quantity};
 
 use super::checks::{Check, CheckShare, LinesAllocated};
+use super::closing::CheckClosed;
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
 use super::types::{Channel, ChosenModifier, ItemSnapshot, Mode, Reason, modifier_currency};
-use crate::aggregate::{Aggregate, EventMeta};
+use crate::aggregate::{Aggregate, EventMeta, Skipped};
 use crate::codec::{Change, Note};
 use crate::refs::{RevenueCenter, Table};
 use crate::schema::DecodeError;
@@ -75,6 +82,8 @@ pub struct OrderInfo {
 pub enum OrderStatus {
     /// Open for changes.
     Active,
+    /// Closed: every check holding a live line was closed. A manager can reopen it.
+    Closed,
     /// Voided as a whole.
     Voided(Reason),
     /// Dropped before anything in it was fired.
@@ -223,28 +232,37 @@ pub enum ConflictKind {
     FiredAfterRemoval(Id<Line>),
     /// A line was comped after it was removed or voided; the comp has no effect.
     CompedAfterRemoval(Id<Line>),
-    /// A line was added to an order that was already voided or abandoned.
+    /// A line was added to an order that was already closed, voided or abandoned: it is unpaid.
     AddedToClosedOrder(Id<Line>),
-    /// A line was fired on an order that was already voided or abandoned.
+    /// A line was fired on an order that was already closed, voided or abandoned.
     FiredOnClosedOrder(Id<Line>),
     /// The order was abandoned although it had live lines, or lines that were fired, which may
     /// have been made.
     AbandonedWithLines,
     /// A check was opened with an identifier already in use; it wasn't opened again.
     DuplicateCheck(Id<Check>),
-    /// An event refers to a check the order doesn't have; it didn't apply to the lines it named.
+    /// An event refers to a check the order doesn't have; it didn't apply to the check or the
+    /// lines it named.
     UnknownCheck(Id<Check>),
-}
-
-/// An event that wasn't applied because it couldn't be decoded.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Skipped {
-    /// The event.
-    pub event: Id<Event>,
-    /// Its schema.
-    pub schema: SchemaRef,
-    /// Why it couldn't be decoded.
-    pub reason: DecodeError,
+    /// A check was closed again; the first close stands.
+    DuplicateClose(Id<Check>),
+    /// A check was closed with amounts in another currency than the order's; it wasn't closed.
+    CheckCurrencyMismatch(Id<Check>),
+    /// A check was closed charging for a line that isn't on it: moved elsewhere, removed or
+    /// voided concurrently. The check's snapshot stands.
+    ChargedOffCheck(Id<Line>),
+    /// A check was closed without a line on it, which a device added or moved there
+    /// concurrently: the line's part moved to an open check, unpaid.
+    LeftOffCheck(Id<Line>),
+    /// A line with a part on a closed check was changed in quantity or modifiers, removed,
+    /// voided or comped: the line follows the event, and the check's snapshot stands.
+    ChangedOnClosedCheck(Id<Line>),
+    /// An allocation would have moved a line onto or off a closed check; it didn't apply to the
+    /// line.
+    AllocatedOnClosedCheck(Id<Line>),
+    /// The order was closed while a check holding a live line was still open: its lines are
+    /// unpaid.
+    ClosedWithOpenCheck(Id<Check>),
 }
 
 impl Order {
@@ -319,6 +337,21 @@ impl Order {
         self.id.cast()
     }
 
+    /// Whether `line` is live with a part on a closed check: what it costs, and how it is split,
+    /// are then frozen until the order is reopened.
+    pub fn is_frozen(&self, line: &Line) -> bool {
+        line.is_live()
+            && line
+                .allocation
+                .iter()
+                .any(|share| self.check(share.check).is_some_and(|check| !check.is_open()))
+    }
+
+    /// Whether a live line has a part on `check`.
+    pub(super) fn holds_live_line(&self, check: Id<Check>) -> bool {
+        self.live_lines().any(|line| line.allocation.iter().any(|share| share.check == check))
+    }
+
     /// Everything in the order's history that a person should look at.
     pub fn conflicts(&self) -> &[Conflict] {
         &self.conflicts
@@ -343,6 +376,33 @@ impl Order {
         self.status != OrderStatus::Active
     }
 
+    fn has_ended(&self) -> bool {
+        matches!(self.status, OrderStatus::Voided(_) | OrderStatus::Abandoned)
+    }
+
+    /// The number the next check gets.
+    fn next_number(&self) -> NonZeroU32 {
+        let opened = u32::try_from(self.checks.len()).ok().and_then(|n| n.checked_add(1));
+        opened.and_then(NonZeroU32::new).unwrap_or(NonZeroU32::MAX)
+    }
+
+    /// The check a line, or a part of one, goes to when it can't go where it would: the first
+    /// open check that doesn't already hold a part of the line (`holding`), or else a new check
+    /// opened for it, whose identifier is that of the event at `meta`. `None` if that identifier
+    /// is already a check's, which only a forged event could cause.
+    fn open_check_for(&mut self, meta: &EventMeta, holding: &[CheckShare]) -> Option<Id<Check>> {
+        let holds = |check: Id<Check>| holding.iter().any(|share| share.check == check);
+        if let Some(open) = self.checks.iter().find(|check| check.is_open() && !holds(check.id)) {
+            return Some(open.id);
+        }
+        let id = meta.event_id.cast();
+        if self.check(id).is_some() {
+            return None;
+        }
+        self.checks.push(Check { id, number: self.next_number(), closed: None });
+        Some(id)
+    }
+
     fn apply_created(&mut self, meta: &EventMeta, created: &OrderCreated) {
         if self.info.is_some() {
             return self.conflict(meta, ConflictKind::DuplicateCreation);
@@ -359,7 +419,7 @@ impl Order {
             customer: created.customer,
             owner: created.owner,
         });
-        self.checks.push(Check { id: self.main_check(), number: NonZeroU32::MIN });
+        self.checks.push(Check { id: self.main_check(), number: NonZeroU32::MIN, closed: None });
     }
 
     fn apply_attributes(info: &mut OrderInfo, changed: &AttributesChanged) {
@@ -386,6 +446,7 @@ impl Order {
         if added.item.unit_price.currency() != currency {
             return self.conflict(meta, ConflictKind::CurrencyMismatch(added.line));
         }
+        let check = self.open_check_for(meta, &[]).unwrap_or(self.main_check());
         self.lines.push(Line {
             id: added.line,
             item: added.item.clone(),
@@ -397,19 +458,25 @@ impl Order {
             status: LineStatus::Pending,
             comp: None,
             fired: false,
-            allocation: vec![CheckShare { check: self.main_check(), shares: NonZeroU16::MIN }],
+            allocation: vec![CheckShare { check, shares: NonZeroU16::MIN }],
         });
         if self.is_closed() {
             self.conflict(meta, ConflictKind::AddedToClosedOrder(added.line));
         }
     }
 
+    /// Whether the line with identifier `id` is frozen, before an event applies to it.
+    fn frozen(&self, id: Id<Line>) -> bool {
+        self.line(id).is_some_and(|line| self.is_frozen(line))
+    }
+
     fn apply_line_changed(&mut self, meta: &EventMeta, currency: Currency, changed: &LineChanged) {
         let id = changed.line;
+        let frozen = self.frozen(id);
         let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
             return self.conflict(meta, ConflictKind::UnknownLine(id));
         };
-        let conflict = if !line.is_live() {
+        let refused = if !line.is_live() {
             Some(ConflictKind::ChangedAfterRemoval(id))
         } else if changed.quantity.is_some_and(|quantity| quantity.unit() != line.quantity.unit()) {
             Some(ConflictKind::UnitMismatch(id))
@@ -421,39 +488,51 @@ impl Order {
         {
             Some(ConflictKind::CurrencyMismatch(id))
         } else {
-            if let Some(quantity) = changed.quantity {
-                line.quantity = quantity;
-            }
-            if let Some(modifiers) = &changed.modifiers {
-                line.modifiers.clone_from(modifiers);
-            }
-            if let Some(seat) = changed.seat {
-                line.seat = seat.into_option();
-            }
-            if let Some(course) = changed.course {
-                line.course = course.into_option();
-            }
-            if let Some(notes) = &changed.notes {
-                line.notes = notes.clone().into_option();
-            }
-            (line.status == LineStatus::Fired).then_some(ConflictKind::ChangedAfterFire(id))
+            None
         };
-        if let Some(kind) = conflict {
-            self.conflict(meta, kind);
+        if let Some(kind) = refused {
+            return self.conflict(meta, kind);
+        }
+        if let Some(quantity) = changed.quantity {
+            line.quantity = quantity;
+        }
+        if let Some(modifiers) = &changed.modifiers {
+            line.modifiers.clone_from(modifiers);
+        }
+        if let Some(seat) = changed.seat {
+            line.seat = seat.into_option();
+        }
+        if let Some(course) = changed.course {
+            line.course = course.into_option();
+        }
+        if let Some(notes) = &changed.notes {
+            line.notes = notes.clone().into_option();
+        }
+        if line.status == LineStatus::Fired {
+            self.conflict(meta, ConflictKind::ChangedAfterFire(id));
+        }
+        // Seats, courses and notes don't change what a line costs.
+        if frozen && (changed.quantity.is_some() || changed.modifiers.is_some()) {
+            self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
         }
     }
 
     fn apply_line_removed(&mut self, meta: &EventMeta, id: Id<Line>) {
+        let frozen = self.frozen(id);
         let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
             return self.conflict(meta, ConflictKind::UnknownLine(id));
         };
-        match line.status {
-            LineStatus::Pending => line.status = LineStatus::Removed,
-            LineStatus::Fired => {
-                line.status = LineStatus::Removed;
-                self.conflict(meta, ConflictKind::RemovedAfterFire(id));
-            }
-            LineStatus::Removed | LineStatus::Voided(_) => {}
+        let fired = match line.status {
+            LineStatus::Pending => false,
+            LineStatus::Fired => true,
+            LineStatus::Removed | LineStatus::Voided(_) => return,
+        };
+        line.status = LineStatus::Removed;
+        if fired {
+            self.conflict(meta, ConflictKind::RemovedAfterFire(id));
+        }
+        if frozen {
+            self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
         }
     }
 
@@ -478,15 +557,20 @@ impl Order {
     }
 
     fn apply_line_voided(&mut self, meta: &EventMeta, id: Id<Line>, reason: &Reason) {
+        let frozen = self.frozen(id);
         let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
             return self.conflict(meta, ConflictKind::UnknownLine(id));
         };
         if line.is_live() {
             line.status = LineStatus::Voided(reason.clone());
+            if frozen {
+                self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
+            }
         }
     }
 
     fn apply_line_comped(&mut self, meta: &EventMeta, id: Id<Line>, reason: &Reason) {
+        let frozen = self.frozen(id);
         let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
             return self.conflict(meta, ConflictKind::UnknownLine(id));
         };
@@ -495,6 +579,9 @@ impl Order {
         }
         if line.comp.is_none() {
             line.comp = Some(reason.clone());
+            if frozen {
+                self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
+            }
         }
     }
 
@@ -502,18 +589,18 @@ impl Order {
         if self.check(id).is_some() {
             return self.conflict(meta, ConflictKind::DuplicateCheck(id));
         }
-        let opened = u32::try_from(self.checks.len()).ok().and_then(|n| n.checked_add(1));
-        let number = opened.and_then(NonZeroU32::new).unwrap_or(NonZeroU32::MAX);
-        self.checks.push(Check { id, number });
+        self.checks.push(Check { id, number: self.next_number(), closed: None });
     }
 
     fn apply_lines_allocated(&mut self, meta: &EventMeta, allocated: &LinesAllocated) {
         let mut unknown_checks: Vec<Id<Check>> = Vec::new();
         for (id, shares) in allocated.lines() {
-            let unknown = shares
+            let unknown =
+                shares.iter().map(|share| share.check).find(|&check| self.check(check).is_none());
+            let onto_closed = shares
                 .iter()
-                .map(|share| share.check)
-                .find(|&check| !self.checks.iter().any(|known| known.id == check));
+                .any(|share| self.check(share.check).is_some_and(|check| !check.is_open()));
+            let frozen = self.frozen(id);
             let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
                 self.conflict(meta, ConflictKind::UnknownLine(id));
                 continue;
@@ -527,6 +614,9 @@ impl Order {
                         unknown_checks.push(check);
                     }
                 }
+                None if frozen || onto_closed => {
+                    self.conflict(meta, ConflictKind::AllocatedOnClosedCheck(id));
+                }
                 None => line.allocation = shares,
             }
         }
@@ -536,8 +626,81 @@ impl Order {
         }
     }
 
-    fn apply_closed(&mut self, meta: &EventMeta, status: OrderStatus) {
-        if self.is_closed() {
+    fn apply_check_closed(&mut self, meta: &EventMeta, currency: Currency, closed: &CheckClosed) {
+        let id = closed.check;
+        let Some(check) = self.checks.iter_mut().find(|check| check.id == id) else {
+            return self.conflict(meta, ConflictKind::UnknownCheck(id));
+        };
+        if check.closed.is_some() {
+            return self.conflict(meta, ConflictKind::DuplicateClose(id));
+        }
+        // The payload's rules put every amount in the total's currency.
+        if closed.total.currency() != currency {
+            return self.conflict(meta, ConflictKind::CheckCurrencyMismatch(id));
+        }
+        check.closed = Some(closed.clone());
+        let on_check =
+            |line: &Line| line.is_live() && line.allocation.iter().any(|share| share.check == id);
+        // Lines the check was charged for that aren't on it.
+        for charge in &closed.lines {
+            let kind = match self.line(charge.line) {
+                None => ConflictKind::UnknownLine(charge.line),
+                Some(line) if on_check(line) => continue,
+                Some(_) => ConflictKind::ChargedOffCheck(charge.line),
+            };
+            self.conflict(meta, kind);
+        }
+        // Lines on the check that it wasn't charged for: their parts move to an open check.
+        let left: Vec<usize> = (0..self.lines.len())
+            .filter(|&index| {
+                self.lines
+                    .get(index)
+                    .is_some_and(|line| on_check(line) && closed.line(line.id).is_none())
+            })
+            .collect();
+        for index in left {
+            let Some(line) = self.lines.get(index) else { continue };
+            let (line_id, holding) = (line.id, line.allocation.clone());
+            if let Some(target) = self.open_check_for(meta, &holding)
+                && let Some(line) = self.lines.get_mut(index)
+            {
+                for share in line.allocation.iter_mut().filter(|share| share.check == id) {
+                    share.check = target;
+                }
+                line.allocation.sort_by_key(|share| share.check.to_bytes());
+            }
+            self.conflict(meta, ConflictKind::LeftOffCheck(line_id));
+        }
+    }
+
+    fn apply_order_closed(&mut self, meta: &EventMeta) {
+        if self.status != OrderStatus::Active {
+            return;
+        }
+        self.status = OrderStatus::Closed;
+        let unpaid: Vec<Id<Check>> = self
+            .checks
+            .iter()
+            .filter(|check| check.is_open() && self.holds_live_line(check.id))
+            .map(Check::id)
+            .collect();
+        for check in unpaid {
+            self.conflict(meta, ConflictKind::ClosedWithOpenCheck(check));
+        }
+    }
+
+    fn apply_reopened(&mut self) {
+        if self.has_ended() {
+            return;
+        }
+        self.status = OrderStatus::Active;
+        for check in &mut self.checks {
+            check.closed = None;
+        }
+    }
+
+    fn apply_ended(&mut self, meta: &EventMeta, status: OrderStatus) {
+        if self.has_ended() {
             return;
         }
         let abandoned_with_lines = status == OrderStatus::Abandoned
@@ -585,11 +748,14 @@ impl Aggregate for Order {
             OrderEvent::LineVoided { line, reason } => self.apply_line_voided(meta, *line, reason),
             OrderEvent::LineComped { line, reason } => self.apply_line_comped(meta, *line, reason),
             OrderEvent::Voided { reason } => {
-                self.apply_closed(meta, OrderStatus::Voided(reason.clone()));
+                self.apply_ended(meta, OrderStatus::Voided(reason.clone()));
             }
-            OrderEvent::Abandoned => self.apply_closed(meta, OrderStatus::Abandoned),
+            OrderEvent::Abandoned => self.apply_ended(meta, OrderStatus::Abandoned),
             OrderEvent::CheckOpened { check } => self.apply_check_opened(meta, *check),
             OrderEvent::LinesAllocated(allocated) => self.apply_lines_allocated(meta, allocated),
+            OrderEvent::CheckClosed(closed) => self.apply_check_closed(meta, currency, closed),
+            OrderEvent::Closed => self.apply_order_closed(meta),
+            OrderEvent::Reopened { .. } => self.apply_reopened(),
         }
     }
 

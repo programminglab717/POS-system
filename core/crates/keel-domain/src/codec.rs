@@ -12,9 +12,10 @@
 //! | quantity | `[millionths, unit code]`, such as `[1500000, "kg"]` |
 //! | name, note | text string of bounded length, without control characters |
 //! | reason code | text string: a lowercase identifier of up to 32 characters |
+//! | processor reference | text string: 1 to 100 ASCII letters, digits and punctuation |
 //! | code (an enumeration) | unsigned integer |
 //! | small count | unsigned integer, from 1 |
-//! | catalog version | 32-byte byte string: a content hash |
+//! | catalog version, rules version | 32-byte byte string: a content hash |
 //! | set of identifiers | array of identifiers in ascending byte order, with no repeats |
 //!
 //! Optional fields are omitted when absent, never written as `null`. In a payload that changes
@@ -352,6 +353,14 @@ text_type!(
     is_identifier
 );
 
+text_type!(
+    /// A payment processor's or terminal's reference for a payment, such as its transaction
+    /// identifier: 1 to 100 ASCII letters, digits and punctuation, with no spaces.
+    ProcessorRef,
+    "processor reference",
+    |text| (1..=100).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_graphic())
+);
+
 /// Text of 1 to `max` characters with no control characters, except line feeds where allowed.
 /// Control characters could drive printers and displays, so they are never stored.
 fn is_text(text: &str, max: usize, line_feeds: bool) -> bool {
@@ -368,39 +377,57 @@ fn is_identifier(text: &str) -> bool {
         && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
-/// A published catalog version: the content hash that identifies it.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CatalogVersion([u8; 32]);
+/// Declares a version of published reference data, identified by its 32-byte content hash.
+macro_rules! version_type {
+    ($(#[$meta:meta])* $name:ident, $what:literal) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name([u8; 32]);
 
-impl CatalogVersion {
-    /// A catalog version from its 32-byte hash.
-    pub const fn from_bytes(bytes: [u8; 32]) -> CatalogVersion {
-        CatalogVersion(bytes)
-    }
+        impl $name {
+            #[doc = concat!("A ", $what, " from its 32-byte hash.")]
+            pub const fn from_bytes(bytes: [u8; 32]) -> $name {
+                $name(bytes)
+            }
 
-    /// The 32-byte hash.
-    pub const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
+            /// The 32-byte hash.
+            pub const fn as_bytes(&self) -> &[u8; 32] {
+                &self.0
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(concat!(stringify!($name), "("))?;
+                self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))?;
+                f.write_str(")")
+            }
+        }
+
+        impl Field for $name {
+            fn to_value(&self) -> Value {
+                Value::from(self.0.as_slice())
+            }
+
+            fn from_value(value: &Value) -> Option<$name> {
+                <[u8; 32]>::try_from(value.as_bytes()?).ok().map($name)
+            }
+        }
+    };
 }
 
-impl fmt::Debug for CatalogVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("CatalogVersion(")?;
-        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))?;
-        f.write_str(")")
-    }
-}
+version_type!(
+    /// A published catalog version: the content hash that identifies it.
+    CatalogVersion,
+    "catalog version"
+);
 
-impl Field for CatalogVersion {
-    fn to_value(&self) -> Value {
-        Value::from(self.0.as_slice())
-    }
-
-    fn from_value(value: &Value) -> Option<CatalogVersion> {
-        <[u8; 32]>::try_from(value.as_bytes()?).ok().map(CatalogVersion)
-    }
-}
+version_type!(
+    /// A published version of a location's pricing rules (its taxes and rounding): the content
+    /// hash that identifies it. A check's snapshot records the version it was priced with.
+    RulesVersion,
+    "rules version"
+);
 
 /// A non-empty set of identifiers, kept in ascending order, so it has one encoding.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -559,6 +586,12 @@ mod tests {
         }
         for bad in ["", "Kitchen", "2nd", "_x", "kitchen-error", &"a".repeat(33)] {
             assert!(ReasonCode::new(bad).is_err(), "{bad}");
+        }
+        for good in ["pi_3Mtw", "8815678901234567", "A-1/b.c:9", &"x".repeat(100)] {
+            assert!(ProcessorRef::new(good).is_ok(), "{good}");
+        }
+        for bad in ["", "two words", "tab\there", "é", &"x".repeat(101)] {
+            assert!(ProcessorRef::new(bad).is_err(), "{bad}");
         }
         assert_eq!(format!("{:?}", Name::new("Tea").unwrap()), "Name(\"Tea\")");
         assert_eq!(Name::new("Tea").unwrap().to_string(), "Tea");

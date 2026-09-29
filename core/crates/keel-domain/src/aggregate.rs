@@ -54,6 +54,17 @@ impl EventMeta {
     }
 }
 
+/// An event that wasn't applied because it couldn't be decoded, or belongs to another stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Skipped {
+    /// The event.
+    pub event: Id<Event>,
+    /// Its schema.
+    pub schema: SchemaRef,
+    /// Why it couldn't be decoded.
+    pub reason: DecodeError,
+}
+
 /// The state of an aggregate, folded from its stream's events.
 pub trait Aggregate {
     /// The aggregate's events.

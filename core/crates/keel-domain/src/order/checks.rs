@@ -3,13 +3,15 @@
 //! Every order has a main check from its creation, identified by the order's own identifier.
 //! More checks can be opened, and each live line is allocated to one or more checks in whole
 //! shares: one share on one check for a line that check pays for alone, one share on each of
-//! three checks for a bottle of wine split three ways.
+//! three checks for a bottle of wine split three ways. A check closes once its payments cover
+//! it, with a snapshot of what it was charged ([`CheckClosed`]).
 
 use core::num::{NonZeroU16, NonZeroU32};
 
 use keel_events::cbor::Value;
 use keel_types::Id;
 
+use super::closing::CheckClosed;
 use super::state::Line;
 use crate::codec::{Field, Fields, IdSet, PayloadError, Record};
 
@@ -18,6 +20,7 @@ use crate::codec::{Field, Fields, IdSet, PayloadError, Record};
 pub struct Check {
     pub(super) id: Id<Check>,
     pub(super) number: NonZeroU32,
+    pub(super) closed: Option<CheckClosed>,
 }
 
 impl Check {
@@ -30,6 +33,17 @@ impl Check {
     /// number 1.
     pub const fn number(&self) -> NonZeroU32 {
         self.number
+    }
+
+    /// What the check was charged, and the payments that settled it, if it is closed. A closed
+    /// check's lines are frozen until the order is reopened.
+    pub const fn closed(&self) -> Option<&CheckClosed> {
+        self.closed.as_ref()
+    }
+
+    /// Whether the check is open: not closed, or reopened since.
+    pub const fn is_open(&self) -> bool {
+        self.closed.is_none()
     }
 }
 

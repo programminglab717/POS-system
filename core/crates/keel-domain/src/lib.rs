@@ -15,13 +15,20 @@
 //! - **Commands** are what a device asks to do. They are checked against the device's current
 //!   view and become events, so a device acting alone never creates a conflict.
 //!
-//! [`order`] is the first aggregate: an order's creation and attributes, and its lines.
+//! The aggregates so far:
+//! - [`order`]: an order's creation and attributes, its lines, its checks, and closing it;
+//! - [`payment`]: money moving against a check, in cash or by card.
+//!
+//! [`checkout`] holds the rules that span an order and its payments: what each check still owes,
+//! starting a payment, closing a check, and money that doesn't fit the order.
 //!
 //! Like the rest of the kernel, this crate is deterministic, never panics, and builds for
 //! `wasm32`.
 
 pub mod aggregate;
+pub mod checkout;
 pub mod codec;
 pub mod order;
+pub mod payment;
 pub mod refs;
 pub mod schema;

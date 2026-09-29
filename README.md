@@ -11,10 +11,11 @@ catalog and roadmap are in a v1 draft. Two kernel crates are built and tested:
 [`keel-types`](./core/crates/keel-types/) (money, currencies, rounding, quantities, time,
 identifiers, business dates) and [`keel-events`](./core/crates/keel-events/) (the signed,
 hash-chained event log). Two more are under way: [`keel-domain`](./core/crates/keel-domain/)
-(event schemas and the business aggregates) has orders, their lines, and their split among
-checks, and [`keel-pricing`](./core/crates/keel-pricing/) prices each check: line amounts,
-shares of split lines, discounts, US sales tax, rounding and the calculation trace. [docs/progress.md](./docs/progress.md) tracks the build step
-by step.
+(event schemas and the business aggregates) has orders, their lines, their split among checks,
+payments in cash and by card, and closing checks and orders, and
+[`keel-pricing`](./core/crates/keel-pricing/) prices each check: line amounts, shares of split
+lines, discounts, US sales tax, rounding and the calculation trace.
+[docs/progress.md](./docs/progress.md) tracks the build step by step.
 
 ## What makes Keel different
 

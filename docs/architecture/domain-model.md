@@ -436,9 +436,9 @@ returns and channels.
 ### 6.5 As built: order events v1
 
 `keel-domain` implements the first part of this section: creating an order, changing its
-attributes, its lines, and splitting them among checks
-([ADR-0015](../adr/0015-checks-and-payments.md)). Adjustments, payments, closing checks and
-orders, ownership, and the Paid, Closed and Reopened states come later. Payloads follow
+attributes, its lines, splitting them among checks, and closing checks and orders
+([ADR-0015](../adr/0015-checks-and-payments.md)); payments are in §7.1. Adjustments, ownership,
+and the PartiallyPaid and Paid stages come later. Payloads follow
 [ADR-0013](../adr/0013-event-payloads-and-schema-evolution.md), and their key tables are in
 `core/crates/keel-domain/src/order/events.rs`.
 
@@ -456,6 +456,9 @@ orders, ownership, and the Paid, Closed and Reopened states come later. Payloads
 | `order.abandoned` | An order was dropped before anything in it was fired. |
 | `order.check_opened` | A check was opened, besides the main check every order has. |
 | `order.lines_allocated` | Lines were allocated to checks: each line listed now belongs to the checks listed for it, in whole shares. |
+| `order.check_closed` | A check was closed: what it was charged (each line's part, with its gross, net and tax; each tax's taxable amount and tax; the total), the version of the pricing rules, and the payments that settled it. |
+| `order.closed` | The order was closed: every check holding a live line was closed. |
+| `order.reopened` | A closed order, or one with closed checks, was reopened, with a reason: the order and every check are open again. |
 
 - **A line's life.** A line is *pending* until it is fired, then *fired*. A pending line can be
   removed; a fired line can only be voided. Removed and voided lines no longer count, but a line
@@ -472,17 +475,33 @@ orders, ownership, and the Paid, Closed and Reopened states come later. Payloads
   more are opened as needed, numbered in the order they were opened. Each live line belongs to
   one or more checks in whole shares, in lowest terms: one share on one check for a line one
   party pays for, one share on each of three checks for a bottle of wine split three ways. A
-  new line goes to the main check, and `order.lines_allocated` moves or splits lines.
+  new line goes to the first open check, the main check unless it is closed; when every check
+  is closed, it goes to a new check opened for it, a *post-close check*. `order.lines_allocated`
+  moves or splits lines.
 - **Pricing:** each check is priced as its own sale (§8.1). Its *basket* holds the live lines
   allocated to it, with the prices they were rung up with; a shared line contributes the check's
   part of it. A comped line is in the basket at no charge. The whole order's basket prices it as
   one sale, as a one-check order is paid.
+- **Closing a check.** A check closes once its captured payments cover its total and none of
+  its payments is unresolved; checkout decides it (§7.1). Its snapshot records what pricing
+  charged it then, line by line and tax by tax, and the payments that settled it: receipts, the
+  ledger and returns read the snapshot, never a recomputation. A closed check freezes what its
+  lines cost, and where they are paid: their quantity, modifiers, removal, void, comp and
+  allocation. Their seat, course and notes can still change, and they are still fired, so an
+  order paid first is still prepared.
+- **Closing the order.** The order closes once every check holding a live line is closed. A
+  closed order takes no command but a reopening. Reopening, with a reason, makes the order and
+  every check open again, so the lines can change and the checks close again with new
+  snapshots; the old ones stay in the log. A voided or abandoned order is final.
 - **Commands** are checked against the device's view of the order. A command needs a created,
   active order at the device's location. Prices must be in the order's currency, and a change must
   change every field it gives. Removing or changing a line needs it pending; voiding needs it
   fired; comping needs it live and not yet comped; abandoning needs every line removed before it
   was fired. A check is opened with an identifier not yet in use; an allocation needs live lines
-  and existing checks, and must change each line's allocation.
+  and existing, open checks, and must change each line's allocation. What a line on a closed
+  check costs can't change, and the line can't move; an order with a closed check can't be
+  voided or abandoned: reopen it first. Closing the order needs a live line, and every check
+  holding one closed; reopening needs the order, or one of its checks, closed.
 
 **Concurrent edits** fold by the rules of
 [offline-and-sync.md §5.2](./offline-and-sync.md#52-conflict-rules). Every event stays in the log;
@@ -501,17 +520,26 @@ the conflicts listed are derived by the fold, identically on every replica:
 | A removed or voided line is fired | It stays off, and the kitchen should be told | `FiredAfterRemoval` |
 | A removed or voided line is comped | No effect | `CompedAfterRemoval` |
 | A line is removed or voided twice, or comped twice | The first wins | — |
-| Lines are added or fired after the order was closed | Applied | `AddedToClosedOrder`, `FiredOnClosedOrder` |
+| Lines are added or fired after the order was closed, voided or abandoned | Applied; an added line goes to an open check, or a new post-close check | `AddedToClosedOrder`, `FiredOnClosedOrder` |
 | The order is voided or abandoned twice | The first wins | — |
+| The order is voided or abandoned after it was closed | Voided or abandoned; checkout reports its payments | — |
+| The order is closed or reopened after it was voided or abandoned, or closed twice | No effect | — |
 | The order is abandoned although a line is live, or was ever fired | Abandoned | `AbandonedWithLines` |
 | Two devices change the same attribute | The later change in canonical order wins, field by field | — |
 | Two devices split a line differently | The later allocation in canonical order wins | — |
 | An allocation names a check that doesn't exist yet | Not applied to the lines it names | `UnknownCheck` |
 | A check is opened twice, or with the main check's identifier | The first opening wins | `DuplicateCheck` |
 | A removed or voided line is allocated | No effect | — |
+| A check is closed again | The first close stands | `DuplicateClose` |
+| A check is closed with amounts in another currency | Not applied | `CheckCurrencyMismatch` |
+| A close charges for a line that isn't on the check: moved, removed or voided concurrently | The snapshot stands | `ChargedOffCheck` |
+| A close leaves out a line on the check, added or moved there concurrently | The line's part moves to the first open check that doesn't hold part of it, or to a new post-close check | `LeftOffCheck` |
+| A line on a closed check is changed in quantity or modifiers, removed, voided or comped | Applied: the kitchen must know. The snapshot stands | `ChangedOnClosedCheck` |
+| An allocation moves a line onto or off a closed check | Not applied to that line | `AllocatedOnClosedCheck` |
+| The order is closed while a check holding a live line is open | Closed; that check's lines are unpaid | `ClosedWithOpenCheck` |
 
-Once checks exist, lines added after the order is closed will land in a post-close check, as
-offline-and-sync §5.2 describes.
+A post-close check's identifier is that of the event that opened it, so every replica opens the
+same one.
 
 ---
 
@@ -584,9 +612,58 @@ store credit, loyalty points, house account and external/manual (e.g. check or a
 Region packs add A2A/instant (Pix, UPI, FedNow request-to-pay, SEPA Instant), QR wallets, mobile
 money, meal vouchers, EBT and BNPL. See [payments.md](./payments.md).
 
-**Idempotency is structural.** Every payment request carries an idempotency key derived from the
-`PaymentInitiated` event ID. A device crash, sync replay or network retry can never double-charge.
-Status queries reconcile any "unknown outcome" before a new attempt is allowed on the same check.
+**Idempotency is structural.** A payment's identifier is the idempotency key that every request
+for it carries, and `payment.initiated` records it (ADR-0015). A device crash, sync replay or
+network retry can never double-charge. Status queries reconcile any "unknown outcome" before a
+new attempt is allowed on the same check.
+
+### 7.1 As built: payments v1
+
+`keel-domain` implements payments in cash and by card
+([ADR-0015](../adr/0015-checks-and-payments.md)): the payment aggregate, and *checkout*, the
+rules that span an order and its payments. The payloads' key tables are in
+`core/crates/keel-domain/src/payment/events.rs`.
+
+| Schema (version 1) | What happened |
+|---|---|
+| `payment.initiated` | A payment was started: its order, check, tender (cash or card) and amount. |
+| `payment.authorized` | A card was authorized for an amount, with the processor's reference. |
+| `payment.captured` | The money moved: the amount applied to the check, a tip on top, the processor's reference, and for cash the amount tendered and any cash rounding. |
+| `payment.failed` | The attempt failed, with a reason, such as a decline or a cancellation: no money moved. |
+| `payment.voided` | The payment was voided before it was captured, with a reason: no money moved. |
+
+- **The state machine.** A payment is initiated, then authorized, captured, failed or voided;
+  an authorized payment is then captured, failed or voided. An initiated or authorized payment
+  is *unresolved*: money may still move.
+- **Commands** record an outcome of an unresolved payment at the device's location. Only a card
+  is authorized, once, for no more than was asked; a capture is for no more than the
+  authorization, or than was asked. A cash capture records the amount tendered and a card
+  capture doesn't; cash never has a processor reference.
+- **Checkout** sees an order together with its payments and the location's pricing rules. A
+  check's *balance* is its total (the snapshot's once it is closed, the current pricing's before)
+  less its captured payments in the order's currency; tips are on top. A payment starts only on
+  an open check of an active order with no unresolved payment, for no more than the balance, so
+  an unknown outcome is resolved before any new attempt. A check closes only with no unresolved
+  payment, and captured payments that cover its total.
+- **Issues.** Money that doesn't fit the order is reported, never hidden: the payments stand,
+  and a manager decides. Checkout reports a payment for a check the order doesn't have, one in
+  another currency, one captured or unresolved on a voided or abandoned order, and one captured
+  or unresolved on a check that closed without it; and a check overpaid, or closed and no longer
+  covered.
+- **Not yet built:** refunds, returns and disputes; store-and-forward and asynchronous rails;
+  tip adjustment and incremental authorization; other tenders; receipt details such as card
+  brand, entry mode and EMV data, which come with the first connector.
+
+Outcomes recorded concurrently fold by these rules, and every event stays in the log:
+
+| Situation | Outcome | Conflict |
+|---|---|---|
+| A payment is initiated twice | The first stands | `DuplicateInitiation` |
+| An outcome comes before the initiation, or from another location | Not applied | `BeforeInitiation`, `WrongLocation` |
+| An outcome has money in another currency than the payment's | Not applied | `CurrencyMismatch` |
+| Anything is recorded after a capture | The capture stands: the money moved | `OutOfTurn` |
+| An authorization or a capture after a failure or a void | Applied: the card may be held or charged, and an authorized payment is unresolved again | `OutOfTurn` |
+| A second authorization, or a failure or void after a failure or void | No effect: no money moved either way | — |
 
 ---
 

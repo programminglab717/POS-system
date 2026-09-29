@@ -1,5 +1,6 @@
 //! Known-answer tests for orders: the lifecycle, each conflict rule, skipped events, and each
-//! command's checks.
+//! command's checks, closing checks and orders included. Closing a check through its payments is
+//! tested with checkout.
 
 use core::num::{NonZeroU8, NonZeroU16};
 use core::time::Duration;
@@ -12,7 +13,9 @@ use keel_types::{Currency, Hlc, Id, Money, Quantity, SeededEntropy, Timestamp, U
 
 use super::*;
 use crate::aggregate::{Aggregate, EventMeta, fold};
-use crate::codec::{CatalogVersion, Change, IdSet, Name, Note, PayloadError, ReasonCode};
+use crate::codec::{
+    CatalogVersion, Change, IdSet, Name, Note, PayloadError, ReasonCode, RulesVersion,
+};
 use crate::schema::{DecodeError, DomainEvent};
 
 fn id<T>(n: u64) -> Id<T> {
@@ -95,6 +98,34 @@ fn added(line: u64, price: Money) -> LineAdded {
         course: None,
         notes: None,
     }
+}
+
+/// A snapshot closing `check`, charging each line the amount given, untaxed, and settled by one
+/// payment when the total is more than zero.
+fn closed(check: u64, charges: &[(u64, i64)]) -> CheckClosed {
+    let lines: Vec<LineCharge> = charges
+        .iter()
+        .map(|&(line, amount)| LineCharge {
+            line: id(line),
+            gross: usd(amount),
+            net: usd(amount),
+            tax: usd(0),
+        })
+        .collect();
+    let total = usd(charges.iter().map(|&(_, amount)| amount).sum());
+    CheckClosed {
+        check: id(check),
+        rules_version: RulesVersion::from_bytes([9; 32]),
+        lines,
+        taxes: Vec::new(),
+        total,
+        payments: total.is_positive().then(|| IdSet::new([id(0xB1)]).unwrap()),
+    }
+}
+
+/// The checks' identifiers and numbers.
+fn numbered(order: &Order) -> Vec<(Id<Check>, u32)> {
+    order.checks().iter().map(|check| (check.id(), check.number().get())).collect()
 }
 
 /// Applies events to an order, each with fresh metadata, as a replica folding them in canonical
@@ -555,6 +586,210 @@ fn concurrent_splits_resolve_by_the_rules() {
 }
 
 #[test]
+fn a_closed_check_freezes_what_its_lines_cost() {
+    let mut script = Script::created();
+    script.apply(&OrderEvent::LineAdded(added(1, usd(450))));
+    script.apply(&OrderEvent::LineAdded(added(2, usd(1000))));
+    script.apply(&OrderEvent::LineAdded(added(3, usd(300))));
+    script.apply(&OrderEvent::CheckOpened { check: id(0xC2) });
+    // The two checks share line 2; line 3 is check 2's alone.
+    let split = LinesAllocated::new([
+        allocation(2, 0xA, 1),
+        allocation(2, 0xC2, 1),
+        allocation(3, 0xC2, 1),
+    ])
+    .unwrap();
+    script.apply(&OrderEvent::LinesAllocated(split));
+    script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(1, 450), (2, 500)])));
+    assert_eq!(script.kinds(), []);
+    let main = script.order.check(id(0xA)).unwrap();
+    assert!(!main.is_open());
+    assert_eq!(main.closed().unwrap().total, usd(950));
+    let frozen = |script: &Script, n| script.order.is_frozen(script.order.line(id(n)).unwrap());
+    assert!(frozen(&script, 1) && frozen(&script, 2) && !frozen(&script, 3));
+
+    // Seats, courses and notes don't change what a line costs; a quantity does. Either applies.
+    let notes = LineChanged {
+        notes: Some(Change::Set(Note::new("no ice").unwrap())),
+        ..LineChanged::to(id(1))
+    };
+    script.apply(&OrderEvent::LineChanged(notes));
+    assert_eq!(script.kinds(), []);
+    let more = LineChanged { quantity: Some(each(2)), ..LineChanged::to(id(1)) };
+    script.apply(&OrderEvent::LineChanged(more));
+    assert_eq!(script.order.line(id(1)).unwrap().quantity(), each(2));
+    // A paid order is still prepared: firing is never frozen.
+    script.fire(&[1, 2, 3]);
+    // A comp and a void apply, and are reported: the snapshot stands.
+    script.apply(&OrderEvent::LineComped { line: id(2), reason: reason("birthday") });
+    script.apply(&OrderEvent::LineVoided { line: id(1), reason: reason("kitchen_error") });
+    assert_eq!(script.order.line(id(2)).unwrap().comp(), Some(&reason("birthday")));
+    assert_eq!(script.status(1), LineStatus::Voided(reason("kitchen_error")));
+    // An allocation can't move a line off a closed check, or onto one.
+    script.apply(&OrderEvent::LinesAllocated(LinesAllocated::moving(&lines(&[2]), id(0xC2))));
+    script.apply(&OrderEvent::LinesAllocated(LinesAllocated::moving(&lines(&[3]), id(0xA))));
+    assert_eq!(script.order.line(id(2)).unwrap().allocation(), [share(0xA, 1), share(0xC2, 1)]);
+    assert_eq!(script.order.line(id(3)).unwrap().allocation(), [share(0xC2, 1)]);
+    assert_eq!(script.order.check(id(0xA)).unwrap().closed().unwrap().total, usd(950));
+    assert_eq!(
+        script.kinds(),
+        [
+            ConflictKind::ChangedOnClosedCheck(id(1)),
+            ConflictKind::ChangedOnClosedCheck(id(2)),
+            ConflictKind::ChangedOnClosedCheck(id(1)),
+            ConflictKind::AllocatedOnClosedCheck(id(2)),
+            ConflictKind::AllocatedOnClosedCheck(id(3)),
+        ]
+    );
+}
+
+#[test]
+fn lines_a_close_left_off_move_to_an_open_check() {
+    let mut script = Script::created();
+    for (line, price) in [(1, 450), (2, 300), (3, 1000), (4, 800)] {
+        script.apply(&OrderEvent::LineAdded(added(line, usd(price))));
+    }
+    script.apply(&OrderEvent::CheckOpened { check: id(0xC2) });
+    let split = LinesAllocated::new([
+        allocation(3, 0xA, 1),
+        allocation(3, 0xC2, 1),
+        allocation(4, 0xC2, 1),
+    ])
+    .unwrap();
+    script.apply(&OrderEvent::LinesAllocated(split));
+
+    // A device closes the main check having seen only line 1 on it, charging it for line 4 too,
+    // which another device moved to check 2, and for a line the order doesn't have.
+    let close =
+        script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(1, 450), (4, 800), (9, 100)])));
+    // Line 2 moves to check 2. Check 2 already has a part of line 3, so the main check's part
+    // goes to a new check, opened for it, with the close's identifier.
+    let post: Id<Check> = close.cast();
+    assert_eq!(numbered(&script.order), [(id(0xA), 1), (id(0xC2), 2), (post, 3)]);
+    assert_eq!(script.order.line(id(2)).unwrap().allocation(), [share(0xC2, 1)]);
+    assert_eq!(
+        script.order.line(id(3)).unwrap().allocation(),
+        [share(0xC2, 1), CheckShare { check: post, shares: NonZeroU16::MIN }]
+    );
+    assert_eq!(
+        script.kinds(),
+        [
+            ConflictKind::ChargedOffCheck(id(4)),
+            ConflictKind::UnknownLine(id(9)),
+            ConflictKind::LeftOffCheck(id(2)),
+            ConflictKind::LeftOffCheck(id(3)),
+        ]
+    );
+
+    // A check closes once; a close of a check the order doesn't have, or in another currency,
+    // isn't applied.
+    script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(1, 450)])));
+    script.apply(&OrderEvent::CheckClosed(closed(0xC9, &[(1, 450)])));
+    let mut euros = closed(0xC2, &[(2, 300)]);
+    euros.total = eur(300);
+    script.apply(&OrderEvent::CheckClosed(euros));
+    assert!(script.order.check(id(0xC2)).unwrap().is_open());
+    assert_eq!(script.order.check(id(0xA)).unwrap().closed().unwrap().lines.len(), 3);
+    assert_eq!(
+        script.kinds()[4..],
+        [
+            ConflictKind::DuplicateClose(id(0xA)),
+            ConflictKind::UnknownCheck(id(0xC9)),
+            ConflictKind::CheckCurrencyMismatch(id(0xC2)),
+        ]
+    );
+}
+
+#[test]
+fn new_lines_go_to_the_first_open_check() {
+    let mut script = Script::created();
+    script.apply(&OrderEvent::CheckOpened { check: id(0xC2) });
+    script.apply(&OrderEvent::LineAdded(added(1, usd(450))));
+    script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(1, 450)])));
+    script.apply(&OrderEvent::LineAdded(added(2, usd(300))));
+    assert_eq!(script.order.line(id(2)).unwrap().allocation(), [share(0xC2, 1)]);
+    script.apply(&OrderEvent::CheckClosed(closed(0xC2, &[(2, 300)])));
+
+    // Every check is closed: the next line gets a check of its own, with its addition's
+    // identifier. The order is still active, so that isn't a conflict.
+    let third = script.apply(&OrderEvent::LineAdded(added(3, usd(500))));
+    let post: Id<Check> = third.cast();
+    assert_eq!(
+        script.order.line(id(3)).unwrap().allocation(),
+        [CheckShare { check: post, shares: NonZeroU16::MIN }]
+    );
+    assert_eq!(numbered(&script.order)[2], (post, 3));
+    assert_eq!(script.kinds(), []);
+
+    // The order is closed with that check still open, and more is added: both are unpaid.
+    script.apply(&OrderEvent::Closed);
+    script.apply(&OrderEvent::LineAdded(added(4, usd(250))));
+    assert_eq!(*script.order.status(), OrderStatus::Closed);
+    assert_eq!(
+        script.order.line(id(4)).unwrap().allocation(),
+        [CheckShare { check: post, shares: NonZeroU16::MIN }]
+    );
+    assert_eq!(
+        script.kinds(),
+        [ConflictKind::ClosedWithOpenCheck(post), ConflictKind::AddedToClosedOrder(id(4))]
+    );
+}
+
+#[test]
+fn orders_close_and_reopen() {
+    let mut script = Script::created();
+    script.apply(&OrderEvent::LineAdded(added(1, usd(450))));
+    script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(1, 450)])));
+    script.apply(&OrderEvent::Closed);
+    script.apply(&OrderEvent::Closed);
+    assert_eq!(*script.order.status(), OrderStatus::Closed);
+    // Reopening reopens the order and every check; the snapshots are history.
+    script.apply(&OrderEvent::Reopened { reason: reason("wrong_tender") });
+    assert_eq!(*script.order.status(), OrderStatus::Active);
+    assert!(script.order.checks().iter().all(Check::is_open));
+    assert!(!script.order.is_frozen(script.order.line(id(1)).unwrap()));
+    script.apply(&OrderEvent::LineRemoved { line: id(1) });
+
+    // A closed order can be voided concurrently; nothing reopens or closes a voided order.
+    script.apply(&OrderEvent::LineAdded(added(2, usd(450))));
+    script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(2, 450)])));
+    script.apply(&OrderEvent::Closed);
+    script.apply(&OrderEvent::Voided { reason: reason("walkout") });
+    script.apply(&OrderEvent::Reopened { reason: reason("wrong_tender") });
+    script.apply(&OrderEvent::Closed);
+    assert_eq!(*script.order.status(), OrderStatus::Voided(reason("walkout")));
+    assert!(!script.order.check(id(0xA)).unwrap().is_open());
+    assert_eq!(script.kinds(), []);
+}
+
+#[test]
+fn forged_check_identifiers_leave_lines_where_they_were() {
+    // Check 0xE006 has the identifier the sixth event will have.
+    let mut script = Script::created();
+    script.apply(&OrderEvent::LineAdded(added(1, usd(450))));
+    script.apply(&OrderEvent::CheckOpened { check: id(0xE006) });
+    script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(1, 450)])));
+    script.apply(&OrderEvent::CheckClosed(closed(0xE006, &[(1, 450)])));
+    // Event 6: every check is closed, and the new check would need an identifier in use.
+    script.apply(&OrderEvent::LineAdded(added(2, usd(300))));
+    assert_eq!(script.order.line(id(2)).unwrap().allocation(), [share(0xA, 1)]);
+    assert_eq!(script.order.checks().len(), 2);
+
+    let mut script = Script::created();
+    script.apply(&OrderEvent::LineAdded(added(1, usd(450))));
+    script.apply(&OrderEvent::LineAdded(added(2, usd(300))));
+    script.apply(&OrderEvent::CheckOpened { check: id(0xE006) });
+    script.apply(&OrderEvent::CheckClosed(closed(0xE006, &[(2, 300)])));
+    // Event 6 closes the main check without line 2, which has nowhere to go.
+    script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(1, 450)])));
+    assert_eq!(script.order.line(id(2)).unwrap().allocation(), [share(0xA, 1)]);
+    assert_eq!(
+        script.kinds(),
+        [ConflictKind::ChargedOffCheck(id(2)), ConflictKind::LeftOffCheck(id(2))]
+    );
+}
+
+#[test]
 fn undecodable_events_are_skipped_and_reported() {
     let mut order = Script::created().order;
     let meta = Script::new().meta_at(location());
@@ -661,11 +896,16 @@ impl Device {
 
     fn run(&mut self, command: OrderCommand) -> Result<(), CommandError> {
         let event = self.order.decide(location(), command)?;
+        self.record(&event);
+        Ok(())
+    }
+
+    /// Records an event, such as a check's close, which checkout decides.
+    fn record(&mut self, event: &OrderEvent) {
         let before = self.order.conflicts().len();
         let meta = self.script.meta_at(location());
-        self.order.apply(&meta, &event);
+        self.order.apply(&meta, event);
         assert_eq!(self.order.conflicts().len(), before, "a valid command caused a conflict");
-        Ok(())
     }
 }
 
@@ -833,6 +1073,93 @@ fn checks_are_opened_once_and_lines_allocated_to_them() {
 }
 
 #[test]
+fn closed_checks_freeze_their_lines_for_commands() {
+    let mut device = Device::with_line(false);
+    device.run(OrderCommand::AddLine(added(2, usd(100)))).unwrap();
+    device.run(OrderCommand::OpenCheck(id(0xC2))).unwrap();
+    device
+        .run(OrderCommand::AllocateLines(LinesAllocated::moving(&lines(&[2]), id(0xC2))))
+        .unwrap();
+    device.record(&OrderEvent::CheckClosed(closed(0xA, &[(1, 100)])));
+
+    // What line 1 costs, and where it is paid, can't change.
+    let quantity = LineChanged { quantity: Some(each(2)), ..LineChanged::to(id(1)) };
+    let modifiers = LineChanged { modifiers: Some(Vec::new()), ..LineChanged::to(id(1)) };
+    let frozen = Err(CommandError::LineOnClosedCheck(id(1)));
+    for command in [
+        OrderCommand::ChangeLine(quantity),
+        OrderCommand::ChangeLine(modifiers),
+        OrderCommand::RemoveLine(id(1)),
+        OrderCommand::CompLine { line: id(1), reason: reason("birthday") },
+        OrderCommand::AllocateLines(LinesAllocated::moving(&lines(&[1]), id(0xC2))),
+    ] {
+        assert_eq!(device.run(command), frozen);
+    }
+    let closed_check = Err(CommandError::CheckClosed(id(0xA)));
+    let onto = OrderCommand::AllocateLines(LinesAllocated::moving(&lines(&[2]), id(0xA)));
+    assert_eq!(device.run(onto), closed_check);
+    assert_eq!(device.run(OrderCommand::Void(reason("walkout"))), closed_check);
+    assert_eq!(device.run(OrderCommand::Close), Err(CommandError::CheckOpen(id(0xC2))));
+
+    // Its notes can change, and it is fired, but not voided.
+    let notes = LineChanged {
+        notes: Some(Change::Set(Note::new("no ice").unwrap())),
+        ..LineChanged::to(id(1))
+    };
+    device.run(OrderCommand::ChangeLine(notes)).unwrap();
+    device.run(OrderCommand::FireLines(lines(&[1, 2]))).unwrap();
+    assert_eq!(device.run(OrderCommand::VoidLine { line: id(1), reason: reason("x") }), frozen);
+
+    // Once every check holding a live line is closed, the order closes, and takes nothing more.
+    device.run(OrderCommand::CompLine { line: id(2), reason: reason("birthday") }).unwrap();
+    device.record(&OrderEvent::CheckClosed(closed(0xC2, &[(2, 0)])));
+    device.run(OrderCommand::Close).unwrap();
+    assert_eq!(*device.order.status(), OrderStatus::Closed);
+    for command in [
+        OrderCommand::AddLine(added(3, usd(100))),
+        OrderCommand::Close,
+        OrderCommand::Void(reason("walkout")),
+    ] {
+        assert_eq!(device.run(command), Err(CommandError::OrderClosed));
+    }
+    assert_eq!(
+        device.order.decide(id(0x101), OrderCommand::Reopen(reason("wrong_tender"))),
+        Err(CommandError::WrongLocation)
+    );
+
+    // Reopened, everything can change again.
+    device.run(OrderCommand::Reopen(reason("wrong_tender"))).unwrap();
+    device.run(OrderCommand::VoidLine { line: id(1), reason: reason("kitchen_error") }).unwrap();
+    assert_eq!(
+        device.run(OrderCommand::Reopen(reason("again"))),
+        Err(CommandError::NothingToReopen)
+    );
+}
+
+#[test]
+fn orders_close_with_their_checks_and_reopen_when_something_closed() {
+    let mut device = Device::new();
+    device.run(OrderCommand::Create(created())).unwrap();
+    assert_eq!(device.run(OrderCommand::Close), Err(CommandError::NothingToClose));
+    assert_eq!(device.run(OrderCommand::Reopen(reason("x"))), Err(CommandError::NothingToReopen));
+    device.run(OrderCommand::AddLine(added(1, usd(100)))).unwrap();
+    assert_eq!(device.run(OrderCommand::Close), Err(CommandError::CheckOpen(id(0xA))));
+
+    // A closed check can be reopened while the order is active; then the order can be voided.
+    device.record(&OrderEvent::CheckClosed(closed(0xA, &[(1, 100)])));
+    assert_eq!(device.run(OrderCommand::Abandon), Err(CommandError::HasLiveLines));
+    // Even when a concurrent removal took the check's only line off, what it was paid stands:
+    // the order isn't abandoned.
+    let mut emptied = Device { order: device.order.clone(), script: Script::new() };
+    let meta = emptied.script.meta_at(location());
+    emptied.order.apply(&meta, &OrderEvent::LineRemoved { line: id(1) });
+    assert_eq!(emptied.run(OrderCommand::Abandon), Err(CommandError::CheckClosed(id(0xA))));
+    device.run(OrderCommand::Reopen(reason("wrong_tender"))).unwrap();
+    device.run(OrderCommand::Void(reason("walkout"))).unwrap();
+    assert_eq!(device.run(OrderCommand::Reopen(reason("x"))), Err(CommandError::OrderClosed));
+}
+
+#[test]
 fn allocations_have_one_form() {
     // In order of line, then check, each line's shares in lowest terms.
     let allocated = LinesAllocated::new([
@@ -967,6 +1294,25 @@ fn golden_events() -> Vec<OrderEvent> {
             ])
             .unwrap(),
         ),
+        // A third of the wine, and a comped dessert, with 8.875% tax on the wine.
+        OrderEvent::CheckClosed(CheckClosed {
+            check: id(0xC1),
+            rules_version: RulesVersion::from_bytes([9; 32]),
+            lines: vec![
+                LineCharge { line: id(1), gross: usd(1000), net: usd(1000), tax: usd(89) },
+                LineCharge { line: id(2), gross: usd(650), net: usd(0), tax: usd(0) },
+            ],
+            taxes: vec![TaxCharge { tax: id(0x900), taxable: usd(1000), amount: usd(89) }],
+            total: usd(1089),
+            payments: Some(IdSet::new([id(0xB1)]).unwrap()),
+        }),
+        OrderEvent::Closed,
+        OrderEvent::Reopened {
+            reason: Reason {
+                code: ReasonCode::new("wrong_tender").unwrap(),
+                note: Some(Note::new("paid by card").unwrap()),
+            },
+        },
     ]
 }
 
@@ -999,6 +1345,40 @@ fn payload_rules_across_fields_are_enforced() {
     let empty = Err(DecodeError::Malformed(PayloadError::EmptyChange));
     assert_eq!(decode(&OrderEvent::AttributesChanged(AttributesChanged::default())), empty);
     assert_eq!(decode(&OrderEvent::LineChanged(LineChanged::to(id(1)))), empty);
+
+    // A closed check's snapshot adds up, in one currency, in one order.
+    let taxed = || {
+        let mut snapshot = closed(0xA, &[(1, 450), (2, 1000)]);
+        snapshot.lines[1].tax = usd(89);
+        snapshot.taxes = vec![TaxCharge { tax: id(0x900), taxable: usd(1000), amount: usd(89) }];
+        snapshot.total = usd(1539);
+        snapshot
+    };
+    let check = |change: fn(&mut CheckClosed)| {
+        let mut snapshot = taxed();
+        change(&mut snapshot);
+        decode(&OrderEvent::CheckClosed(snapshot))
+    };
+    assert!(check(|_| {}).is_ok());
+    assert_eq!(check(|s| s.lines.swap(0, 1)), invalid("lines"));
+    assert_eq!(check(|s| s.lines.clear()), invalid("lines"));
+    assert_eq!(check(|s| s.lines[0].net = usd(451)), invalid("lines"));
+    assert_eq!(check(|s| s.lines[0].net = usd(-1)), invalid("lines"));
+    assert_eq!(check(|s| s.lines[0].gross = eur(450)), invalid("lines"));
+    assert_eq!(check(|s| s.taxes[0].taxable = usd(0)), invalid("taxes"));
+    assert_eq!(check(|s| s.taxes[0].amount = usd(88)), invalid("taxes"));
+    assert_eq!(check(|s| s.taxes.push(s.taxes[0])), invalid("taxes"));
+    assert_eq!(check(|s| s.lines[1].tax = usd(-89)), invalid("lines"));
+    assert_eq!(check(|s| s.total = usd(1540)), invalid("total"));
+    assert_eq!(
+        check(|s| s.payments = None),
+        Err(DecodeError::Malformed(PayloadError::Missing("payments")))
+    );
+    // Nothing to pay needs no payment, and may still have one.
+    let mut free = closed(0xA, &[(1, 0)]);
+    assert!(decode(&OrderEvent::CheckClosed(free.clone())).is_ok());
+    free.payments = Some(IdSet::new([id(0xB1)]).unwrap());
+    assert!(decode(&OrderEvent::CheckClosed(free)).is_ok());
 }
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -1010,8 +1390,9 @@ fn bytes(hex: &str) -> Vec<u8> {
 
 /// The order payloads, pinned forever: one example of each schema. Python's `cbor2` decoded
 /// each one, confirmed it is canonical, and matched it field by field against the documented
-/// key tables; it encoded the check payloads itself, from the key tables. If this test fails, a
-/// payload format changed, and stored events would no longer decode.
+/// key tables; it encoded the check payloads, and the closing and reopening ones, itself, from
+/// the key tables. If this test fails, a payload format changed, and stored events would no
+/// longer decode.
 #[test]
 fn the_payload_formats_are_pinned() {
     let pinned = [
@@ -1045,6 +1426,12 @@ fn the_payload_formats_are_pinned() {
             "order.lines_allocated",
             "a10183a301500192f0c100007000800000000000000102500192f0c100007000800000000000000a0302a301500192f0c100007000800000000000000102500192f0c10000700080000000000000c10301a301500192f0c100007000800000000000000202500192f0c10000700080000000000000c10301",
         ),
+        (
+            "order.check_closed",
+            "a601500192f0c10000700080000000000000c102582009090909090909090909090909090909090909090909090909090909090909090382a401500192f0c100007000800000000000000102821903e86355534403821903e8635553440482185963555344a401500192f0c1000070008000000000000002028219028a6355534403820063555344048200635553440481a301500192f0c100007000800000000000090002821903e86355534403821859635553440582190441635553440681500192f0c10000700080000000000000b1",
+        ),
+        ("order.closed", "a0"),
+        ("order.reopened", "a2016c77726f6e675f74656e646572026c706169642062792063617264"),
     ];
     let events = golden_events();
     assert_eq!(events.len(), pinned.len());

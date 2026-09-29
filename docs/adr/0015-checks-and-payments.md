@@ -70,7 +70,7 @@ The work is built in two slices: checks and splits (decisions 1 to 4), then paym
    - a check opened twice keeps the first opening (`DuplicateCheck`);
    - an allocation of a line that was removed or voided changes nothing.
 
-### Payments and closing (built in the next slice)
+### Payments and closing
 
 5. **Closing a check records what was charged.** `order.check_closed` stores the check's snapshot:
    the version of the pricing rules used; each line part's gross, net and tax; each tax's taxable
@@ -117,6 +117,31 @@ The work is built in two slices: checks and splits (decisions 1 to 4), then paym
     - each line's tax per tax in the snapshot, and re-pricing a snapshot to audit it;
     - re-splitting a line after part of it was paid.
 
+### As built
+
+Building decisions 5 to 9 settled details the decisions left open, or refined:
+
+- **What a closed check freezes** is what its lines cost and where they are paid: their
+  quantity, modifiers, removal, void, comp and allocation. Their seat, course and notes can still
+  change, and they are still fired, so an order paid first is still prepared.
+- **An allocation doesn't move a frozen line**, even from a device acting concurrently: moving it
+  would charge its paid part twice. It doesn't apply to that line, and leaves a conflict. Every
+  other change to a frozen line follows the event, as decision 6 says.
+- **A line a close left off** moves to the first open check that doesn't already hold part of
+  it, so no two parts of a line merge; a new line goes to the first open check, the main check
+  unless it is closed. When no open check will do, a post-close check is opened, whose
+  identifier is the event's that opened it, so every replica opens the same one.
+- **Reopening** reopens every closed check as well as the order, so their lines can change; each
+  check then closes again with a new snapshot. It is allowed when the order or any of its checks
+  is closed, and a voided or abandoned order is final.
+- **The payment's fold**: a capture always applies, and nothing after it changes the payment; an
+  authorization or a capture after a failure or void applies; a second authorization, or a
+  failure or void after a failure or void, changes nothing. A void releases an authorization or
+  calls off an attempt; a failure is a decline, an error or a cancellation.
+- **Checkout also reports** a payment captured or unresolved on a check that closed without it,
+  and a closed check its payments no longer cover (one not yet received, say).
+- **Voiding or abandoning an order with a closed check** is refused: reopen it first.
+
 ## Consequences
 
 **Positive**
@@ -129,9 +154,10 @@ The work is built in two slices: checks and splits (decisions 1 to 4), then paym
 - A split order's total can differ by a cent or so from the same order unsplit, which staff and
   guests may notice.
 - Pricing one check needs the whole order: a shared line's part depends on every check sharing it.
-- Until payments are built, checks can be split but not closed.
 - While a line has a part on a closed check, its split is frozen, so the other checks sharing it
   can't re-split it.
+- Reopening an order reopens all its checks, and a check closes again at the pricing rules then
+  in force, which may differ from those it first closed with.
 
 ## Alternatives considered
 
@@ -152,5 +178,5 @@ The work is built in two slices: checks and splits (decisions 1 to 4), then paym
 - [ADR-0005](./0005-processor-agnostic-payments.md) (processor-agnostic payments),
   [ADR-0013](./0013-event-payloads-and-schema-evolution.md) (payloads),
   [ADR-0014](./0014-pricing-engine-v0.md) (pricing)
-- Implementation: [`core/crates/keel-domain`](../../core/crates/keel-domain/),
-  [`core/crates/keel-pricing`](../../core/crates/keel-pricing/)
+- Implementation: [`core/crates/keel-domain`](../../core/crates/keel-domain/) (the `order`,
+  `payment` and `checkout` modules), [`core/crates/keel-pricing`](../../core/crates/keel-pricing/)

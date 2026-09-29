@@ -86,6 +86,27 @@ pub trait DomainEvent: Sized {
     }
 }
 
+/// Why an event can't be recorded: it can't be encoded, or it wouldn't decode under its own
+/// schema, so every kernel would skip it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Unrecordable {
+    /// The event can't be encoded.
+    Schema(SchemaError),
+    /// The event's payload breaks its schema's rules.
+    Payload(PayloadError),
+}
+
+/// Checks that `event` can be recorded: it encodes, and decodes under its own schema. Every
+/// event a command produces is checked, so no device writes one that others would reject.
+pub(crate) fn check_recordable<E: DomainEvent>(event: &E) -> Result<(), Unrecordable> {
+    let (schema, payload) = event.encode().map_err(Unrecordable::Schema)?;
+    match E::decode(&schema, &payload) {
+        Ok(_) => Ok(()),
+        Err(DecodeError::Malformed(error)) => Err(Unrecordable::Payload(error)),
+        Err(_) => Err(Unrecordable::Payload(PayloadError::NotAMap)),
+    }
+}
+
 /// Why an event payload couldn't be decoded.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]

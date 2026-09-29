@@ -223,7 +223,7 @@ workspace, compiled for iOS, Android, Windows, macOS, Linux, the browser (WASM) 
 |---|---|
 | `keel-types` | Money and ISO 4217 currencies, rounding, Rate, Decimal, Quantity and units, Timestamp and clocks, HLC, typed IDs (UUIDv7), BusinessDate; Locale to come |
 | `keel-events` | Event envelope, canonical CBOR, COSE signatures, hash chaining, log writing and chain verification, device registry and revocation |
-| `keel-domain` | Event payload schemas and the schema registry; aggregates, their total fold functions and command checks: order (creation, attributes, lines, and their split among checks built so far), check, payment, kitchen ticket, stock, drawer session, booking, custody job, stored value, loyalty, membership, time entry |
+| `keel-domain` | Event payload schemas and the schema registry; aggregates, their total fold functions and command checks: order (built so far: creation, attributes, lines, their split among checks, and closing checks and orders), payment (built so far: cash and card), and checkout across them; kitchen ticket, stock, drawer session, booking, custody job, stored value, loyalty, membership, time entry |
 | `keel-pricing` | Price resolution, promotions optimizer, tax engine, allocation, rounding, trace (v0 built: line amounts, shares of split lines, discounts and their allocation, US sales tax, rounding, trace) |
 | `keel-policy` | ABAC permissions, approvals, rule-pack evaluation with explanations |
 | `keel-store` | SQLite event store, projections, snapshots, outbox, retention |
@@ -262,13 +262,13 @@ sequenceDiagram
   S->>K: AddLine × 3, ApplyLoyalty
   K-->>S: totals + trace (local, < 50 ms)
   S->>K: StartPayment(card, 18.40)
-  K->>K: PaymentInitiated (idempotency key = event id)
+  K->>K: PaymentInitiated (idempotency key = payment id)
   K->>T: sale request (semi-integrated)
   alt processor reachable (e.g. cellular failover on terminal or hub)
     T->>P: authorize
     P-->>T: approved
     T-->>K: approved + token + receipt data
-    K->>K: PaymentCaptured → OrderClosed → effects: print, fiscal
+    K->>K: PaymentCaptured → CheckClosed → OrderClosed → effects: print, fiscal
   else processor unreachable and risk envelope allows
     T-->>K: stored offline (terminal store-and-forward)
     K->>K: PaymentStoredOffline (exposure +18.40) → OrderClosed

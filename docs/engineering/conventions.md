@@ -92,7 +92,18 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
   missing check. Give command generators faulty variants, such as an identifier already in use, a
   price in another currency, a zero quantity or another location, and require the code and the
   model to agree on every one. Folds get events no single device would write, such as a change to
-  a line that was never added.
+  a line that was never added, and forgeries aimed at the fold's fallbacks, such as a check opened
+  under the identifier the next event would give a new check.
+- **Predict why a command is refused, not only whether.** Rules back each other up: an amount in
+  another currency also fails the limit it can't be compared with, and an empty check's snapshot
+  also fails its schema. A model that only predicts acceptance can't see such a rule go missing,
+  so models of commands predict the refusal, taking the rules in the order the code checks them.
+- **Aim at each rule on its own.** A change that breaks two rules at once can't show that either
+  is missing: moving one line's net in a snapshot breaks the total too. Generators aimed at a
+  payload's rules change one thing and keep the rest valid, moving the sums to match.
+- **Check commands where concurrency leads.** A merge leaves states no single device reaches, such
+  as a closed check whose lines another device removed. Check commands against the model on
+  merged views, and on every state the merge passes through.
 - **No `prop_assume!`.** Generate valid inputs directly, or filter inside the strategy. Rejected
   cases count against a global limit that aborts high case-count runs.
 - **Check that new tests can fail.** Plant the bug a test is meant to catch, and confirm the test
@@ -104,6 +115,9 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
     the bugs a new test targets to the list.
   - The runner reports a bug whose text no longer matches the code as stale, and one that doesn't
     compile as proving nothing; a compile error is never counted as a caught bug.
+  - A planted bug that can't change what the code does isn't a bug, such as removing a check that
+    another rule backs up with the same result. Leave it out, with a comment in the list saying
+    why, and re-aim a bug whose code moved.
   - It restores each file by rewriting it, so Cargo sees a new modification time, and runs with
     `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`, so a planted bug's failures never reach the
     regression files. Don't edit or build the crate while it runs, or give it a separate worktree

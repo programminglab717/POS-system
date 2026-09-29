@@ -1,8 +1,9 @@
-//! Property tests for order event payloads, against an independent model of the schemas:
-//! payloads round-trip; a payload with a field changed, removed or added is accepted exactly
-//! when the model says it is valid, and then has exactly one encoding; and the rules that span
-//! fields or sit at a boundary (one currency per payload, text lengths, identifier sets in
-//! ascending order, allocations in order and in lowest terms) are aimed at directly.
+//! Property tests for order and payment event payloads, against an independent model of the
+//! schemas: payloads round-trip; a payload with a field changed, removed or added is accepted
+//! exactly when the model says it is valid, and then has exactly one encoding; and the rules
+//! that span fields or sit at a boundary (one currency per payload, text lengths, identifier
+//! sets in ascending order, allocations in order and in lowest terms, snapshots that add up,
+//! cash that covers what is paid) are aimed at directly.
 
 #![allow(
     clippy::unwrap_used,
@@ -14,13 +15,57 @@
 
 mod support;
 
-use keel_domain::order::OrderEvent;
-use keel_domain::schema::DomainEvent;
+use keel_domain::order::{CheckClosed, LineCharge, OrderEvent, TaxCharge};
+use keel_domain::payment::PaymentEvent;
+use keel_domain::schema::{DecodeError, DomainEvent, SchemaId};
 use keel_events::cbor::{Map, Value};
 use keel_events::envelope::{SchemaName, SchemaRef};
-use keel_types::{Currency, Unit};
+use keel_types::{Currency, Money, Unit};
 use proptest::prelude::*;
-use support::{any_event, any_line_added, any_line_changed, any_lines_allocated, modifiers};
+use support::{
+    any_captured, any_check_closed, any_event, any_line_added, any_line_changed,
+    any_lines_allocated, any_payment_event, modifiers,
+};
+
+/// An event of any aggregate.
+#[derive(Clone, Debug, PartialEq)]
+enum Event {
+    Order(OrderEvent),
+    Payment(PaymentEvent),
+}
+
+impl Event {
+    fn schema(&self) -> SchemaId {
+        match self {
+            Event::Order(event) => event.schema(),
+            Event::Payment(event) => event.schema(),
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        match self {
+            Event::Order(event) => event.to_value(),
+            Event::Payment(event) => event.to_value(),
+        }
+    }
+}
+
+/// Decodes `payload` as `schema`, by the aggregate its name belongs to, and re-encodes it.
+fn decode(schema: &SchemaRef, payload: &Value) -> Result<Value, DecodeError> {
+    if schema.name.as_str().starts_with("payment.") {
+        PaymentEvent::from_value(schema, payload).map(|event| event.to_value())
+    } else {
+        OrderEvent::from_value(schema, payload).map(|event| event.to_value())
+    }
+}
+
+/// Any event of either aggregate.
+fn any_any_event() -> impl Strategy<Value = Event> {
+    prop_oneof![
+        3 => any_event().prop_map(Event::Order),
+        1 => any_payment_event().prop_map(Event::Payment),
+    ]
+}
 
 /// How a field may appear in a payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,11 +90,18 @@ enum Kind {
     Code(u64),
     Count8,
     Count16,
-    CatalogVersion,
+    /// A 32-byte content hash: a catalog or rules version.
+    Hash32,
     IdSet,
     Modifiers,
     /// Allocations of lines to checks.
     Allocations,
+    /// A processor's reference.
+    Reference,
+    /// What a closed check charged for its lines.
+    LineCharges,
+    /// What a closed check charged for each tax.
+    TaxCharges,
 }
 
 use Kind::*;
@@ -79,7 +131,7 @@ fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
         "order.line_added" => vec![
             (1, Id, Required),
             (2, Id, Required),
-            (3, CatalogVersion, Required),
+            (3, Hash32, Required),
             (4, Name, Required),
             (5, Id, Required),
             (6, Money, Required),
@@ -102,9 +154,31 @@ fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
         "order.line_voided" | "order.line_comped" => {
             vec![(1, Id, Required), (2, Reason, Required), (3, Note, Optional)]
         }
-        "order.voided" => vec![(1, Reason, Required), (2, Note, Optional)],
-        "order.abandoned" => vec![],
+        "order.voided" | "order.reopened" => vec![(1, Reason, Required), (2, Note, Optional)],
+        "order.abandoned" | "order.closed" => vec![],
         "order.lines_allocated" => vec![(1, Allocations, Required)],
+        "order.check_closed" => vec![
+            (1, Id, Required),
+            (2, Hash32, Required),
+            (3, LineCharges, Required),
+            (4, TaxCharges, Required),
+            (5, Money, Required),
+            (6, IdSet, Optional),
+        ],
+        "payment.initiated" => {
+            vec![(1, Id, Required), (2, Id, Required), (3, Code(1), Required), (4, Money, Required)]
+        }
+        "payment.authorized" => vec![(1, Money, Required), (2, Reference, Optional)],
+        "payment.captured" => vec![
+            (1, Money, Required),
+            (2, Money, Optional),
+            (3, Reference, Optional),
+            (4, Money, Optional),
+            (5, Money, Optional),
+        ],
+        "payment.failed" | "payment.voided" => {
+            vec![(1, Reason, Required), (2, Note, Optional), (3, Reference, Optional)]
+        }
         other => panic!("no rules for {other}"),
     }
 }
@@ -200,6 +274,98 @@ fn allocations_valid(value: &Value) -> bool {
     !parsed.is_empty() && ascending && divisors.values().all(|&divisor| divisor == 1)
 }
 
+/// The entries of an array of maps with exactly the keys 1 to `keys`, each a `kinds` value.
+fn records(value: &Value, kinds: &[Kind]) -> Option<Vec<Vec<Value>>> {
+    value
+        .as_array()?
+        .iter()
+        .map(|item| {
+            let map = item.as_map()?;
+            let keys: Vec<u64> = map.iter().filter_map(|(key, _)| key.as_u64()).collect();
+            let expected: Vec<u64> = (1..=u64::try_from(kinds.len()).unwrap()).collect();
+            if keys != expected || map.len() != kinds.len() {
+                return None;
+            }
+            let values: Vec<Value> = map.iter().map(|(_, value)| value.clone()).collect();
+            values
+                .iter()
+                .zip(kinds)
+                .all(|(value, &kind)| valid_value(kind, value))
+                .then_some(values)
+        })
+        .collect()
+}
+
+/// Whether identifiers come in strictly ascending byte order.
+fn strictly_ascending(ids: &[&Value]) -> bool {
+    ids.windows(2).all(|pair| pair[0].as_bytes() < pair[1].as_bytes())
+}
+
+/// Whether a sum of amounts fits an amount.
+fn fits(sum: i128) -> bool {
+    i64::try_from(sum).is_ok()
+}
+
+/// The rules of a closed check's snapshot, which span its fields.
+fn snapshot_valid(map: &Map) -> bool {
+    let get = |key: u64| map.get(&Value::Unsigned(key)).unwrap();
+    let (total, currency) = money(get(5)).unwrap();
+    let lines = records(get(3), &[Id, Money, Money, Money]).unwrap();
+    let taxes = records(get(4), &[Id, Money, Money]).unwrap();
+    let amounts = |values: &[Value]| {
+        values[1..].iter().map(|value| money(value).unwrap()).collect::<Vec<_>>()
+    };
+    let lines_valid = !lines.is_empty()
+        && strictly_ascending(&lines.iter().map(|line| &line[0]).collect::<Vec<_>>())
+        && lines.iter().all(|line| {
+            let [(gross, _), (net, _), (tax, _)] = amounts(line)[..] else { return false };
+            amounts(line).iter().all(|&(_, c)| c == currency)
+                && 0 <= net
+                && net <= gross
+                && tax >= 0
+        });
+    let taxes_valid = strictly_ascending(&taxes.iter().map(|tax| &tax[0]).collect::<Vec<_>>())
+        && taxes.iter().all(|tax| {
+            let [(taxable, _), (amount, _)] = amounts(tax)[..] else { return false };
+            amounts(tax).iter().all(|&(_, c)| c == currency) && taxable > 0 && amount >= 0
+        });
+    let sum = |rows: &[Vec<Value>], at: usize| -> i128 {
+        rows.iter().map(|row| i128::from(money(&row[at]).unwrap().0)).sum()
+    };
+    let (net, tax, taxed) = (sum(&lines, 2), sum(&lines, 3), sum(&taxes, 2));
+    lines_valid
+        && taxes_valid
+        && fits(net)
+        && fits(tax)
+        && fits(taxed)
+        && tax == taxed
+        && net + tax == i128::from(total)
+        && (total <= 0 || map.get(&Value::Unsigned(6)).is_some())
+}
+
+/// The rules of a capture, which span its fields.
+fn capture_valid(map: &Map) -> bool {
+    let get = |key: u64| map.get(&Value::Unsigned(key)).map(|value| money(value).unwrap());
+    let (amount, currency) = get(1).unwrap();
+    let in_currency = |key: u64| get(key).is_none_or(|(_, c)| c == currency);
+    let tip = get(2).map_or(0, |(tip, _)| tip);
+    let rounding = get(5).map_or(0, |(rounding, _)| rounding);
+    // Paid step by step, as amounts: each running total must be one.
+    let with_tip = i128::from(amount) + i128::from(tip);
+    let paid = with_tip + i128::from(rounding);
+    let cash_valid = match get(4) {
+        None => get(5).is_none(),
+        Some((tendered, _)) => {
+            fits(with_tip) && fits(paid) && paid >= 0 && i128::from(tendered) >= paid
+        }
+    };
+    amount > 0
+        && [2, 4, 5].into_iter().all(in_currency)
+        && get(2).is_none_or(|(tip, _)| tip > 0)
+        && get(5).is_none_or(|(rounding, _)| rounding != 0)
+        && cash_valid
+}
+
 /// Whether the prices are all zero or more, and all in one currency (or `currency`, if given).
 fn prices_consistent(prices: &[(i64, Currency)], currency: Option<Currency>) -> bool {
     let currency = currency.or_else(|| prices.first().map(|&(_, currency)| currency));
@@ -229,7 +395,7 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
         Code(max) => value.as_u64().is_some_and(|code| code <= max),
         Count8 => value.as_u64().is_some_and(|n| (1..=255).contains(&n)),
         Count16 => value.as_u64().is_some_and(|n| (1..=65_535).contains(&n)),
-        CatalogVersion => value.as_bytes().is_some_and(|bytes| bytes.len() == 32),
+        Hash32 => value.as_bytes().is_some_and(|bytes| bytes.len() == 32),
         IdSet => value.as_array().is_some_and(|ids| {
             !ids.is_empty()
                 && ids.iter().all(is_uuid_v7)
@@ -245,6 +411,11 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
                 })
         }
         Allocations => allocations_valid(value),
+        Reference => value.as_text().is_some_and(|text| {
+            (1..=100).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_graphic())
+        }),
+        LineCharges => records(value, &[Id, Money, Money, Money]).is_some(),
+        TaxCharges => records(value, &[Id, Money, Money]).is_some(),
     }
 }
 
@@ -288,11 +459,15 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
                 get(3).is_none_or(|modifiers| prices_consistent(&all_prices(modifiers), None));
             map.len() > 1 && quantity_positive && modifiers_consistent
         }
+        "order.check_closed" => snapshot_valid(map),
+        "payment.initiated" => money(get(4).unwrap()).unwrap().0 > 0,
+        "payment.authorized" => money(get(1).unwrap()).unwrap().0 > 0,
+        "payment.captured" => capture_valid(map),
         _ => true,
     }
 }
 
-fn schema_ref(event: &OrderEvent) -> SchemaRef {
+fn schema_ref(event: &Event) -> SchemaRef {
     event.schema().to_ref().unwrap()
 }
 
@@ -344,9 +519,18 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
             int(-2..=-1),
         ]
         .boxed(),
-        CatalogVersion => {
-            prop::collection::vec(any::<u8>(), 31..=33).prop_map(Value::Bytes).boxed()
-        }
+        Hash32 => prop::collection::vec(any::<u8>(), 31..=33).prop_map(Value::Bytes).boxed(),
+        Reference => prop_oneof![
+            text("[!-~]{1,3}"),
+            text("[!-~]{99,101}"),
+            text("[a-z]{1,4} [a-z]{1,4}"),
+            Just(Value::from("")),
+            Just(Value::from("pi_é")),
+            Just(Value::from("tab\there")),
+        ]
+        .boxed(),
+        LineCharges => charges_near_miss(3),
+        TaxCharges => charges_near_miss(4),
         Modifiers => prop_oneof![
             2 => support::any_currency()
                 .prop_flat_map(|currency| modifiers(currency, 1))
@@ -384,6 +568,179 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
         Just(Value::Map(Map::new())),
     ];
     prop_oneof![4 => aimed, 1 => anything].boxed()
+}
+
+/// Charges close to a snapshot's: its lines' (key 3) or taxes' (key 4), valid or spoiled.
+fn charges_near_miss(key: u64) -> BoxedStrategy<Value> {
+    let field = move |closed: &CheckClosed| {
+        let payload = OrderEvent::CheckClosed(closed.clone()).to_value();
+        payload.as_map().unwrap().get(&Value::Unsigned(key)).unwrap().clone()
+    };
+    prop_oneof![
+        2 => any_check_closed().prop_map(move |closed| field(&closed)),
+        // A valid list spoiled: out of order, repeated, an amount changed, a field removed, or
+        // another currency.
+        4 => (any_check_closed(), 0_u8..5, any::<prop::sample::Index>(), -2_i64..=2)
+            .prop_map(move |(closed, how, at, by)| spoil_charges(&field(&closed), how, at, by)),
+        1 => Just(Value::Array(Vec::new())),
+    ]
+    .boxed()
+}
+
+/// Charges with one thing wrong, or right after all: the entry at `at` swapped with the next,
+/// repeated, with an amount moved by `by`, with a field removed, or in another currency.
+fn spoil_charges(value: &Value, how: u8, at: prop::sample::Index, by: i64) -> Value {
+    let mut items = value.as_array().unwrap().to_vec();
+    if items.is_empty() {
+        return value.clone();
+    }
+    let (i, count) = (at.index(items.len()), items.len());
+    let mut entries = items[i].as_map().unwrap().clone().into_entries();
+    let amounts = entries.len() - 1;
+    match how {
+        0 if count > 1 => items.swap(i, (i + 1) % count),
+        1 => items.insert(i, items[i].clone()),
+        2 => {
+            let which = usize::try_from(by.unsigned_abs()).unwrap() % amounts;
+            let (_, amount) = &mut entries[1 + which];
+            let [minor, code] = amount.as_array().unwrap() else { panic!("an amount") };
+            let moved = as_i64(minor).unwrap().saturating_add(by);
+            *amount = Value::Array(vec![Value::integer(moved), code.clone()]);
+            items[i] = Value::Map(Map::from_entries(entries).unwrap());
+        }
+        3 => {
+            entries.pop();
+            items[i] = Value::Map(Map::from_entries(entries).unwrap());
+        }
+        _ => {
+            for (key, amount) in &mut entries {
+                if key.as_u64() != Some(1) {
+                    recurrency(amount);
+                }
+            }
+            items[i] = Value::Map(Map::from_entries(entries).unwrap());
+        }
+    }
+    Value::Array(items)
+}
+
+/// Changes one thing in a valid snapshot, aimed at one of its rules, and keeps the other rules
+/// where it can. `how` picks the change; `at` and `other` pick the lines or taxes it touches,
+/// `other` never the same as `at` when there are two; `by` is the amount it sets or moves:
+/// - 0: a line's gross set to its net and `by`: no sum includes the gross;
+/// - 1: a line's net set to `by`, the total moved to match;
+/// - 2: a line's tax set to `by`, the difference moved to another line, so the sums hold;
+/// - 3: a tax's amount set to `by`, the difference moved to another tax;
+/// - 4: a tax's taxable amount set to `by`: no sum includes it;
+/// - 5, 6: two lines, or two taxes, swapped;
+/// - 7, 8: a line repeated with nothing charged, or a tax repeated with no tax;
+/// - 9: no lines, no taxes and a total of zero;
+/// - 10, 11: an amount of a line, or of a tax, in another currency;
+/// - 12 to 15: the total, a line's net or tax, or a tax's amount, moved by `by`;
+/// - 16: the payments dropped;
+/// - otherwise, nothing: the snapshot stays valid.
+///
+/// With only one line or one tax, a change that moves a difference to another moves it to the
+/// taxes and the total instead, which may break a second rule; the model judges either way.
+fn spoil_snapshot(
+    closed: &mut CheckClosed,
+    how: u8,
+    at: prop::sample::Index,
+    other: prop::sample::Index,
+    by: i64,
+) {
+    let set = |money: Money, minor: i64| Money::from_minor(minor, money.currency());
+    let moved = |money: Money, by: i64| set(money, money.minor() + by);
+    let foreign = |money: Money| {
+        let usd = Currency::from_code("USD").unwrap();
+        let other = if money.currency() == usd { Currency::from_code("EUR").unwrap() } else { usd };
+        Money::from_minor(money.minor(), other)
+    };
+    // An entry, and another one whenever there are two.
+    let pick = |count: usize| {
+        let first = at.index(count);
+        let second = if count > 1 { (first + 1 + other.index(count - 1)) % count } else { first };
+        (first, second)
+    };
+    let (i, k) = pick(closed.lines.len());
+    let (j, l) = if closed.taxes.is_empty() { (0, 0) } else { pick(closed.taxes.len()) };
+    let taxed = !closed.taxes.is_empty();
+    match how {
+        0 => closed.lines[i].gross = moved(closed.lines[i].net, by),
+        1 => {
+            let old = closed.lines[i].net;
+            closed.lines[i].net = set(old, by);
+            closed.total = moved(closed.total, by - old.minor());
+        }
+        2 => {
+            let old = closed.lines[i].tax;
+            closed.lines[i].tax = set(old, by);
+            let rest = old.minor() - by;
+            if k == i {
+                closed.total = moved(closed.total, -rest);
+                if let Some(tax) = closed.taxes.first_mut() {
+                    tax.amount = moved(tax.amount, -rest);
+                }
+            } else {
+                closed.lines[k].tax = moved(closed.lines[k].tax, rest);
+            }
+        }
+        3 if taxed => {
+            let old = closed.taxes[j].amount;
+            closed.taxes[j].amount = set(old, by);
+            let rest = old.minor() - by;
+            if l == j {
+                closed.lines[i].tax = moved(closed.lines[i].tax, -rest);
+                closed.total = moved(closed.total, -rest);
+            } else {
+                closed.taxes[l].amount = moved(closed.taxes[l].amount, rest);
+            }
+        }
+        4 if taxed => closed.taxes[j].taxable = set(closed.taxes[j].taxable, by),
+        5 => closed.lines.swap(i, k),
+        6 if taxed => closed.taxes.swap(j, l),
+        7 => {
+            let nothing = set(closed.total, 0);
+            let repeat = LineCharge {
+                line: closed.lines[i].line,
+                gross: nothing,
+                net: nothing,
+                tax: nothing,
+            };
+            closed.lines.insert(i + 1, repeat);
+        }
+        8 if taxed => {
+            let repeat = TaxCharge { amount: set(closed.total, 0), ..closed.taxes[j] };
+            closed.taxes.insert(j + 1, repeat);
+        }
+        9 => {
+            closed.lines.clear();
+            closed.taxes.clear();
+            closed.total = set(closed.total, 0);
+        }
+        10 => {
+            let line = &mut closed.lines[i];
+            match other.index(3) {
+                0 => line.gross = foreign(line.gross),
+                1 => line.net = foreign(line.net),
+                _ => line.tax = foreign(line.tax),
+            }
+        }
+        11 if taxed => {
+            let tax = &mut closed.taxes[j];
+            if other.index(2) == 0 {
+                tax.taxable = foreign(tax.taxable);
+            } else {
+                tax.amount = foreign(tax.amount);
+            }
+        }
+        12 => closed.total = moved(closed.total, by),
+        13 => closed.lines[i].net = moved(closed.lines[i].net, by),
+        14 => closed.lines[i].tax = moved(closed.lines[i].tax, by),
+        15 if taxed => closed.taxes[j].amount = moved(closed.taxes[j].amount, by),
+        16 => closed.payments = None,
+        _ => {}
+    }
 }
 
 /// The payload encoding of allocations.
@@ -498,24 +855,23 @@ fn other_currency(code: &Value) -> Value {
 }
 
 /// Puts every price in `value` into another currency, consistently: a money value's, or every
-/// modifier's in a list, at any depth.
+/// price in a list of modifiers or charges, at any depth.
 fn recurrency(value: &mut Value) {
-    let Value::Array(parts) = value else { return };
-    if let [_, code] = parts.as_mut_slice()
-        && code.as_text().is_some()
-    {
-        *code = other_currency(code);
+    if money(value).is_some() {
+        let Value::Array(parts) = value else { return };
+        parts[1] = other_currency(&parts[1]);
         return;
     }
-    for item in parts {
-        let Some(map) = item.as_map() else { continue };
-        let mut entries = map.clone().into_entries();
-        for (key, value) in &mut entries {
-            if matches!(key.as_u64(), Some(6 | 7)) {
+    match value {
+        Value::Array(items) => items.iter_mut().for_each(recurrency),
+        Value::Map(map) => {
+            let mut entries = map.clone().into_entries();
+            for (_, value) in &mut entries {
                 recurrency(value);
             }
+            *map = Map::from_entries(entries).unwrap();
         }
-        *item = Value::Map(Map::from_entries(entries).unwrap());
+        _ => {}
     }
 }
 
@@ -545,6 +901,22 @@ fn reprice(value: &Value, target: usize, seen: &mut usize) -> Value {
     }
 }
 
+/// Checks that `event`'s payload, with `change`, is accepted exactly when the model says it is
+/// valid, and then has exactly one encoding.
+fn accepted_exactly_when_valid(event: &Event, change: &FieldChange) -> Result<(), TestCaseError> {
+    let schema = schema_ref(event);
+    let payload = changed(schema.name.as_str(), &event.to_value(), change);
+    let valid = valid_payload(schema.name.as_str(), &payload);
+    match decode(&schema, &payload) {
+        Ok(decoded) => {
+            prop_assert!(valid, "accepted an invalid payload");
+            prop_assert_eq!(decoded.encode(), payload.encode());
+        }
+        Err(error) => prop_assert!(!valid, "rejected a valid payload: {}", error),
+    }
+    Ok(())
+}
+
 /// Version 1 of the schema named `name`.
 fn schema_named(name: &str) -> SchemaRef {
     SchemaRef { name: SchemaName::new(name).unwrap(), version: 1.try_into().unwrap() }
@@ -554,13 +926,14 @@ fn schema_named(name: &str) -> SchemaRef {
 fn priced_keys(schema: &str) -> Vec<u64> {
     rules(schema)
         .iter()
-        .filter(|rule| matches!(rule.1, Money | Modifiers))
+        .filter(|rule| matches!(rule.1, Money | Modifiers | LineCharges | TaxCharges))
         .map(|rule| rule.0)
         .collect()
 }
 
-fn any_case() -> impl Strategy<Value = (OrderEvent, FieldChange)> {
-    any_event().prop_flat_map(|event| {
+/// An event of `events`, and a change to its payload.
+fn any_case(events: impl Strategy<Value = Event>) -> impl Strategy<Value = (Event, FieldChange)> {
+    events.prop_flat_map(|event| {
         let rules = rules(event.schema().name);
         let keys: Vec<u64> = rules.iter().map(|rule| rule.0).collect();
         let aimed = if rules.is_empty() {
@@ -658,26 +1031,49 @@ fn changed(schema: &str, payload: &Value, change: &FieldChange) -> Value {
 proptest! {
     /// Every event survives encoding and decoding, and its payload is valid by the model.
     #[test]
-    fn events_round_trip(event in any_event()) {
+    fn events_round_trip(event in any_event(), payment in any_payment_event()) {
         let (schema, payload) = event.encode().unwrap();
         prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
         prop_assert_eq!(OrderEvent::decode(&schema, &payload), Ok(event));
+        let (schema, payload) = payment.encode().unwrap();
+        prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
+        prop_assert_eq!(PaymentEvent::decode(&schema, &payload), Ok(payment));
     }
 
     /// A payload with one field changed, removed or added is accepted exactly when the model
     /// says it is valid, and then re-encodes to exactly the same bytes.
     #[test]
-    fn changed_payloads_are_accepted_exactly_when_valid((event, change) in any_case()) {
+    fn changed_payloads_are_accepted_exactly_when_valid(
+        (event, change) in any_case(any_event().prop_map(Event::Order)),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
+    /// The same for payment payloads.
+    #[test]
+    fn changed_payment_payloads_are_accepted_exactly_when_valid(
+        (event, change) in any_case(any_payment_event().prop_map(Event::Payment)),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
+    /// A change changes something: with every optional field removed, an attribute or line
+    /// change is refused, and with some left, accepted exactly when the model says so.
+    #[test]
+    fn a_change_changes_something(
+        event in prop_oneof![
+            support::any_attributes_changed().prop_map(|changed| Event::Order(OrderEvent::AttributesChanged(changed))),
+            any_line_changed().prop_map(|changed| Event::Order(OrderEvent::LineChanged(changed))),
+        ],
+        emptied in any::<bool>(),
+    ) {
+        let change = if emptied { FieldChange::KeepOnlyRequired } else { FieldChange::AddText };
         let schema = schema_ref(&event);
         let payload = changed(schema.name.as_str(), &event.to_value(), &change);
-        let valid = valid_payload(schema.name.as_str(), &payload);
-        match OrderEvent::from_value(&schema, &payload) {
-            Ok(decoded) => {
-                prop_assert!(valid, "accepted an invalid payload");
-                prop_assert_eq!(decoded.to_value().encode(), payload.encode());
-            }
-            Err(error) => prop_assert!(!valid, "rejected a valid payload: {}", error),
+        if emptied {
+            prop_assert!(!valid_payload(schema.name.as_str(), &payload));
         }
+        accepted_exactly_when_valid(&event, &change)?;
     }
 
     /// Every price in a payload is in one currency. Moving one price, at any depth, or every
@@ -686,8 +1082,10 @@ proptest! {
     #[test]
     fn a_payload_has_one_currency(
         event in prop_oneof![
-            any_line_added().prop_map(OrderEvent::LineAdded),
-            any_line_changed().prop_map(OrderEvent::LineChanged),
+            any_line_added().prop_map(|added| Event::Order(OrderEvent::LineAdded(added))),
+            any_line_changed().prop_map(|changed| Event::Order(OrderEvent::LineChanged(changed))),
+            any_check_closed().prop_map(|closed| Event::Order(OrderEvent::CheckClosed(closed))),
+            any_captured().prop_map(|captured| Event::Payment(PaymentEvent::Captured(captured))),
         ],
         pick in any::<prop::sample::Index>(),
         whole_field in any::<bool>(),
@@ -704,7 +1102,7 @@ proptest! {
             if prices == 0 { original.clone() } else { reprice(&original, pick.index(prices), &mut 0) }
         };
         let valid = valid_payload(name, &payload);
-        prop_assert_eq!(OrderEvent::from_value(&schema, &payload).is_ok(), valid);
+        prop_assert_eq!(decode(&schema, &payload).is_ok(), valid);
     }
 
     /// Names hold 1 to 200 characters and notes 1 to 500, counted in characters rather than
@@ -763,6 +1161,79 @@ proptest! {
         prop_assert_eq!(
             OrderEvent::from_value(&schema_named("order.voided"), &Value::Map(voided)).is_ok(),
             valid_value(Reason, &value)
+        );
+    }
+
+    /// Processor references are 1 to 100 ASCII letters, digits and punctuation, with no spaces.
+    /// A reference decoded from a payload follows the same rules.
+    #[test]
+    fn processor_references_hold_exactly_their_limits(
+        length in prop_oneof![Just(0_usize), 1_usize..3, 98_usize..=102],
+        letter in prop::sample::select(vec!['a', 'Z', '7', '_', '~']),
+        odd in prop::option::weighted(0.3, (prop::sample::select(vec![' ', 'é', '\t', '\u{7f}']), any::<prop::sample::Index>())),
+    ) {
+        let mut chars = vec![letter; length];
+        if let Some((odd, at)) = odd
+            && !chars.is_empty()
+        {
+            let at = at.index(chars.len());
+            chars[at] = odd;
+        }
+        let text: String = chars.into_iter().collect();
+        let value = Value::from(text.as_str());
+        prop_assert_eq!(keel_domain::codec::ProcessorRef::new(&text).is_ok(), valid_value(Reference, &value));
+        let authorized = Map::from_entries(vec![
+            (Value::Unsigned(1), Value::Array(vec![Value::Unsigned(100), Value::from("USD")])),
+            (Value::Unsigned(2), value.clone()),
+        ]).unwrap();
+        prop_assert_eq!(
+            decode(&schema_named("payment.authorized"), &Value::Map(authorized)).is_ok(),
+            valid_value(Reference, &value)
+        );
+    }
+
+    /// A snapshot decodes only if it keeps every rule. Each case changes one thing, aimed at
+    /// one rule, and keeps the other rules where it can (see `spoil_snapshot`): a gross below
+    /// its net, a net, tax or taxable amount at or below zero with the sums still adding up,
+    /// lines or taxes out of order or repeated, no lines at all, an amount in another currency,
+    /// a sum a unit or two off, or the payments dropped. The payload decodes exactly when the
+    /// model says it is valid.
+    #[test]
+    fn snapshots_decode_only_when_they_keep_every_rule(
+        closed in any_check_closed(),
+        how in 0_u8..18,
+        at in any::<prop::sample::Index>(),
+        other in any::<prop::sample::Index>(),
+        by in prop_oneof![Just(-1_i64), Just(1), -2_i64..=2],
+    ) {
+        let mut closed = closed;
+        spoil_snapshot(&mut closed, how, at, other, by);
+        let payload = OrderEvent::CheckClosed(closed).to_value();
+        let schema = schema_named("order.check_closed");
+        prop_assert_eq!(decode(&schema, &payload).is_ok(), valid_payload("order.check_closed", &payload));
+    }
+
+    /// Cash covers what is paid: the amount, the tip and the rounding, which add up to zero or
+    /// more. What was tendered, a unit or two either side of that, and roundings around zero,
+    /// with or without what was tendered, decode exactly when the model says so.
+    #[test]
+    fn cash_decodes_only_when_it_covers_what_is_paid(
+        amount in prop_oneof![1_i64..5, 1_i64..10_000],
+        tip in prop::option::of(prop_oneof![0_i64..3, 1_i64..1_000]),
+        rounding in prop::option::of(-3_i64..=3),
+        over in -2_i64..=2,
+        tendered in prop::bool::weighted(0.9),
+    ) {
+        let usd = |minor: i64| Value::Array(vec![Value::integer(minor), Value::from("USD")]);
+        let paid = amount + tip.unwrap_or(0) + rounding.unwrap_or(0);
+        let mut entries = vec![(Value::Unsigned(1), usd(amount))];
+        entries.extend(tip.map(|tip| (Value::Unsigned(2), usd(tip))));
+        entries.extend(tendered.then(|| (Value::Unsigned(4), usd(paid + over))));
+        entries.extend(rounding.map(|rounding| (Value::Unsigned(5), usd(rounding))));
+        let payload = Value::Map(Map::from_entries(entries).unwrap());
+        prop_assert_eq!(
+            decode(&schema_named("payment.captured"), &payload).is_ok(),
+            valid_payload("payment.captured", &payload)
         );
     }
 
@@ -844,17 +1315,19 @@ proptest! {
     /// Payloads never decode under another schema's name or version by accident: every
     /// unknown schema is reported as unknown, whatever the payload.
     #[test]
-    fn unknown_schemas_are_reported(event in any_event(), version in 2_u32..5) {
+    fn unknown_schemas_are_reported(event in any_any_event(), version in 2_u32..5) {
         let schema = schema_ref(&event);
         let newer = SchemaRef { name: schema.name.clone(), version: version.try_into().unwrap() };
-        prop_assert_eq!(
-            OrderEvent::from_value(&newer, &event.to_value()),
-            Err(keel_domain::schema::DecodeError::UnknownSchema)
-        );
-        let renamed = SchemaRef { name: SchemaName::new("order.unknown").unwrap(), version: schema.version };
-        prop_assert_eq!(
-            OrderEvent::from_value(&renamed, &event.to_value()),
-            Err(keel_domain::schema::DecodeError::UnknownSchema)
-        );
+        prop_assert_eq!(decode(&newer, &event.to_value()), Err(DecodeError::UnknownSchema));
+        for name in ["order.unknown", "payment.unknown"] {
+            let renamed = SchemaRef { name: SchemaName::new(name).unwrap(), version: schema.version };
+            prop_assert_eq!(decode(&renamed, &event.to_value()), Err(DecodeError::UnknownSchema));
+        }
+        // Neither aggregate decodes the other's schemas.
+        let crossed = match &event {
+            Event::Order(_) => PaymentEvent::from_value(&schema, &event.to_value()).map(|_| ()),
+            Event::Payment(_) => OrderEvent::from_value(&schema, &event.to_value()).map(|_| ()),
+        };
+        prop_assert_eq!(crossed, Err(DecodeError::UnknownSchema));
     }
 }

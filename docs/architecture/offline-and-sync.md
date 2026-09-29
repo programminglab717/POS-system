@@ -271,7 +271,8 @@ island mode or overrides, resolve deterministically:
 | Order voided on one device while another took a payment | Payment stands. The void becomes *void requested* pending refund. | Manager task |
 
 The order rules built so far, with every case the fold handles, are in
-[domain-model.md §6.5](./domain-model.md#65-as-built-order-events-v1).
+[domain-model.md §6.5](./domain-model.md#65-as-built-order-events-v1), and the payment rules in
+[§7.1](./domain-model.md#71-as-built-payments-v1).
 
 ## 6. Consistency classes
 
@@ -480,7 +481,7 @@ tier**:
 
 | Effect | Executor | Idempotency mechanism |
 |---|---|---|
-| Card-present authorization, capture, refund | Device (with terminal) | Processor idempotency key or terminal transaction reference = `PaymentInitiated.event_id`. Unknown outcomes are resolved by a status query before any retry. |
+| Card-present authorization, capture, refund | Device (with terminal) | Processor idempotency key or terminal transaction reference = the payment's identifier, which `payment.initiated` records ([ADR-0015](../adr/0015-checks-and-payments.md)). Unknown outcomes are resolved by a status query before any retry. |
 | Print jobs (receipts, kitchen, labels) | Device, or hub for hub-attached and network printers | Job ID. Printers are at-least-once, so "reprint" is explicit and deduped on the KDS. |
 | Local fiscal device signing (e.g. TSE) | Device or hub, whichever the fiscal device is attached to | Transaction number from the fiscal device |
 | Tax-authority submissions (real-time or batch regimes) | Hub (queued) or cloud | Document number plus the authority's dedupe semantics |

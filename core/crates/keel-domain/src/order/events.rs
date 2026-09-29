@@ -17,17 +17,26 @@
 //! | `order.abandoned` | no keys: an empty map |
 //! | `order.check_opened` | 1 check |
 //! | `order.lines_allocated` | 1 allocations: an array, not empty |
+//! | `order.check_closed` | 1 check, 2 rules version, 3 lines (an array of line charges, not empty), 4 taxes (an array of tax charges, possibly empty), 5 total, 6 payments (optional, a set) |
+//! | `order.closed` | no keys: an empty map |
+//! | `order.reopened` | 1 reason code, 2 note (optional) |
 //!
 //! A chosen modifier is a map: 1 modifier, 2 name, 3 prefix, 4 quantity, 5 placement, 6 unit
 //! price, 7 modifiers (an array, possibly empty). An allocation is a map: 1 line, 2 check, 3
-//! shares (a count up to 65,535).
+//! shares (a count up to 65,535). A line charge is a map: 1 line, 2 gross, 3 net, 4 tax. A tax
+//! charge is a map: 1 tax, 2 taxable amount, 3 tax.
 //!
 //! Beyond the types, payloads must satisfy these rules:
 //! - quantities are positive, and prices are zero or more;
-//! - all the prices in one payload are in the same currency;
+//! - all the prices and amounts in one payload are in the same currency;
 //! - a change changes at least one field;
 //! - allocations are in strictly ascending order of line, then check, and each line's shares
-//!   are in lowest terms.
+//!   are in lowest terms;
+//! - a closed check's line charges are in strictly ascending order of line, each with a net
+//!   between zero and its gross and a tax of zero or more; its tax charges are in strictly
+//!   ascending order of tax, each taxing more than zero, with a tax of zero or more; the taxes
+//!   add up to the lines' tax; the total is the lines' net plus their tax; and payments are
+//!   listed when the total is more than zero.
 
 use core::num::{NonZeroU8, NonZeroU16};
 
@@ -36,6 +45,7 @@ use keel_events::envelope::{Customer, SchemaRef, TeamMember};
 use keel_types::{Currency, Id, Quantity};
 
 use super::checks::{Check, LinesAllocated};
+use super::closing::CheckClosed;
 use super::state::Line;
 use super::types::{Channel, ChosenModifier, ItemSnapshot, Mode, Reason, modifier_currency};
 use crate::codec::{Change, Fields, IdSet, PayloadError, Record};
@@ -191,6 +201,16 @@ pub enum OrderEvent {
     },
     /// Lines were allocated to checks.
     LinesAllocated(LinesAllocated),
+    /// A check was closed: its payments covered it.
+    CheckClosed(CheckClosed),
+    /// The order was closed: every check holding a live line was closed.
+    Closed,
+    /// A closed order, or an order with closed checks, was reopened: the order and every check
+    /// are open again.
+    Reopened {
+        /// Why.
+        reason: Reason,
+    },
 }
 
 /// The schemas, in the order of `OrderEvent`'s variants.
@@ -206,6 +226,9 @@ const VOIDED: SchemaId = SchemaId { name: "order.voided", version: 1 };
 const ABANDONED: SchemaId = SchemaId { name: "order.abandoned", version: 1 };
 const CHECK_OPENED: SchemaId = SchemaId { name: "order.check_opened", version: 1 };
 const LINES_ALLOCATED: SchemaId = SchemaId { name: "order.lines_allocated", version: 1 };
+const CHECK_CLOSED: SchemaId = SchemaId { name: "order.check_closed", version: 1 };
+const CLOSED: SchemaId = SchemaId { name: "order.closed", version: 1 };
+const REOPENED: SchemaId = SchemaId { name: "order.reopened", version: 1 };
 
 impl DomainEvent for OrderEvent {
     const STREAM: &'static str = "order";
@@ -223,6 +246,9 @@ impl DomainEvent for OrderEvent {
         ABANDONED,
         CHECK_OPENED,
         LINES_ALLOCATED,
+        CHECK_CLOSED,
+        CLOSED,
+        REOPENED,
     ];
 
     fn schema(&self) -> SchemaId {
@@ -239,12 +265,16 @@ impl DomainEvent for OrderEvent {
             OrderEvent::Abandoned => ABANDONED,
             OrderEvent::CheckOpened { .. } => CHECK_OPENED,
             OrderEvent::LinesAllocated(_) => LINES_ALLOCATED,
+            OrderEvent::CheckClosed(_) => CHECK_CLOSED,
+            OrderEvent::Closed => CLOSED,
+            OrderEvent::Reopened { .. } => REOPENED,
         }
     }
 
     fn to_value(&self) -> Value {
         let record = Record::default();
         match self {
+            OrderEvent::CheckClosed(closed) => closed.record(record),
             OrderEvent::Created(created) => record
                 .field(1, &created.channel)
                 .field(2, &created.mode)
@@ -285,10 +315,10 @@ impl DomainEvent for OrderEvent {
             OrderEvent::LineVoided { line, reason } | OrderEvent::LineComped { line, reason } => {
                 record.field(1, line).field(2, &reason.code).optional(3, reason.note.as_ref())
             }
-            OrderEvent::Voided { reason } => {
+            OrderEvent::Voided { reason } | OrderEvent::Reopened { reason } => {
                 record.field(1, &reason.code).optional(2, reason.note.as_ref())
             }
-            OrderEvent::Abandoned => record,
+            OrderEvent::Abandoned | OrderEvent::Closed => record,
             OrderEvent::CheckOpened { check } => record.field(1, check),
             OrderEvent::LinesAllocated(allocated) => record.field(1, allocated),
         }
@@ -321,12 +351,20 @@ impl DomainEvent for OrderEvent {
             } else {
                 OrderEvent::LineComped { line, reason }
             }
-        } else if VOIDED.matches(schema) {
+        } else if VOIDED.matches(schema) || REOPENED.matches(schema) {
             let reason =
                 Reason { code: fields.required(1, "reason")?, note: fields.optional(2, "note")? };
-            OrderEvent::Voided { reason }
+            if VOIDED.matches(schema) {
+                OrderEvent::Voided { reason }
+            } else {
+                OrderEvent::Reopened { reason }
+            }
         } else if ABANDONED.matches(schema) {
             OrderEvent::Abandoned
+        } else if CLOSED.matches(schema) {
+            OrderEvent::Closed
+        } else if CHECK_CLOSED.matches(schema) {
+            OrderEvent::CheckClosed(CheckClosed::read(&mut fields)?)
         } else if CHECK_OPENED.matches(schema) {
             OrderEvent::CheckOpened { check: fields.required(1, "check")? }
         } else if LINES_ALLOCATED.matches(schema) {

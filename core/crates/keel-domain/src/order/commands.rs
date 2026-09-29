@@ -5,7 +5,9 @@
 //! state it was checked against. Conflicts only arise when devices act concurrently on
 //! different views, and the fold resolves those (see [`super::state`]).
 //!
-//! Permissions, approvals and the owning device's lease are checked by other parts of the kernel.
+//! Closing a check needs its payments, which are other aggregates: [`crate::checkout`] decides
+//! it. Permissions, approvals and the owning device's lease are checked by other parts of the
+//! kernel.
 
 use keel_events::envelope::Location;
 use keel_types::Id;
@@ -15,7 +17,7 @@ use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, Ord
 use super::state::{Line, LineStatus, Order, OrderInfo, OrderStatus};
 use super::types::Reason;
 use crate::codec::{Change, IdSet, PayloadError};
-use crate::schema::{DecodeError, DomainEvent, SchemaError};
+use crate::schema::{SchemaError, Unrecordable, check_recordable};
 
 /// What a device asks to do to an order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,8 +56,14 @@ pub enum OrderCommand {
     Abandon,
     /// Open a check.
     OpenCheck(Id<Check>),
-    /// Allocate live lines to existing checks. Every line listed must get a new allocation.
+    /// Allocate live lines to existing, open checks. Every line listed must get a new
+    /// allocation, and none may have a part on a closed check.
     AllocateLines(LinesAllocated),
+    /// Close the order: every check holding a live line is closed.
+    Close,
+    /// Reopen a closed order, or an order with closed checks: the order and every check are
+    /// open again, and the lines on them can change.
+    Reopen(Reason),
 }
 
 /// Why a command was refused.
@@ -71,7 +79,7 @@ pub enum CommandError {
     /// The order belongs to another location than the device's.
     #[error("the order belongs to another location")]
     WrongLocation,
-    /// The order was voided or abandoned.
+    /// The order was closed, voided or abandoned.
     #[error("the order is closed")]
     OrderClosed,
     /// A field given in a change already has that value, or nothing was given.
@@ -113,6 +121,21 @@ pub enum CommandError {
     /// No check has that identifier.
     #[error("no check {0}")]
     UnknownCheck(Id<Check>),
+    /// The check is closed: reopen the order first.
+    #[error("check {0} is closed")]
+    CheckClosed(Id<Check>),
+    /// The check holds live lines and is still open.
+    #[error("check {0} is open")]
+    CheckOpen(Id<Check>),
+    /// The line has a part on a closed check, so what it costs is frozen: reopen the order first.
+    #[error("line {0} is on a closed check")]
+    LineOnClosedCheck(Id<Line>),
+    /// The order has no live lines to close it with: void or abandon it instead.
+    #[error("the order has nothing to close")]
+    NothingToClose,
+    /// Neither the order nor any of its checks is closed.
+    #[error("nothing in the order is closed")]
+    NothingToReopen,
     /// The event wouldn't satisfy its schema, such as a negative price or quantity.
     #[error("invalid event: {0}")]
     Invalid(PayloadError),
@@ -139,24 +162,68 @@ impl Order {
                 }
                 OrderEvent::Created(created)
             }
+            // Reopening is the one command a closed order takes.
+            OrderCommand::Reopen(reason) if *self.status() == OrderStatus::Closed => {
+                self.check_location(location)?;
+                OrderEvent::Reopened { reason }
+            }
             command => {
-                let info = self.info().ok_or(CommandError::NotCreated)?;
-                if info.location != location {
-                    return Err(CommandError::WrongLocation);
-                }
-                if *self.status() != OrderStatus::Active {
-                    return Err(CommandError::OrderClosed);
-                }
+                let info = self.check_active(location)?;
                 self.decide_on_active(info, command)?
             }
         };
-        // Every event must satisfy its own schema, so no device writes one that others reject.
-        let (schema, payload) = event.encode()?;
-        OrderEvent::decode(&schema, &payload).map_err(|error| match error {
-            DecodeError::Malformed(error) => CommandError::Invalid(error),
-            _ => CommandError::Invalid(PayloadError::NotAMap),
-        })?;
+        check_recordable(&event)?;
         Ok(event)
+    }
+
+    /// The order's details, if it is created at `location`.
+    fn check_location(&self, location: Id<Location>) -> Result<&OrderInfo, CommandError> {
+        let info = self.info().ok_or(CommandError::NotCreated)?;
+        if info.location != location {
+            return Err(CommandError::WrongLocation);
+        }
+        Ok(info)
+    }
+
+    /// The order's details, if it is created at `location` and active.
+    pub(crate) fn check_active(&self, location: Id<Location>) -> Result<&OrderInfo, CommandError> {
+        let info = self.check_location(location)?;
+        if *self.status() != OrderStatus::Active {
+            return Err(CommandError::OrderClosed);
+        }
+        Ok(info)
+    }
+
+    /// Checks that a command can close `check`, as far as the order can tell: the order is
+    /// active at `location`, and the check is open and holds live lines. Whether its payments
+    /// cover it is [`crate::checkout`]'s to check.
+    pub(crate) fn check_closable(
+        &self,
+        location: Id<Location>,
+        check: Id<Check>,
+    ) -> Result<&OrderInfo, CommandError> {
+        let info = self.check_active(location)?;
+        let found = self.check(check).ok_or(CommandError::UnknownCheck(check))?;
+        if !found.is_open() {
+            return Err(CommandError::CheckClosed(check));
+        }
+        if !self.holds_live_line(check) {
+            return Err(CommandError::NothingToClose);
+        }
+        Ok(info)
+    }
+
+    /// The first closed check, by number.
+    fn closed_check(&self) -> Option<Id<Check>> {
+        self.checks().iter().find(|check| !check.is_open()).map(Check::id)
+    }
+
+    /// Refuses a command on a line with a part on a closed check.
+    fn check_not_frozen(&self, line: &Line) -> Result<(), CommandError> {
+        if self.is_frozen(line) {
+            return Err(CommandError::LineOnClosedCheck(line.id()));
+        }
+        Ok(())
     }
 
     fn decide_on_active(
@@ -166,6 +233,10 @@ impl Order {
     ) -> Result<OrderEvent, CommandError> {
         match command {
             OrderCommand::Create(_) => Err(CommandError::AlreadyCreated),
+            OrderCommand::Reopen(reason) => {
+                self.closed_check().ok_or(CommandError::NothingToReopen)?;
+                Ok(OrderEvent::Reopened { reason })
+            }
             OrderCommand::ChangeAttributes(changed) => {
                 check_attributes(info, &changed)?;
                 Ok(OrderEvent::AttributesChanged(changed))
@@ -184,10 +255,14 @@ impl Order {
             OrderCommand::ChangeLine(changed) => {
                 let line = self.pending_line(changed.line)?;
                 check_line_change(info, line, &changed)?;
+                // Seats, courses and notes don't change what a line costs.
+                if changed.quantity.is_some() || changed.modifiers.is_some() {
+                    self.check_not_frozen(line)?;
+                }
                 Ok(OrderEvent::LineChanged(changed))
             }
             OrderCommand::RemoveLine(line) => {
-                self.pending_line(line)?;
+                self.check_not_frozen(self.pending_line(line)?)?;
                 Ok(OrderEvent::LineRemoved { line })
             }
             OrderCommand::FireLines(lines) => {
@@ -201,6 +276,7 @@ impl Order {
                 if *found.status() != LineStatus::Fired {
                     return Err(CommandError::LineNotFired(line));
                 }
+                self.check_not_frozen(found)?;
                 Ok(OrderEvent::LineVoided { line, reason })
             }
             OrderCommand::CompLine { line, reason } => {
@@ -211,15 +287,24 @@ impl Order {
                 if found.comp().is_some() {
                     return Err(CommandError::AlreadyComped(line));
                 }
+                self.check_not_frozen(found)?;
                 Ok(OrderEvent::LineComped { line, reason })
             }
-            OrderCommand::Void(reason) => Ok(OrderEvent::Voided { reason }),
+            OrderCommand::Void(reason) => {
+                if let Some(check) = self.closed_check() {
+                    return Err(CommandError::CheckClosed(check));
+                }
+                Ok(OrderEvent::Voided { reason })
+            }
             OrderCommand::Abandon => {
                 if self.live_lines().next().is_some() {
                     return Err(CommandError::HasLiveLines);
                 }
                 if let Some(fired) = self.lines().iter().find(|line| line.was_fired()) {
                     return Err(CommandError::LineWasFired(fired.id()));
+                }
+                if let Some(check) = self.closed_check() {
+                    return Err(CommandError::CheckClosed(check));
                 }
                 Ok(OrderEvent::Abandoned)
             }
@@ -230,23 +315,46 @@ impl Order {
                 Ok(OrderEvent::CheckOpened { check })
             }
             OrderCommand::AllocateLines(allocated) => {
-                for (id, shares) in allocated.lines() {
-                    let line = self.line(id).ok_or(CommandError::UnknownLine(id))?;
-                    if !line.is_live() {
-                        return Err(CommandError::LineNotLive(id));
-                    }
-                    if let Some(share) =
-                        shares.iter().find(|share| self.check(share.check).is_none())
-                    {
-                        return Err(CommandError::UnknownCheck(share.check));
-                    }
-                    if line.allocation() == shares.as_slice() {
-                        return Err(CommandError::NoChange);
-                    }
-                }
+                self.check_allocation(&allocated)?;
                 Ok(OrderEvent::LinesAllocated(allocated))
             }
+            OrderCommand::Close => {
+                if self.live_lines().next().is_none() {
+                    return Err(CommandError::NothingToClose);
+                }
+                let open = self
+                    .checks()
+                    .iter()
+                    .find(|check| check.is_open() && self.holds_live_line(check.id()));
+                if let Some(check) = open {
+                    return Err(CommandError::CheckOpen(check.id()));
+                }
+                Ok(OrderEvent::Closed)
+            }
         }
+    }
+
+    /// Checks that every line an allocation lists is live, not frozen, and gets a new
+    /// allocation, to checks that exist and are open.
+    fn check_allocation(&self, allocated: &LinesAllocated) -> Result<(), CommandError> {
+        for (id, shares) in allocated.lines() {
+            let line = self.line(id).ok_or(CommandError::UnknownLine(id))?;
+            if !line.is_live() {
+                return Err(CommandError::LineNotLive(id));
+            }
+            for share in &shares {
+                let check =
+                    self.check(share.check).ok_or(CommandError::UnknownCheck(share.check))?;
+                if !check.is_open() {
+                    return Err(CommandError::CheckClosed(share.check));
+                }
+            }
+            self.check_not_frozen(line)?;
+            if line.allocation() == shares.as_slice() {
+                return Err(CommandError::NoChange);
+            }
+        }
+        Ok(())
     }
 
     fn pending_line(&self, id: Id<Line>) -> Result<&Line, CommandError> {
@@ -255,6 +363,15 @@ impl Order {
             return Err(CommandError::LineNotPending(id));
         }
         Ok(line)
+    }
+}
+
+impl From<Unrecordable> for CommandError {
+    fn from(error: Unrecordable) -> CommandError {
+        match error {
+            Unrecordable::Schema(error) => CommandError::Schema(error),
+            Unrecordable::Payload(error) => CommandError::Invalid(error),
+        }
     }
 }
 
