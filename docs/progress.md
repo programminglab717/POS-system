@@ -64,7 +64,7 @@ follows.
 
 ### The event log store: step 5, slice 1 (2026-09-29)
 
-Commit to follow. Waiting for review.
+Commit `f9e68d7`. Waiting for review.
 
 - **Built** ([ADR-0016](./adr/0016-device-store.md), decisions 1 to 7):
   - `keel-store`, the kernel's first platform crate: each device's events in one SQLite
@@ -127,10 +127,10 @@ Commit to follow. Waiting for review.
     by its property tests alone. The runner now skips, under `--props`, a bug marked `"unit"`,
     which only unit tests can catch; `keel-events`' five known-answer-only bugs (byte-level
     checks of COSE messages and keys) are marked so.
-  - The store's property test and the restored-writer property each passed 100,000 cases. A
-    larger crash run, not kept, passed too: an abort at every point of a 24-write workload
-    (145 crashes), and 300 kills.
-  - The CI-equivalent run passed locally; CI on the commit to follow.
+  - The store's property test, and every log property in `keel-events`, the restored writer's
+    among them, each passed 100,000 cases. A larger crash run, not kept, passed too: an abort at
+    every point of a 24-write workload (145 crashes), and 300 kills.
+  - CI green.
 - **Decisions:** [ADR-0016](./adr/0016-device-store.md), proposed, with the details the build
   settled under "As built":
   - the checks on a received event run in a fixed order, each refusal with a stable code;
