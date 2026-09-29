@@ -1,6 +1,7 @@
 # ADR-0017: Projections and the outbox: per-stream projections recomputed in each write, and a transactional effect outbox
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-29), with the details settled in building it, under "As built",
+  accepted after review
 - **Date:** 2026-09-29
 
 ## Context

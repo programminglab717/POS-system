@@ -8,9 +8,8 @@
 
 **Phase 0 (Foundations), step 5 of 8:** `keel-store`, the SQLite event store, projections and
 outbox, in three slices ([ADR-0016](./adr/0016-device-store.md)). Slice 1, the event log store,
-is built and reviewed; slice 2, projections and the outbox
-([ADR-0017](./adr/0017-projections-and-outbox.md), proposed), is built and verified, and waiting
-for review.
+and slice 2, projections and the outbox ([ADR-0017](./adr/0017-projections-and-outbox.md)), are
+built and reviewed. Slice 3, encryption at rest and integrity checks, is being designed.
 Step 4, `keel-domain` and `keel-pricing` v0, is done: built in four slices, each reviewed.
 
 ## Phase 0 milestones
@@ -23,7 +22,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
-| 5 | `keel-store`: SQLite events, projections and outbox | In progress: slice 1 of 3 built and reviewed; slice 2 built, waiting for review | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md) (proposed) |
+| 5 | `keel-store`: SQLite events, projections and outbox | In progress: slices 1 and 2 of 3 built and reviewed; slice 3 being designed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
@@ -50,7 +49,7 @@ Step 5 comes in three slices, each ending with a review
 1. **The event log store** (built and reviewed 2026-09-29): the device's own events and
    those it receives from other replicas, in one SQLite database; the quarantine and the version
    vector; one transaction per write; crash tests at every point of a write.
-2. **Projections and the outbox** (built 2026-09-29, waiting for review): order and payment
+2. **Projections and the outbox** (built and reviewed 2026-09-29): order and payment
    projections recomputed in each write's transaction, rebuilt from the log when their version
    changes; and an outbox of effects that commit with the events that cause them.
 3. **Encryption at rest and integrity checks**: SQLCipher-class encryption with its key from the
@@ -60,24 +59,23 @@ Retention, snapshots and backups follow the sync engine (step 6).
 
 ## Current slice
 
-Slice 2, projections and the outbox, is built and verified: commit `7a85745`, with CI green. It
-waits for review, with its design in [ADR-0017](./adr/0017-projections-and-outbox.md), proposed:
+Slice 3, encryption at rest and integrity checks, is being designed: the database encrypted with
+a key the platform keystore protects ([security §4](./architecture/security.md#4-data-protection)),
+and the checks the store makes when it opens.
 
 | Piece | Status |
 |---|---|
-| Design: what projections hold, when they are recomputed and rebuilt, and the outbox's states | Done |
-| Schema version 2: the outbox and the projections' versions; migrating version 1 stores | Done |
-| `orders` and `payments` projections, recomputed in each write, rebuilt when their version changes | Done |
-| Loading aggregates; the streams a write touched | Done |
-| The outbox: enqueue, start, finish, retry and fail, inside writes; due and running effects | Done |
-| Known-answer tests, property tests against models, convergence, crash tests | Done |
-| Planted bugs, coverage probes, 100,000-case soak, CI-equivalent run | Done |
+| Design: the cipher and its build, the key and who holds it, what the store checks when it opens | In progress |
+| Encryption at rest | Not started |
+| Integrity checks when the store opens | Not started |
+| Known-answer tests, property tests against models, crash tests | Not started |
+| Planted bugs, coverage probes, 100,000-case soak, CI-equivalent run | Not started |
 
 ## Completed
 
 ### Projections and the outbox: step 5, slice 2 (2026-09-29)
 
-Commit `7a85745`. Waiting for review.
+Commit `7a85745`. Reviewed 2026-09-29.
 
 - **Built** ([ADR-0017](./adr/0017-projections-and-outbox.md)):
   - projections: a row for each order and each payment, folded with `keel-domain`'s folds from
@@ -121,8 +119,8 @@ Commit `7a85745`. Waiting for review.
     83; the other 11, settings, versions and invalid input, only the unit tests reach.
   - Every property test in `keel-store` passed 100,000 cases.
   - CI green.
-- **Decisions:** [ADR-0017](./adr/0017-projections-and-outbox.md), proposed, with the details the
-  build settled under "As built":
+- **Decisions:** [ADR-0017](./adr/0017-projections-and-outbox.md), accepted 2026-09-29 after
+  review, with the details the build settled under "As built":
   - projections hold one row per stream, recomputed from the whole stream in each write that
     touches it, measured at about 2.3 µs an event on the development machine;
   - enqueuing a key the outbox holds is a no-op for the same effect, and refused for another;
