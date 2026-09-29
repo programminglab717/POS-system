@@ -9,7 +9,8 @@
 **Phase 0 (Foundations), step 5 of 8:** `keel-store`, the SQLite event store, projections and
 outbox, in three slices ([ADR-0016](./adr/0016-device-store.md)). Slice 1, the event log store,
 is built and reviewed; slice 2, projections and the outbox
-([ADR-0017](./adr/0017-projections-and-outbox.md), proposed), is built and being verified.
+([ADR-0017](./adr/0017-projections-and-outbox.md), proposed), is built and verified, and waiting
+for review.
 Step 4, `keel-domain` and `keel-pricing` v0, is done: built in four slices, each reviewed.
 
 ## Phase 0 milestones
@@ -22,7 +23,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
-| 5 | `keel-store`: SQLite events, projections and outbox | In progress: slice 1 of 3 built and reviewed; slice 2 in design | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md) |
+| 5 | `keel-store`: SQLite events, projections and outbox | In progress: slice 1 of 3 built and reviewed; slice 2 built, waiting for review | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md) (proposed) |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
@@ -49,7 +50,7 @@ Step 5 comes in three slices, each ending with a review
 1. **The event log store** (built and reviewed 2026-09-29): the device's own events and
    those it receives from other replicas, in one SQLite database; the quarantine and the version
    vector; one transaction per write; crash tests at every point of a write.
-2. **Projections and the outbox** (built 2026-09-29, being verified): order and payment
+2. **Projections and the outbox** (built 2026-09-29, waiting for review): order and payment
    projections recomputed in each write's transaction, rebuilt from the log when their version
    changes; and an outbox of effects that commit with the events that cause them.
 3. **Encryption at rest and integrity checks**: SQLCipher-class encryption with its key from the
@@ -59,8 +60,8 @@ Retention, snapshots and backups follow the sync engine (step 6).
 
 ## Current slice
 
-Slice 2, projections and the outbox, is built, with its design in
-[ADR-0017](./adr/0017-projections-and-outbox.md), proposed:
+Slice 2, projections and the outbox, is built and verified: commit `7a85745`, with CI green. It
+waits for review, with its design in [ADR-0017](./adr/0017-projections-and-outbox.md), proposed:
 
 | Piece | Status |
 |---|---|
@@ -76,7 +77,7 @@ Slice 2, projections and the outbox, is built, with its design in
 
 ### Projections and the outbox: step 5, slice 2 (2026-09-29)
 
-Commit to follow. Waiting for review.
+Commit `7a85745`. Waiting for review.
 
 - **Built** ([ADR-0017](./adr/0017-projections-and-outbox.md)):
   - projections: a row for each order and each payment, folded with `keel-domain`'s folds from
@@ -119,7 +120,7 @@ Commit to follow. Waiting for review.
     outbox, and 7 re-aimed at code this slice moved. The property and crash tests alone catch
     83; the other 11, settings, versions and invalid input, only the unit tests reach.
   - Every property test in `keel-store` passed 100,000 cases.
-  - The CI-equivalent run passed locally; CI on the commit to follow.
+  - CI green.
 - **Decisions:** [ADR-0017](./adr/0017-projections-and-outbox.md), proposed, with the details the
   build settled under "As built":
   - projections hold one row per stream, recomputed from the whole stream in each write that

@@ -16,7 +16,8 @@ card, and closing checks and orders) and [`keel-pricing`](./core/crates/keel-pri
 prices each check: line amounts, shares of split lines, discounts, US sales tax, rounding and the
 calculation trace. [`keel-store`](./core/crates/keel-store/) keeps events on the device in SQLite:
 so far the event log, with the device's own events and those it receives from other replicas,
-written in crash-tested transactions.
+projections of orders and payments, and an outbox of effects, all written in crash-tested
+transactions.
 [docs/progress.md](./docs/progress.md) tracks the build step by step.
 
 ## What makes Keel different
