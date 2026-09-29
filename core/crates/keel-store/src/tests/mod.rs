@@ -18,6 +18,9 @@ use rusqlite::Connection;
 
 use super::*;
 
+mod outbox;
+mod projections;
+
 fn id<T>(n: u64) -> Id<T> {
     Id::parse(&format!("0192f0c1-0000-7000-8000-{n:012x}")).unwrap()
 }
@@ -159,7 +162,7 @@ fn a_new_store_runs_durably_and_holds_nothing() {
         store.db().query_row("PRAGMA synchronous", [], |row| row.get(0)).unwrap();
     let trusted: i64 = store.db().query_row("PRAGMA trusted_schema", [], |row| row.get(0)).unwrap();
     let version: i64 = store.db().query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-    assert_eq!((journal.as_str(), synchronous, trusted, version), ("wal", 2, 0, 1));
+    assert_eq!((journal.as_str(), synchronous, trusted, version), ("wal", 2, 0, 2));
     assert_eq!(store.device(), own().0);
     assert_eq!(store.location(), here());
     assert_eq!(store.head(own().0).unwrap(), LogHead::EMPTY);
@@ -412,9 +415,9 @@ fn a_store_opens_only_for_its_device_location_and_key() {
     let wrong_key = Store::open(dir.db(), config(), device(3).1, SeededEntropy::new(1));
     assert!(matches!(wrong_key, Err(StoreError::WrongKey)));
     // A newer kernel's database is refused.
-    open(&dir.db()).db().execute_batch("PRAGMA user_version = 2").unwrap();
+    open(&dir.db()).db().execute_batch("PRAGMA user_version = 3").unwrap();
     let newer = Store::open(dir.db(), config(), own().1, SeededEntropy::new(1));
-    assert!(matches!(newer, Err(StoreError::NewerSchema { found: 2, known: 1 })));
+    assert!(matches!(newer, Err(StoreError::NewerSchema { found: 3, known: 2 })));
 }
 
 /// Refuses at the `nth` time it reaches `point`, counting from 1.

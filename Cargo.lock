@@ -646,6 +646,7 @@ dependencies = [
 name = "keel-store"
 version = "0.1.0"
 dependencies = [
+ "keel-domain",
  "keel-events",
  "keel-types",
  "proptest",

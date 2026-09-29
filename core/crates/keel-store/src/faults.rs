@@ -13,6 +13,8 @@ use crate::error::StoreError;
 pub enum Point {
     /// A migration of the schema is about to commit.
     Migrating,
+    /// A rebuild of projections, when the store opens or on request, is about to commit.
+    Rebuilding,
     /// A write has begun its transaction.
     Began,
     /// An event was stored or quarantined, and the write goes on.
@@ -25,9 +27,15 @@ pub enum Point {
 }
 
 impl Point {
-    /// Every point, in the order a write passes them.
-    pub const ALL: [Point; 5] =
-        [Point::Migrating, Point::Began, Point::Stored, Point::Committing, Point::Committed];
+    /// Every point, in the order a store passes them.
+    pub const ALL: [Point; 6] = [
+        Point::Migrating,
+        Point::Rebuilding,
+        Point::Began,
+        Point::Stored,
+        Point::Committing,
+        Point::Committed,
+    ];
 }
 
 /// Decides whether a write goes on at each point.

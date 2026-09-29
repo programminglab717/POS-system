@@ -10,11 +10,22 @@
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use core::num::NonZeroU16;
+
+use keel_domain::codec::{CatalogVersion, IdSet, Name, ReasonCode, RulesVersion};
+use keel_domain::order::{
+    Channel, Check, CheckClosed, ItemSnapshot, Line, LineAdded, LineCharge, Mode, OrderCreated,
+    OrderEvent, Reason,
+};
+use keel_domain::payment::Payment;
+use keel_domain::schema::DomainEvent;
 use keel_events::cbor::Value;
 use keel_events::envelope::{
-    Actor, Device, EventBody, Location, Payload, SchemaName, SchemaRef, StreamKind, StreamRef,
+    Actor, Aggregate, Device, EventBody, Location, Payload, SchemaName, SchemaRef, StreamKind,
+    StreamRef,
 };
 use keel_events::event::SignedEvent;
 use keel_events::hash::EventHash;
@@ -22,7 +33,7 @@ use keel_events::keys::{SignatureAlgorithm, Signer, SoftwareSigner};
 use keel_events::log::{EventDraft, LogConfig, LogHead, LogWriter};
 use keel_events::verify::{DeviceRegistry, Revocation};
 use keel_store::StoreConfig;
-use keel_types::{Hlc, Id, SeededEntropy, Timestamp};
+use keel_types::{Currency, Hlc, Id, Money, Quantity, SeededEntropy, Timestamp, Unit};
 
 pub fn id<T>(n: u64) -> Id<T> {
     Id::parse(&format!("0192f0c1-0000-7000-8000-{n:012x}")).unwrap()
@@ -57,11 +68,18 @@ pub const REVOKED: u8 = 4;
 pub const UNKNOWN: u8 = 5;
 /// A device enrolled at another location.
 pub const FOREIGN: u8 = 9;
+/// Another device enrolled here, with a store of its own: a second replica.
+pub const REPLICA: u8 = 6;
 
 pub const DRIFT: Duration = Duration::from_secs(60);
 
 pub fn config() -> StoreConfig {
-    StoreConfig { device: device(OWN), location: here(), max_forward_drift: DRIFT }
+    config_of(OWN)
+}
+
+/// The configuration of device `n`'s store, here.
+pub fn config_of(n: u8) -> StoreConfig {
+    StoreConfig { device: device(n), location: here(), max_forward_drift: DRIFT }
 }
 
 /// `ms` milliseconds past 2026-09-28, 00:00 UTC.
@@ -127,7 +145,7 @@ pub fn trusted_first() -> SignedEvent {
 /// Every device, enrolled where it belongs; [`REVOKED`] revoked after [`trusted_first`].
 pub fn registry() -> DeviceRegistry {
     let mut registry = DeviceRegistry::new();
-    for n in [OWN, PEERS[0], PEERS[1], REVOKED] {
+    for n in [OWN, PEERS[0], PEERS[1], REVOKED, REPLICA] {
         registry.enroll(device(n), here(), key(n).public_key().clone()).unwrap();
     }
     registry.enroll(device(FOREIGN), elsewhere(), key(FOREIGN).public_key().clone()).unwrap();
@@ -178,4 +196,100 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Domain events, for projections.
+
+pub fn usd(minor: i64) -> Money {
+    Money::from_minor(minor, Currency::from_code("USD").unwrap())
+}
+
+/// A draft of `event` on stream `stream`, reported under business date `2026-09-(28 + day)`.
+pub fn domain_draft<D: DomainEvent>(stream: Id<Aggregate>, event: &D, day: u8) -> EventDraft {
+    let (schema, payload) = event.encode().unwrap();
+    EventDraft {
+        stream: StreamRef { kind: StreamKind::new(D::STREAM).unwrap(), id: stream },
+        schema,
+        business_date: format!("2026-09-{}", 28 + day).parse().unwrap(),
+        actor: Actor::TeamMember(id(0x300)),
+        approval: None,
+        causation: None,
+        correlation: None,
+        payload,
+    }
+}
+
+pub fn reason(code: &str) -> Reason {
+    Reason { code: ReasonCode::new(code).unwrap(), note: None }
+}
+
+pub fn created(table: u64, guests: u16) -> OrderEvent {
+    OrderEvent::Created(OrderCreated {
+        channel: Channel::Pos,
+        mode: Mode::DineIn,
+        currency: Currency::from_code("USD").unwrap(),
+        revenue_center: None,
+        table: Some(id(table)),
+        guest_count: NonZeroU16::new(guests),
+        customer: None,
+        owner: Some(id(0x300)),
+    })
+}
+
+pub fn line_added(line: Id<Line>, price: i64) -> OrderEvent {
+    OrderEvent::LineAdded(LineAdded {
+        line,
+        item: ItemSnapshot {
+            variant: id(0x400),
+            catalog_version: CatalogVersion::from_bytes([7; 32]),
+            name: Name::new("Flat white").unwrap(),
+            tax_category: id(0x500),
+            unit_price: usd(price),
+        },
+        quantity: Quantity::from_micros(1_000_000, Unit::Each),
+        modifiers: Vec::new(),
+        seat: None,
+        course: None,
+        notes: None,
+    })
+}
+
+/// Closing `check`, which charged `line` `amount`, untaxed, settled by `payment`.
+pub fn check_closed(
+    check: Id<Check>,
+    line: Id<Line>,
+    amount: i64,
+    payment: Id<Payment>,
+) -> OrderEvent {
+    OrderEvent::CheckClosed(CheckClosed {
+        check,
+        rules_version: RulesVersion::from_bytes([9; 32]),
+        lines: vec![LineCharge { line, gross: usd(amount), net: usd(amount), tax: usd(0) }],
+        taxes: Vec::new(),
+        total: usd(amount),
+        payments: Some(IdSet::new([payment]).unwrap()),
+    })
+}
+
+/// Every row of the projections of the store in `scratch`, table by table, read directly from its
+/// database.
+pub fn projection_rows(
+    scratch: &Scratch,
+) -> BTreeMap<&'static str, Vec<Vec<rusqlite::types::Value>>> {
+    let db = rusqlite::Connection::open(scratch.db()).unwrap();
+    [("orders", "order_id"), ("payments", "payment_id")]
+        .into_iter()
+        .map(|(table, key)| {
+            let mut statement =
+                db.prepare(&format!("SELECT * FROM {table} ORDER BY {key}")).unwrap();
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |row| (0..columns).map(|column| row.get(column)).collect())
+                .unwrap()
+                .collect::<Result<Vec<Vec<rusqlite::types::Value>>, _>>()
+                .unwrap();
+            (table, rows)
+        })
+        .collect()
 }

@@ -457,8 +457,8 @@ workflow, not a surprise on a statement.
   database, so *event append + projection update + outbox enqueue* is a single atomic transaction.
   Every commit is fsynced (`synchronous = FULL`), so none can pass for durable when it isn't. The
   database is encrypted at rest with a key protected by the platform keystore. See
-  [ADR-0016](../adr/0016-device-store.md): the event log is built; projections, the outbox and
-  encryption follow.
+  [ADR-0016](../adr/0016-device-store.md) and [ADR-0017](../adr/0017-projections-and-outbox.md):
+  the event log, projections and the outbox are built; encryption follows.
 - **Retention**:
   - Hub: 90 days of full events (configurable).
   - Terminals: 14 days.
@@ -478,8 +478,10 @@ workflow, not a surprise on a statement.
 
 Anything that touches the outside world is an **effect** recorded in the outbox in the same transaction
 as the event that caused it. Effects include charging a card, printing, a fiscal submission, SMS,
-a webhook, a marketplace status update and recurring billing. Each effect type has **one executor
-tier**:
+a webhook, a marketplace status update and recurring billing. An executor starts an effect, and the
+start commits, before it acts; an effect found running after a restart is in doubt, and is resolved,
+by a status query where there is one, before any retry
+([ADR-0017](../adr/0017-projections-and-outbox.md)). Each effect type has **one executor tier**:
 
 | Effect | Executor | Idempotency mechanism |
 |---|---|---|

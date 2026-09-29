@@ -22,5 +22,6 @@ supersedes the old one.
 | [0014](./0014-pricing-engine-v0.md) | Pricing engine v0: snapshot prices, five rounding points, allocated discounts, US sales tax | Accepted |
 | [0015](./0015-checks-and-payments.md) | Checks and payments: line shares, per-check pricing, closing snapshots, and the payment aggregate | Accepted |
 | [0016](./0016-device-store.md) | The device store: SQLite through rusqlite, one transaction per write, crash-tested | Accepted |
+| [0017](./0017-projections-and-outbox.md) | Projections and the outbox: per-stream projections recomputed in each write, and a transactional effect outbox | Proposed |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

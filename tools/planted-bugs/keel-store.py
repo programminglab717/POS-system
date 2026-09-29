@@ -50,30 +50,53 @@ BUGS = [
     (
         "a migration commits before its last point",
         "src/schema.rs",
-        """        proceed(faults, Point::Migrating)?;
-        tx.commit()?;""",
-        """        tx.commit()?;
-        proceed(faults, Point::Migrating)?;""",
+        """    proceed(faults, Point::Migrating)?;
+    tx.commit()?;""",
+        """    tx.commit()?;
+    proceed(faults, Point::Migrating)?;""",
     ),
     (
         "a migration commits its tables apart from the rest",
         "src/schema.rs",
-        """        tx.execute_batch(V1)?;
+        """    if version < 1 {
+        tx.execute_batch(V1)?;
         tx.execute(
             "INSERT INTO store (singleton, device, location, clock) VALUES (1, ?1, ?2, ?3)",
             params![&device.to_bytes()[..], &location.to_bytes()[..], &hlc_bytes(Hlc::ZERO)[..]],
         )?;
-        tx.execute_batch("PRAGMA user_version = 1")?;
-        proceed(faults, Point::Migrating)?;
-        tx.commit()?;""",
-        """        tx.execute_batch(V1)?;
-        tx.commit()?;
-        proceed(faults, Point::Migrating)?;
+    }
+    if version < 2 {
+        tx.execute_batch(V2)?;
+    }
+    tx.pragma_update(None, "user_version", VERSION)?;
+    proceed(faults, Point::Migrating)?;
+    tx.commit()?;""",
+        """    if version < 1 {
+        tx.execute_batch(V1)?;
+    }
+    tx.commit()?;
+    proceed(faults, Point::Migrating)?;
+    if version < 1 {
         db.execute(
             "INSERT INTO store (singleton, device, location, clock) VALUES (1, ?1, ?2, ?3)",
             params![&device.to_bytes()[..], &location.to_bytes()[..], &hlc_bytes(Hlc::ZERO)[..]],
         )?;
-        db.execute_batch("PRAGMA user_version = 1")?;""",
+    }
+    if version < 2 {
+        db.execute_batch(V2)?;
+    }
+    db.pragma_update(None, "user_version", VERSION)?;""",
+    ),
+    (
+        "a version 1 store isn't given the outbox",
+        "src/schema.rs",
+        """    if version < 2 {
+        tx.execute_batch(V2)?;
+    }""",
+        """    if version < 1 {
+        tx.execute_batch(V2)?;
+    }""",
+        "unit",
     ),
     (
         "a store opens for another device",
@@ -133,6 +156,8 @@ BUGS = [
         "a failed caller's write commits",
         "src/store.rs",
         """        let value = f(&mut writing)?;
+        let touched = writing.touched;
+        projection::update(&tx, &touched)?;
         schema::store_clock(&tx, self.writer.latest_hlc())?;
         proceed(&mut *self.faults, Point::Committing)?;
         tx.commit().map_err(StoreError::from)?;
@@ -140,6 +165,8 @@ BUGS = [
         let _ = self.faults.proceed(Point::Committed);
         Ok(value)""",
         """        let value = f(&mut writing);
+        let touched = writing.touched;
+        projection::update(&tx, &touched)?;
         schema::store_clock(&tx, self.writer.latest_hlc())?;
         proceed(&mut *self.faults, Point::Committing)?;
         tx.commit().map_err(StoreError::from)?;
@@ -163,8 +190,11 @@ BUGS = [
             writer: &mut self.writer,
             faults: &mut *self.faults,
             location: self.location,
+            touched: Vec::new(),
         };
         let value = f(&mut writing)?;
+        let touched = writing.touched;
+        projection::update(&tx, &touched)?;
         schema::store_clock(&tx, self.writer.latest_hlc())?;""",
         """        proceed(&mut *self.faults, Point::Began)?;
         schema::store_clock(&tx, self.writer.latest_hlc())?;
@@ -173,8 +203,11 @@ BUGS = [
             writer: &mut self.writer,
             faults: &mut *self.faults,
             location: self.location,
+            touched: Vec::new(),
         };
-        let value = f(&mut writing)?;""",
+        let value = f(&mut writing)?;
+        let touched = writing.touched;
+        projection::update(&tx, &touched)?;""",
     ),
     (
         "the Committing point comes after the commit",
@@ -193,9 +226,11 @@ BUGS = [
     (
         "appending doesn't reach the Stored point",
         "src/write.rs",
-        """        let event = pending.commit();
-        proceed(self.faults, Point::Stored)?;""",
-        "        let event = pending.commit();",
+        """        self.touch(&event);
+        proceed(self.faults, Point::Stored)?;
+        Ok(event)""",
+        """        self.touch(&event);
+        Ok(event)""",
     ),
     # Receiving: the order of the checks, and what becomes of each event.
     (
@@ -374,15 +409,15 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
     ),
     (
         "streams are read in the order events arrived",
-        "src/store.rs",
-        "             ORDER BY hlc, origin_device, origin_seq\",",
-        "             ORDER BY arrival\",",
+        "src/rows.rs",
+        "         ORDER BY hlc, origin_device, origin_seq\",",
+        "         ORDER BY arrival\",",
     ),
     (
         "ties in a stream are broken by the later device first",
-        "src/store.rs",
-        "             ORDER BY hlc, origin_device, origin_seq\",",
-        "             ORDER BY hlc, origin_device DESC, origin_seq\",",
+        "src/rows.rs",
+        "         ORDER BY hlc, origin_device, origin_seq\",",
+        "         ORDER BY hlc, origin_device DESC, origin_seq\",",
     ),
     # Ordering ties by HLC alone isn't listed: SQLite reads a stream through its index, which is
     # ordered by device after HLC, so the result is the same.
@@ -433,6 +468,314 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
     }
 """,
         "",
+        "unit",
+    ),
+    # Projections (ADR-0017).
+    (
+        "a write doesn't update its projections",
+        "src/store.rs",
+        """        projection::update(&tx, &touched)?;
+""",
+        "",
+    ),
+    (
+        "appended events don't mark their streams",
+        "src/write.rs",
+        """        self.touch(&event);
+        proceed(self.faults, Point::Stored)?;""",
+        "        proceed(self.faults, Point::Stored)?;",
+    ),
+    (
+        "received events don't mark their streams",
+        "src/write.rs",
+        """                rows::insert(self.tx, &event)?;
+                self.touch(&event);""",
+        "                rows::insert(self.tx, &event)?;",
+    ),
+    (
+        "a stream is reported each time a write touches it",
+        "src/write.rs",
+        """        if !self.touched.contains(stream) {
+            self.touched.push(stream.clone());
+        }""",
+        "        self.touched.push(stream.clone());",
+    ),
+    (
+        "projections fold each device's events together",
+        "src/projection.rs",
+        "            let events = rows::stream_events(db, projection.kind, stream.id)?;",
+        """            let mut events = rows::stream_events(db, projection.kind, stream.id)?;
+            events.sort_by_key(|event| (event.body().origin_device, event.body().origin_seq));""",
+    ),
+    (
+        "a rebuild folds a stream backwards",
+        "src/projection.rs",
+        "        let events = rows::stream_events(db, projection.kind, stream)?;",
+        """        let mut events = rows::stream_events(db, projection.kind, stream)?;
+        events.reverse();""",
+    ),
+    (
+        "a rebuild keeps only the first stream",
+        "src/projection.rs",
+        "ORDER BY stream_id\",",
+        "ORDER BY stream_id LIMIT 1\",",
+    ),
+    (
+        "stale projections aren't rebuilt when the store opens",
+        "src/store.rs",
+        "        if !stale.is_empty() {",
+        "        if false {",
+    ),
+    # A rebuild that forgets its version rebuilds again at every opening, to the same rows; and no
+    # property test changes a version. The unit tests read the versions back.
+    (
+        "a rebuild doesn't record its version",
+        "src/projection.rs",
+        """    db.execute(
+        "INSERT INTO projections (name, version) VALUES (?1, ?2) \\
+         ON CONFLICT (name) DO UPDATE SET version = excluded.version",
+        params![projection.name, projection.version],
+    )?;
+""",
+        "",
+        "unit",
+    ),
+    (
+        "a changed version doesn't rebuild",
+        "src/projection.rs",
+        "        if built != Some(projection.version) {",
+        "        if built.is_none() {",
+        "unit",
+    ),
+    (
+        "rebuilds don't reach their fault point",
+        "src/store.rs",
+        """        proceed(&mut *self.faults, Point::Rebuilding)?;
+""",
+        "",
+    ),
+    # Interrupting a rebuild that already committed changes nothing a crash test can see: the
+    # rebuilt rows are right. The unit test puts wrong rows in first.
+    (
+        "a rebuild commits before its fault point",
+        "src/store.rs",
+        """        proceed(&mut *self.faults, Point::Rebuilding)?;
+        tx.commit()?;""",
+        """        tx.commit()?;
+        proceed(&mut *self.faults, Point::Rebuilding)?;""",
+        "unit",
+    ),
+    (
+        "loading folds each device's events together",
+        "src/projection.rs",
+        "    let events = rows::stream_events(db, A::Event::STREAM, aggregate.stream_id())?;",
+        """    let mut events = rows::stream_events(db, A::Event::STREAM, aggregate.stream_id())?;
+    events.sort_by_key(|event| (event.body().origin_device, event.body().origin_seq));""",
+    ),
+    (
+        "an order's business date is its last event's",
+        "src/projection.rs",
+        "            info.and_then(|info| business_date(events, info.created_by)),",
+        "            events.last().map(|event| event.body().business_date.to_string()),",
+    ),
+    (
+        "open and closed checks are swapped",
+        "src/projection.rs",
+        """            count(checks.len().saturating_sub(closed))?,
+            count(closed)?,""",
+        """            count(closed)?,
+            count(checks.len().saturating_sub(closed))?,""",
+    ),
+    (
+        "every line counts as live",
+        "src/projection.rs",
+        "            count(order.live_lines().count())?,",
+        "            count(order.lines().len())?,",
+    ),
+    (
+        "an order's unreadable events aren't counted",
+        "src/projection.rs",
+        "            count(order.skipped().len())?,",
+        "            count(0)?,",
+    ),
+    (
+        "an order's conflicts aren't counted",
+        "src/projection.rs",
+        "            count(order.conflicts().len())?,",
+        "            count(0)?,",
+    ),
+    (
+        "a payment's conflicts aren't counted",
+        "src/projection.rs",
+        "            count(payment.conflicts().len())?,",
+        "            count(0)?,",
+    ),
+    (
+        "a payment's tip is its amount",
+        "src/projection.rs",
+        "            captured.and_then(|captured| captured.tip).map(Money::minor),",
+        "            captured.map(|captured| captured.amount.minor()),",
+    ),
+    (
+        "an order without its creation reads as active",
+        "src/projection.rs",
+        """        if order.info().is_none() {
+            return OrderState::Uncreated;
+        }""",
+        "",
+    ),
+    (
+        "a payment without its initiation reads as initiated",
+        "src/projection.rs",
+        """        if payment.info().is_none() {
+            return PaymentState::Uninitiated;
+        }""",
+        "",
+    ),
+    (
+        "a stream's first and last HLCs are swapped",
+        "src/projection.rs",
+        """            first: hlc_at(events.first()),
+            last: hlc_at(events.last()),""",
+        """            first: hlc_at(events.last()),
+            last: hlc_at(events.first()),""",
+    ),
+    (
+        "a stream's event count is one short",
+        "src/projection.rs",
+        "            events: count(events.len())?,",
+        "            events: count(events.len().saturating_sub(1))?,",
+    ),
+    (
+        "open and submitted stages share a code",
+        "src/projection.rs",
+        """        Stage::Open => "open",""",
+        """        Stage::Open => "submitted",""",
+    ),
+    (
+        "orders in a state are listed by identifier",
+        "src/store.rs",
+        "WHERE state = ?1 ORDER BY first_hlc, order_id\"",
+        "WHERE state = ?1 ORDER BY order_id\"",
+    ),
+    (
+        "an order's payments are found by their check",
+        "src/store.rs",
+        "FROM payments WHERE order_id = ?1 \\",
+        "FROM payments WHERE check_id = ?1 \\",
+    ),
+    # The outbox (ADR-0017).
+    (
+        "enqueuing a key again inserts it again",
+        "src/outbox.rs",
+        """    if let Some(existing) = get(db, &effect.key)? {
+        return if existing.effect == *effect {
+            Ok(Enqueued::Already)
+        } else {
+            Err(EffectError::KeyInUse.into())
+        };
+    }
+""",
+        "",
+    ),
+    (
+        "another effect under a key is taken for the same",
+        "src/outbox.rs",
+        "        return if existing.effect == *effect {",
+        "        return if existing.effect.key == effect.key {",
+    ),
+    (
+        "an effect's cause isn't checked",
+        "src/outbox.rs",
+        """    if let Some(cause) = effect.cause
+        && !rows::has_id(db, &cause.to_bytes())?
+    {
+        return Err(EffectError::UnknownCause.into());
+    }
+""",
+        "",
+    ),
+    (
+        "effects start before they are due",
+        "src/outbox.rs",
+        """    if queued.due > now {
+        return Err(EffectError::NotDue(queued.due).into());
+    }
+""",
+        "",
+    ),
+    (
+        "a start doesn't count its attempt",
+        "src/outbox.rs",
+        """    let attempts = queued.attempts.checked_add(1).ok_or(StoreError::OutOfRange("attempts"))?;""",
+        "    let attempts = queued.attempts;",
+    ),
+    (
+        "a start keeps the first start's time",
+        "src/outbox.rs",
+        "\"UPDATE outbox SET state = 'running', attempts = ?2, started = ?3 WHERE key = ?1\",",
+        "\"UPDATE outbox SET state = 'running', attempts = ?2, started = coalesce(started, ?3) WHERE key = ?1\",",
+    ),
+    (
+        "finishing an effect fails it",
+        "src/write.rs",
+        "        outbox::end(self.tx, key, EffectState::Done)",
+        "        outbox::end(self.tx, key, EffectState::Failed)",
+    ),
+    (
+        "an effect is retried whatever its state",
+        "src/outbox.rs",
+        """    expect(db, key, EffectState::Running)?;
+    db.execute(
+        "UPDATE outbox SET state = 'pending', due = ?2 WHERE key = ?1",""",
+        """    get(db, key)?.ok_or(EffectError::Unknown)?;
+    db.execute(
+        "UPDATE outbox SET state = 'pending', due = ?2 WHERE key = ?1",""",
+    ),
+    (
+        "a retry keeps its due time",
+        "src/outbox.rs",
+        "\"UPDATE outbox SET state = 'pending', due = ?2 WHERE key = ?1\",",
+        "\"UPDATE outbox SET state = 'pending' WHERE key = ?1 AND ?2 IS NOT NULL\",",
+    ),
+    (
+        "due effects come in the order they were enqueued",
+        "src/outbox.rs",
+        "         ORDER BY due, seq LIMIT ?2\"",
+        "         ORDER BY seq LIMIT ?2\"",
+    ),
+    (
+        "running effects are due again",
+        "src/outbox.rs",
+        "WHERE state = 'pending' AND due <= ?1",
+        "WHERE state IN ('pending', 'running') AND due <= ?1",
+    ),
+    (
+        "one more effect is due than asked",
+        "src/outbox.rs",
+        "         ORDER BY due, seq LIMIT ?2\"",
+        "         ORDER BY due, seq LIMIT ?2 + 1\"",
+    ),
+    (
+        "pending effects are listed as running",
+        "src/outbox.rs",
+        "FROM outbox WHERE state = ?1 ORDER BY seq",
+        "FROM outbox WHERE state = ?1 OR state = 'pending' ORDER BY seq",
+    ),
+    # The property tests only make valid kinds and keys; the unit tests try the invalid ones.
+    # A kind starting with a capital isn't listed: every letter must be lowercase anyway.
+    (
+        "an effect's kind may start with a digit",
+        "src/outbox.rs",
+        "word.as_bytes().first().is_some_and(u8::is_ascii_lowercase)",
+        "word.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)",
+        "unit",
+    ),
+    (
+        "an empty key is accepted",
+        "src/outbox.rs",
+        "    if effect.key.is_empty() || effect.key.len() > MAX_KEY {",
+        "    if effect.key.len() > MAX_KEY {",
         "unit",
     ),
 ]

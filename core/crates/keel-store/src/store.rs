@@ -4,15 +4,22 @@ use core::time::Duration;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use keel_domain::aggregate::Aggregate;
+use keel_domain::order::Order;
+use keel_domain::payment::Payment;
 use keel_events::envelope::{Device, Event, Location, StreamRef};
 use keel_events::event::SignedEvent;
 use keel_events::keys::Signer;
 use keel_events::log::{LogConfig, LogHead, LogWriter};
-use keel_types::{Entropy, Hlc, Id};
+use keel_types::{Entropy, Hlc, Id, Timestamp};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::error::StoreError;
 use crate::faults::{Faults, NoFaults, Point, proceed};
+use crate::outbox::{self, EffectState, Queued};
+use crate::projection::{
+    self, ORDER_COLUMNS, OrderState, OrderSummary, PAYMENT_COLUMNS, PaymentSummary, Projection,
+};
 use crate::rows;
 use crate::schema;
 use crate::write::{Quarantined, Reason, Writing};
@@ -100,7 +107,35 @@ impl<S: Signer, E: Entropy> Store<S, E> {
             max_forward_drift: config.max_forward_drift,
         };
         let writer = LogWriter::new(log, signer, entropy);
-        Ok(Store { db, location: config.location, writer, faults })
+        let mut store = Store { db, location: config.location, writer, faults };
+        let stale = projection::stale(&store.db)?;
+        if !stale.is_empty() {
+            store.rebuild(&stale)?;
+        }
+        Ok(store)
+    }
+
+    /// Drops every projection and rebuilds it from the stored events, in one transaction. The
+    /// store does this itself when it opens, for a projection whose version changed: this is for
+    /// support, and tests.
+    ///
+    /// # Errors
+    /// [`StoreError::Database`] if the store can't be read or written, [`StoreError::Corrupt`]
+    /// if an event doesn't read back as stored, and [`StoreError::Interrupted`] if a fault hook
+    /// interrupts the rebuild, which then changes nothing.
+    pub fn rebuild_projections(&mut self) -> Result<(), StoreError> {
+        let all: Vec<&Projection> = projection::ALL.iter().collect();
+        self.rebuild(&all)
+    }
+
+    fn rebuild(&mut self, projections: &[&Projection]) -> Result<(), StoreError> {
+        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for projection in projections {
+            projection::rebuild(&tx, projection)?;
+        }
+        proceed(&mut *self.faults, Point::Rebuilding)?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Runs `f` as one write: the events it appends and receives are stored together, or none
@@ -147,8 +182,11 @@ impl<S: Signer, E: Entropy> Store<S, E> {
             writer: &mut self.writer,
             faults: &mut *self.faults,
             location: self.location,
+            touched: Vec::new(),
         };
         let value = f(&mut writing)?;
+        let touched = writing.touched;
+        projection::update(&tx, &touched)?;
         schema::store_clock(&tx, self.writer.latest_hlc())?;
         proceed(&mut *self.faults, Point::Committing)?;
         tx.commit().map_err(StoreError::from)?;
@@ -232,15 +270,7 @@ impl<S: Signer, E: Entropy> Store<S, E> {
     /// # Errors
     /// As [`Store::head`].
     pub fn stream(&self, stream: &StreamRef) -> Result<Vec<SignedEvent>, StoreError> {
-        let mut statement = self.db.prepare(
-            "SELECT message, hash FROM events WHERE stream_kind = ?1 AND stream_id = ?2 \
-             ORDER BY hlc, origin_device, origin_seq",
-        )?;
-        let rows = statement.query_map(
-            params![stream.kind.as_str(), &stream.id.to_bytes()[..]],
-            rows::stored_event,
-        )?;
-        rows::collect(rows)
+        rows::stream_events(&self.db, stream.kind.as_str(), stream.id)
     }
 
     /// The event with identifier `id`, if the store holds it.
@@ -256,6 +286,108 @@ impl<S: Signer, E: Entropy> Store<S, E> {
             )
             .optional()?
             .transpose()
+    }
+
+    /// Folds `aggregate` from its stream's events in canonical order: the first step of a
+    /// command. A command that must see exactly the state it changes loads it inside its write,
+    /// with [`Writing::load`].
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn load<A: Aggregate>(&self, aggregate: A) -> Result<A, StoreError> {
+        projection::load(&self.db, aggregate)
+    }
+
+    /// The order `id`, as the `orders` projection keeps it; `None` if the store holds no event
+    /// of it.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn order(&self, id: Id<Order>) -> Result<Option<OrderSummary>, StoreError> {
+        self.db
+            .query_row(
+                &format!("SELECT {ORDER_COLUMNS} FROM orders WHERE order_id = ?1"),
+                [&id.to_bytes()[..]],
+                projection::order_summary,
+            )
+            .optional()?
+            .transpose()
+    }
+
+    /// The orders in `state`, the earliest first by the HLC of their first event.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn orders(&self, state: OrderState) -> Result<Vec<OrderSummary>, StoreError> {
+        let mut statement = self.db.prepare(&format!(
+            "SELECT {ORDER_COLUMNS} FROM orders WHERE state = ?1 ORDER BY first_hlc, order_id"
+        ))?;
+        let rows = statement.query_map([state.code()], projection::order_summary)?;
+        rows.map(|row| row?).collect()
+    }
+
+    /// The payment `id`, as the `payments` projection keeps it; `None` if the store holds no
+    /// event of it.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn payment(&self, id: Id<Payment>) -> Result<Option<PaymentSummary>, StoreError> {
+        self.db
+            .query_row(
+                &format!("SELECT {PAYMENT_COLUMNS} FROM payments WHERE payment_id = ?1"),
+                [&id.to_bytes()[..]],
+                projection::payment_summary,
+            )
+            .optional()?
+            .transpose()
+    }
+
+    /// The payments initiated for order `order`, the earliest first by the HLC of their first
+    /// event.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn payments_of(&self, order: Id<Order>) -> Result<Vec<PaymentSummary>, StoreError> {
+        let mut statement = self.db.prepare(&format!(
+            "SELECT {PAYMENT_COLUMNS} FROM payments WHERE order_id = ?1 \
+             ORDER BY first_hlc, payment_id"
+        ))?;
+        let rows = statement.query_map([&order.to_bytes()[..]], projection::payment_summary)?;
+        rows.map(|row| row?).collect()
+    }
+
+    /// The effect with key `key`, if the outbox holds one.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn effect(&self, key: &[u8]) -> Result<Option<Queued>, StoreError> {
+        outbox::get(&self.db, key)
+    }
+
+    /// Up to `limit` pending effects due by `now`, for their executors to start: the earliest
+    /// due first, then in the order they were enqueued.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn due_effects(&self, now: Timestamp, limit: u32) -> Result<Vec<Queued>, StoreError> {
+        outbox::due(&self.db, now, limit)
+    }
+
+    /// The running effects, in the order they were enqueued. After a restart, each is in doubt:
+    /// find out whether its attempt happened, then finish or retry it.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn running_effects(&self) -> Result<Vec<Queued>, StoreError> {
+        outbox::in_state(&self.db, EffectState::Running)
+    }
+
+    /// Every effect in the outbox, in the order they were enqueued.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn effects(&self) -> Result<Vec<Queued>, StoreError> {
+        outbox::all(&self.db)
     }
 
     /// Everything in the quarantine, in the order it arrived.

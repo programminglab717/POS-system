@@ -3,6 +3,7 @@
 use keel_events::log::AppendError;
 
 use crate::faults::Point;
+use crate::outbox::EffectError;
 
 /// Why the store couldn't open, read or write.
 #[derive(Debug, thiserror::Error)]
@@ -40,4 +41,7 @@ pub enum StoreError {
     /// A fault hook interrupted the write, which rolled back.
     #[error("the write was interrupted at {0:?}")]
     Interrupted(Point),
+    /// The outbox refused a change.
+    #[error(transparent)]
+    Effect(#[from] EffectError),
 }

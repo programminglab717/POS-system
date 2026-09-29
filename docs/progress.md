@@ -8,8 +8,9 @@
 
 **Phase 0 (Foundations), step 5 of 8:** `keel-store`, the SQLite event store, projections and
 outbox, in three slices ([ADR-0016](./adr/0016-device-store.md)). Slice 1, the event log store,
-is built and reviewed; slice 2, projections and the outbox, is being designed. Step 4,
-`keel-domain` and `keel-pricing` v0, is done: built in four slices, each reviewed.
+is built and reviewed; slice 2, projections and the outbox
+([ADR-0017](./adr/0017-projections-and-outbox.md), proposed), is built and being verified.
+Step 4, `keel-domain` and `keel-pricing` v0, is done: built in four slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -48,7 +49,9 @@ Step 5 comes in three slices, each ending with a review
 1. **The event log store** (built and reviewed 2026-09-29): the device's own events and
    those it receives from other replicas, in one SQLite database; the quarantine and the version
    vector; one transaction per write; crash tests at every point of a write.
-2. **Projections and the outbox**, updated in the same transaction as the events.
+2. **Projections and the outbox** (built 2026-09-29, being verified): order and payment
+   projections recomputed in each write's transaction, rebuilt from the log when their version
+   changes; and an outbox of effects that commit with the events that cause them.
 3. **Encryption at rest and integrity checks**: SQLCipher-class encryption with its key from the
    platform keystore, and checks when the store opens.
 
@@ -56,12 +59,87 @@ Retention, snapshots and backups follow the sync engine (step 6).
 
 ## Current slice
 
-Slice 2, projections and the outbox, begins with its design: what the store derives from events
-and how it keeps that current in each write's transaction, how a projection is rebuilt, and what
-the outbox holds and how its effects reach the world outside the kernel. It will be recorded in a
-proposed ADR, and reviewed with the slice.
+Slice 2, projections and the outbox, is built, with its design in
+[ADR-0017](./adr/0017-projections-and-outbox.md), proposed:
+
+| Piece | Status |
+|---|---|
+| Design: what projections hold, when they are recomputed and rebuilt, and the outbox's states | Done |
+| Schema version 2: the outbox and the projections' versions; migrating version 1 stores | Done |
+| `orders` and `payments` projections, recomputed in each write, rebuilt when their version changes | Done |
+| Loading aggregates; the streams a write touched | Done |
+| The outbox: enqueue, start, finish, retry and fail, inside writes; due and running effects | Done |
+| Known-answer tests, property tests against models, convergence, crash tests | Done |
+| Planted bugs, coverage probes, 100,000-case soak, CI-equivalent run | Done |
 
 ## Completed
+
+### Projections and the outbox: step 5, slice 2 (2026-09-29)
+
+Commit to follow. Waiting for review.
+
+- **Built** ([ADR-0017](./adr/0017-projections-and-outbox.md)):
+  - projections: a row for each order and each payment, folded with `keel-domain`'s folds from
+    the stream's events in canonical order. Each write recomputes the rows of the streams it
+    touched before it commits, so a late event needs nothing more; a projection whose version
+    changed is dropped and rebuilt from the log when the store opens;
+  - reads: an order or a payment by identifier, the orders in a state, an order's payments, and
+    any aggregate loaded from its stream, inside a write or outside one. A write reports the
+    streams it touched;
+  - the outbox: effects with an idempotency key, a kind, a payload and the event that caused
+    them, enqueued, started, finished, retried and failed inside writes; the due effects, and
+    the running ones, which after a restart are in doubt;
+  - schema version 2, which adds the outbox and the projections' versions, and migrates version
+    1 stores; a fault point for rebuilds.
+- **Verified:**
+  - Known-answer tests: 18 more in `keel-store` (33 in all), among them an order and a payment
+    projected as they fold, a late event folded in its place, rebuilds on a version change and
+    on request, an interrupted rebuild, a version 1 store migrated, and every state of an
+    effect, and every refusal. The golden rows pin each projection's rows for a fixed history.
+  - A property test against a model of projections: writes that append events and receive two
+    other devices' logs a few events at a time, commit or fail, with reopenings and rebuilds.
+    After every step, each order's and payment's row is the model's fold of the stream's stored
+    events in canonical order, as are the lists by state and by order, every aggregate loaded,
+    and the streams each write reports it touched; a rebuild changes nothing.
+  - A convergence property: two stores receive the same events, each in its own order and its
+    own writes, some failing, and end with byte-identical projections, and the model's.
+  - A property test against a model of the outbox: every change, and why a change is refused
+    (an unknown key, another effect under the key, the wrong state, not yet due, a cause the
+    store doesn't hold), inside writes that commit or fail, with reopenings.
+  - The crash tests' workload now also rings up an order and moves effects along; after every
+    crash, the projections equal a rebuild from the stored events, and the outbox holds exactly
+    the effects of the stored writes.
+  - Coverage probes, over 1,000 cases: an event arriving after others with later HLCs in its
+    stream in 72%, and the arrival order folding differently from the canonical one in 62%;
+    every order and payment state in 54 to 891 cases; closed checks in 90, tips in 75, a
+    payment on an opened check in 453, a business date differing from the last event's in 442;
+    every outcome of every outbox change, an effect started before it was due in 85, and due
+    effects out of the order they were enqueued in 153.
+  - Planted bugs, all caught: 94 in `keel-store`, 43 of them new, aimed at projections and the
+    outbox, and 7 re-aimed at code this slice moved. The property and crash tests alone catch
+    83; the other 11, settings, versions and invalid input, only the unit tests reach.
+  - Every property test in `keel-store` passed 100,000 cases.
+  - The CI-equivalent run passed locally; CI on the commit to follow.
+- **Decisions:** [ADR-0017](./adr/0017-projections-and-outbox.md), proposed, with the details the
+  build settled under "As built":
+  - projections hold one row per stream, recomputed from the whole stream in each write that
+    touches it, measured at about 2.3 µs an event on the development machine;
+  - enqueuing a key the outbox holds is a no-op for the same effect, and refused for another;
+  - an effect's cause must be an event the store holds.
+- **Found and fixed during the build:**
+  - The first planted-bug run hung: a bug that kept projections from being built made every
+    write fail, and the convergence test, which lets writes fail on purpose, retried forever.
+    It now fails on any error it didn't plan.
+  - The projection property didn't check loading aggregates; it now compares every aggregate the
+    store loads with the model's fold.
+  - Two outbox refusals came up too rarely: starting an effect before it's due, in 5.6% of cases,
+    and due effects out of the order they were enqueued, in 2.9%. Checking the due effects at
+    later times too, and more retries, raised them to 8.5% and 15%.
+  - The crash tests take 20 s instead of 4 s in a debug build, since each write folds the streams
+    it touches from the start, and the workload's streams grow to hundreds of events.
+  - One planted bug couldn't change what the code does: letting an effect's kind start with a
+    capital, which the check on every letter refuses anyway. It was re-aimed at a kind starting
+    with a digit.
 
 ### The event log store: step 5, slice 1 (2026-09-29)
 
@@ -540,8 +618,16 @@ Work deliberately left for later, so it isn't forgotten:
 - **`keel-store`:**
   - Power-loss tests, which need keel-sim's simulated disk; until then the durability settings
     are checked as SQLite reports them.
-  - Projections and the outbox (slice 2); encryption at rest and integrity checks (slice 3);
-    retention, snapshots and backups, after the sync engine.
+  - Encryption at rest and integrity checks (slice 3); retention, snapshots and backups, after
+    the sync engine.
+  - Check balances in a projection: they need the location's pricing rules in the store.
+  - Folding only what's new: each write folds the streams it touches from the start, about
+    2.3 µs an event on the development machine. Long-lived streams, such as a gift card's, will
+    need folded state kept between writes.
+  - Telling the UI what changed: a write reports the streams it touched, for the shell to show
+    again; subscriptions come with the shell.
+  - Which replica enqueues an effect, by its executor tier, comes with the first effects:
+    payments, printing and fiscal submissions.
   - Releasing or discarding quarantined messages: they are kept for a person to look at, with
     no tools yet.
   - The simulator must give each restart of a device fresh entropy: a store reopened with the

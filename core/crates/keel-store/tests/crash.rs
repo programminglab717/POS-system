@@ -9,10 +9,15 @@
 //! - or killed by the parent, a moment after a chosen write's acknowledgement, which also lands
 //!   inside SQLite's own work.
 //!
+//! Each write appends events, one of them to a real order, receives another device's events, and
+//! moves effects along: it enqueues one, starts the one before, and finishes the one before that.
+//!
 //! After each crash, the parent reopens the store and checks that:
 //! - every acknowledged write is stored, and so is the write in flight when the crash came
 //!   after its commit; no other write is;
-//! - each write is stored whole or not at all;
+//! - each write is stored whole or not at all, its projections and effects included: the
+//!   projections equal a rebuild from the stored events, and the outbox holds exactly the
+//!   effects of the writes stored;
 //! - every stored log verifies: signatures, sequence numbers, links and clocks;
 //! - the device's clock came back, and its writer continues its log;
 //! - after a crash in a migration, the database holds nothing of it.
@@ -36,12 +41,18 @@ use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use keel_domain::order::{Line, Order};
 use keel_events::event::SignedEvent;
 use keel_events::log::{Link, LogHead};
 use keel_events::verify::DeviceRegistry;
-use keel_store::{Faults, Point, Received, Store, StoreError};
-use keel_types::{Hlc, SeededEntropy};
-use support::{OWN, PEERS, Scratch, at, config, device, draft, here, key, next_event, registry};
+use keel_store::{
+    Effect, EffectKind, EffectState, Faults, OrderState, Point, Received, Store, StoreError,
+};
+use keel_types::{Hlc, Id, SeededEntropy};
+use support::{
+    OWN, PEERS, Scratch, at, config, created, device, domain_draft, draft, here, id, key,
+    line_added, next_event, projection_rows, registry,
+};
 
 /// Set in the child: the directory of the store it works on.
 const CHILD: &str = "KEEL_STORE_CRASH_DIR";
@@ -76,6 +87,37 @@ fn note(i: usize, k: usize) -> u64 {
     u64::try_from(i * 10 + k).unwrap()
 }
 
+/// The order the workload rings up: the first write creates it, and each write adds a line.
+fn order() -> Id<Order> {
+    id(0x7000)
+}
+
+fn line(i: usize) -> Id<Line> {
+    id(0x1_0000 + u64::try_from(i).unwrap())
+}
+
+/// Write `i` appends this many events to the order.
+fn order_events(i: usize) -> usize {
+    if i == 0 { 2 } else { 1 }
+}
+
+/// The key of the effect write `i` enqueues.
+fn effect_key(i: usize) -> Vec<u8> {
+    format!("effect {i}").into_bytes()
+}
+
+/// Where the effect write `k` enqueued is after `written` writes: write `k + 1` starts it, and
+/// write `k + 2` finishes it.
+fn effect_state(k: usize, written: usize) -> EffectState {
+    if k + 2 < written {
+        EffectState::Done
+    } else if k + 1 < written {
+        EffectState::Running
+    } else {
+        EffectState::Pending
+    }
+}
+
 /// The peer's log, as long as `writes` writes need.
 fn peer_log(writes: usize) -> Vec<SignedEvent> {
     let count: usize = (0..writes).map(receives).sum();
@@ -92,6 +134,7 @@ fn peer_log(writes: usize) -> Vec<SignedEvent> {
 fn point_name(point: Point) -> &'static str {
     match point {
         Point::Migrating => "migrating",
+        Point::Rebuilding => "rebuilding",
         Point::Began => "began",
         Point::Stored => "stored",
         Point::Committing => "committing",
@@ -145,9 +188,27 @@ fn crash_child() {
                 for k in 0..appends(i) {
                     w.append(draft(1 + u8::try_from(i % 3).unwrap(), note(i, k)), now)?;
                 }
+                if i == 0 {
+                    w.append(domain_draft(order().cast(), &created(0x200, 2), 0), now)?;
+                }
+                let added =
+                    w.append(domain_draft(order().cast(), &line_added(line(i), 450), 0), now)?;
                 for event in incoming {
                     let outcome = w.receive(&event.to_bytes(), &registry, now)?;
                     assert!(matches!(outcome, Received::Stored(_)));
+                }
+                let effect = Effect {
+                    key: effect_key(i),
+                    kind: EffectKind::new("print.kitchen").unwrap(),
+                    payload: note(i, 0).to_be_bytes().to_vec(),
+                    cause: Some(added.body().event_id),
+                };
+                w.enqueue(&effect, now)?;
+                if i >= 1 {
+                    w.start(&effect_key(i - 1), now)?;
+                }
+                if i >= 2 {
+                    w.finish(&effect_key(i - 2))?;
                 }
                 Ok::<(), StoreError>(())
             })
@@ -209,7 +270,11 @@ fn reached(stdout: &str) -> Vec<(String, usize)> {
 fn check_store(scratch: &Scratch, peer: &[SignedEvent], candidates: &[usize]) -> usize {
     let mut store =
         Store::open(scratch.db(), config(), key(OWN), SeededEntropy::new(4242)).unwrap();
-    let own = store.log(device(OWN), 0, 10_000).unwrap();
+    let all_own = store.log(device(OWN), 0, 10_000).unwrap();
+    let (own, ordered): (Vec<SignedEvent>, Vec<SignedEvent>) = all_own
+        .iter()
+        .cloned()
+        .partition(|event| event.body().schema.name.as_str() == "order.noted");
     let theirs = store.log(device(PEER), 0, 10_000).unwrap();
     // Whole writes only: the stored events are exactly those of the first `written` writes.
     let written = candidates
@@ -217,8 +282,9 @@ fn check_store(scratch: &Scratch, peer: &[SignedEvent], candidates: &[usize]) ->
         .copied()
         .find(|&written| {
             let own_count: usize = (0..written).map(appends).sum();
+            let order_count: usize = (0..written).map(order_events).sum();
             let their_count: usize = (0..written).map(receives).sum();
-            own.len() == own_count && theirs.len() == their_count
+            own.len() == own_count && ordered.len() == order_count && theirs.len() == their_count
         })
         .unwrap_or_else(|| {
             panic!(
@@ -233,9 +299,31 @@ fn check_store(scratch: &Scratch, peer: &[SignedEvent], candidates: &[usize]) ->
         own.iter().map(|event| event.body().payload.value().unwrap().as_u64().unwrap()).collect();
     assert_eq!(stored_notes, notes, "the device's own events, in order");
     assert_eq!(theirs, peer[..theirs.len()], "the peer's events, in order");
+    // The projections are what the stored events make: a rebuild changes nothing. The order has a
+    // line for each write.
+    let kept = projection_rows(scratch);
+    store.rebuild_projections().unwrap();
+    assert_eq!(projection_rows(scratch), kept, "the projections disagree with the events");
+    match store.order(order()).unwrap() {
+        None => assert_eq!(written, 0),
+        Some(summary) => {
+            assert_eq!(summary.state, OrderState::Active);
+            assert_eq!(summary.live_lines, u64::try_from(written).unwrap());
+        }
+    }
+    // The outbox holds each stored write's effect, as far as the writes after it moved it.
+    let effects: Vec<(Vec<u8>, EffectState)> = store
+        .effects()
+        .unwrap()
+        .into_iter()
+        .map(|queued| (queued.effect.key, queued.state))
+        .collect();
+    let expected: Vec<(Vec<u8>, EffectState)> =
+        (0..written).map(|k| (effect_key(k), effect_state(k, written))).collect();
+    assert_eq!(effects, expected, "the outbox after {written} writes");
     // Every log verifies.
     let registry: DeviceRegistry = registry();
-    for log in [&own, &theirs] {
+    for log in [&all_own, &theirs] {
         let mut head = LogHead::EMPTY;
         for event in log {
             assert_eq!(registry.verify(&event.to_bytes()).as_ref(), Ok(event));
@@ -244,12 +332,13 @@ fn check_store(scratch: &Scratch, peer: &[SignedEvent], candidates: &[usize]) ->
         }
     }
     // The clock came back: at least every stored event's.
-    let latest = own.iter().chain(&theirs).map(|event| event.body().hlc).max().unwrap_or(Hlc::ZERO);
+    let latest =
+        all_own.iter().chain(&theirs).map(|event| event.body().hlc).max().unwrap_or(Hlc::ZERO);
     assert!(store.clock() >= latest, "the clock {:?} is behind {latest:?}", store.clock());
     // The device carries on its log.
     let next = store.write(|w| w.append(draft(1, 999), at(20_000))).unwrap();
     assert_eq!(store.head(device(OWN)).unwrap(), LogHead::of(&next));
-    let before = own.last().map_or(LogHead::EMPTY, LogHead::of);
+    let before = all_own.last().map_or(LogHead::EMPTY, LogHead::of);
     assert_eq!(before.link(&next), Ok(Link::Next));
     assert!(next.body().hlc > latest);
     written
@@ -258,8 +347,9 @@ fn check_store(scratch: &Scratch, peer: &[SignedEvent], candidates: &[usize]) ->
 /// How often a workload of `writes` writes reaches `point`.
 fn occurrences(point: Point, writes: usize) -> usize {
     match point {
-        Point::Migrating => 1,
-        Point::Stored => (0..writes).map(|i| appends(i) + receives(i)).sum(),
+        // A new store migrates, and builds its projections, once.
+        Point::Migrating | Point::Rebuilding => 1,
+        Point::Stored => (0..writes).map(|i| appends(i) + order_events(i) + receives(i)).sum(),
         _ => writes,
     }
 }

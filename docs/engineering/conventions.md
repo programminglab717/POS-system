@@ -134,6 +134,11 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
   killed. The parent reopens the store and checks that every acknowledged write is there, whole.
   The parent kills a child only after reading a chosen write's acknowledgement, not after a fixed
   sleep, so that kills land among the writes on a fast machine and a slow one alike.
+- **Convergence.** What replicas derive from events must depend on the events alone. Tests feed
+  two stores the same events in different orders and in different writes, some of which fail, and
+  compare their projections byte for byte.
+- **Golden rows** pin each projection's rows for a fixed history. When they change, the projection
+  changed: bump its version, so that every store rebuilds it, then update the rows.
 - **Exhaustive sweeps**, such as every time zone transition from 1970 to 2037, are `#[ignore]`d
   for quick local runs. CI runs them with `-- --include-ignored`.
 - **Case counts.** Locally, property tests run proptest's default of 256 cases. CI runs 4,096

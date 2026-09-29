@@ -1,6 +1,6 @@
 //! Reading and writing events' rows, inside a write's transaction or outside one.
 
-use keel_events::envelope::Device;
+use keel_events::envelope::{Aggregate, Device};
 use keel_events::event::SignedEvent;
 use keel_events::hash::EventHash;
 use keel_events::log::LogHead;
@@ -96,6 +96,21 @@ fn read_event(message: &[u8], hash: &[u8]) -> Result<SignedEvent, StoreError> {
 fn event_hash(bytes: &[u8]) -> Result<EventHash, StoreError> {
     let bytes: [u8; 32] = bytes.try_into().map_err(|_| StoreError::Corrupt("a hash"))?;
     Ok(EventHash::from_bytes(bytes))
+}
+
+/// The events of the stream of kind `kind` and identifier `id`, in canonical order: by HLC, then
+/// device, then position in the device's log.
+pub(crate) fn stream_events(
+    db: &Connection,
+    kind: &str,
+    id: Id<Aggregate>,
+) -> Result<Vec<SignedEvent>, StoreError> {
+    let mut statement = db.prepare(
+        "SELECT message, hash FROM events WHERE stream_kind = ?1 AND stream_id = ?2 \
+         ORDER BY hlc, origin_device, origin_seq",
+    )?;
+    let rows = statement.query_map(params![kind, &id.to_bytes()[..]], stored_event)?;
+    collect(rows)
 }
 
 /// Collects rows of stored events, failing on the first that doesn't read back.

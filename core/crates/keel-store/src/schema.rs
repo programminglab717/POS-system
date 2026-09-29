@@ -1,7 +1,7 @@
 //! The database's settings and schema.
 //!
-//! The schema version is `PRAGMA user_version`, and each migration takes it one version further,
-//! in one transaction. Version 1:
+//! The schema version is `PRAGMA user_version`. Opening a store brings it up to the latest
+//! version in one transaction, whatever version it was at. Version 1:
 //!
 //! - `store`: one row naming the device and location the store belongs to, and the device's
 //!   clock, the latest HLC its log writer issued or observed.
@@ -10,6 +10,13 @@
 //!   gaps, so a device's highest sequence number is how far into its log the store holds.
 //!   Identifiers are 16 bytes, and HLCs 8 bytes, big-endian, so both sort as they compare.
 //! - `quarantine`: each distinct message that was refused, once, with why.
+//!
+//! Version 2 (ADR-0017):
+//!
+//! - `outbox`: effects waiting to happen, each once by its idempotency key, in the order they were
+//!   enqueued. Times are milliseconds since the Unix epoch.
+//! - `projections`: the version of each projection the store built. The projections' own tables
+//!   are theirs to create and drop ([`crate::projection`]).
 
 use keel_events::envelope::{Device, Location};
 use keel_types::{Hlc, Id};
@@ -19,7 +26,7 @@ use crate::error::StoreError;
 use crate::faults::{Faults, Point, proceed};
 
 /// The latest schema version this kernel knows.
-pub(crate) const VERSION: i64 = 1;
+pub(crate) const VERSION: i64 = 2;
 
 /// Version 1's tables.
 const V1: &str = "
@@ -53,6 +60,29 @@ CREATE TABLE quarantine (
 ) STRICT;
 ";
 
+/// Version 2's tables.
+const V2: &str = "
+CREATE TABLE outbox (
+    seq INTEGER PRIMARY KEY,
+    key BLOB NOT NULL UNIQUE CHECK (length(key) BETWEEN 1 AND 64),
+    kind TEXT NOT NULL CHECK (length(kind) BETWEEN 1 AND 64),
+    payload BLOB NOT NULL CHECK (length(payload) <= 65536),
+    cause BLOB CHECK (length(cause) = 16),
+    state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'done', 'failed')),
+    attempts INTEGER NOT NULL CHECK (attempts >= 0),
+    enqueued INTEGER NOT NULL,
+    due INTEGER NOT NULL,
+    started INTEGER
+) STRICT;
+
+CREATE INDEX outbox_by_due ON outbox (state, due, seq);
+
+CREATE TABLE projections (
+    name TEXT PRIMARY KEY,
+    version INTEGER NOT NULL
+) STRICT;
+";
+
 /// Sets the durability settings, and checks that SQLite runs with them: the WAL journal, and
 /// every commit on disk before it returns.
 pub(crate) fn configure(db: &Connection) -> Result<(), StoreError> {
@@ -69,33 +99,48 @@ pub(crate) fn configure(db: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Brings the schema up to [`VERSION`]. A new database is created for `device` at `location`.
+/// Brings the schema up to [`VERSION`], in one transaction. A new database is created for
+/// `device` at `location`.
 pub(crate) fn migrate(
     db: &mut Connection,
     device: Id<Device>,
     location: Id<Location>,
     faults: &mut dyn Faults,
 ) -> Result<(), StoreError> {
-    let version = schema_version(db)?;
-    if version > VERSION {
-        return Err(StoreError::NewerSchema { found: version, known: VERSION });
-    }
-    if version >= VERSION {
+    if up_to_date(schema_version(db)?)? {
         return Ok(());
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Another connection may have migrated since the version was read.
-    if schema_version(&tx)? < 1 {
+    let version = schema_version(&tx)?;
+    if up_to_date(version)? {
+        return Ok(());
+    }
+    if version < 1 {
         tx.execute_batch(V1)?;
         tx.execute(
             "INSERT INTO store (singleton, device, location, clock) VALUES (1, ?1, ?2, ?3)",
             params![&device.to_bytes()[..], &location.to_bytes()[..], &hlc_bytes(Hlc::ZERO)[..]],
         )?;
-        tx.execute_batch("PRAGMA user_version = 1")?;
-        proceed(faults, Point::Migrating)?;
-        tx.commit()?;
     }
+    if version < 2 {
+        tx.execute_batch(V2)?;
+    }
+    tx.pragma_update(None, "user_version", VERSION)?;
+    proceed(faults, Point::Migrating)?;
+    tx.commit()?;
     Ok(())
+}
+
+/// Whether a schema at `version` is at [`VERSION`]: `false` if it is older.
+///
+/// # Errors
+/// [`StoreError::NewerSchema`] if a newer kernel wrote it.
+fn up_to_date(version: i64) -> Result<bool, StoreError> {
+    if version > VERSION {
+        return Err(StoreError::NewerSchema { found: version, known: VERSION });
+    }
+    Ok(version == VERSION)
 }
 
 fn schema_version(db: &Connection) -> Result<i64, StoreError> {

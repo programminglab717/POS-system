@@ -1,6 +1,7 @@
-//! Writing: the device's own events, and events received from other replicas.
+//! Writing: the device's own events, events received from other replicas, and the outbox.
 
-use keel_events::envelope::Location;
+use keel_domain::aggregate::Aggregate;
+use keel_events::envelope::{Location, StreamRef};
 use keel_events::event::SignedEvent;
 use keel_events::hash::EventHash;
 use keel_events::keys::Signer;
@@ -11,6 +12,8 @@ use rusqlite::Transaction;
 
 use crate::error::StoreError;
 use crate::faults::{Faults, Point, proceed};
+use crate::outbox::{self, Effect, EffectState, Enqueued, Queued};
+use crate::projection;
 use crate::rows;
 
 /// A write in progress: everything it stores commits together, or not at all. See
@@ -20,6 +23,8 @@ pub struct Writing<'a, S, E> {
     pub(crate) writer: &'a mut LogWriter<S, E>,
     pub(crate) faults: &'a mut dyn Faults,
     pub(crate) location: Id<Location>,
+    /// The streams the write stored events in, in the order it first did.
+    pub(crate) touched: Vec<StreamRef>,
 }
 
 /// What became of a received event.
@@ -156,8 +161,80 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
         let pending = self.writer.prepare(draft, now)?;
         rows::insert(self.tx, pending.event())?;
         let event = pending.commit();
+        self.touch(&event);
         proceed(self.faults, Point::Stored)?;
         Ok(event)
+    }
+
+    /// Marks the stream of `event`, just stored, as touched.
+    fn touch(&mut self, event: &SignedEvent) {
+        let stream = &event.body().stream;
+        if !self.touched.contains(stream) {
+            self.touched.push(stream.clone());
+        }
+    }
+
+    /// The streams the write has stored events in so far, in the order it first did. Their
+    /// projections are recomputed when the write commits: return them from the write to show
+    /// them again.
+    pub fn touched(&self) -> &[StreamRef] {
+        &self.touched
+    }
+
+    /// Folds `aggregate` from its stream's events in canonical order, as the write sees them: the
+    /// events it stored itself included.
+    ///
+    /// # Errors
+    /// [`StoreError::Database`] if the stream can't be read, and [`StoreError::Corrupt`] if an
+    /// event doesn't read back as stored.
+    pub fn load<A: Aggregate>(&self, aggregate: A) -> Result<A, StoreError> {
+        projection::load(self.tx, aggregate)
+    }
+
+    /// Enqueues `effect`, due at `now`, to commit with the write. Enqueuing an effect the outbox
+    /// already holds, with the same key, changes nothing.
+    ///
+    /// # Errors
+    /// [`StoreError::Effect`] if another effect has the key, the event that caused it isn't
+    /// stored, or its key or payload is out of bounds; [`StoreError::Database`] if the outbox
+    /// can't be read or written.
+    pub fn enqueue(&mut self, effect: &Effect, now: Timestamp) -> Result<Enqueued, StoreError> {
+        outbox::enqueue(self.tx, effect, now)
+    }
+
+    /// Starts the pending effect with key `key` at `now`, counting an attempt. Act on it only once
+    /// the write has committed.
+    ///
+    /// # Errors
+    /// [`StoreError::Effect`] if no effect has the key, it isn't pending, or it isn't due by
+    /// `now`; [`StoreError::Database`] if the outbox can't be read or written.
+    pub fn start(&mut self, key: &[u8], now: Timestamp) -> Result<Queued, StoreError> {
+        outbox::start(self.tx, key, now)
+    }
+
+    /// Finishes the running effect with key `key`: it is done.
+    ///
+    /// # Errors
+    /// [`StoreError::Effect`] if no effect has the key or it isn't running;
+    /// [`StoreError::Database`] if the outbox can't be read or written.
+    pub fn finish(&mut self, key: &[u8]) -> Result<(), StoreError> {
+        outbox::end(self.tx, key, EffectState::Done)
+    }
+
+    /// Makes the running effect with key `key` pending again, due at `due`.
+    ///
+    /// # Errors
+    /// As [`Writing::finish`].
+    pub fn retry(&mut self, key: &[u8], due: Timestamp) -> Result<(), StoreError> {
+        outbox::retry(self.tx, key, due)
+    }
+
+    /// Fails the running effect with key `key` for good, for a person to look at.
+    ///
+    /// # Errors
+    /// As [`Writing::finish`].
+    pub fn fail(&mut self, key: &[u8]) -> Result<(), StoreError> {
+        outbox::end(self.tx, key, EffectState::Failed)
     }
 
     /// Takes in `bytes`, an event received from another replica at physical time `now`. The
@@ -195,6 +272,7 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
             }
             Ok(Link::Next) => {
                 rows::insert(self.tx, &event)?;
+                self.touch(&event);
                 if device == self.writer.device() {
                     // The device's own log, as another replica held it: continue after it.
                     let clock = self.writer.latest_hlc();
