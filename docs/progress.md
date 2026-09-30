@@ -9,8 +9,9 @@
 **Phase 0 (Foundations), step 6 of 8:** `keel-sim` and `keel-sync` v0, the deterministic
 simulator and the sync engine, in four slices
 ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)). Slice 1, replication and
-the simulator, is built and reviewed. Slice 2, hub sequencing, is being designed. Step 5,
-`keel-store`, is done: built in three slices, each reviewed.
+the simulator, is built and reviewed. Slice 2, hub sequencing, is designed
+([ADR-0020](./adr/0020-hub-sequencing.md), proposed) and being built. Step 5, `keel-store`, is
+done: built in three slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -23,7 +24,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: slice 1 of 4 built and reviewed; slice 2 being designed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: slice 1 of 4 built and reviewed; slice 2 designed, being built | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -64,8 +65,8 @@ Step 6 is built in four slices, each ending with a review
 1. **Replication and the simulator** (built and reviewed 2026-09-30): `keel-sync`'s protocol v0, anti-entropy
    by version vector over any transport, and `keel-sim`, devices, the hub and the cloud with
    real stores under seeded faults, checking the protocol's rules and the invariants.
-2. **Hub sequencing:** `store_seq` per epoch, confirmed and provisional events, the cloud's
-   durable-ack watermark.
+2. **Hub sequencing** (designed 2026-09-30, [ADR-0020](./adr/0020-hub-sequencing.md)):
+   `store_seq` per epoch, confirmed and provisional events, the cloud's durable-ack watermark.
 3. **Ownership leases:** the hub grants and transfers orders' ownership; island mode and the
    manager's override.
 4. **Hub election and failover:** priorities, heartbeats, the hot standby, epochs and fencing,
@@ -73,15 +74,29 @@ Step 6 is built in four slices, each ending with a review
 
 ## Current slice
 
-Step 6, slice 2, hub sequencing, begins with its design
-([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), decision 8):
+Step 6, slice 2, hub sequencing, is designed in [ADR-0020](./adr/0020-hub-sequencing.md),
+proposed:
 
-- `store_seq` per epoch, recorded in the hub's own log as signed events;
-- confirmed and provisional events;
-- the cloud's durable-ack watermark;
-- store durability once two replicas hold an event.
+- The hub numbers the store's events in the order it receives them, gapless in its epoch, in
+  signed `sequence.assigned` records in its own log. Each record names stretches of devices'
+  logs, each pinned by the hash of its last event.
+- Every replica works out from the records it holds which events are confirmed, and which
+  provisional: a replica holding a forked version of a log never takes the hub's numbers for
+  its own. The store keeps the numbers in a projection, and gives a gapless feed.
+- The hub sequences only once its own log is settled.
+- A device knows its events are store-durable once the hub says it holds them, and learns the
+  cloud's durable-ack watermark from a new `durable` frame the hub relays.
 
-It will be recorded in a proposed ADR, and built, verified and reviewed like slice 1.
+| Piece | Status |
+|---|---|
+| Design, in ADR-0020 | Done |
+| `keel-domain`: the `sequence.assigned` payload | Next |
+| `keel-store`: sequencing, the `sequence` projection, confirmation and the feed | |
+| `keel-sync`: the hub's sequencing, store durability, and the `durable` frame | |
+| `keel-sim`: the hub sequences, the cloud is durable, and the new invariants | |
+| Known answers, property tests, the simulator's seeds, planted bugs and probes | |
+| Soak, CI-equivalent run, docs | |
+| Review, and accepting ADR-0020 | |
 
 ## Completed
 
