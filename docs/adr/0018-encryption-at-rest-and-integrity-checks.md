@@ -1,6 +1,7 @@
 # ADR-0018: Encryption at rest and integrity checks: SQLCipher with a vendored OpenSSL, a raw key the platform protects, and checks on open and on request
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-30), with the details settled in building it, under "As built",
+  accepted after review
 - **Date:** 2026-09-29
 
 ## Context

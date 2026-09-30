@@ -247,14 +247,14 @@ Keel, and **never lose a sale to Keel**.
    and payments and closing ([ADR-0015](./adr/0015-checks-and-payments.md)). See
    [progress](./progress.md).*
 5. **`keel-store`**: the SQLite event store, projections and outbox in a single transaction, with
-   crash-safety tests. *Status: in progress, in three slices
-   ([ADR-0016](./adr/0016-device-store.md)). Slice 1, the event log store, and slice 2,
-   projections and the outbox ([ADR-0017](./adr/0017-projections-and-outbox.md)), are built and
-   reviewed; slice 3, encryption at rest and integrity checks
-   ([ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md)), is built and waiting for
-   review. See [progress](./progress.md).*
+   crash-safety tests. *Status: done, in three slices, each reviewed: the event log store
+   ([ADR-0016](./adr/0016-device-store.md)); projections and the outbox
+   ([ADR-0017](./adr/0017-projections-and-outbox.md)); and encryption at rest and integrity
+   checks ([ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md)). See
+   [progress](./progress.md).*
 6. **`keel-sim` + `keel-sync` (v0)**: two devices, one hub and one cloud in simulation. Replication,
-   hub sequencing, ownership leases, failover. The invariant suite runs in CI.
+   hub sequencing, ownership leases, failover. The invariant suite runs in CI. *Status: in
+   progress: design. See [progress](./progress.md).*
 7. **Android register shell**: ring an order with modifiers, pay cash, print a receipt (ESC/POS over
    TCP), running on a reference all-in-one against a local hub.
 8. **Cloud cell v0**: sync ingest, catalog publishing, a minimal back office (catalog editor, reports).

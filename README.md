@@ -108,6 +108,5 @@ Read [docs/engineering/conventions.md](./docs/engineering/conventions.md) before
 ## Next step
 
 Phase 0 (Foundations) in the [roadmap](./docs/roadmap.md#8-first-engineering-milestones-the-next-build-steps):
-after `keel-types`, `keel-events` and the order/pricing core, the SQLite store (its last slice,
-encryption at rest and integrity checks, is built and waiting for review), then the deterministic
-sync simulator.
+after `keel-types`, `keel-events`, the order/pricing core and the SQLite store, the
+deterministic sync simulator and the sync engine (being designed).

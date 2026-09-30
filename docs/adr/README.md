@@ -23,6 +23,6 @@ supersedes the old one.
 | [0015](./0015-checks-and-payments.md) | Checks and payments: line shares, per-check pricing, closing snapshots, and the payment aggregate | Accepted |
 | [0016](./0016-device-store.md) | The device store: SQLite through rusqlite, one transaction per write, crash-tested | Accepted |
 | [0017](./0017-projections-and-outbox.md) | Projections and the outbox: per-stream projections recomputed in each write, and a transactional effect outbox | Accepted |
-| [0018](./0018-encryption-at-rest-and-integrity-checks.md) | Encryption at rest and integrity checks: SQLCipher with a vendored OpenSSL, a raw key the platform protects, and checks on open and on request | Proposed |
+| [0018](./0018-encryption-at-rest-and-integrity-checks.md) | Encryption at rest and integrity checks: SQLCipher with a vendored OpenSSL, a raw key the platform protects, and checks on open and on request | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

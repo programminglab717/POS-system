@@ -6,13 +6,9 @@
 
 ## Where we are
 
-**Phase 0 (Foundations), step 5 of 8:** `keel-store`, the SQLite event store, projections and
-outbox, in three slices ([ADR-0016](./adr/0016-device-store.md)). Slice 1, the event log store,
-and slice 2, projections and the outbox ([ADR-0017](./adr/0017-projections-and-outbox.md)), are
-built and reviewed. Slice 3, encryption at rest and integrity checks
-([ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), proposed), is built and
-verified, and waiting for review.
-Step 4, `keel-domain` and `keel-pricing` v0, is done: built in four slices, each reviewed.
+**Phase 0 (Foundations), step 6 of 8:** `keel-sim` and `keel-sync` v0, the deterministic
+simulator and the sync engine. Its design is under way. Step 5, `keel-store`, is done: built in
+three slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -24,8 +20,8 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
-| 5 | `keel-store`: SQLite events, projections and outbox | In progress: slices 1 and 2 of 3 built and reviewed; slice 3 built, waiting for review | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) (proposed) |
-| 6 | `keel-sim` and `keel-sync` v0 | Not started | |
+| 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: design | |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -45,7 +41,7 @@ built:
 4. **Payments and closing** (built 2026-09-28, reviewed 2026-09-29): the payment aggregate,
    balances, closing checks with their totals, and closing and reopening orders.
 
-Step 5 comes in three slices, each ending with a review
+Step 5 was built in three slices, each ending with a review
 ([ADR-0016](./adr/0016-device-store.md), decision 8):
 
 1. **The event log store** (built and reviewed 2026-09-29): the device's own events and
@@ -54,7 +50,7 @@ Step 5 comes in three slices, each ending with a review
 2. **Projections and the outbox** (built and reviewed 2026-09-29): order and payment
    projections recomputed in each write's transaction, rebuilt from the log when their version
    changes; and an outbox of effects that commit with the events that cause them.
-3. **Encryption at rest and integrity checks** (built 2026-09-30, waiting for review): SQLCipher
+3. **Encryption at rest and integrity checks** (built and reviewed 2026-09-30): SQLCipher
    encryption with a key the platform protects, a store that fails closed when damaged, cheap
    checks when it opens, and a full check on request.
 
@@ -62,28 +58,19 @@ Retention, snapshots and backups follow the sync engine (step 6).
 
 ## Current slice
 
-Slice 3, encryption at rest and integrity checks, is built and verified: commit `fcef53f`, with
-CI green. It waits for review, with its design in
-[ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), proposed: SQLCipher with a
-vendored OpenSSL, a raw key the platform protects, cheap checks every time the store opens, and a
-full check on request.
-
-| Piece | Status |
-|---|---|
-| Design: the cipher and its build, the key and who holds it, what the store checks and when | Done |
-| Encryption at rest: the key, pinned settings, refusing other keys, changing the key | Done |
-| A damaged store fails closed; whether the store was closed cleanly | Done |
-| The full check: pages, structure, events and chains, projections, the outbox and quarantine | Done |
-| Known-answer tests, a golden store, property tests against models, damage tests, crash tests | Done |
-| Planted bugs and coverage probes | Done |
-| 100,000-case soak, CI-equivalent run, measurements | Done |
-| Review, and accepting ADR-0018 | Waiting |
+Step 6 begins with its design: the deterministic simulator, and the sync engine that runs in it
+([offline-and-sync.md](./architecture/offline-and-sync.md) §3 to §7, and §12). That means how
+replicas exchange events and what they do with gaps and forks; how the hub orders a location's
+events; ownership leases, for what one device must decide alone; what happens when the hub
+fails; and a simulator of devices, a hub and the cloud, with their network, clocks and disks in
+its hands, that runs them through faults and checks invariants after every step, in CI. It will
+be recorded in a proposed ADR, with step 6 split into slices, each ending with a review.
 
 ## Completed
 
 ### Encryption at rest and integrity checks: step 5, slice 3 (2026-09-30)
 
-Commit `fcef53f`. Waiting for review.
+Commit `fcef53f`. Reviewed 2026-09-30.
 
 - **Built** ([ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md)):
   - encryption at rest: SQLCipher 4.14, compiled in with OpenSSL 3.6 built from source, the same
@@ -150,8 +137,8 @@ Commit `fcef53f`. Waiting for review.
     only a unit test provokes, such as a rekey SQLCipher can't do.
   - Every property test in `keel-store` passed 100,000 cases.
   - CI green.
-- **Decisions:** [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), proposed,
-  with the details the build settled under "As built":
+- **Decisions:** [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), accepted
+  2026-09-30 after review, with the details the build settled under "As built":
   - opening tells a key that doesn't open the store from a file SQLite finds malformed. When a
     journal was left behind, the store checks the key through a connection that can't write
     first, since one that can would tidy the journal away, the only sign of a crash;
