@@ -117,6 +117,9 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
     can read, is marked `"unit"` in the list, with a comment saying why, and `--props` skips it.
     Before marking one, try to make it observable: `keel-store`'s property test opens stores as
     other devices so that the checks on opening are its to catch.
+  - A list may name other crates whose tests exercise the crate (`ALSO`: `keel-sim` for
+    `keel-sync`), which run with its own, and integration tests that hold known answers rather
+    than properties (`KNOWN_ANSWERS`), which `--props` leaves out.
   - The runner reports a bug whose text no longer matches the code as stale, and one that doesn't
     compile as proving nothing; a compile error is never counted as a caught bug.
   - A planted bug that can't change what the code does isn't a bug, such as removing a check that
@@ -139,6 +142,22 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
 - **Convergence.** What replicas derive from events must depend on the events alone. Tests feed
   two stores the same events in different orders and in different writes, some of which fail, and
   compare their projections byte for byte.
+- **Simulation** (`keel-sim`, [ADR-0019](../adr/0019-replication-and-deterministic-simulation.md))
+  runs devices, the hub and the cloud, each with a real store, in one thread and virtual time,
+  under faults drawn from a seed. `cargo test -p keel-sim --test seeds` runs 32 seeds.
+  - `KEEL_SIM_SEEDS` sets how many, and `KEEL_SIM_FIRST_SEED` the first; CI's two test runs take
+    different ranges. A failing seed prints the command that runs it alone, and `KEEL_SIM_LOG=1`
+    prints every action it takes, frames decoded.
+  - Turn a failing seed into a named regression test in the crate at fault, as for any bug.
+  - Before a significant change to replication, soak thousands of seeds in a release build.
+  - **Check rules as the run goes, not only its outcome.** A replica that sends a peer the batch it
+    refused again as soon as the peer acknowledges it still converges. So the simulator checks
+    every batch against the protocol's rules as it is sent, and the protocol's property test
+    checks every frame.
+  - **Measure what runs meet**, as for generators: how many seeds crash in the middle of a write,
+    fork a log or stall a peer. The first runs forked a device's log in 3 seeds out of 10. That
+    showed a device restarting waited for its peers' next round to settle its log, so a starting
+    replica's `have` now asks for its peers' `have` in return.
 - **Golden rows** pin each projection's rows for a fixed history. When they change, the projection
   changed: bump its version, so that every store rebuilds it, then update the rows.
 - **Golden stores** (`keel-store/tests/golden/`) are stores made once, encrypted with a fixed
@@ -175,10 +194,11 @@ below, and must be:
 - **well maintained and widely used**, with a stable API;
 - **minimal**: default features off unless they are needed.
 
-**Platform crates** are the exception to "pure Rust". `keel-store`, and later the bindings and
-drivers, do I/O, and may use a native library that an ADR chooses. They aren't built for
-`wasm32`, and the portable kernel crates (`keel-types`, `keel-events`, `keel-domain`,
-`keel-pricing`) never depend on them. Such a library may draw on the operating system's
+**Platform crates** are the exception to "pure Rust". `keel-store`, `keel-sync` (which adapts the
+store for replication, and does no I/O itself), and later the bindings and drivers, may use a
+native library that an ADR chooses. They aren't built for `wasm32`, and the portable kernel
+crates (`keel-types`, `keel-events`, `keel-domain`, `keel-pricing`) never depend on them.
+`keel-sim`, the simulator, is for tests only and never shipped. Such a library may draw on the operating system's
 randomness where nothing the kernel computes depends on it: SQLCipher gives each page a random
 IV, so a store's bytes differ from run to run, and tests compare what a store holds, never its
 bytes.

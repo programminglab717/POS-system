@@ -17,7 +17,7 @@ use keel_types::{
 use crate::envelope::{
     Actor, Cause, Correlation, Device, Event, EventBody, Location, Payload, SchemaRef, StreamRef,
 };
-use crate::event::SignedEvent;
+use crate::event::{MAX_EVENT_BYTES, SignedEvent};
 use crate::hash::EventHash;
 use crate::keys::{SignError, Signer};
 
@@ -275,6 +275,9 @@ impl<S: Signer, E: Entropy> LogWriter<S, E> {
             prev_hash: self.head.hash,
         };
         let event = SignedEvent::sign(body, &self.signer)?;
+        if event.to_bytes().len() > MAX_EVENT_BYTES {
+            return Err(AppendError::TooLarge);
+        }
         Ok(PendingEvent { writer: self, event })
     }
 }
@@ -331,6 +334,9 @@ pub enum AppendError {
     /// The log has reached the largest sequence number.
     #[error("the log is full")]
     Full,
+    /// The event would be larger than [`MAX_EVENT_BYTES`].
+    #[error("the event is larger than {MAX_EVENT_BYTES} bytes")]
+    TooLarge,
 }
 
 #[cfg(test)]
@@ -372,6 +378,28 @@ mod tests {
 
     /// Microseconds since the Unix epoch on 2026-09-27.
     const BASE: i64 = 1_790_517_780_000_000;
+
+    /// A draft whose payload is a byte string of `len` bytes.
+    fn draft_of(len: usize) -> EventDraft {
+        let payload = Payload::new(&crate::cbor::Value::Bytes(vec![0x5A; len])).unwrap();
+        EventDraft { payload, ..draft() }
+    }
+
+    /// The first event a fresh writer makes from `draft`, or why it can't.
+    fn first(draft: EventDraft) -> Result<SignedEvent, AppendError> {
+        writer(LogHead::EMPTY).prepare(draft, at(0)).map(PendingEvent::commit)
+    }
+
+    #[test]
+    fn an_event_is_at_most_max_event_bytes() {
+        // What an event holds besides its payload's bytes is the same for every payload from
+        // 64 KiB up: the headers of the byte strings holding it are all five bytes long.
+        let sample = first(draft_of(100_000)).unwrap().to_bytes().len();
+        let overhead = sample.checked_sub(100_000).unwrap();
+        let largest = MAX_EVENT_BYTES.checked_sub(overhead).unwrap();
+        assert_eq!(first(draft_of(largest)).unwrap().to_bytes().len(), MAX_EVENT_BYTES);
+        assert_eq!(first(draft_of(largest.checked_add(1).unwrap())), Err(AppendError::TooLarge));
+    }
 
     fn at(seconds: i64) -> Timestamp {
         let micros = seconds.checked_mul(1_000_000).and_then(|micros| micros.checked_add(BASE));

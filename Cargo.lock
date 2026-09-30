@@ -643,6 +643,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-sim"
+version = "0.1.0"
+dependencies = [
+ "keel-domain",
+ "keel-events",
+ "keel-pricing",
+ "keel-store",
+ "keel-sync",
+ "keel-types",
+]
+
+[[package]]
 name = "keel-store"
 version = "0.1.0"
 dependencies = [
@@ -653,6 +665,17 @@ dependencies = [
  "rusqlite",
  "thiserror",
  "zeroize",
+]
+
+[[package]]
+name = "keel-sync"
+version = "0.1.0"
+dependencies = [
+ "keel-events",
+ "keel-store",
+ "keel-types",
+ "proptest",
+ "thiserror",
 ]
 
 [[package]]

@@ -18,6 +18,10 @@ A bug that only a unit test can catch, such as a database setting nothing outsid
 observe, ends with a fifth element, "unit", and a comment saying why; `--props` skips it.
 With `--ignored`, tests marked `#[ignore]`, such as exhaustive sweeps, run too, as they do in CI.
 
+A bug list may also set `ALSO`, other crates whose tests exercise the crate and run with its own
+(keel-sim's simulations, for keel-sync), and `KNOWN_ANSWERS`, the crate's integration tests that
+hold known answers rather than properties, which `--props` leaves out.
+
 The runner edits source files in place and restores them from memory, even when interrupted.
 Don't edit or build the crate while it runs, or run it in a separate worktree with `--root`.
 If a run is killed outright, `git diff` shows the planted bug; `git checkout` the file.
@@ -52,10 +56,15 @@ def parse_args():
     return parser.parse_intermixed_args()
 
 
-def test_command(crate_dir, crate, props, ignored):
+def test_command(crate_dir, crate, props, ignored, also=(), known_answers=()):
     command = ["cargo", "test", "-p", crate, "--no-fail-fast"]
+    for other in also:
+        command += ["-p", other]
     if props:
-        targets = sorted(path.stem for path in (crate_dir / "tests").glob("*.rs"))
+        targets = sorted(path.stem for path in (crate_dir / "tests").glob("*.rs")
+                         if path.stem not in known_answers)
+        for other in also:
+            targets += sorted(path.stem for path in (crate_dir.parent / other / "tests").glob("*.rs"))
         if not targets:
             sys.exit(f"{crate} has no property tests in tests/")
         for target in targets:
@@ -107,7 +116,8 @@ def main():
         sys.exit(f"no crate at {crate_dir}")
     if not bug_file.is_file():
         sys.exit(f"no bug list at {bug_file}")
-    bugs = runpy.run_path(str(bug_file))["BUGS"]
+    listed = runpy.run_path(str(bug_file))
+    bugs = listed["BUGS"]
     malformed = [bug[0] for bug in bugs if len(bug) != 4 and not unit_only(bug)]
     if malformed:
         sys.exit(f"a bug is (name, file, old, new), with \"unit\" after if only unit tests can "
@@ -123,7 +133,8 @@ def main():
     # which the `finally` in run_bug handles.
     signal.signal(signal.SIGTERM, signal.default_int_handler)
 
-    command = test_command(crate_dir, args.crate, args.props, args.ignored)
+    command = test_command(crate_dir, args.crate, args.props, args.ignored,
+                           listed.get("ALSO", ()), listed.get("KNOWN_ANSWERS", ()))
     env = {
         **os.environ,
         "PROPTEST_CASES": str(args.cases),

@@ -13,7 +13,7 @@ use keel_types::Id;
 
 use crate::cose::CoseError;
 use crate::envelope::{Device, Location};
-use crate::event::{EventError, SignedEvent, UnverifiedEvent};
+use crate::event::{EventError, MAX_EVENT_BYTES, SignedEvent, UnverifiedEvent};
 use crate::hash::EventHash;
 use crate::keys::PublicKey;
 
@@ -133,6 +133,9 @@ impl DeviceRegistry {
     /// # Errors
     /// [`Rejection`] saying which check failed.
     pub fn verify(&self, bytes: &[u8]) -> Result<SignedEvent, Rejection> {
+        if bytes.len() > MAX_EVENT_BYTES {
+            return Err(Rejection::TooLarge);
+        }
         let event = UnverifiedEvent::decode(bytes).map_err(Rejection::Malformed)?;
         let device = event.origin_device();
         let record = self.devices.get(&device).ok_or(Rejection::UnknownDevice(device))?;
@@ -175,6 +178,9 @@ pub enum Rejection {
         /// The last trusted sequence number.
         after_seq: u64,
     },
+    /// The event is larger than [`MAX_EVENT_BYTES`].
+    #[error("the event is larger than {MAX_EVENT_BYTES} bytes")]
+    TooLarge,
 }
 
 /// Why the registry couldn't be changed.
@@ -243,6 +249,15 @@ mod tests {
 
     fn device() -> Id<Device> {
         golden::body().origin_device
+    }
+
+    #[test]
+    fn an_event_over_max_event_bytes_is_refused_before_it_is_decoded() {
+        let (registry, _) = setup();
+        let largest = vec![0x5A; MAX_EVENT_BYTES];
+        assert!(matches!(registry.verify(&largest), Err(Rejection::Malformed(_))));
+        let over = vec![0x5A; MAX_EVENT_BYTES.checked_add(1).unwrap()];
+        assert_eq!(registry.verify(&over), Err(Rejection::TooLarge));
     }
 
     #[test]

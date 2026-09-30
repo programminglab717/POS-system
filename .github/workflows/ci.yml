@@ -44,6 +44,9 @@ jobs:
 
       - name: Test without default features
         run: cargo test --workspace --no-default-features
+        env:
+          # The simulator's seeds from 1000: other runs than the step above.
+          KEEL_SIM_FIRST_SEED: "1000"
 
       - name: Documentation
         run: cargo doc --workspace --no-deps --all-features

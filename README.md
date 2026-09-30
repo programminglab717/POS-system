@@ -7,7 +7,8 @@ today's POS products and removes the failures that make merchants feel trapped, 
 offline.
 
 **Status: building the foundations.** The research, architecture, decision records, feature
-catalog and roadmap are in a v1 draft. Five kernel crates are built and tested, the last in part:
+catalog and roadmap are in a v1 draft. Six kernel crates are built and tested, the last two in
+part:
 [`keel-types`](./core/crates/keel-types/) (money, currencies, rounding, quantities, time,
 identifiers, business dates), [`keel-events`](./core/crates/keel-events/) (the signed,
 hash-chained event log), [`keel-domain`](./core/crates/keel-domain/) (event schemas and the first
@@ -18,6 +19,10 @@ calculation trace. [`keel-store`](./core/crates/keel-store/) keeps events on the
 encrypted with SQLCipher: the event log, with the device's own events and those it receives from
 other replicas, projections of orders and payments, and an outbox of effects, all written in
 crash-tested transactions, with checks that find damage and fail closed.
+[`keel-sync`](./core/crates/keel-sync/) replicates events between stores, over any network.
+[`keel-sim`](./core/crates/keel-sim/) tests it: devices, a hub and the cloud, with real stores,
+through lost and reordered messages, partitions, crashes, restored backups and clock jumps,
+each run replayable from its seed.
 [docs/progress.md](./docs/progress.md) tracks the build step by step.
 
 ## What makes Keel different

@@ -477,4 +477,40 @@ BUGS = [
         "        LogHead { seq, hash, hlc }",
         "        LogHead { seq, hash, hlc: Hlc::ZERO }",
     ),
+    # The size limit (ADR-0019). Only the unit tests make events near 256 KiB, and pin the limit
+    # to the byte, at the writer and at the registry.
+    (
+        "the writer makes events over the size limit",
+        "src/log.rs",
+        """        if event.to_bytes().len() > MAX_EVENT_BYTES {
+            return Err(AppendError::TooLarge);
+        }
+""",
+        "",
+        "unit",
+    ),
+    (
+        "the writer's size limit is a byte short",
+        "src/log.rs",
+        "        if event.to_bytes().len() > MAX_EVENT_BYTES {",
+        "        if event.to_bytes().len() >= MAX_EVENT_BYTES {",
+        "unit",
+    ),
+    (
+        "the registry verifies events over the size limit",
+        "src/verify.rs",
+        """        if bytes.len() > MAX_EVENT_BYTES {
+            return Err(Rejection::TooLarge);
+        }
+""",
+        "",
+        "unit",
+    ),
+    (
+        "the registry's size limit is a byte short",
+        "src/verify.rs",
+        "        if bytes.len() > MAX_EVENT_BYTES {",
+        "        if bytes.len() >= MAX_EVENT_BYTES {",
+        "unit",
+    ),
 ]

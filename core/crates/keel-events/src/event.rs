@@ -13,6 +13,12 @@ use crate::envelope::{Device, EnvelopeError, EventBody};
 use crate::hash::EventHash;
 use crate::keys::{KeyId, PublicKey, SignError, Signer};
 
+/// The largest event, as stored and transmitted, in bytes. Replicas exchange events in frames of
+/// bounded size, and a device's log replicates in order, so an event too large to send would
+/// hold back every later event of its device: the log writer refuses to make one, and the
+/// registry refuses to verify one (ADR-0019).
+pub const MAX_EVENT_BYTES: usize = 256 * 1024;
+
 /// An event whose signature has been made or verified.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignedEvent {

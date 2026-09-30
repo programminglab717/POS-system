@@ -30,6 +30,9 @@ keel-types = { path = "core/crates/keel-types", default-features = false }
 keel-events = { path = "core/crates/keel-events", default-features = false }
 keel-pricing = { path = "core/crates/keel-pricing" }
 keel-domain = { path = "core/crates/keel-domain", default-features = false }
+# Platform crates, which do I/O and aren't built for wasm32.
+keel-store = { path = "core/crates/keel-store" }
+keel-sync = { path = "core/crates/keel-sync" }
 
 # Platform dependencies: native libraries that platform crates (keel-store) use, each chosen by
 # an ADR, never used by the portable kernel crates. SQLite is compiled in, so every platform runs

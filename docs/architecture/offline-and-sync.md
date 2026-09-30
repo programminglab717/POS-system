@@ -159,6 +159,27 @@ sequenceDiagram
   (Lessons from retry-storm incidents in [R04 §2](../research/04-technical-architecture.md).)
 - **Durability acknowledgment.** The cloud returns its VV as a durable-ack watermark. Devices show
   "all sales backed up" per location and prune locally only below the watermark (§9).
+- **As built: protocol v0** (`keel-sync`, [ADR-0019](../adr/0019-replication-and-deterministic-simulation.md)).
+  Two frames, each a canonical CBOR array:
+  - `have`: a replica's location, its version vector, the number of the last batch it received from
+    the peer, and whether it asks for the peer's `have` in return;
+  - `events`: a numbered batch of signed events, each device's in order.
+
+  How they're exchanged:
+  - A replica sends `have` when it starts, after each batch it receives (acknowledging it), and
+    every round (5 s). Until it has heard from a peer, its `have` asks for the peer's and repeats
+    every 2 s; the peer answers at once. This is the HELLO exchange above.
+  - On a peer's `have`, a replica sends one batch of what the peer lacks, and waits for the peer to
+    acknowledge it, or 2 s, before sending the next. A batch carries the peer's own log first,
+    since its device can't write until it has its own log back, and other devices share the rest.
+    A peer that refused its own log (having forked it) gets it only as one share among the
+    others.
+  - New events are pushed at once, and never echoed back to their sender.
+  - A batch the peer took none of waits for the next round.
+
+  It assumes nothing of delivery: a lost, duplicated or reordered frame costs time, never an event.
+  Scopes, certificates, protocol negotiation, priority lanes and compression come with the
+  transport.
 
 ### 3.3 Transport, discovery and security
 - **Transport**: WebSocket over TLS 1.3 with CBOR frames, which works in every runtime including
@@ -199,15 +220,25 @@ sequenceDiagram
   is preserved without trusting wall clocks. Excessive skew (a remote HLC too far ahead) is capped and
   alerted. Devices take NTP time from the hub, and the hub takes it from the internet.
 - **The hub sequences.** When the hub receives an event, it assigns a gapless **store sequence
-  number** (`store_seq`, scoped to the hub epoch), validates it against the canonical state, and
-  broadcasts the confirmation.
+  number** (`store_seq`, scoped to the hub epoch), in the order it receives events, validates it
+  against the canonical state, and broadcasts the confirmation.
   - Events carrying a `store_seq` are **confirmed**.
   - Events not yet sequenced (just created, or created in island mode) are **provisional**. The UI shows
     provisional state where it matters, e.g. "not yet confirmed by store" on a split made in island mode.
-- **Canonical order**: confirmed events in `(epoch, store_seq)` order, then provisional events in
-  `(hlc, origin_device, origin_seq)` order. After a partition heals, the hub appends the formerly
-  provisional events in HLC order. This is the same result every replica would compute on its own,
-  so there are no surprises.
+- **Canonical order** is `(hlc, origin_device, origin_seq)` for every event, confirmed or provisional
+  ([ADR-0019](../adr/0019-replication-and-deterministic-simulation.md)).
+  - Every replica folds a stream in that order, so the same events make the same state everywhere:
+    with or without a hub, in island mode, and in a split brain.
+  - The hub's `store_seq` **confirms** and never reorders. It records the order the hub received
+    events in, gives the store one gapless feed, and orders the hub's own decisions, such as leases.
+    It never moves an event in a fold.
+  - This design first folded confirmed events in `(epoch, store_seq)` order. That would append an
+    island's events after everything the hub sequenced while it was away, so an island's stale
+    change would override a newer one made in the store. Confirming an event would change state
+    staff had already seen, and a failover that sequences again would reorder history.
+  - The cost: a device whose clock runs ahead wins "last writer" conflicts it shouldn't. Leases
+    prevent most such conflicts, devices take the hub's time, and a remote HLC more than the
+    drift limit ahead doesn't advance a device's clock.
 - **Events are facts, not requests.** The hub never *rejects* a signed event, because it may record
   something that already happened in the world: a card was charged, a ticket printed, food fired.
   Invalid-in-context events are sequenced and flagged, and any correction is an explicit compensating
@@ -554,6 +585,22 @@ in the style of FoundationDB and TigerBeetle:
   7. Stored-value balances equal Σ ledger events.
   8. Offline exposure never exceeds configured limits.
 - CI runs thousands of seeds per commit and millions nightly. Every failing seed reproduces exactly.
+- **As built** (`keel-sim`, [ADR-0019](../adr/0019-replication-and-deterministic-simulation.md)).
+  - **What a run is:** two or three devices, the hub and the cloud, each with a real encrypted
+    store on a RAM disk. They run in one thread and virtual time, under a scheduler seeded from
+    one number.
+  - **Faults:** the network loses, duplicates and reorders frames, and partitions cut links.
+    Nodes crash, between writes or in the middle of one. Devices' stores are restored from older
+    copies, and clocks jump.
+  - **Workload:** devices ring and settle orders through `keel-domain`'s commands.
+  - **Checks:** each batch replicas send is checked against the protocol's rules as it goes.
+    After healing, the replicas must agree within a bound. Then come the invariants: convergence
+    (exact logs and projections), no loss, causality, no forks or quarantine except a device's
+    that wrote as an island after a rollback, and stores that check clean.
+  - **Cost:** a real store makes a seed cost about 0.4 s, so CI runs 64 seeds per commit and a
+    soak runs thousands. The protocol's property tests run a model store, and are fast.
+  - Slice 1 covers the first two invariants of the list above, for replication. The rest arrive
+    with the features they guard.
 
 ## 13. Performance budgets (enforced in CI and in production telemetry)
 

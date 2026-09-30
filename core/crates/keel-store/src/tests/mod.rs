@@ -346,7 +346,9 @@ fn refused_events_are_quarantined_once_and_the_first_event_stays() {
     let duplicate_id = resigned(&next, 2, |body| body.event_id = theirs[0].body().event_id);
     let out_of_range =
         resigned(&next, 2, |body| body.origin_seq = NonZeroU64::new(1 << 63).unwrap());
-    let cases: [(&[u8], Reason); 11] = [
+    // The registry refuses an event too large to replicate (ADR-0019), before decoding it.
+    let too_large = vec![0x5A; keel_events::event::MAX_EVENT_BYTES.checked_add(1).unwrap()];
+    let cases: [(&[u8], Reason); 12] = [
         (&fork, Reason::Fork),
         (&early_fork, Reason::Fork),
         (&broken, Reason::BrokenLink),
@@ -358,6 +360,7 @@ fn refused_events_are_quarantined_once_and_the_first_event_stays() {
         (&duplicate_id, Reason::DuplicateId),
         (&out_of_range, Reason::OutOfRange),
         (b"not an event", Reason::Malformed),
+        (&too_large, Reason::Rejected),
     ];
     for (bytes, reason) in cases {
         assert_eq!(receive(&mut store, bytes), Received::Quarantined(reason), "{reason:?}");

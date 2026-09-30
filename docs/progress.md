@@ -7,8 +7,10 @@
 ## Where we are
 
 **Phase 0 (Foundations), step 6 of 8:** `keel-sim` and `keel-sync` v0, the deterministic
-simulator and the sync engine. Its design is under way. Step 5, `keel-store`, is done: built in
-three slices, each reviewed.
+simulator and the sync engine, in four slices. Slice 1, replication and the simulator, is built
+and verified, and waiting for review with its ADR,
+[ADR-0019](./adr/0019-replication-and-deterministic-simulation.md). Step 5, `keel-store`, is
+done: built in three slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -21,7 +23,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: design | |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: slice 1 of 4 built, waiting for review | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -56,17 +58,165 @@ Step 5 was built in three slices, each ending with a review
 
 Retention, snapshots and backups follow the sync engine (step 6).
 
+Step 6 is built in four slices, each ending with a review
+([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), decision 8):
+
+1. **Replication and the simulator** (built 2026-09-30): `keel-sync`'s protocol v0, anti-entropy
+   by version vector over any transport, and `keel-sim`, devices, the hub and the cloud with
+   real stores under seeded faults, checking the protocol's rules and the invariants.
+2. **Hub sequencing:** `store_seq` per epoch, confirmed and provisional events, the cloud's
+   durable-ack watermark.
+3. **Ownership leases:** the hub grants and transfers orders' ownership; island mode and the
+   manager's override.
+4. **Hub election and failover:** priorities, heartbeats, the hot standby, epochs and fencing,
+   and a split brain healing.
+
 ## Current slice
 
-Step 6 begins with its design: the deterministic simulator, and the sync engine that runs in it
-([offline-and-sync.md](./architecture/offline-and-sync.md) §3 to §7, and §12). That means how
-replicas exchange events and what they do with gaps and forks; how the hub orders a location's
-events; ownership leases, for what one device must decide alone; what happens when the hub
-fails; and a simulator of devices, a hub and the cloud, with their network, clocks and disks in
-its hands, that runs them through faults and checks invariants after every step, in CI. It will
-be recorded in a proposed ADR, with step 6 split into slices, each ending with a review.
+Step 6, slice 1, replication and the simulator, is built and verified. It waits for review
+with its design in [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md),
+proposed: anti-entropy by version vector over any transport, folds in HLC order, and a seeded
+simulator of devices, the hub and the cloud with real stores.
+
+| Piece | Status |
+|---|---|
+| Design: the protocol, the fold order, settling a device's own log, the simulator, its invariants, and step 6's slices | Done |
+| `keel-sync`: frames, the replicator, the `Replica` trait and the store adapter | Done |
+| `keel-sim`: the scheduler, network, nodes, faults, workload, the rules checked as runs go, and the invariants | Done |
+| Known-answer tests, the protocol property against the model replica, and the simulator's seeds | Done |
+| Planted bugs and coverage probes | Done |
+| 100,000-case soak, 5,000 seeds, CI-equivalent run | Done |
+| Review, and accepting ADR-0019 | Waiting |
+
+After the review, slice 2, hub sequencing, starts with its design:
+
+- `store_seq` per epoch, recorded in the hub's own log as signed events;
+- confirmed and provisional events;
+- the cloud's durable-ack watermark;
+- store durability once two replicas hold an event.
 
 ## Completed
+
+### Replication and the simulator: step 6, slice 1 (2026-09-30)
+
+Commit to follow. Waiting for review.
+
+- **Built** ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)):
+  - `keel-sync`, replication v0: anti-entropy by version vector, correct over any transport,
+    with no I/O of its own. The caller hands it each frame received and a tick when
+    `next_tick` asks, and sends the frames it returns.
+  - Two frames, `have` and `events`, in canonical CBOR. A replica tells each peer what it holds
+    when it starts, after each batch it receives, and every round.
+  - It sends each peer one batch at a time of what the peer lacks, the peer's own log first
+    unless the peer refused it. It pushes new events at once, never echoes them back, and after a
+    batch the peer took none of, waits for its next round.
+  - Until it hears from a peer, its `have` asks for the peer's in return, which comes at once.
+    So a device settles its own log, holding what its peers hold of it, before it writes.
+  - It works through a `Replica` trait, implemented for `keel-store`; a model replica in memory
+    serves the property tests.
+  - `keel-sim`, the deterministic simulator: two or three devices, the hub and the cloud, each
+    with a real encrypted store on a RAM disk, in one thread and virtual time, with every choice
+    drawn from one seed.
+    - Faults: frames lost, duplicated and reordered; partitions; crashes between writes and in
+      the middle of one; stores restored from older copies; clocks offset and jumping.
+    - Workload: devices ring and settle orders through `keel-domain`'s commands.
+    - Checks: each batch against the protocol's rules as it is sent. After healing, the
+      replicas must agree within a minute; then convergence, no loss, causality, forks and
+      quarantine, and every store's full check.
+    - A failing seed prints the command that replays it, and `KEEL_SIM_LOG` prints every
+      action.
+  - `keel-events`: an event is at most 256 KiB. The log writer won't make a larger one, and the
+    registry refuses one, which the store quarantines.
+  - The planted-bug runner can run other crates' tests with a crate's, and leave its known
+    answers out of `--props`.
+- **Verified:**
+  - Known-answer tests:
+    - frames pinned byte for byte, and 22 ways a frame is refused;
+    - 17 replicator tests, frame by frame against the model replica: starting, asking and
+      answering, batches and their acknowledgement, shares and the peer's own log first, stalls
+      and the rounds that end them, timeouts, echoes, settling, a replicator out of step with
+      its store, a clock set back, and the regressions of seeds 162 and 1645;
+    - two against real stores, one interrupted in the middle of a write;
+    - the event size limit, at the writer and the registry, to the byte.
+  - The protocol property. Cases: 2 to 4 replicas as a star, a line or a mesh, over a network
+    that delays every frame, loses, duplicates and cuts, with restarts, replicas declining
+    batches, and batches of 1 to 6 events, some with too few bytes for two.
+    - At the end, every replica holds exactly the events appended, has refused none, and has
+      its log settled.
+    - All along, every frame keeps the protocol's rules: no event the peer has said it holds
+      or sent; batch sizes; one batch at a time; nothing more to a peer that took none of the
+      last batch until the next round, which comes when due; fresh batch numbers, even across
+      restarts; acknowledgements and answers at once; asking exactly until the peer is heard
+      from; no tick that does anything before `next_tick` said.
+    - 100,000 cases passed.
+  - The simulator: 5,000 seeds passed in a release build, in 34 minutes. What they met:
+    - 612,799 events appended, by 17 kinds of move;
+    - 2.4 million frames, of which 161,000 were lost, 136,000 duplicated, 54,000 cut off and
+      25,000 sent to a node that was down;
+    - 3,525 crashes between writes, 3,408 in the middle of a write (in 2,504 seeds), 3,629
+      rollbacks (in 2,880 seeds), 7,526 clock jumps and 7,575 cuts;
+    - 13,593 events received after a gap, 177,201 duplicates, 119,518 timeouts, and 1,078
+      stalls, in 497 seeds;
+    - 5,112 events lost to rollbacks, held by no other replica, in 1,056 seeds; 528 devices
+      forked, in 509 seeds; 24,961 writes held back until a log settled;
+    - agreement after healing within 1.2 s at the median, 2.0 s at the 90th percentile, 5.0 s
+      at the 99th, and 8.5 s at most.
+  - Planted bugs: 50 in `keel-sync`, all caught, and 4 in `keel-events` at the size limit,
+    caught by its unit tests.
+    - The property tests alone catch 33 of `keel-sync`'s: the protocol property 29, 10 of them
+      alone, and the simulator 23, 4 of them alone. Those 4 need a real store or a rollback:
+      forgetting that a restored peer holds less, a log settled from the start or when a peer
+      holds more, and the store adapter skipping an event.
+    - Only the unit tests reach the other 17:
+      - 8 frames or inputs that no replica or test network makes;
+      - 3 bugs of a replicator out of step with its store;
+      - 2 in how a batch is shared out, which is fairness, not correctness;
+      - the pace of `have` repeats before a peer is heard from;
+      - a clock set back further than the simulator's clocks go;
+      - a batch half stored;
+      - seed 1645's bug, which the simulator meets in about 1 seed in 1,000.
+  - The CI-equivalent run passed locally; CI on the commit to follow.
+- **Decisions:** [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), proposed,
+  with the details the build settled under "As built". Among them:
+  - the fold order: every replica folds in HLC order, and the hub's order will confirm, never
+    reorder, amending offline-and-sync §4;
+  - a `have` asks for one in return until its sender has heard from the peer;
+  - batches carry the peer's own log first, unless the peer refused it;
+  - rounds keep their own clock;
+  - events are at most 256 KiB;
+  - the simulator's faults, its workload, and the rules it checks as runs go.
+- **Found and fixed during the build:**
+  - Seed 13: a device restored from an older copy, whose one `have` at startup was lost, waited
+    a round (5 s) for its peer, longer than its settle wait (3 s), and forked its log. A replica
+    now repeats its `have` every 2 s until it hears from a peer.
+  - Seed 162: a hub stalled towards a device for good. The device kept sending batches the hub
+    refused, and each acknowledgement counted as the round that ends a stall, so the round never
+    came. Rounds now keep their own clock, and a named regression test pins it.
+  - The first coverage probe showed 294 seeds in 1,000 forking a device's log. A replica that
+    started learned what its peers held only at their next round: now its `have` asks for
+    theirs, which cuts forks to 98. Seed 17 then showed a restored device getting its own
+    events back at half speed, sharing each batch with another device's: batches now carry the
+    peer's own log first, and 88 seeds fork. The three examined were islands by force, their
+    links to the hub cut through the settle wait.
+  - Seed 1645, in the soak: putting a peer's own log first starved a device that had forked
+    its log. The hub's version of that log filled every batch, the device took none of each,
+    and it never got another device's events. A peer's own log that it refused now takes a
+    share like any other's, and a named regression test pins it.
+  - A replica that sends a peer its refused batch again as soon as the peer acknowledges it met
+    every final invariant. So the simulator now checks each batch against the protocol's rules
+    as it is sent, and the protocol property checks every frame.
+  - The stall rules were met only in the simulator, whose 32 seeds missed seed 162's bug: it
+    fails 12 seeds in 500, the first of them seed 84. The protocol property now has replicas
+    decline batches, so senders stall, and checks the stall rules too; it catches the bug, and
+    every other planted stall bug.
+  - A planted bug that took any later position of a device's log for its next went unnoticed:
+    the known answer for a replicator out of step with its store had only one device out of
+    step. It now has two.
+  - The store adapter storing each event of a batch in a write of its own went unnoticed too:
+    the known answer interrupted the write at the first event, where one write and many roll
+    back alike. It now interrupts at the second.
+  - `next_tick` was tested only by known answers. The simulator now ticks each node when it
+    asks, and the protocol property checks that no tick does anything sooner.
 
 ### Encryption at rest and integrity checks: step 5, slice 3 (2026-09-30)
 
@@ -723,9 +873,6 @@ Work deliberately left for later, so it isn't forgotten:
   - Salvaging a damaged store: reading what still reads, above all the device's own events not
     yet sent, and starting again from its peers. A store that can't open, because a page opening
     reads is damaged, can't be checked yet either.
-  - A store that lost its latest writes, to an older copy restored over it or a damaged WAL,
-    can't tell: before such a device writes again, the sync engine must check its own log's head
-    against its peers', or its next events fork its log.
   - The platform shells make, wrap, store and rotate the store's key (steps 7 and 8), as ADR-0018
     describes. Rotation follows the protocol the store's crash tests check.
   - SQLCipher's HMAC-SHA512 may be slow on ARM cores without SHA-512 instructions: measure on the
@@ -743,10 +890,24 @@ Work deliberately left for later, so it isn't forgotten:
     payments, printing and fiscal submissions.
   - Releasing or discarding quarantined messages: they are kept for a person to look at, with
     no tools yet.
-  - The simulator must give each restart of a device fresh entropy: a store reopened with the
-    same entropy in the same millisecond mints identifiers it already holds, and its writes fail.
   - Two processes opening one store at once: a store is one process's. Opening re-checks the
     schema version inside its transaction, but no test races two openers.
+- **`keel-sync`:**
+  - Slices 2 to 4 of step 6: hub sequencing, ownership leases, and hub election and failover.
+  - The transport (offline-and-sync §3.2–3.3): WebSocket over TLS, discovery, scopes, device
+    certificates, protocol negotiation, priority lanes, compression and reconnection backoff.
+  - A device restored from an older copy that must sell before any peer answers forks its log.
+    The replicas report the fork, and keep disagreeing about that log until a person resolves
+    it, with tools that don't exist yet.
+  - A batch waiting for acknowledgement from a peer that has since restarted holds up the next
+    for up to the acknowledgement timeout (2 s).
+  - A clock set back less than a round delays the rounds by as much. Timers on a monotonic clock
+    would need a second kind of time passed in, beside the clock the store stamps events with.
+- **`keel-sim`:**
+  - Disk faults, torn writes and lost fsyncs, wait for a simulated disk: a SQLite VFS, which
+    needs `unsafe` code.
+  - The invariants of later slices and features: one confirmation per event, one lease holder
+    per order, one hub per epoch; payments, the ledger and fiscal chains (offline-and-sync §12).
 - **Orders:**
   - Permissions, approvals and ownership leases aren't checked yet (`keel-policy`, `keel-sync`).
   - An order with payments on its open checks can be voided, and checkout reports the payments:

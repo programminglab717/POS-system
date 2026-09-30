@@ -1,0 +1,19 @@
+[package]
+name = "keel-sim"
+version = "0.1.0"
+description = "Keel's deterministic simulator: devices, a hub and the cloud in one process, under a seeded scheduler with virtual time and faults, and the invariants every run must keep."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+keel-types.workspace = true
+keel-events = { workspace = true, features = ["stored"] }
+keel-domain.workspace = true
+keel-pricing.workspace = true
+keel-store.workspace = true
+keel-sync.workspace = true
+
+[lints]
+workspace = true

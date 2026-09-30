@@ -1,0 +1,20 @@
+[package]
+name = "keel-sync"
+version = "0.1.0"
+description = "Keel's replication protocol: replicas exchange signed events by version vector, over any transport, and converge."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+keel-types.workspace = true
+keel-events = { workspace = true, features = ["stored"] }
+keel-store.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

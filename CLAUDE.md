@@ -34,6 +34,8 @@ cargo test --workspace --all-features -- --include-ignored  # with the exhaustiv
 PROPTEST_CASES=100000 cargo test --workspace            # soak before significant changes
 cargo build -p keel-types -p keel-events -p keel-domain -p keel-pricing --no-default-features --target wasm32-unknown-unknown
 python3 tools/planted-bugs/run.py <crate> [--props]    # plant the crate's known bugs, one at a time
+KEEL_SIM_SEEDS=2000 cargo test --release -p keel-sim --test seeds every_seed  # soak the simulator
+KEEL_SIM_FIRST_SEED=<seed> KEEL_SIM_SEEDS=1 KEEL_SIM_LOG=1 cargo test -p keel-sim --test seeds every_seed  # replay a seed
 python3 core/crates/keel-pricing/tests/golden/generate.py  # after changing how pricing works
 python3 core/crates/keel-types/tools/gen_currency_table.py  # after changing the ISO 4217 snapshot
 KEEL_STORE_MAKE_GOLDEN=1 cargo test -p keel-store --test golden_store -- --ignored  # once, for a new store schema version
