@@ -102,7 +102,8 @@ proposed:
 
 ### A race opening a process's first stores (2026-09-30)
 
-Found when CI failed on `28aed7a`, the commit accepting ADR-0019.
+Found when CI failed on `28aed7a`, the commit accepting ADR-0019. Fixed in commit `0118401`, with
+CI green on it (19.8 minutes), on ADR-0019's acceptance and ADR-0020's design with it.
 
 - **What failed:** 1 ms into the `keel-store` unit tests, as their threads opened their first
   stores at once, one store didn't open. SQLCipher refused its key: "An error occurred with
