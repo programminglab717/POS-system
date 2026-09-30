@@ -103,7 +103,7 @@ Step 6, slice 2, hub sequencing, is built and verified (see "Completed"), as
 
 ### Hub sequencing: step 6, slice 2 (2026-09-30)
 
-Built and verified; awaiting review. Its commit and CI run are recorded once it is pushed.
+Commit `7b6bd52`, with CI green on it (28.6 minutes). Awaiting review.
 
 - **Built** ([ADR-0020](./adr/0020-hub-sequencing.md)):
   - `keel-domain`: `sequence.assigned` v1, the hub's sequencing record. It holds an epoch, the
