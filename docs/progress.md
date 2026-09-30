@@ -11,7 +11,7 @@ outbox, in three slices ([ADR-0016](./adr/0016-device-store.md)). Slice 1, the e
 and slice 2, projections and the outbox ([ADR-0017](./adr/0017-projections-and-outbox.md)), are
 built and reviewed. Slice 3, encryption at rest and integrity checks
 ([ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), proposed), is built and
-waiting for review.
+verified, and waiting for review.
 Step 4, `keel-domain` and `keel-pricing` v0, is done: built in four slices, each reviewed.
 
 ## Phase 0 milestones
@@ -62,10 +62,11 @@ Retention, snapshots and backups follow the sync engine (step 6).
 
 ## Current slice
 
-Slice 3, encryption at rest and integrity checks, is built and waiting for review, with its
-design in [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), proposed: SQLCipher
-with a vendored OpenSSL, a raw key the platform protects, cheap checks every time the store
-opens, and a full check on request.
+Slice 3, encryption at rest and integrity checks, is built and verified: commit `fcef53f`, with
+CI green. It waits for review, with its design in
+[ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), proposed: SQLCipher with a
+vendored OpenSSL, a raw key the platform protects, cheap checks every time the store opens, and a
+full check on request.
 
 | Piece | Status |
 |---|---|
@@ -82,7 +83,7 @@ opens, and a full check on request.
 
 ### Encryption at rest and integrity checks: step 5, slice 3 (2026-09-30)
 
-Commit to follow. Waiting for review.
+Commit `fcef53f`. Waiting for review.
 
 - **Built** ([ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md)):
   - encryption at rest: SQLCipher 4.14, compiled in with OpenSSL 3.6 built from source, the same
@@ -148,7 +149,7 @@ Commit to follow. Waiting for review.
     unit tests reach: settings and versions nothing else can see, invalid input, and failures
     only a unit test provokes, such as a rekey SQLCipher can't do.
   - Every property test in `keel-store` passed 100,000 cases.
-  - The CI-equivalent run passed locally; CI on the commit to follow.
+  - CI green.
 - **Decisions:** [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), proposed,
   with the details the build settled under "As built":
   - opening tells a key that doesn't open the store from a file SQLite finds malformed. When a
