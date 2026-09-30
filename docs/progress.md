@@ -73,8 +73,8 @@ Step 6 is built in four slices, each ending with a review
 
 ## Current slice
 
-Step 6, slice 1, replication and the simulator, is built and verified. It waits for review
-with its design in [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md),
+Step 6, slice 1, replication and the simulator, is built and verified: commit `c5240e1`, with CI
+green. It waits for review with its design in [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md),
 proposed: anti-entropy by version vector over any transport, folds in HLC order, and a seeded
 simulator of devices, the hub and the cloud with real stores.
 
@@ -99,7 +99,7 @@ After the review, slice 2, hub sequencing, starts with its design:
 
 ### Replication and the simulator: step 6, slice 1 (2026-09-30)
 
-Commit to follow. Waiting for review.
+Commit `c5240e1`. Waiting for review.
 
 - **Built** ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)):
   - `keel-sync`, replication v0: anti-entropy by version vector, correct over any transport,
@@ -175,7 +175,7 @@ Commit to follow. Waiting for review.
       - a clock set back further than the simulator's clocks go;
       - a batch half stored;
       - seed 1645's bug, which the simulator meets in about 1 seed in 1,000.
-  - The CI-equivalent run passed locally; CI on the commit to follow.
+  - CI green.
 - **Decisions:** [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), proposed,
   with the details the build settled under "As built". Among them:
   - the fold order: every replica folds in HLC order, and the hub's order will confirm, never
