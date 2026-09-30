@@ -1,6 +1,7 @@
 # ADR-0019: Replication and deterministic simulation: anti-entropy over version vectors, folds in HLC order, and a seeded single-process simulator
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-09-30), with the details settled in building slice 1, under "As
+  built", accepted after review
 - **Date:** 2026-09-30
 
 ## Context

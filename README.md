@@ -114,4 +114,5 @@ Read [docs/engineering/conventions.md](./docs/engineering/conventions.md) before
 
 Phase 0 (Foundations) in the [roadmap](./docs/roadmap.md#8-first-engineering-milestones-the-next-build-steps):
 after `keel-types`, `keel-events`, the order/pricing core and the SQLite store, the
-deterministic sync simulator and the sync engine (being designed).
+deterministic sync simulator and the sync engine: replication and the simulator are built, and
+hub sequencing is being designed.

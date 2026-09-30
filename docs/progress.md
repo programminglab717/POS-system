@@ -7,10 +7,10 @@
 ## Where we are
 
 **Phase 0 (Foundations), step 6 of 8:** `keel-sim` and `keel-sync` v0, the deterministic
-simulator and the sync engine, in four slices. Slice 1, replication and the simulator, is built
-and verified, and waiting for review with its ADR,
-[ADR-0019](./adr/0019-replication-and-deterministic-simulation.md). Step 5, `keel-store`, is
-done: built in three slices, each reviewed.
+simulator and the sync engine, in four slices
+([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)). Slice 1, replication and
+the simulator, is built and reviewed. Slice 2, hub sequencing, is being designed. Step 5,
+`keel-store`, is done: built in three slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -23,7 +23,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: slice 1 of 4 built, waiting for review | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: slice 1 of 4 built and reviewed; slice 2 being designed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -61,7 +61,7 @@ Retention, snapshots and backups follow the sync engine (step 6).
 Step 6 is built in four slices, each ending with a review
 ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), decision 8):
 
-1. **Replication and the simulator** (built 2026-09-30): `keel-sync`'s protocol v0, anti-entropy
+1. **Replication and the simulator** (built and reviewed 2026-09-30): `keel-sync`'s protocol v0, anti-entropy
    by version vector over any transport, and `keel-sim`, devices, the hub and the cloud with
    real stores under seeded faults, checking the protocol's rules and the invariants.
 2. **Hub sequencing:** `store_seq` per epoch, confirmed and provisional events, the cloud's
@@ -73,33 +73,21 @@ Step 6 is built in four slices, each ending with a review
 
 ## Current slice
 
-Step 6, slice 1, replication and the simulator, is built and verified: commit `c5240e1`, with CI
-green. It waits for review with its design in [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md),
-proposed: anti-entropy by version vector over any transport, folds in HLC order, and a seeded
-simulator of devices, the hub and the cloud with real stores.
-
-| Piece | Status |
-|---|---|
-| Design: the protocol, the fold order, settling a device's own log, the simulator, its invariants, and step 6's slices | Done |
-| `keel-sync`: frames, the replicator, the `Replica` trait and the store adapter | Done |
-| `keel-sim`: the scheduler, network, nodes, faults, workload, the rules checked as runs go, and the invariants | Done |
-| Known-answer tests, the protocol property against the model replica, and the simulator's seeds | Done |
-| Planted bugs and coverage probes | Done |
-| 100,000-case soak, 5,000 seeds, CI-equivalent run | Done |
-| Review, and accepting ADR-0019 | Waiting |
-
-After the review, slice 2, hub sequencing, starts with its design:
+Step 6, slice 2, hub sequencing, begins with its design
+([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), decision 8):
 
 - `store_seq` per epoch, recorded in the hub's own log as signed events;
 - confirmed and provisional events;
 - the cloud's durable-ack watermark;
 - store durability once two replicas hold an event.
 
+It will be recorded in a proposed ADR, and built, verified and reviewed like slice 1.
+
 ## Completed
 
 ### Replication and the simulator: step 6, slice 1 (2026-09-30)
 
-Commit `c5240e1`. Waiting for review.
+Commit `c5240e1`. Reviewed 2026-09-30.
 
 - **Built** ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)):
   - `keel-sync`, replication v0: anti-entropy by version vector, correct over any transport,
@@ -176,8 +164,8 @@ Commit `c5240e1`. Waiting for review.
       - a batch half stored;
       - seed 1645's bug, which the simulator meets in about 1 seed in 1,000.
   - CI green.
-- **Decisions:** [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), proposed,
-  with the details the build settled under "As built". Among them:
+- **Decisions:** [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), accepted
+  2026-09-30 after review, with the details the build settled under "As built". Among them:
   - the fold order: every replica folds in HLC order, and the hub's order will confirm, never
     reorder, amending offline-and-sync §4;
   - a `have` asks for one in return until its sender has heard from the peer;
