@@ -9,8 +9,8 @@
 **Phase 0 (Foundations), step 6 of 8:** `keel-sim` and `keel-sync` v0, the deterministic
 simulator and the sync engine, in four slices
 ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)). Slice 1, replication and
-the simulator, is built and reviewed. Slice 2, hub sequencing, is designed
-([ADR-0020](./adr/0020-hub-sequencing.md), proposed) and being built. Step 5, `keel-store`, is
+the simulator, is built and reviewed. Slice 2, hub sequencing, is built and verified, and
+awaits review ([ADR-0020](./adr/0020-hub-sequencing.md), proposed). Step 5, `keel-store`, is
 done: built in three slices, each reviewed.
 
 ## Phase 0 milestones
@@ -24,7 +24,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: slice 1 of 4 built and reviewed; slice 2 designed, being built | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: slice 1 of 4 built and reviewed; slice 2 built, awaiting review | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -65,8 +65,9 @@ Step 6 is built in four slices, each ending with a review
 1. **Replication and the simulator** (built and reviewed 2026-09-30): `keel-sync`'s protocol v0, anti-entropy
    by version vector over any transport, and `keel-sim`, devices, the hub and the cloud with
    real stores under seeded faults, checking the protocol's rules and the invariants.
-2. **Hub sequencing** (designed 2026-09-30, [ADR-0020](./adr/0020-hub-sequencing.md)):
-   `store_seq` per epoch, confirmed and provisional events, the cloud's durable-ack watermark.
+2. **Hub sequencing** (built 2026-09-30, [ADR-0020](./adr/0020-hub-sequencing.md)):
+   `store_seq` per epoch, confirmed and provisional events, store durability, and the cloud's
+   durable-ack watermark.
 3. **Ownership leases:** the hub grants and transfers orders' ownership; island mode and the
    manager's override.
 4. **Hub election and failover:** priorities, heartbeats, the hot standby, epochs and fencing,
@@ -74,8 +75,8 @@ Step 6 is built in four slices, each ending with a review
 
 ## Current slice
 
-Step 6, slice 2, hub sequencing, is designed in [ADR-0020](./adr/0020-hub-sequencing.md),
-proposed:
+Step 6, slice 2, hub sequencing, is built and verified (see "Completed"), as
+[ADR-0020](./adr/0020-hub-sequencing.md), proposed, describes:
 
 - The hub numbers the store's events in the order it receives them, gapless in its epoch, in
   signed `sequence.assigned` records in its own log. Each record names stretches of devices'
@@ -90,15 +91,152 @@ proposed:
 | Piece | Status |
 |---|---|
 | Design, in ADR-0020 | Done |
-| `keel-domain`: the `sequence.assigned` payload | Next |
-| `keel-store`: sequencing, the `sequence` projection, confirmation and the feed | |
-| `keel-sync`: the hub's sequencing, store durability, and the `durable` frame | |
-| `keel-sim`: the hub sequences, the cloud is durable, and the new invariants | |
-| Known answers, property tests, the simulator's seeds, planted bugs and probes | |
-| Soak, CI-equivalent run, docs | |
-| Review, and accepting ADR-0020 | |
+| `keel-domain`: the `sequence.assigned` payload | Done |
+| `keel-store`: sequencing, the `sequence` projection, confirmation and the feed | Done |
+| `keel-sync`: the hub's sequencing, store durability, and the `durable` frame | Done |
+| `keel-sim`: the hub sequences, the cloud is durable, and the new invariants | Done |
+| Known answers, property tests, the simulator's seeds, planted bugs and probes | Done |
+| Soak, CI-equivalent run, docs | Done |
+| Review, and accepting ADR-0020 | Next |
 
 ## Completed
+
+### Hub sequencing: step 6, slice 2 (2026-09-30)
+
+Built and verified; awaiting review. Its commit and CI run are recorded once it is pushed.
+
+- **Built** ([ADR-0020](./adr/0020-hub-sequencing.md)):
+  - `keel-domain`: `sequence.assigned` v1, the hub's sequencing record. It holds an epoch, the
+    number of its first event, and 1 to 1,024 runs, each a device, a stretch of its log, and the
+    hash of the stretch's last event. Every rule is judged in one place, for records made and
+    records decoded alike.
+  - `keel-events`: `LogWriter::generate_id`, a new aggregate's identifier drawn from the log
+    writer's entropy, so that simulated runs stay deterministic.
+  - `keel-store`:
+    - `Store::sequence`: for each device, the store numbers the events after the last position
+      any record covers, records aside, in the order it received them, from where its own last
+      record of the epoch left off. It writes several records where a device's runs wouldn't
+      follow on, or a record is full.
+    - The `sequence` projection, a row per run, and confirmation by hash: `confirmed()`,
+      `store_seq()`, and `sequenced()`, the feed. Indexes on each run's length bound every
+      search.
+    - The full check compares every row of a stream, now that a stream may have several.
+  - `keel-sync`:
+    - A replicator's roles: the Store Hub numbers after every write that stores events it
+      received, after its own appends, and when its log settles; never before.
+    - `store_durable()`: how far into the device's own log a peer has said it holds.
+    - The `durable` frame, and the watermark: the durable peer's `have`, kept at its highest and
+      relayed to the other peers.
+  - `keel-sim`: the hub sequences in epoch 1 and names the cloud its durable peer, and the
+    simulator checks the new invariants, some as a run goes and the rest at its end.
+- **Verified:**
+  - Known answers:
+    - `keel-domain`, 9 tests: the payload pinned byte for byte in two payloads Python's `cbor2`
+      encoded; each rule a record is refused by, made or decoded; strict reading; the registry.
+    - `keel-events`: identifiers drawn between events are fresh and in order.
+    - `keel-store`, 11 tests:
+      - numbering in the order received, and records ending where a device doesn't follow on
+        or a record is full;
+      - confirmation by hash, a forked version never confirmed, and the feed;
+      - records that disagree, where an event's first number counts;
+      - the confirmed start of a log;
+      - an interrupted sequencing leaving nothing, and each epoch numbering from 1;
+      - the check finding a run that isn't what its record says.
+    - `keel-sync`: the `durable` frame pinned byte for byte, and 5 ways it is refused. Six
+      replicator tests, frame by frame against the model replica:
+      - the hub numbering what it stores, once its log is settled, and a replica that isn't the
+        hub numbering nothing;
+      - store durability, as far as a peer holds the device's log;
+      - the durable peer's `have` as the watermark, and a `durable` frame raising it, each
+        passed on;
+      - the watermark with every round, and in answer to a `have` that asks.
+  - Property tests:
+    - `keel-domain`: records against the codec's model, as for every schema; spoiled records
+      refused exactly when the model refuses them; the numbers a record gives, counted run by
+      run; and records around the 1,024-run limit.
+    - `keel-store`, against a model:
+      - a hub takes in two devices' logs and appends events of its own, sequencing now and
+        then, sometimes interrupted;
+      - another replica takes in the hub's log and the devices' logs in any interleaving, one of
+        them perhaps forked;
+      - that replica then sequences in the next epoch, and the hub takes in its records.
+
+      After every step, each store's numbers, confirmed starts, and the feed of each epoch and a
+      page of it, must be the model's.
+    - `keel-sync`: the protocol property, with one replica the hub and one durable. All along,
+      every `durable` frame claims no more than the durable replica holds and never goes to it,
+      and every watermark only rises. At the end, every replica's watermark reaches what the
+      durable replica holds.
+    - 100,000 cases each passed, in release builds: `keel-domain`'s 18 payload properties in
+      80 s, the protocol property in 13 minutes, and the store's in 54.
+  - The simulator: 5,000 seeds passed in a release build, in 43 minutes, alongside other runs.
+    - The hub wrote 367,065 records, numbering 597,945 events, and replicas sent 961,128
+      `durable` frames.
+    - The runs met what slice 1's did: 613,260 events appended; 4.6 million frames, of which
+      240,000 were lost, 256,000 duplicated, 116,000 cut off and 64,000 sent to a node that was
+      down; 3,524 crashes between writes, 3,410 in the middle of one, 3,627 rollbacks, 7,526
+      clock jumps and 7,575 cuts; 5,317 events lost to rollbacks, held by no other replica, and
+      535 devices forked.
+    - The replicas agreed after healing within 1.4 s at the median, 2.1 s at the 90th
+      percentile, 5.1 s at the 99th, and 10.9 s at most, now that agreeing includes every
+      watermark reaching what the cloud holds.
+  - A coverage probe over 1,000 seeds, all passing:
+    - the hub wrote 72,983 records, numbering 118,617 events, 1.6 a record;
+    - 57,239 runs reached a device before the events they cover, in 998 seeds;
+    - the hub was interrupted in the middle of a replicator's write 166 times, in 158 seeds;
+    - devices were told 118,788 events were store-durable. Rollbacks then took 5,443 of them
+      from their devices, in 525 seeds, and none was lost: the hub gave them back;
+    - 1,653 of forked devices' own events stayed unconfirmed where the devices held them, in
+      87 seeds, as they should;
+    - of 194,241 `durable` frames, 12,326 (6%) went back to the hub from its devices, and none
+      to the cloud.
+  - Planted bugs, all caught: 22 in `keel-domain`, 27 in `keel-store`, 14 in `keel-sync`, and 1
+    in `keel-events`, caught by its unit test.
+    - The property tests alone catch 46 of the 63 in the first three: `keel-domain`'s 20,
+      `keel-store`'s 17, and `keel-sync`'s 9. The protocol property catches all 9 of those, and
+      the simulator 5 of them.
+    - Only the unit tests reach the other 17:
+      - 6 need records that only a second sequencer or a misbehaving device writes: two
+        devices' records in one epoch, records that disagree about an event, or a device that
+        isn't the hub writing a record between its own events;
+      - 2 are refused by another rule as well, and only the error's rule name tells them apart;
+      - a record of 1,024 runs, an epoch out of range, a record's business date, and a
+        projection row changed behind the store's back;
+      - the hub numbering before its log is settled, which can't fork the numbers while the
+        simulator never rolls the hub back;
+      - store durability, where the simulator's devices each have one peer;
+      - a watermark held back until the next round, twice;
+      - a watermark from another location, where every replica is at one.
+  - A CI-equivalent run passed every step, in 28 minutes: formatting, both lint runs, the tests
+    with the exhaustive sweeps and 4,096 cases a property, the tests without default features,
+    the docs, the `wasm32` build, the currency table and the golden baskets.
+- **Decisions:** [ADR-0020](./adr/0020-hub-sequencing.md), proposed, with what the build
+  settled under "As built":
+  - what the hub numbers, for each device: the events after the last position any record
+    covers, which holds even when the hub's own records come back from its peers;
+  - a record ends where a device's runs wouldn't follow on;
+  - confirmation worked out as the store is read, from a row per run, never per event;
+  - where records disagree, an event's first number counts;
+  - the watermark relayed on every rise, with every round, and in answer to a `have` that asks.
+- **Found and fixed during the build:**
+  - Seed 1: the simulator marked store-durable events by position. A device rolled back wrote
+    its lost positions again, and a later mark made an old, lost event look store-durable. Marks
+    now go to the event the device held at each position when it was told.
+  - The first sequencing read every event, and the hub's own records again, at every write:
+    37 ms a write at 20,000 events. It now reads only each device's events after its last
+    covered position, and the hub's own log after its latest record: 1.6 ms.
+  - The first run of the planted bugs found `keel-domain`'s test records too regular: the
+    property tests missed 7 of 22 bugs, and the unit tests one, a decoder keeping only the first
+    byte of each run's hash, since every hash they used was one byte repeated. Records now have
+    up to three devices taking turns, runs near the largest position as well as the first, and
+    hashes whose bytes all differ; spoiled runs reach each end of the range; and one property
+    builds records around the 1,024-run limit, which random records almost never reach.
+  - After the store's queries were rewritten for speed, a planted bug that numbers records went
+    unnoticed: a hub on its own never reads its own records again. The store's property now
+    has another replica sequence in the next epoch, reading the hub's records. That also leaves
+    gaps in what a replica holding a forked log has confirmed, so the property now catches a
+    confirmed start that passes a gap, which only a unit test caught before.
+  - The CI failure that the SQLCipher race caused, below.
 
 ### A race opening a process's first stores (2026-09-30)
 
@@ -922,8 +1060,24 @@ Work deliberately left for later, so it isn't forgotten:
     `init_sqlite` before its first, or SQLCipher's initialization can race again: the shells
     (steps 7 and 8). SQLite now offers a hook that initializes under its lock
     (`SQLITE_EXTRA_INIT_MUTEXED`); SQLCipher could use it, which is worth reporting.
+  - A statement cache: reading an event's number or a page of the feed spends most of its time
+    preparing statements, as every read of the store does. `rusqlite`'s `cache` feature would
+    help them all.
+  - `confirmed()` reads every run of every record. The UI, which shows what is provisional, will
+    need each device's confirmed start kept as records arrive.
+  - Records of two devices in one epoch, which slice 4's fencing rules out, can give two events
+    one number: the feed gives both, and a page that ends between them skips the second.
 - **`keel-sync`:**
-  - Slices 2 to 4 of step 6: hub sequencing, ownership leases, and hub election and failover.
+  - Slices 3 and 4 of step 6: ownership leases, and hub election and failover.
+  - Until slice 4, a record from any device enrolled at the location counts. A record from a
+    device that isn't the hub could leave a stretch of a log below its highest covered position
+    that nothing ever numbers. Slice 4 also brings a hub restored from an older copy of its
+    store, which could fork its log (ADR-0020, decision 8).
+  - Batching several writes' events into one record, if the records prove too many: when events
+    arrive one at a time, the store holds about as many records as events.
+  - Devices send the watermark back to the hub with each round: redundant, and harmless.
+  - Pruning below the watermark, with retention.
+  - Showing what is provisional and what isn't yet backed up, in the shells (step 7).
   - The transport (offline-and-sync §3.2–3.3): WebSocket over TLS, discovery, scopes, device
     certificates, protocol negotiation, priority lanes, compression and reconnection backoff.
   - A device restored from an older copy that must sell before any peer answers forks its log.
@@ -936,8 +1090,8 @@ Work deliberately left for later, so it isn't forgotten:
 - **`keel-sim`:**
   - Disk faults, torn writes and lost fsyncs, wait for a simulated disk: a SQLite VFS, which
     needs `unsafe` code.
-  - The invariants of later slices and features: one confirmation per event, one lease holder
-    per order, one hub per epoch; payments, the ledger and fiscal chains (offline-and-sync §12).
+  - The invariants of later slices and features: one lease holder per order, one hub per epoch;
+    payments, the ledger and fiscal chains (offline-and-sync §12).
 - **Orders:**
   - Permissions, approvals and ownership leases aren't checked yet (`keel-policy`, `keel-sync`).
   - An order with payments on its open checks can be voided, and checkout reports the payments:

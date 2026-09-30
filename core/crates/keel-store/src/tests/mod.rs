@@ -23,6 +23,7 @@ mod encryption;
 mod integrity;
 mod outbox;
 mod projections;
+mod sequencing;
 
 fn id<T>(n: u64) -> Id<T> {
     Id::parse(&format!("0192f0c1-0000-7000-8000-{n:012x}")).unwrap()

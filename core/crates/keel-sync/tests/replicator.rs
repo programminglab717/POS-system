@@ -13,7 +13,9 @@ mod support;
 use core::time::Duration;
 
 use keel_events::event::SignedEvent;
-use keel_sync::{Events, Frame, Have, Outgoing, Replicator, SyncConfig, VersionVector};
+use keel_sync::{
+    Durable, Events, Frame, Have, Outgoing, Replicator, Roles, SyncConfig, VersionVector,
+};
 use keel_types::Timestamp;
 use support::{Model, at, device, elsewhere, here, registry};
 
@@ -77,8 +79,18 @@ fn with_events(n: u8, count: u64) -> Model {
 }
 
 fn start(model: &mut Model, peers: &[u8], now: Timestamp) -> (Replicator, Vec<(u8, Frame)>) {
+    start_as(model, peers, Roles::default(), now)
+}
+
+/// As [`start`], in `roles`.
+fn start_as(
+    model: &mut Model,
+    peers: &[u8],
+    roles: Roles,
+    now: Timestamp,
+) -> (Replicator, Vec<(u8, Frame)>) {
     let (replicator, out) =
-        Replicator::start(model, peers.iter().map(|n| device(*n)), CONFIG, now).unwrap();
+        Replicator::start(model, peers.iter().map(|n| device(*n)), CONFIG, roles, now).unwrap();
     (replicator, decoded(&out))
 }
 
@@ -439,4 +451,157 @@ fn appending_pushes_the_new_events_to_peers_lacking_them() {
     let [(2, frame)] = out.as_slice() else { panic!("{out:?}") };
     assert_eq!(positions(&batch(frame).1), [(1, 2)]);
     assert_eq!(replicator.version_vector(), &vv(&[(1, 2)]));
+}
+
+/// The hub's roles: it sequences in epoch 1.
+const HUB: Roles = Roles { sequencer: Some(1), durable: None };
+
+/// A batch of `model`'s events, all of them, numbered `number`.
+fn all_of(model: &Model, number: u64) -> Vec<u8> {
+    let events = model.events().iter().map(SignedEvent::to_bytes).collect();
+    Frame::Events(Events { batch: number, events }).encode()
+}
+
+/// The positions of the events of every batch in `out` for `to`.
+fn pushed(out: &[(u8, Frame)], to: u8) -> Vec<(u8, u64)> {
+    out.iter()
+        .filter(|(n, frame)| *n == to && matches!(frame, Frame::Events(_)))
+        .flat_map(|(_, frame)| positions(&batch(frame).1))
+        .collect()
+}
+
+#[test]
+fn the_hub_numbers_what_it_stores_once_its_log_is_settled() {
+    let mut hub = model(1);
+    let (mut replicator, _) = start_as(&mut hub, &[2], HUB, at(0));
+    // Device 2's events arrive before the hub has heard from it: stored, and left unnumbered.
+    let two = with_events(2, 2);
+    replicator.on_frame(&mut hub, device(2), &all_of(&two, 1), at(1_000)).unwrap();
+    assert!(!replicator.settled());
+    assert_eq!((hub.sequenced, hub.unsequenced().len()), (0, 2));
+    // Device 2 holds none of the hub's log: the hub's log is settled, it numbers what it holds,
+    // and pushes the record.
+    let out =
+        decoded(&replicator.on_frame(&mut hub, device(2), &have(&[(2, 2)], 0), at(2_000)).unwrap());
+    assert!(replicator.settled());
+    assert_eq!((hub.sequenced, hub.unsequenced()), (1, Vec::new()));
+    assert_eq!(pushed(&out, 2), [(1, 1)]);
+    let records = hub.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!((records[0].1.first, records[0].1.count()), (1, 2));
+    // What it stores after is numbered at once, as are its own events.
+    let more = with_events(2, 3);
+    let third = Frame::Events(Events { batch: 2, events: vec![more.events()[2].to_bytes()] });
+    replicator.on_frame(&mut hub, device(2), &third.encode(), at(3_000)).unwrap();
+    assert_eq!((hub.sequenced, hub.unsequenced()), (2, Vec::new()));
+    let own = hub.append(9, at(4_000));
+    replicator.appended(&mut hub, &[own], at(4_000)).unwrap();
+    assert_eq!((hub.sequenced, hub.unsequenced()), (3, Vec::new()));
+    let numbers: Vec<(u64, u64)> =
+        hub.records().iter().map(|(_, record)| (record.first, record.last())).collect();
+    assert_eq!(numbers, [(1, 2), (3, 3), (4, 4)]);
+    // A tick numbers nothing.
+    replicator.on_tick(&mut hub, at(60_000)).unwrap();
+    assert_eq!(hub.sequenced, 3);
+}
+
+#[test]
+fn a_replica_that_isnt_the_hub_numbers_nothing() {
+    let mut a = model(1);
+    let (mut replicator, _) = start(&mut a, &[2], at(0));
+    let two = with_events(2, 2);
+    replicator.on_frame(&mut a, device(2), &have(&[(2, 2)], 0), at(1_000)).unwrap();
+    replicator.on_frame(&mut a, device(2), &all_of(&two, 1), at(2_000)).unwrap();
+    let own = a.append(1, at(3_000));
+    replicator.appended(&mut a, &[own], at(3_000)).unwrap();
+    assert!(replicator.settled());
+    assert_eq!((a.sequenced, a.records().len()), (0, 0));
+}
+
+#[test]
+fn the_devices_events_are_store_durable_as_far_as_a_peer_holds_them() {
+    let mut a = with_events(1, 3);
+    let (mut replicator, _) = start(&mut a, &[2, 3], at(0));
+    assert_eq!(replicator.store_durable(), 0);
+    replicator.on_frame(&mut a, device(2), &have(&[(1, 1)], 0), at(1_000)).unwrap();
+    assert_eq!(replicator.store_durable(), 1);
+    replicator.on_frame(&mut a, device(3), &have(&[(1, 3), (3, 7)], 0), at(1_000)).unwrap();
+    assert_eq!(replicator.store_durable(), 3);
+    // The most any peer holds: another holding less changes nothing.
+    replicator.on_frame(&mut a, device(2), &have(&[(1, 2)], 0), at(2_000)).unwrap();
+    assert_eq!(replicator.store_durable(), 3);
+}
+
+fn durable_frame(entries: &[(u8, u64)]) -> Vec<u8> {
+    Frame::Durable(Durable { location: here(), vv: vv(entries) }).encode()
+}
+
+/// The watermark in every `durable` frame of `out`, and to whom.
+fn watermarks(out: &[(u8, Frame)]) -> Vec<(u8, VersionVector)> {
+    out.iter()
+        .filter_map(|(to, frame)| match frame {
+            Frame::Durable(durable) => Some((*to, durable.vv.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_durable_peers_have_is_the_watermark_passed_on_to_the_others() {
+    let mut a = model(1);
+    let roles = Roles { sequencer: None, durable: Some(device(3)) };
+    let (mut replicator, _) = start_as(&mut a, &[2, 3], roles, at(0));
+    assert_eq!(replicator.durable(), &VersionVector::new());
+    let out = replicator.on_frame(&mut a, device(3), &have(&[(2, 4), (3, 5)], 0), at(1_000));
+    assert_eq!(replicator.durable(), &vv(&[(2, 4), (3, 5)]));
+    // Passed on to the other peers, never back to the durable peer.
+    assert_eq!(watermarks(&decoded(&out.unwrap())), [(2, vv(&[(2, 4), (3, 5)]))]);
+    // It only rises: a `have` holding less changes nothing, and another peer's isn't it.
+    let out = replicator.on_frame(&mut a, device(3), &have(&[(2, 3)], 0), at(2_000)).unwrap();
+    assert_eq!(
+        (replicator.durable(), watermarks(&decoded(&out))),
+        (&vv(&[(2, 4), (3, 5)]), Vec::new())
+    );
+    replicator.on_frame(&mut a, device(2), &have(&[(2, 9)], 0), at(2_000)).unwrap();
+    assert_eq!(replicator.durable(), &vv(&[(2, 4), (3, 5)]));
+    let out = replicator.on_frame(&mut a, device(3), &have(&[(2, 6), (3, 5)], 0), at(3_000));
+    assert_eq!(watermarks(&decoded(&out.unwrap())), [(2, vv(&[(2, 6), (3, 5)]))]);
+}
+
+#[test]
+fn a_durable_frame_raises_the_watermark_and_is_passed_on() {
+    let mut b = model(2);
+    let (mut replicator, _) = start(&mut b, &[1, 3], at(0));
+    let out = replicator.on_frame(&mut b, device(1), &durable_frame(&[(1, 2)]), at(1_000)).unwrap();
+    assert_eq!(replicator.durable(), &vv(&[(1, 2)]));
+    assert_eq!(watermarks(&decoded(&out)), [(3, vv(&[(1, 2)]))]);
+    // Told again, nothing to pass on.
+    let out = replicator.on_frame(&mut b, device(1), &durable_frame(&[(1, 2)]), at(1_500)).unwrap();
+    assert_eq!(out, Vec::new());
+    // Kept device by device at its highest.
+    let out = replicator.on_frame(&mut b, device(3), &durable_frame(&[(1, 1), (3, 4)]), at(2_000));
+    assert_eq!(replicator.durable(), &vv(&[(1, 2), (3, 4)]));
+    assert_eq!(watermarks(&decoded(&out.unwrap())), [(1, vv(&[(1, 2), (3, 4)]))]);
+    // From another location, or a stranger, it is dropped.
+    let elsewhere = Frame::Durable(Durable { location: elsewhere(), vv: vv(&[(1, 9)]) }).encode();
+    replicator.on_frame(&mut b, device(1), &elsewhere, at(3_000)).unwrap();
+    replicator.on_frame(&mut b, device(4), &durable_frame(&[(1, 9)]), at(3_000)).unwrap();
+    assert_eq!(replicator.durable(), &vv(&[(1, 2), (3, 4)]));
+    assert_eq!(replicator.stats().dropped, 2);
+}
+
+#[test]
+fn the_watermark_goes_out_with_each_round_and_to_a_have_that_asks() {
+    let mut b = model(2);
+    let (mut replicator, _) = start(&mut b, &[1, 3], at(0));
+    // Knowing none, it sends none.
+    let out = decoded(&replicator.on_tick(&mut b, at(2_000)).unwrap());
+    assert_eq!(watermarks(&out), Vec::new());
+    replicator.on_frame(&mut b, device(1), &durable_frame(&[(1, 2)]), at(2_500)).unwrap();
+    let out = decoded(&replicator.on_tick(&mut b, at(4_000)).unwrap());
+    assert_eq!(watermarks(&out), [(1, vv(&[(1, 2)])), (3, vv(&[(1, 2)]))]);
+    // A peer that has heard nothing since it started gets it with the `have` it asked for.
+    let asks = Frame::Have(Have { location: here(), vv: vv(&[]), acked: 0, asks: true }).encode();
+    let out = decoded(&replicator.on_frame(&mut b, device(3), &asks, at(4_500)).unwrap());
+    assert_eq!(watermarks(&out), [(3, vv(&[(1, 2)]))]);
 }

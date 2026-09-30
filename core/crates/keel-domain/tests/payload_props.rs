@@ -1,9 +1,11 @@
-//! Property tests for order and payment event payloads, against an independent model of the
-//! schemas: payloads round-trip; a payload with a field changed, removed or added is accepted
-//! exactly when the model says it is valid, and then has exactly one encoding; and the rules
-//! that span fields or sit at a boundary (one currency per payload, text lengths, identifier
-//! sets in ascending order, allocations in order and in lowest terms, snapshots that add up,
-//! cash that covers what is paid) are aimed at directly.
+//! Property tests for order and payment event payloads, and sequencing records, against an
+//! independent model of the schemas: payloads round-trip; a payload with a field changed, removed
+//! or added is accepted exactly when the model says it is valid, and then has exactly one
+//! encoding; and the rules that span fields or sit at a boundary (one currency per payload, text
+//! lengths, identifier sets in ascending order, allocations in order and in lowest terms,
+//! snapshots that add up, cash that covers what is paid, runs that follow on, numbers up to the
+//! largest) are aimed at directly. A sequencing record's numbers are checked against a model that
+//! counts run by run.
 
 #![allow(
     clippy::unwrap_used,
@@ -18,9 +20,11 @@ mod support;
 use keel_domain::order::{CheckClosed, LineCharge, OrderEvent, TaxCharge};
 use keel_domain::payment::PaymentEvent;
 use keel_domain::schema::{DecodeError, DomainEvent, SchemaId};
+use keel_domain::sequence::{Assigned, Run, SequenceEvent};
 use keel_events::cbor::{Map, Value};
-use keel_events::envelope::{SchemaName, SchemaRef};
-use keel_types::{Currency, Money, Unit};
+use keel_events::envelope::{Device, SchemaName, SchemaRef};
+use keel_events::hash::EventHash;
+use keel_types::{Currency, Id, Money, Unit};
 use proptest::prelude::*;
 use support::{
     any_captured, any_check_closed, any_event, any_line_added, any_line_changed,
@@ -32,6 +36,7 @@ use support::{
 enum Event {
     Order(OrderEvent),
     Payment(PaymentEvent),
+    Sequence(SequenceEvent),
 }
 
 impl Event {
@@ -39,6 +44,7 @@ impl Event {
         match self {
             Event::Order(event) => event.schema(),
             Event::Payment(event) => event.schema(),
+            Event::Sequence(event) => event.schema(),
         }
     }
 
@@ -46,24 +52,29 @@ impl Event {
         match self {
             Event::Order(event) => event.to_value(),
             Event::Payment(event) => event.to_value(),
+            Event::Sequence(event) => event.to_value(),
         }
     }
 }
 
-/// Decodes `payload` as `schema`, by the aggregate its name belongs to, and re-encodes it.
+/// Decodes `payload` as `schema`, by the kind of stream its name belongs to, and re-encodes it.
 fn decode(schema: &SchemaRef, payload: &Value) -> Result<Value, DecodeError> {
-    if schema.name.as_str().starts_with("payment.") {
+    let name = schema.name.as_str();
+    if name.starts_with("payment.") {
         PaymentEvent::from_value(schema, payload).map(|event| event.to_value())
+    } else if name.starts_with("sequence.") {
+        SequenceEvent::from_value(schema, payload).map(|event| event.to_value())
     } else {
         OrderEvent::from_value(schema, payload).map(|event| event.to_value())
     }
 }
 
-/// Any event of either aggregate.
+/// Any event of any kind of stream.
 fn any_any_event() -> impl Strategy<Value = Event> {
     prop_oneof![
         3 => any_event().prop_map(Event::Order),
         1 => any_payment_event().prop_map(Event::Payment),
+        1 => any_assigned().prop_map(|record| Event::Sequence(SequenceEvent::Assigned(record))),
     ]
 }
 
@@ -102,6 +113,10 @@ enum Kind {
     LineCharges,
     /// What a closed check charged for each tax.
     TaxCharges,
+    /// A sequencing record's epoch or number, or a position in a log: from 1 to [`LARGEST`].
+    Number,
+    /// A sequencing record's runs.
+    Runs,
 }
 
 use Kind::*;
@@ -178,6 +193,9 @@ fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
         ],
         "payment.failed" | "payment.voided" => {
             vec![(1, Reason, Required), (2, Note, Optional), (3, Reference, Optional)]
+        }
+        "sequence.assigned" => {
+            vec![(1, Number, Required), (2, Number, Required), (3, Runs, Required)]
         }
         other => panic!("no rules for {other}"),
     }
@@ -416,7 +434,53 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
         }),
         LineCharges => records(value, &[Id, Money, Money, Money]).is_some(),
         TaxCharges => records(value, &[Id, Money, Money]).is_some(),
+        Number => value.as_u64().is_some_and(|n| (1..=LARGEST).contains(&n)),
+        Runs => runs_valid(value),
     }
+}
+
+/// The largest epoch, number or position a sequencing record may hold: 2^63 − 1 (ADR-0020).
+const LARGEST: u64 = (1 << 63) - 1;
+
+/// The most runs a sequencing record may hold (ADR-0020).
+const MOST_RUNS: usize = 1024;
+
+/// A sequencing record's runs, if each is `[device, from, to, hash]`: a UUIDv7, two unsigned
+/// integers and 32 bytes. Gives each run's device, first and last positions.
+fn runs_of(value: &Value) -> Option<Vec<(Vec<u8>, u64, u64)>> {
+    value
+        .as_array()?
+        .iter()
+        .map(|run| {
+            let [device, from, to, hash] = run.as_array()? else { return None };
+            let shaped = is_uuid_v7(device) && hash.as_bytes().is_some_and(|hash| hash.len() == 32);
+            shaped.then_some((device.as_bytes()?.to_vec(), from.as_u64()?, to.as_u64()?))
+        })
+        .collect()
+}
+
+/// Whether runs keep a record's rules: from 1 to [`MOST_RUNS`] of them, each from a first to a
+/// last position no earlier, both from 1 to [`LARGEST`]; no two neighbours of one device; and
+/// each run of a device starting right after the device's run before it.
+fn runs_valid(value: &Value) -> bool {
+    let Some(runs) = runs_of(value) else { return false };
+    let in_range = |n: u64| (1..=LARGEST).contains(&n);
+    // Where each device's next run must start.
+    let mut next: std::collections::BTreeMap<Vec<u8>, u128> = std::collections::BTreeMap::new();
+    let follow_on = runs.iter().all(|(device, from, to)| {
+        let follows = next.get(device).is_none_or(|&start| start == u128::from(*from));
+        next.insert(device.clone(), u128::from(*to) + 1);
+        follows
+    });
+    (1..=MOST_RUNS).contains(&runs.len())
+        && runs.iter().all(|&(_, from, to)| in_range(from) && in_range(to) && from <= to)
+        && runs.windows(2).all(|pair| pair[0].0 != pair[1].0)
+        && follow_on
+}
+
+/// How many events valid runs number.
+fn events_in(runs: &Value) -> u128 {
+    runs_of(runs).unwrap().iter().map(|&(_, from, to)| u128::from(to - from) + 1).sum()
 }
 
 /// Whether `payload` is a valid payload of `schema`, by the model.
@@ -463,6 +527,11 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
         "payment.initiated" => money(get(4).unwrap()).unwrap().0 > 0,
         "payment.authorized" => money(get(1).unwrap()).unwrap().0 > 0,
         "payment.captured" => capture_valid(map),
+        // The last number the record assigns is the largest at most.
+        "sequence.assigned" => {
+            u128::from(get(2).unwrap().as_u64().unwrap()) + events_in(get(3).unwrap()) - 1
+                <= u128::from(LARGEST)
+        }
         _ => true,
     }
 }
@@ -551,6 +620,8 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
                 }),
         ]
         .boxed(),
+        Number => number_near_miss(),
+        Runs => runs_near_miss(),
         Allocations => prop_oneof![
             3 => any_lines_allocated().prop_map(|allocated| allocations_value(&allocated)),
             // Valid allocations spoiled: out of order, repeated, not in lowest terms, a share of
@@ -568,6 +639,35 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
         Just(Value::Map(Map::new())),
     ];
     prop_oneof![4 => aimed, 1 => anything].boxed()
+}
+
+/// Epochs and numbers close to a sequencing record's: valid, at the ends, or past them.
+fn number_near_miss() -> BoxedStrategy<Value> {
+    let int = |range: core::ops::RangeInclusive<i64>| range.prop_map(Value::integer);
+    let text = |pattern: &'static str| pattern.prop_map(Value::Text);
+    prop_oneof![
+        prop::sample::select(vec![0, 1, 2, LARGEST - 1, LARGEST, LARGEST + 1, u64::MAX])
+            .prop_map(Value::Unsigned),
+        int(-2..=-1),
+        text("[0-9]{1,3}"),
+    ]
+    .boxed()
+}
+
+/// Runs close to a sequencing record's: valid, spoiled in one way, as many as a record may hold
+/// and one more, or none.
+fn runs_near_miss() -> BoxedStrategy<Value> {
+    prop_oneof![
+        2 => any_assigned().prop_map(|record| runs_value(&record)),
+        8 => (any_assigned(), any_spoil())
+            .prop_map(|(record, (how, at, other, choice))| {
+                spoil_runs(&runs_value(&record), how, at, other, choice)
+            }),
+        1 => prop::sample::select(vec![MOST_RUNS - 1, MOST_RUNS, MOST_RUNS + 1])
+            .prop_map(taking_turns),
+        1 => Just(Value::Array(Vec::new())),
+    ]
+    .boxed()
 }
 
 /// Charges close to a snapshot's: its lines' (key 3) or taxes' (key 4), valid or spoiled.
@@ -741,6 +841,174 @@ fn spoil_snapshot(
         16 => closed.payments = None,
         _ => {}
     }
+}
+
+/// Device `n`.
+fn device(n: u64) -> Id<Device> {
+    support::id(n)
+}
+
+/// A hash for the run at `index` of a record: bytes that step up, all different, so that a byte
+/// lost or moved shows.
+fn run_hash(index: usize) -> EventHash {
+    let first = u8::try_from(index % 256).unwrap();
+    EventHash::from_bytes(core::array::from_fn(|k| first.wrapping_add(u8::try_from(k).unwrap())))
+}
+
+/// A valid sequencing record: up to three devices taking turns, so that most have several runs,
+/// each starting in its log at the beginning or near the largest position, with runs of one to
+/// three events or up to the end of its log, a device's turns side by side making one run. Its
+/// first number is 1, the largest that fits, or any between.
+fn any_assigned() -> impl Strategy<Value = Assigned> {
+    let epoch = prop_oneof![3 => 1_u64..=3, 1 => (LARGEST - 2)..=LARGEST];
+    let start = || prop_oneof![3 => 1_u64..=5, 1 => (LARGEST - 4)..=LARGEST];
+    let length = prop_oneof![6 => 1_u64..=3, 1 => Just(u64::MAX)];
+    let turns = prop::collection::vec((0_usize..3, length), 1..=12);
+    let first = (0_u8..3, any::<u64>());
+    (epoch, [start(), start(), start()], turns, first).prop_map(
+        |(epoch, mut next, turns, (which, any))| {
+            let mut runs: Vec<Run> = Vec::new();
+            let mut count = 0_u64;
+            for (who, length) in turns {
+                let from = next[who];
+                // The events the record can still number.
+                let room = LARGEST - count;
+                if from > LARGEST || room == 0 {
+                    continue;
+                }
+                let to = from.saturating_add(length.min(room) - 1).min(LARGEST);
+                count += to - from + 1;
+                next[who] = to + 1;
+                let id = device(u64::try_from(who).unwrap() + 1);
+                let last = run_hash(runs.len());
+                match runs.last_mut() {
+                    Some(run) if run.device == id => {
+                        run.to = to;
+                        run.last = last;
+                    }
+                    _ => runs.push(Run { device: id, from, to, last }),
+                }
+            }
+            let largest_first = LARGEST - count + 1;
+            let first = match which {
+                0 => 1,
+                1 => largest_first,
+                _ => 1 + any % largest_first,
+            };
+            Assigned { epoch, first, runs }
+        },
+    )
+}
+
+/// What [`spoil_runs`] takes: which change, which runs, and which value.
+fn any_spoil() -> impl Strategy<Value = (u8, prop::sample::Index, prop::sample::Index, u8)> {
+    (0_u8..14, any::<prop::sample::Index>(), any::<prop::sample::Index>(), any::<u8>())
+}
+
+/// The payload encoding of a record's runs.
+fn runs_value(record: &Assigned) -> Value {
+    let payload = SequenceEvent::Assigned(record.clone()).to_value();
+    payload.as_map().unwrap().get(&Value::Unsigned(3)).unwrap().clone()
+}
+
+/// `count` runs of two devices taking turns, an event each: valid up to [`MOST_RUNS`].
+fn taking_turns(count: usize) -> Value {
+    let runs = (1_u64..)
+        .flat_map(|at| [(1, at), (2, at)])
+        .take(count)
+        .enumerate()
+        .map(|(index, (n, at))| Run { device: device(n), from: at, to: at, last: run_hash(index) })
+        .collect();
+    runs_value(&Assigned { epoch: 1, first: 1, runs })
+}
+
+/// Runs with one thing wrong, or right after all. `how` picks the change, `at` the run it
+/// touches, `other` another run, and `choice` a value within the change:
+/// - 0: two runs swapped;
+/// - 1: a run repeated;
+/// - 2: a run dropped;
+/// - 3, 4: a run's first or last position set to 0, 1, one less, one more, the largest, one
+///   past it, or the largest integer;
+/// - 5: a run moved, both ends, by −2, −1, 1 or 2 positions, into a gap or an overlap with the
+///   runs of its device around it;
+/// - 6: a run given its neighbour's device;
+/// - 7: a run split in two, side by side;
+/// - 8: a hash a byte short or long;
+/// - 9: a device that isn't a UUIDv7;
+/// - 10: a run with an entry dropped or added;
+/// - 11: a run given a device of its own;
+/// - 12: every run stretched over its device's whole log, from 1 to the largest position;
+/// - otherwise, nothing.
+fn spoil_runs(
+    value: &Value,
+    how: u8,
+    at: prop::sample::Index,
+    other: prop::sample::Index,
+    choice: u8,
+) -> Value {
+    let mut runs: Vec<Vec<Value>> =
+        value.as_array().unwrap().iter().map(|run| run.as_array().unwrap().to_vec()).collect();
+    let count = runs.len();
+    let (i, j) = (at.index(count), other.index(count));
+    let position = |value: &Value, choice: u8| {
+        let position = value.as_u64().unwrap();
+        let choices = [
+            0,
+            1,
+            position.wrapping_sub(1),
+            position.wrapping_add(1),
+            LARGEST,
+            LARGEST + 1,
+            u64::MAX,
+        ];
+        Value::Unsigned(choices[usize::from(choice) % choices.len()])
+    };
+    match how {
+        0 => runs.swap(i, j),
+        1 => runs.insert(i, runs[i].clone()),
+        2 if count > 1 => {
+            runs.remove(i);
+        }
+        3 => runs[i][1] = position(&runs[i][1], choice),
+        4 => runs[i][2] = position(&runs[i][2], choice),
+        5 => {
+            let by = [-2_i64, -1, 1, 2][usize::from(choice) % 4];
+            for end in &mut runs[i][1..=2] {
+                *end = Value::Unsigned(end.as_u64().unwrap().wrapping_add_signed(by));
+            }
+        }
+        6 if count > 1 => {
+            let neighbour = if i + 1 < count { i + 1 } else { i - 1 };
+            runs[i][0] = runs[neighbour][0].clone();
+        }
+        7 => {
+            let (from, to) = (runs[i][1].as_u64().unwrap(), runs[i][2].as_u64().unwrap());
+            if from < to {
+                let mut second = runs[i].clone();
+                runs[i][2] = Value::Unsigned(from);
+                second[1] = Value::Unsigned(from + 1);
+                runs.insert(i + 1, second);
+            }
+        }
+        8 => runs[i][3] = Value::Bytes(vec![0xAB; if choice.is_multiple_of(2) { 31 } else { 33 }]),
+        9 => runs[i][0] = Value::Bytes(vec![0; 16]),
+        10 => {
+            if choice.is_multiple_of(2) {
+                runs[i].pop();
+            } else {
+                runs[i].push(Value::Null);
+            }
+        }
+        11 => runs[i][0] = support_id_value(0xD0 + u64::try_from(i).unwrap()),
+        12 => {
+            for run in &mut runs {
+                run[1] = Value::Unsigned(1);
+                run[2] = Value::Unsigned(LARGEST);
+            }
+        }
+        _ => {}
+    }
+    Value::Array(runs.into_iter().map(Value::Array).collect())
 }
 
 /// The payload encoding of allocations.
@@ -1031,13 +1299,22 @@ fn changed(schema: &str, payload: &Value, change: &FieldChange) -> Value {
 proptest! {
     /// Every event survives encoding and decoding, and its payload is valid by the model.
     #[test]
-    fn events_round_trip(event in any_event(), payment in any_payment_event()) {
+    fn events_round_trip(
+        event in any_event(),
+        payment in any_payment_event(),
+        record in any_assigned(),
+    ) {
         let (schema, payload) = event.encode().unwrap();
         prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
         prop_assert_eq!(OrderEvent::decode(&schema, &payload), Ok(event));
         let (schema, payload) = payment.encode().unwrap();
         prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
         prop_assert_eq!(PaymentEvent::decode(&schema, &payload), Ok(payment));
+        let sequenced = SequenceEvent::Assigned(record.clone());
+        let (schema, payload) = sequenced.encode().unwrap();
+        prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
+        prop_assert_eq!(SequenceEvent::decode(&schema, &payload), Ok(sequenced));
+        prop_assert_eq!(Assigned::new(record.epoch, record.first, record.runs.clone()), Ok(record));
     }
 
     /// A payload with one field changed, removed or added is accepted exactly when the model
@@ -1055,6 +1332,89 @@ proptest! {
         (event, change) in any_case(any_payment_event().prop_map(Event::Payment)),
     ) {
         accepted_exactly_when_valid(&event, &change)?;
+    }
+
+    /// The same for sequencing records.
+    #[test]
+    fn changed_sequencing_records_are_accepted_exactly_when_valid(
+        (event, change) in any_case(
+            any_assigned().prop_map(|record| Event::Sequence(SequenceEvent::Assigned(record))),
+        ),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
+    /// Runs decode only when they keep every rule: a record's runs, spoiled in one way aimed at
+    /// one rule, decode exactly when the model says they are valid.
+    #[test]
+    fn runs_decode_only_when_they_keep_every_rule(
+        record in any_assigned(),
+        (how, at, other, choice) in any_spoil(),
+    ) {
+        let payload = SequenceEvent::Assigned(record).to_value();
+        let runs = payload.as_map().unwrap().get(&Value::Unsigned(3)).unwrap();
+        let change = FieldChange::Set { key: 3, value: spoil_runs(runs, how, at, other, choice) };
+        let spoiled = changed("sequence.assigned", &payload, &change);
+        let decoded = SequenceEvent::from_value(&schema_named("sequence.assigned"), &spoiled);
+        prop_assert_eq!(decoded.is_ok(), valid_payload("sequence.assigned", &spoiled));
+    }
+
+    /// A record holds at most [`MOST_RUNS`] runs: around the limit, two devices taking turns
+    /// decode exactly while they are within it.
+    #[test]
+    fn records_hold_at_most_the_most_runs(count in (MOST_RUNS - 2)..=(MOST_RUNS + 2)) {
+        let mut entries = SequenceEvent::Assigned(Assigned { epoch: 1, first: 1, runs: Vec::new() })
+            .to_value()
+            .as_map()
+            .unwrap()
+            .clone()
+            .into_entries();
+        entries.retain(|(key, _)| key.as_u64() != Some(3));
+        entries.push((Value::Unsigned(3), taking_turns(count)));
+        let payload = Value::Map(Map::from_entries(entries).unwrap());
+        let decoded = SequenceEvent::from_value(&schema_named("sequence.assigned"), &payload);
+        prop_assert_eq!(decoded.is_ok(), count <= MOST_RUNS);
+        prop_assert_eq!(valid_payload("sequence.assigned", &payload), count <= MOST_RUNS);
+    }
+
+    /// A record numbers its events in order, from its first number on, run by run, and knows
+    /// the number of each event it covers and of no other: a model counting run by run agrees.
+    #[test]
+    fn records_number_their_events_in_order(record in any_assigned()) {
+        let mut before: u128 = 0;
+        let mut firsts = Vec::new();
+        for run in &record.runs {
+            let first = u128::from(record.first) + before;
+            firsts.push(u64::try_from(first).unwrap());
+            for position in [run.from, run.from + (run.to - run.from) / 2, run.to] {
+                let number = record.number_of(run.device, position).map(u128::from);
+                prop_assert_eq!(number, Some(first + u128::from(position - run.from)));
+            }
+            before += u128::from(run.to - run.from) + 1;
+        }
+        prop_assert_eq!(u128::from(record.count()), before);
+        prop_assert_eq!(u128::from(record.last()), u128::from(record.first) + before - 1);
+        let numbered: Vec<u64> = record.numbered().map(|(number, _)| number).collect();
+        prop_assert_eq!(numbered, firsts);
+        // Just outside each device's stretch of its log, and in another device's log, nothing.
+        for run in &record.runs {
+            let runs = record.runs.iter().filter(|other| other.device == run.device);
+            let lowest = runs.clone().map(|other| other.from).min().unwrap();
+            let highest = runs.map(|other| other.to).max().unwrap();
+            prop_assert_eq!(record.number_of(run.device, lowest - 1), None);
+            prop_assert_eq!(record.number_of(run.device, highest + 1), None);
+        }
+        prop_assert_eq!(record.number_of(device(9), 1), None);
+    }
+
+    /// The numbers a record assigns reach exactly the largest: with the largest first number
+    /// that fits, a record decodes, and with one larger, it doesn't.
+    #[test]
+    fn records_number_up_to_exactly_the_largest(record in any_assigned(), past in 0_u64..=2) {
+        let first = LARGEST - record.count() + 1 + past;
+        let payload = SequenceEvent::Assigned(Assigned { first, ..record }).to_value();
+        let decoded = SequenceEvent::from_value(&schema_named("sequence.assigned"), &payload);
+        prop_assert_eq!(decoded.is_ok(), past == 0);
     }
 
     /// A change changes something: with every optional field removed, an attribute or line
@@ -1242,12 +1602,12 @@ proptest! {
     /// strictly ascending byte order.
     #[test]
     fn identifier_sets_are_sets(ids in prop::collection::vec(0_u64..8, 0..6)) {
-        let ids: Vec<keel_types::Id<()>> = ids.into_iter().map(support::id).collect();
+        let ids: Vec<Id<()>> = ids.into_iter().map(support::id).collect();
         let distinct: std::collections::BTreeSet<[u8; 16]> = ids.iter().map(|id| id.to_bytes()).collect();
         match keel_domain::codec::IdSet::new(ids.clone()) {
             Ok(set) => {
                 prop_assert!(!ids.is_empty() && distinct.len() == ids.len());
-                let bytes: Vec<[u8; 16]> = set.iter().map(keel_types::Id::to_bytes).collect();
+                let bytes: Vec<[u8; 16]> = set.iter().map(Id::to_bytes).collect();
                 prop_assert_eq!(bytes, distinct.into_iter().collect::<Vec<_>>());
             }
             Err(_) => prop_assert!(ids.is_empty() || distinct.len() < ids.len()),
@@ -1319,15 +1679,22 @@ proptest! {
         let schema = schema_ref(&event);
         let newer = SchemaRef { name: schema.name.clone(), version: version.try_into().unwrap() };
         prop_assert_eq!(decode(&newer, &event.to_value()), Err(DecodeError::UnknownSchema));
-        for name in ["order.unknown", "payment.unknown"] {
+        for name in ["order.unknown", "payment.unknown", "sequence.unknown"] {
             let renamed = SchemaRef { name: SchemaName::new(name).unwrap(), version: schema.version };
             prop_assert_eq!(decode(&renamed, &event.to_value()), Err(DecodeError::UnknownSchema));
         }
-        // Neither aggregate decodes the other's schemas.
+        // No kind of stream decodes another's schemas.
+        let payload = event.to_value();
+        let as_order = OrderEvent::from_value(&schema, &payload).map(|_| ());
+        let as_payment = PaymentEvent::from_value(&schema, &payload).map(|_| ());
+        let as_sequence = SequenceEvent::from_value(&schema, &payload).map(|_| ());
         let crossed = match &event {
-            Event::Order(_) => PaymentEvent::from_value(&schema, &event.to_value()).map(|_| ()),
-            Event::Payment(_) => OrderEvent::from_value(&schema, &event.to_value()).map(|_| ()),
+            Event::Order(_) => [as_payment, as_sequence],
+            Event::Payment(_) => [as_order, as_sequence],
+            Event::Sequence(_) => [as_order, as_payment],
         };
-        prop_assert_eq!(crossed, Err(DecodeError::UnknownSchema));
+        for decoded in crossed {
+            prop_assert_eq!(decoded, Err(DecodeError::UnknownSchema));
+        }
     }
 }

@@ -513,4 +513,13 @@ BUGS = [
         "        if bytes.len() >= MAX_EVENT_BYTES {",
         "unit",
     ),
+    (
+        "identifiers for aggregates repeat",
+        "src/log.rs",
+        """        self.ids.generate(now)
+    }""",
+        """        let _ = now;
+        Id::parse("0192f0c1-0000-7000-8000-000000000001").map_err(|_| IdError::Exhausted)
+    }""",
+    ),
 ]

@@ -10,15 +10,21 @@
 //!   the log of a device that wrote before its log settled after a rollback, as an island; such
 //!   a device's log is left out of the checks above.
 //! - **Every store checks clean,** and every replicator's version vector is its store's.
+//! - **Sequencing** (ADR-0020): the hub's records number every event but records once, gapless
+//!   from 1 in its epoch, and each device's log in order; every replica confirms the same, and
+//!   holds every event confirmed but a forked device's other version; the feed gives them in
+//!   number order. No event a device was told is store-durable is lost to a rollback.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use keel_domain::schema::DomainEvent;
+use keel_domain::sequence::SequenceEvent;
 use keel_events::envelope::{Aggregate, Device};
 use keel_events::event::SignedEvent;
-use keel_store::{OrderState, Reason, Store, StoreConfig, StoreKey};
+use keel_store::{OrderState, Reason, Store, StoreConfig, StoreKey, StoreSeq};
 use keel_types::{Id, SeededEntropy};
 
-use crate::node::{DRIFT, HUB, ORACLE, SimStore, device, here, signer, time};
+use crate::node::{DRIFT, EPOCH, HUB, ORACLE, SimStore, device, here, signer, time};
 use crate::run::Run;
 
 fn store_of(run: &Run, n: u8) -> Result<&SimStore, String> {
@@ -38,6 +44,7 @@ pub(crate) fn after(run: &mut Run) -> Result<(), String> {
     run.report.forked = u64::try_from(run.forked.len()).unwrap_or(u64::MAX);
     causality(run, &logs, &forked)?;
     quarantine(run, &forked)?;
+    sequencing(run, &logs, &forked)?;
     for (&n, node) in &mut run.nodes {
         let (Some(store), Some(replicator)) = (node.store.as_mut(), node.replicator.as_ref())
         else {
@@ -123,6 +130,12 @@ fn no_loss(
                 appended.node, appended.at
             ));
         }
+        if run.store_durable.contains(&body.event_id) {
+            return Err(format!(
+                "event {position} of node {}, which its device was told is store-durable, is lost",
+                appended.node
+            ));
+        }
         lost = lost.saturating_add(1);
     }
     Ok(lost)
@@ -147,6 +160,112 @@ fn causality(
                 "event {} of node {} has HLC {:?}, no later than {:?}, which its device held",
                 body.origin_seq, appended.node, body.hlc, appended.after
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `event` is a sequencing record.
+fn is_record(event: &SignedEvent) -> bool {
+    event.body().stream.kind.as_str() == keel_domain::sequence::STREAM
+}
+
+/// Checks the hub's numbering, and every replica's confirmations and feed, against the logs.
+fn sequencing(
+    run: &mut Run,
+    logs: &BTreeMap<Id<Device>, Vec<SignedEvent>>,
+    forked: &BTreeSet<Id<Device>>,
+) -> Result<(), String> {
+    // The numbers the hub's records give, each event once.
+    let mut numbers: BTreeMap<(Id<Device>, u64), u64> = BTreeMap::new();
+    let mut records: u64 = 0;
+    for event in logs.get(&device(HUB)).into_iter().flatten().filter(|event| is_record(event)) {
+        let body = event.body();
+        let Ok(SequenceEvent::Assigned(record)) =
+            SequenceEvent::decode(&body.schema, &body.payload)
+        else {
+            return Err("the hub wrote a record that doesn't decode".to_owned());
+        };
+        if record.epoch != EPOCH {
+            return Err(format!("the hub numbered in epoch {}", record.epoch));
+        }
+        records = records.saturating_add(1);
+        for (number, run_of) in record.numbered() {
+            for position in run_of.from..=run_of.to {
+                let offset = position.saturating_sub(run_of.from);
+                let key = (run_of.device, position);
+                if numbers.insert(key, number.saturating_add(offset)).is_some() {
+                    return Err(format!("{:?} {position} is numbered twice", run_of.device));
+                }
+            }
+        }
+    }
+    // Every event but a record is numbered, each device's log in order, gapless.
+    for (origin, log) in logs {
+        let mut last = 0;
+        for event in log.iter().filter(|event| !is_record(event)) {
+            let position = event.body().origin_seq.get();
+            let Some(&number) = numbers.get(&(*origin, position)) else {
+                return Err(format!("{origin:?} {position} is never numbered"));
+            };
+            if number <= last {
+                return Err(format!("{origin:?} {position} is numbered {number}, after {last}"));
+            }
+            last = number;
+        }
+    }
+    let count = u64::try_from(numbers.len()).unwrap_or(u64::MAX);
+    if numbers.values().copied().collect::<BTreeSet<u64>>() != (1..=count).collect() {
+        return Err("the hub's numbers have gaps".to_owned());
+    }
+    run.report.sequenced = [records, count];
+    // Every replica confirms each event as the hub numbered it, a forked device's aside, and holds
+    // every log confirmed to its end.
+    for &n in run.nodes.keys() {
+        let store = store_of(run, n)?;
+        for (origin, log) in logs.iter().filter(|(origin, _)| !forked.contains(*origin)) {
+            for event in log {
+                let position = event.body().origin_seq.get();
+                let expected = numbers
+                    .get(&(*origin, position))
+                    .map(|&number| StoreSeq { epoch: EPOCH, number });
+                if store.store_seq(*origin, position).map_err(text)? != expected {
+                    return Err(format!("node {n} confirms {origin:?} {position} otherwise"));
+                }
+            }
+        }
+        let confirmed = store.confirmed().map_err(text)?;
+        for (origin, log) in logs.iter().filter(|(origin, _)| !forked.contains(*origin)) {
+            let length = u64::try_from(log.len()).unwrap_or(u64::MAX);
+            if confirmed.get(origin).copied().unwrap_or(0) != length {
+                return Err(format!(
+                    "node {n} holds {origin:?} confirmed up to {:?}, of {length}",
+                    confirmed.get(origin)
+                ));
+            }
+        }
+        // The feed: the confirmed events in number order.
+        let feed: Vec<(u64, Id<Device>, u64)> = store
+            .sequenced(EPOCH, 0, u32::MAX)
+            .map_err(text)?
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.number,
+                    entry.event.body().origin_device,
+                    entry.event.body().origin_seq.get(),
+                )
+            })
+            .filter(|(_, origin, _)| !forked.contains(origin))
+            .collect();
+        let mut expected: Vec<(u64, Id<Device>, u64)> = numbers
+            .iter()
+            .filter(|((origin, _), _)| !forked.contains(origin))
+            .map(|(&(origin, position), &number)| (number, origin, position))
+            .collect();
+        expected.sort_unstable();
+        if feed != expected {
+            return Err(format!("node {n}'s feed differs from the hub's numbering"));
         }
     }
     Ok(())

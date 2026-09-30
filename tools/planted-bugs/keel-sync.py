@@ -400,4 +400,113 @@ BUGS = [
         # whose write fails, so only the known answer, which interrupts a write, can tell.
         "unit",
     ),
+    # Sequencing, store durability and the durable-ack watermark (ADR-0020).
+    (
+        "sequencing: the hub numbers before its log is settled",
+        "src/replicator.rs",
+        """        if !self.settled {
+            return Ok(Vec::new());
+        }
+        let records = replica.sequence(epoch, now)?;""",
+        """        let records = replica.sequence(epoch, now)?;""",
+        # Replicas here never lose events, so numbers can't fork: only a unit test sees the
+        # hub number too soon.
+        "unit",
+    ),
+    (
+        "sequencing: the hub doesn't number what it receives",
+        "src/replicator.rs",
+        "        if stored_any || (self.settled && !was_settled) {",
+        "        if self.settled && !was_settled {",
+    ),
+    (
+        "sequencing: the hub doesn't number when its log settles",
+        "src/replicator.rs",
+        """        if self.settled && !was_settled {
+            outgoing.extend(self.sequence(replica, now)?);
+        }
+        Ok(outgoing)""",
+        """        Ok(outgoing)""",
+    ),
+    (
+        "sequencing: the hub doesn't number its own events",
+        "src/replicator.rs",
+        """        if !events.is_empty() {
+            outgoing.extend(self.sequence(replica, now)?);
+        }""",
+        """        let _ = events.is_empty();""",
+    ),
+    (
+        "sequencing: records aren't passed on",
+        "src/replicator.rs",
+        "        self.take_in(replica, &records, now)",
+        "        let _ = records;\n        Ok(Vec::new())",
+    ),
+    (
+        "store durability: the least any peer holds",
+        "src/replicator.rs",
+        """            .filter_map(|peer| peer.known.as_ref()?.get(&self.device).copied())
+            .max()""",
+        """            .filter_map(|peer| peer.known.as_ref()?.get(&self.device).copied())
+            .min()""",
+        # The simulator checks that no event a device was told is store-durable is lost, which a
+        # smaller claim can't break, and a device there has one peer, the hub: only a unit test,
+        # with two peers, sees the least claimed instead of the most.
+        "unit",
+    ),
+    (
+        "the watermark follows the last it heard",
+        "src/replicator.rs",
+        "            if position > *held {",
+        "            if position != *held {",
+    ),
+    (
+        "the watermark isn't passed on when it rises",
+        "src/replicator.rs",
+        "        if self.merge_durable(vv) { self.relay_durable(from) } else { Vec::new() }",
+        "        let _ = (self.merge_durable(vv), from);\n        Vec::new()",
+        # Each round passes it on anyway: only a unit test sees it held back until then.
+        "unit",
+    ),
+    (
+        "the watermark isn't sent with each round",
+        "src/replicator.rs",
+        "                outgoing.extend(self.durable_for(to));",
+        "                let _ = to;",
+    ),
+    (
+        "the watermark goes back to the durable peer",
+        "src/replicator.rs",
+        "        if self.durable.is_empty() || self.roles.durable == Some(to) {",
+        "        if self.durable.is_empty() {",
+    ),
+    (
+        "any peer's have is the watermark",
+        "src/replicator.rs",
+        "        if self.roles.durable == Some(from) && self.merge_durable(&have.vv) {",
+        "        if self.merge_durable(&have.vv) {",
+    ),
+    (
+        "a watermark from another location is taken",
+        "src/replicator.rs",
+        "            Ok(Frame::Durable(durable)) if durable.location == self.location => {",
+        "            Ok(Frame::Durable(durable)) => {",
+        # Every replica in the property test and the simulator is at one location.
+        "unit",
+    ),
+    (
+        "a have that asks isn't answered with the watermark",
+        "src/replicator.rs",
+        """            outgoing.push(self.have(from));
+            outgoing.extend(self.durable_for(from));""",
+        """            outgoing.push(self.have(from));""",
+        # The next round brings it anyway: only a unit test sees it wait.
+        "unit",
+    ),
+    (
+        "a durable frame is an events frame",
+        "src/frame.rs",
+        "const DURABLE: u64 = 2;",
+        "const DURABLE: u64 = 1;",
+    ),
 ]

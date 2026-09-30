@@ -19,6 +19,13 @@
 //!   events in canonical order ([`OrderSummary`], [`PaymentSummary`]). Each write recomputes the
 //!   rows of the streams it touched, before it commits; a projection whose version changed is
 //!   rebuilt from the log when the store opens. [`Store::load`] folds any aggregate.
+//! - **Sequencing** (ADR-0020): the Store Hub numbers the events it holds in the order it
+//!   received them, gapless in its epoch, in `sequence.assigned` records in its own log
+//!   ([`Store::sequence`]). Every replica works out from the records it holds which of its
+//!   events are confirmed ([`Store::confirmed`], [`Store::store_seq`]): a run of a record
+//!   confirms the stretch of a device's log it covers when the store holds the run's last event
+//!   with the hash the record gives it. [`Store::sequenced`] is the store's feed, the confirmed
+//!   events of an epoch in number order.
 //! - **The outbox** (ADR-0017): effects waiting to happen, such as printing or charging a card,
 //!   enqueued in the write that records their cause, and started, finished, retried or failed in
 //!   writes too ([`Effect`], [`EffectState`]). An effect found running after a restart is in
@@ -49,6 +56,7 @@ mod outbox;
 mod projection;
 mod rows;
 mod schema;
+mod sequencing;
 mod store;
 mod write;
 
@@ -64,5 +72,6 @@ pub use outbox::{
 };
 pub use projection::{OrderState, OrderSummary, PaymentState, PaymentSummary};
 pub use schema::init_sqlite;
+pub use sequencing::{Sequenced, StoreSeq};
 pub use store::{Store, StoreConfig};
 pub use write::{Quarantined, Reason, Received, Writing};

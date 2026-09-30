@@ -5,7 +5,9 @@
 //! a while. Replicas restart now and then, losing what their replicator knew but none of their
 //! events, and at times decline a batch, as a replica that can't take it for now would, so that
 //! its sender stalls. After twenty seconds the faults stop. Within a minute more, every replica
-//! must hold exactly every event appended, and none may have refused any. All along, the
+//! must hold exactly every event appended and the hub's records, and none may have refused any.
+//! Replica 1 is the Store Hub, sequencing in epoch 1, and the last replica is the durable one,
+//! which the replicas linked to it name as their durable peer (ADR-0020). All along, the
 //! protocol's rules must hold, checked frame by frame:
 //!
 //! - no replica sends a peer an event the peer last told it it holds, or sent it since;
@@ -17,7 +19,13 @@
 //! - a replica acknowledges each batch it receives at once;
 //! - a replica's `have` asks for the peer's in return exactly until it has heard from the peer
 //!   since it started, and a replica answers a `have` that asks at once;
-//! - a replica's ticks do nothing before [`Replicator::next_tick`] says they are needed.
+//! - a replica's ticks do nothing before [`Replicator::next_tick`] says they are needed;
+//! - a `durable` frame claims no more of any device's log than the durable replica holds, and a
+//!   replicator's watermark only rises;
+//! - the hub, once its log is settled, leaves nothing it holds unnumbered.
+//!
+//! And after healing, every event but the records is numbered once, gapless, and every
+//! replica's watermark but the durable replica's reaches everything it holds.
 
 #![allow(
     clippy::unwrap_used,
@@ -34,10 +42,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use keel_events::envelope::Device;
 use keel_events::event::SignedEvent;
-use keel_sync::{Frame, Outgoing, Replica, Replicator, SyncConfig, VersionVector};
+use keel_sync::{Durable, Frame, Outgoing, Replica, Replicator, Roles, SyncConfig, VersionVector};
 use keel_types::{Entropy, Id, SeededEntropy};
 use proptest::prelude::*;
-use support::{Model, at, device, registry};
+use support::{Model, at, device, is_record, registry};
 
 #[derive(Clone, Copy, Debug)]
 enum Topology {
@@ -140,6 +148,17 @@ fn peers_of(links: &[(u8, u8)], replica: u8) -> Vec<Id<Device>> {
         .collect()
 }
 
+/// Replica 1 sequences, in epoch 1; the last replica is the durable one, and each replica
+/// linked to it names it its durable peer.
+fn roles_of(case: &Case, links: &[(u8, u8)], replica: u8) -> Roles {
+    let durable = case.replicas;
+    let linked = links.iter().any(|&link| link == (replica, durable) || link == (durable, replica));
+    Roles {
+        sequencer: (replica == 1).then_some(1),
+        durable: (linked && replica != durable).then(|| device(durable)),
+    }
+}
+
 const ACK_TIMEOUT: i64 = 2_000;
 const ROUND: i64 = 5_000;
 
@@ -181,6 +200,8 @@ struct World {
     numbered: BTreeMap<(u8, u8), u64>,
     /// Each replica and a peer it has had a `have` from since it last started.
     heard: BTreeSet<(u8, u8)>,
+    /// Each replicator's watermark, as last seen, since it last started.
+    watermarks: BTreeMap<u8, VersionVector>,
     appended: Vec<SignedEvent>,
 }
 
@@ -216,14 +237,21 @@ impl World {
             stalled: BTreeMap::new(),
             numbered: BTreeMap::new(),
             heard: BTreeSet::new(),
+            watermarks: BTreeMap::new(),
             appended: Vec::new(),
         };
         let mut starting = Vec::new();
         for n in 1..=world.case.replicas {
             let mut model = Model::new(n, registry(1..=world.case.replicas));
-            let (replicator, out) =
-                Replicator::start(&mut model, peers_of(&world.links, n), world.config, at(0))
-                    .unwrap();
+            let roles = roles_of(&world.case, &world.links, n);
+            let (replicator, out) = Replicator::start(
+                &mut model,
+                peers_of(&world.links, n),
+                world.config,
+                roles,
+                at(0),
+            )
+            .unwrap();
             models.insert(n, model);
             replicators.insert(n, replicator);
             starting.push((n, out));
@@ -260,6 +288,7 @@ impl World {
                     let heard = self.heard.contains(&(from, to));
                     assert_eq!(have.asks, !heard, "{from}'s have to {to}, having heard: {heard}");
                 }
+                Frame::Durable(durable) => self.check_durable(from, to, &durable),
             }
             let faulty = self.now < HEAL;
             let copies = if faulty && self.random(1000) < self.case.duplication { 2 } else { 1 };
@@ -315,6 +344,42 @@ impl World {
             "{from} numbered a batch {batch} after {last:?}"
         );
         self.in_flight.insert((from, to), InFlight { batch, sent: self.now, first });
+    }
+
+    /// Checks a `durable` frame: it claims no more than the durable replica holds, and doesn't
+    /// go to the durable replica itself.
+    fn check_durable(&self, from: u8, to: u8, durable: &Durable) {
+        let holder = self.case.replicas;
+        assert_ne!(to, holder, "{from} told the durable replica its own watermark");
+        let held = self.models[&holder].logs();
+        for (origin, &position) in &durable.vv {
+            let holds = held.get(origin).map_or(0, Vec::len);
+            assert!(
+                position <= u64::try_from(holds).unwrap(),
+                "{from} told {to} the durable replica holds {origin:?} up to {position}; it holds {holds}",
+            );
+        }
+    }
+
+    /// Checks replica `n` after it handled something: its watermark only rose, and, if it is the
+    /// hub and its log is settled, it left nothing it holds unnumbered.
+    fn check_replica(&mut self, n: u8) {
+        let replicator = &self.replicators[&n];
+        let watermark = replicator.durable().clone();
+        if let Some(before) = self.watermarks.get(&n) {
+            for (origin, &position) in before {
+                let now = watermark.get(origin).copied().unwrap_or(0);
+                assert!(
+                    now >= position,
+                    "{n}'s watermark for {origin:?} fell from {position} to {now}"
+                );
+            }
+        }
+        self.watermarks.insert(n, watermark);
+        if n == 1 && replicator.settled() {
+            let unsequenced = self.models[&n].unsequenced();
+            assert!(unsequenced.is_empty(), "the settled hub left {unsequenced:?} unnumbered");
+        }
     }
 
     fn deliver(&mut self, from: u8, to: u8, frame: &[u8]) {
@@ -380,6 +445,7 @@ impl World {
             }
         }
         self.send(to, out);
+        self.check_replica(to);
     }
 
     fn append(&mut self, replica: u8, count: u8) {
@@ -390,15 +456,23 @@ impl World {
         let replicator = self.replicators.get_mut(&replica).unwrap();
         let out = replicator.appended(model, &events, at(self.now)).unwrap();
         self.send(replica, out);
+        self.check_replica(replica);
     }
 
     /// Restarts `replica`: its replicator forgets everything, its events stay.
     fn restart(&mut self, replica: u8) {
         let model = self.models.get_mut(&replica).unwrap();
-        let (replicator, out) =
-            Replicator::start(model, peers_of(&self.links, replica), self.config, at(self.now))
-                .unwrap();
+        let roles = roles_of(&self.case, &self.links, replica);
+        let (replicator, out) = Replicator::start(
+            model,
+            peers_of(&self.links, replica),
+            self.config,
+            roles,
+            at(self.now),
+        )
+        .unwrap();
         self.replicators.insert(replica, replicator);
+        self.watermarks.remove(&replica);
         self.told.retain(|(r, _), _| *r != replica);
         self.in_flight.retain(|(r, _), _| *r != replica);
         self.stalled.retain(|(r, _), _| *r != replica);
@@ -437,15 +511,26 @@ impl World {
             }
             self.stalled.retain(|&(replica, peer), _| replica != n || !rounds.contains(&peer));
             self.send(n, out);
+            self.check_replica(n);
         }
     }
 
-    /// Whether every replica holds every event appended.
+    /// Whether every replica holds every event appended and every record of the hub, and every
+    /// replica's watermark but the durable replica's reaches everything.
     fn agreed(&self) -> bool {
-        let total = self.appended.len();
+        let hub = &self.models[&1];
+        let records = hub.logs().values().flatten().filter(|event| is_record(event)).count();
+        let total = self.appended.len() + records;
+        let holder = &self.models[&self.case.replicas];
+        let everything =
+            holder.logs().iter().map(|(origin, log)| (*origin, u64::try_from(log.len()).unwrap()));
+        let everything: VersionVector = everything.collect();
         self.models
             .values()
             .all(|model| model.logs().values().map(Vec::len).sum::<usize>() == total)
+            && self.replicators.iter().all(|(n, replicator)| {
+                *n == self.case.replicas || replicator.durable() == &everything
+            })
     }
 
     /// Runs the case until the replicas agree, or they fail to in time.
@@ -514,6 +599,28 @@ proptest! {
         for event in &world.appended {
             expected.entry(event.body().origin_device).or_default().push(event.clone());
         }
+        // And the hub's records, which number every other event once, gapless.
+        let records: Vec<SignedEvent> = world.models[&1].logs()[&device(1)].iter().filter(|event| is_record(event)).cloned().collect();
+        for record in &records {
+            expected.entry(device(1)).or_default().push(record.clone());
+        }
+        for log in expected.values_mut() {
+            log.sort_by_key(|event| event.body().origin_seq);
+        }
+        let mut numbered: BTreeMap<(Id<Device>, u64), u64> = BTreeMap::new();
+        for (_, record) in world.models[&1].records() {
+            prop_assert_eq!(record.epoch, 1);
+            for (number, run) in record.numbered() {
+                for position in run.from..=run.to {
+                    let again = numbered.insert((run.device, position), number + (position - run.from));
+                    prop_assert!(again.is_none(), "{:?} {} numbered twice", run.device, position);
+                }
+            }
+        }
+        let others: BTreeSet<(Id<Device>, u64)> = expected.values().flatten().filter(|event| !is_record(event)).map(|event| (event.body().origin_device, event.body().origin_seq.get())).collect();
+        prop_assert_eq!(numbered.keys().copied().collect::<BTreeSet<_>>(), others);
+        let numbers: BTreeSet<u64> = numbered.values().copied().collect();
+        prop_assert_eq!(numbers, (1..=u64::try_from(numbered.len()).unwrap()).collect());
         for (n, model) in &mut world.models {
             prop_assert_eq!(model.logs(), &expected, "replica {}", n);
             prop_assert!(model.quarantine.is_empty(), "replica {} refused {:?}", n, model.quarantine);

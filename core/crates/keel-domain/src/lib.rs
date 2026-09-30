@@ -20,7 +20,8 @@
 //! - [`payment`]: money moving against a check, in cash or by card.
 //!
 //! [`checkout`] holds the rules that span an order and its payments: what each check still owes,
-//! starting a payment, closing a check, and money that doesn't fit the order.
+//! starting a payment, closing a check, and money that doesn't fit the order. [`sequence`] holds
+//! the Store Hub's sequencing records, which number the store's events.
 //!
 //! Like the rest of the kernel, this crate is deterministic, never panics, and builds for
 //! `wasm32`.
@@ -32,3 +33,4 @@ pub mod order;
 pub mod payment;
 pub mod refs;
 pub mod schema;
+pub mod sequence;

@@ -25,6 +25,7 @@ use crate::projection::{
 };
 use crate::rows;
 use crate::schema;
+use crate::sequencing::{self, Sequenced, StoreSeq};
 use crate::write::{Quarantined, Reason, Writing};
 
 /// Whose store it is.
@@ -441,6 +442,55 @@ impl<S: Signer, E: Entropy> Store<S, E> {
             })
             .collect()
         })
+    }
+
+    /// Numbers, as the Store Hub in `epoch`, the events of each device's log after the last
+    /// position any sequencing record covers, except records, in the order the store received
+    /// them, and appends the records at physical time `now`, in a write of their own (ADR-0020).
+    /// Returns the records: none when nothing is new. Numbers follow on from the store's last
+    /// record of the epoch, so a hub must sequence only once its log is settled.
+    ///
+    /// # Errors
+    /// As [`Store::write`], and [`StoreError::OutOfRange`] if the epoch isn't from 1 to 2^63 − 1
+    /// or its numbers run out.
+    pub fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, StoreError> {
+        self.write(|writing| writing.sequence(epoch, now))
+    }
+
+    /// For each device, how far into its log the store holds confirmed events: the longest start
+    /// of its log in which each event is confirmed, or a sequencing record (ADR-0020).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn confirmed(&self) -> Result<BTreeMap<Id<Device>, u64>, StoreError> {
+        self.read(sequencing::confirmed)
+    }
+
+    /// The epoch and number of the event at `position` of `device`'s log, once confirmed: `None`
+    /// while it is provisional. Where records disagree, its first number counts.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn store_seq(
+        &self,
+        device: Id<Device>,
+        position: u64,
+    ) -> Result<Option<StoreSeq>, StoreError> {
+        self.read(|db| sequencing::store_seq(db, device, position))
+    }
+
+    /// Up to `limit` of the confirmed events of `epoch` numbered after `after`, in number order:
+    /// the store's feed. An event appears under its first number only.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn sequenced(
+        &self,
+        epoch: u64,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<Sequenced>, StoreError> {
+        self.read(|db| sequencing::sequenced(db, epoch, after, limit))
     }
 
     /// Up to `limit` events of `device`'s log, in order, from the one after `after`.

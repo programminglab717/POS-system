@@ -44,6 +44,15 @@ pub trait Replica {
     /// If the store can't be written, in which case none of them was stored.
     fn receive(&mut self, events: &[Vec<u8>], now: Timestamp)
     -> Result<Vec<Received>, Self::Error>;
+
+    /// Numbers, as the Store Hub in `epoch`, the events of each device's log after the last
+    /// position any sequencing record covers, except records, in a write of its own at physical
+    /// time `now`, and returns the records it appended to its device's log: none when nothing is
+    /// new (ADR-0020).
+    ///
+    /// # Errors
+    /// If the store can't be written, in which case it appended nothing.
+    fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, Self::Error>;
 }
 
 /// A [`Replica`] that is `keel-store`'s store, verifying the events it receives with a device
@@ -93,5 +102,9 @@ impl<S: Signer, E: Entropy> Replica for StoreReplica<'_, S, E> {
     fn receive(&mut self, events: &[Vec<u8>], now: Timestamp) -> Result<Vec<Received>, StoreError> {
         let registry = self.registry;
         self.store.write(|w| events.iter().map(|bytes| w.receive(bytes, registry, now)).collect())
+    }
+
+    fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, StoreError> {
+        self.store.sequence(epoch, now)
     }
 }

@@ -6,6 +6,7 @@
 //!
 //! - **Nodes:** two or three devices, the hub and the cloud, in a star: devices to the hub, the
 //!   hub to the cloud. Each has its own key, signer and clock, off virtual time by up to 25 s.
+//!   The hub sequences, in epoch 1, and names the cloud its durable peer (ADR-0020).
 //! - **The network** delivers frames after random delays, so they arrive out of order, and while
 //!   it is faulty loses and duplicates some; partitions cut links for a while.
 //! - **Faults:** nodes crash, between writes or in the middle of one, and restart; a device's
@@ -13,9 +14,12 @@
 //! - **Workload:** devices ring orders and take cash through `keel-domain`'s commands and
 //!   checkout, each decided against the device's own view.
 //! - **A run** works under faults for 30 virtual seconds, heals, and runs until the replicas
-//!   agree, then checks the invariants: convergence, no loss, causality, no forks or quarantine,
-//!   stores that check clean (see [`simulate`]). All along, it checks each batch replicas send
-//!   against the protocol's rules for batches. Its [`Config`] is drawn from a seed, and every
+//!   agree and every watermark reaches what the cloud holds, then checks the invariants:
+//!   convergence, no loss, causality, no forks or quarantine, stores that check clean, and the
+//!   hub's numbering, every replica confirming alike, and no store-durable event lost (see
+//!   [`simulate`]). All along, it checks each batch replicas send against the protocol's rules for
+//!   batches, each `durable` frame against what the cloud holds, and that every replicator's
+//!   watermark only rises. Its [`Config`] is drawn from a seed, and every
 //!   choice the run makes comes from the seed too, so a failing seed replays exactly.
 //!
 //! This crate is for tests only, and is never shipped.

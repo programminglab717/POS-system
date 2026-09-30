@@ -10,7 +10,7 @@ use keel_events::envelope::{Device, Location};
 use keel_events::keys::{SignatureAlgorithm, Signer, SoftwareSigner};
 use keel_events::verify::DeviceRegistry;
 use keel_store::{Faults, Point, Store, StoreConfig, StoreError, StoreKey};
-use keel_sync::{Outgoing, Replicator, StoreReplica, SyncConfig, VersionVector};
+use keel_sync::{Outgoing, Replicator, Roles, StoreReplica, SyncConfig, VersionVector};
 use keel_types::{Id, IdGenerator, SeededEntropy, Timestamp};
 
 /// The hub.
@@ -19,6 +19,18 @@ pub(crate) const HUB: u8 = 10;
 pub(crate) const CLOUD: u8 = 20;
 /// The fresh store the replicas' projections are compared with at the end.
 pub(crate) const ORACLE: u8 = 30;
+
+/// The hub's epoch: 1, until hubs are elected (ADR-0020).
+pub(crate) const EPOCH: u64 = 1;
+
+/// Node `n`'s roles: the hub sequences, with the cloud as its durable peer.
+pub(crate) fn roles(n: u8) -> Roles {
+    if n == HUB {
+        Roles { sequencer: Some(EPOCH), durable: Some(device(CLOUD)) }
+    } else {
+        Roles::default()
+    }
+}
 
 /// Milliseconds since the Unix epoch at the simulation's time 0: 2026-09-30T10:00:00Z.
 const BASE: i64 = 1_790_762_400_000;
@@ -222,9 +234,14 @@ impl Node {
         .map_err(|error| SimError::Store(self.n, format!("opening: {error}")))?;
         let peers = self.peers.iter().map(|&peer| device(peer));
         let now = self.time(ms);
-        let (replicator, out) =
-            Replicator::start(&mut StoreReplica::new(&mut store, registry), peers, config, now)
-                .map_err(|error| SimError::Store(self.n, format!("starting: {error}")))?;
+        let (replicator, out) = Replicator::start(
+            &mut StoreReplica::new(&mut store, registry),
+            peers,
+            config,
+            roles(self.n),
+            now,
+        )
+        .map_err(|error| SimError::Store(self.n, format!("starting: {error}")))?;
         self.store = Some(store);
         self.replicator = Some(replicator);
         self.ids = Some(IdGenerator::new(entropy(2)));

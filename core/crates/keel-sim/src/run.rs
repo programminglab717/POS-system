@@ -13,7 +13,7 @@ use core::fmt::Write as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use keel_events::envelope::Device;
+use keel_events::envelope::{Device, Event};
 use keel_events::event::SignedEvent;
 use keel_events::hash::EventHash;
 use keel_events::verify::DeviceRegistry;
@@ -132,6 +132,10 @@ pub struct Report {
     /// last arrival came while no node was down and no link was cut. In a run without faults,
     /// that is every event.
     pub max_lag: i64,
+    /// The hub's sequencing records, and the events they number.
+    pub sequenced: [u64; 2],
+    /// `durable` frames sent.
+    pub durable_frames: u64,
 }
 
 /// A failed run: its seed, and what went wrong.
@@ -214,6 +218,15 @@ pub(crate) struct Run {
     pending: BTreeMap<(Id<Device>, u64), (i64, BTreeSet<u8>)>,
     /// What each node held when the simulator last looked.
     seen: BTreeMap<u8, VersionVector>,
+    /// Each node's durable-ack watermark when the simulator last looked, since it last started.
+    watermarks: BTreeMap<u8, VersionVector>,
+    /// How far into its own log each device's replicator, since it last started, has said its
+    /// events are store-durable, and which events that made store-durable: the ones its device
+    /// last appended at those positions.
+    durable_marked: BTreeMap<u8, u64>,
+    pub(crate) store_durable: BTreeSet<Id<Event>>,
+    /// The event each device last appended at each position of its log.
+    latest: BTreeMap<(u8, u64), Id<Event>>,
     pub(crate) base: PathBuf,
     /// Whether to print every action, when `KEEL_SIM_LOG` is set.
     log: bool,
@@ -256,6 +269,10 @@ impl Run {
             snapshot_heads: BTreeMap::new(),
             pending: BTreeMap::new(),
             seen: BTreeMap::new(),
+            watermarks: BTreeMap::new(),
+            durable_marked: BTreeMap::new(),
+            store_durable: BTreeSet::new(),
+            latest: BTreeMap::new(),
             base,
             log: std::env::var_os("KEEL_SIM_LOG").is_some(),
         })
@@ -335,7 +352,25 @@ impl Run {
                 .collect();
             vectors.push(vector);
         }
-        vectors.iter().zip(vectors.iter().skip(1)).all(|(a, b)| a == b)
+        // Every watermark but the cloud's own reaches everything the cloud holds.
+        let cloud = self.cloud_holds();
+        let watermarks = self
+            .nodes
+            .iter()
+            .filter(|(n, _)| **n != CLOUD)
+            .all(|(_, node)| node.replicator.as_ref().is_some_and(|r| r.durable() == &cloud));
+        watermarks && vectors.iter().zip(vectors.iter().skip(1)).all(|(a, b)| a == b)
+    }
+
+    /// What the cloud holds: as its replicator knows it, or, while it is down, as it did when it
+    /// went down. Its store is never restored from an older copy.
+    fn cloud_holds(&self) -> VersionVector {
+        self.nodes.get(&CLOUD).map_or_else(VersionVector::new, |cloud| {
+            cloud
+                .replicator
+                .as_ref()
+                .map_or_else(|| cloud.held.clone(), |r| r.version_vector().clone())
+        })
     }
 
     /// `action`, for the log a failing seed can be replayed with: frames decoded.
@@ -358,6 +393,11 @@ impl Run {
                         })
                         .collect();
                     format!("{from}->{to} batch {} {positions:?}", events.batch)
+                }
+                Ok(keel_sync::Frame::Durable(durable)) => {
+                    let vv: Vec<(u8, u64)> =
+                        durable.vv.iter().map(|(d, p)| (short(d), *p)).collect();
+                    format!("{from}->{to} durable {vv:?}")
                 }
                 Err(error) => format!("{from}->{to} undecodable: {error}"),
             },
@@ -446,6 +486,8 @@ impl Run {
     fn start(&mut self, n: u8) -> Result<(), SimError> {
         let now = self.now;
         self.monitor.forget(n);
+        self.watermarks.remove(&n);
+        self.durable_marked.remove(&n);
         let (out, incarnation) = {
             let Some(node) = self.nodes.get_mut(&n) else { return Ok(()) };
             let out = node.start(now, &self.registry, self.sync)?;
@@ -479,6 +521,18 @@ impl Run {
                 && let Err(broken) = self.monitor.sending(from, to, &frame, clock)
             {
                 self.broken.get_or_insert(broken);
+            }
+            if let Ok(keel_sync::Frame::Durable(durable)) = keel_sync::Frame::decode(&frame) {
+                self.report.durable_frames = self.report.durable_frames.saturating_add(1);
+                let cloud = self.cloud_holds();
+                if let Some((origin, position)) = durable.vv.iter().find(|(origin, position)| {
+                    cloud.get(*origin).is_none_or(|held| held < *position)
+                }) {
+                    let held = cloud.get(origin).copied().unwrap_or(0);
+                    self.broken.get_or_insert(format!(
+                        "{from} told {to} the cloud holds {origin:?} up to {position}; it holds {held}"
+                    ));
+                }
             }
             self.report.frames[0] = self.report.frames[0].saturating_add(1);
             let faulty = self.healed.is_none();
@@ -555,6 +609,7 @@ impl Run {
             Ok(out) => self.send(to, out),
             Err(error) => self.failed(to, &error)?,
         }
+        self.watch(to);
         self.set_timer(to);
         self.observe(to);
         Ok(())
@@ -602,6 +657,7 @@ impl Run {
             }
             Err(error) => self.failed(n, &error)?,
         }
+        self.watch(n);
         self.set_timer(n);
         Ok(())
     }
@@ -702,6 +758,7 @@ impl Run {
         for event in events {
             self.appended.push(Appended { node: n, event: event.clone(), after, at: now });
             let body = event.body();
+            self.latest.insert((n, body.origin_seq.get()), body.event_id);
             self.pending
                 .insert((body.origin_device, body.origin_seq.get()), (now, BTreeSet::new()));
             self.report.events = self.report.events.saturating_add(1);
@@ -719,6 +776,7 @@ impl Run {
             Ok(out) => self.send(n, out),
             Err(error) => self.failed(n, &error)?,
         }
+        self.watch(n);
         self.set_timer(n);
         self.observe(n);
         Ok(())
@@ -813,6 +871,32 @@ impl Run {
             self.start(n)?;
         }
         Ok(())
+    }
+
+    /// Checks node `n`'s replicator after it handled something: its watermark only rose since it
+    /// started. Notes how far into a device's own log its events are store-durable.
+    fn watch(&mut self, n: u8) {
+        let Some(replicator) = self.nodes.get(&n).and_then(|node| node.replicator.as_ref()) else {
+            return;
+        };
+        let watermark = replicator.durable().clone();
+        let store_durable = replicator.store_durable();
+        if let Some(before) = self.watermarks.get(&n)
+            && let Some((origin, position)) = before
+                .iter()
+                .find(|(origin, position)| watermark.get(*origin).is_none_or(|now| now < *position))
+        {
+            self.broken
+                .get_or_insert(format!("node {n}'s watermark for {origin:?} fell from {position}"));
+        }
+        self.watermarks.insert(n, watermark);
+        let marked = self.durable_marked.get(&n).copied().unwrap_or(0);
+        for position in marked.saturating_add(1)..=store_durable {
+            if let Some(&event) = self.latest.get(&(n, position)) {
+                self.store_durable.insert(event);
+            }
+        }
+        self.durable_marked.insert(n, marked.max(store_durable));
     }
 
     /// Notes what node `n` now holds, for the lag of events reaching every replica.

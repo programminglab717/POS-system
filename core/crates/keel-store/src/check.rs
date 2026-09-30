@@ -51,9 +51,9 @@ pub enum Problem {
     Identity,
     /// The device's clock, which every write stores, is behind the HLC of its last event.
     Clock,
-    /// The row of stream `stream` in projection `projection` isn't what a rebuild from the stored
-    /// events makes: it is wrong, missing, or there when it shouldn't be. Rebuilding the
-    /// projections mends it.
+    /// The rows of stream `stream` in projection `projection` aren't what a rebuild from the
+    /// stored events makes: one is wrong, missing, or there when it shouldn't be. Rebuilding the
+    /// projections mends them.
     Projection {
         /// The projection's table.
         projection: &'static str,
@@ -268,7 +268,7 @@ fn projections(db: &mut Connection, problems: &mut Vec<Problem>) -> Result<(), S
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for projection in &projection::ALL {
         for stream in streams(&tx, projection)? {
-            if let Some(false) = projection_row_holds(&tx, projection, &stream)? {
+            if let Some(false) = projection_rows_hold(&tx, projection, &stream)? {
                 problems.push(Problem::Projection { projection: projection.name, stream });
             }
         }
@@ -289,33 +289,33 @@ fn streams(db: &Connection, projection: &Projection) -> Result<Vec<Vec<u8>>, Sto
     Ok(streams.collect::<Result<_, _>>()?)
 }
 
-/// Whether the row of `stream` in `projection` is what rebuilding it makes: `None` if that can't
-/// be told, since the stream has an event that doesn't read back.
-fn projection_row_holds(
+/// Whether the rows of `stream` in `projection` are what rebuilding them makes: `None` if that
+/// can't be told, since the stream has an event that doesn't read back.
+fn projection_rows_hold(
     db: &Connection,
     projection: &Projection,
     stream: &[u8],
 ) -> Result<Option<bool>, StoreError> {
-    let stored = projection_row(db, projection, stream)?;
+    let stored = projection_rows(db, projection, stream)?;
     db.execute_batch("SAVEPOINT rebuild")?;
-    let rebuilt = rebuild_row(db, projection, stream);
+    let rebuilt = rebuild_rows(db, projection, stream);
     db.execute_batch("ROLLBACK TO rebuild; RELEASE rebuild")?;
     Ok(match rebuilt? {
-        Rebuilt::Row(rebuilt) => Some(rebuilt == stored),
+        Rebuilt::Rows(rebuilt) => Some(rebuilt == stored),
         Rebuilt::Unknown => None,
     })
 }
 
-/// What rebuilding a projection's row makes.
+/// What rebuilding a projection's rows for a stream makes.
 enum Rebuilt {
-    /// The row, or no row at all.
-    Row(Option<Vec<Value>>),
+    /// The rows, in the projection's order: none, for some streams.
+    Rows(Vec<Vec<Value>>),
     /// Nothing that can be told: the stream has an event that doesn't read back.
     Unknown,
 }
 
-/// The row of `stream` in `projection` as rebuilding it makes it.
-fn rebuild_row(
+/// The rows of `stream` in `projection` as rebuilding them makes them.
+fn rebuild_rows(
     db: &Connection,
     projection: &Projection,
     stream: &[u8],
@@ -336,24 +336,28 @@ fn rebuild_row(
             Err(error) => return Err(error),
         }
     }
-    Ok(Rebuilt::Row(projection_row(db, projection, stream)?))
+    Ok(Rebuilt::Rows(projection_rows(db, projection, stream)?))
 }
 
-/// The row of `stream` in `projection`, as stored.
-fn projection_row(
+/// The rows of `stream` in `projection`, as stored, in the projection's order.
+fn projection_rows(
     db: &Connection,
     projection: &Projection,
     stream: &[u8],
-) -> Result<Option<Vec<Value>>, StoreError> {
+) -> Result<Vec<Vec<Value>>, StoreError> {
     let mut statement = db.prepare(&format!(
-        "SELECT * FROM {table} WHERE {key} = ?1",
+        "SELECT * FROM {table} WHERE {key} = ?1 ORDER BY {order}",
         table = projection.name,
         key = projection.key,
+        order = projection.order,
     ))?;
     let columns = statement.column_count();
     let mut rows = statement.query([stream])?;
-    let Some(row) = rows.next()? else { return Ok(None) };
-    Ok(Some((0..columns).map(|column| row.get(column)).collect::<Result<_, _>>()?))
+    let mut all = Vec::new();
+    while let Some(row) = rows.next()? {
+        all.push((0..columns).map(|column| row.get(column)).collect::<Result<_, _>>()?);
+    }
+    Ok(all)
 }
 
 /// Checks every quarantined message: filed under its digest, with a reason the store knows.

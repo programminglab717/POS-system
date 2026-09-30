@@ -129,6 +129,101 @@ Election, epochs changing hands and fencing are slice 4's. This slice has one hu
        claims what the cloud doesn't hold, and reaches everything after healing;
    - planted bugs in `keel-domain`, `keel-store` and `keel-sync`, and coverage probes.
 
+## As built
+
+Details settled in building it, for review with it:
+
+- **The record** is as decision 1 describes, pinned byte for byte in two payloads that Python's
+  `cbor2` encoded from the key table. Every rule is judged in one place, when a record is made
+  and when one is decoded, so both name the same rule: `epoch`, `first`, `runs` (none, or more
+  than 1,024), `run` (a position outside 1 to 2^63 − 1, or a run ending before it starts),
+  `runs of one device side by side`, `runs that don't follow on`, and `last number`. A first
+  number past the largest takes the last number past it too, so those two rules refuse the same
+  records.
+- **What the hub numbers:** for each device, the events after the highest position any record
+  the hub holds covers, except records, in the order the hub received them.
+  - This holds if the hub's own records come back from its peers after a restore, which "after
+    the arrival of the hub's latest record" wouldn't.
+  - The hub's own log is read only after its latest record, which numbered everything in its log
+    before it. Each run's row keeps its record's position in its author's log for that, since
+    records, which nothing numbers, would otherwise be read again at every write.
+  - A stretch below a device's highest covered position that no record covers is never
+    numbered. Only a record written by another device could leave one; slice 4 restricts
+    records to the elected hub.
+  - Within one record, each device's runs follow on: a record ends where a device's next event
+    doesn't follow on (around a record in that device's own log), and at 1,024 runs.
+  - A record's stream identifier is drawn from the store's own entropy through its log writer
+    (`LogWriter::generate_id`, new in `keel-events`), so simulated runs stay deterministic. Its
+    business date is the latest among the events it numbers.
+  - `Store::sequence` checks the epoch first. Numbers start at 1 in each epoch and follow on
+    from the store's own last record of the epoch; another device's records in the epoch don't
+    move them.
+- **Confirmation** is worked out as the store is read, never kept, since it depends on the
+  events the store holds. The projection keeps a row per run, never per event: a record may
+  claim a run of any length, and a row per event would let one record fill every replica's
+  disk. Each run's length is indexed, so a search for the runs covering an event looks no
+  further than its device's longest run.
+  - `store_seq`: the first number, by epoch and number, among the confirming runs covering the
+    event.
+  - `confirmed()`: for each device, the longest start of its log in which every event is
+    confirmed or a record. Records aren't numbered, and count as confirmed.
+  - `sequenced(epoch, after, limit)`: the confirming runs of the epoch in number order, each
+    event under its first number only.
+  - A record's stream holds one event. The projection reads its first event, in canonical order;
+    a record this kernel can't read numbers nothing.
+- **Projections and the check:** a projection names the columns that order a stream's rows, and
+  the full check compares every row of a stream in that order.
+- **`keel-sync`:**
+  - A replicator starts with its roles, `Roles { sequencer, durable }`.
+  - The hub numbers after every write that stores events it received, after the device's own
+    writes, and when its log settles; never before. The records go out like any new events.
+    `Replica::sequence` is the store's `sequence`.
+  - `store_durable()` is the most any peer has said it holds of the device's own log.
+  - The watermark is the durable peer's `have`, raised device by device, never lowered. When it
+    rises, a replica passes it to every peer but the one it came from; it also sends it with
+    every round and in answer to a `have` that asks. It never sends it to its own durable peer.
+  - Devices send the watermark back to the hub with each round, 6% of all `durable` frames:
+    redundant, and harmless.
+- **`keel-sim`:** the hub sequences in epoch 1 and names the cloud its durable peer.
+  - Checked as a run goes: every `durable` frame against what the cloud holds, and that every
+    replicator's watermark only rises.
+  - Checked at the end:
+    - every event but the records is numbered once, gapless, and each device's log in order;
+    - every replica confirms each event as the hub numbered it, a forked device's aside, and
+      holds each log confirmed to its end;
+    - each replica's feed gives its events in number order;
+    - no event a device was told was store-durable was lost to a rollback.
+  - The replicas agree only once every watermark but the cloud's reaches what the cloud holds.
+  - The first durability check marked positions, and seed 1 showed why that was wrong: a device
+    rolled back writes its lost positions again, and a later mark made an old, lost event look
+    store-durable. Marks now go to the event the device held at each position when it was told.
+- **Verification**, beyond decision 9: in the store's property test, the other replica, once it
+  holds everything, then sequences in the next epoch, and the hub takes in its records and the
+  rest of the devices' logs. That checks what a sequencer numbers where another device's records
+  cover part of each log, and confirmation across epochs and versions of a log. It was added
+  when a planted bug that numbers records went unnoticed: a hub on its own never reads its own
+  records again.
+- **Costs**, measured on the development machine in a release build, on a RAM disk. A hub took
+  two devices' events ten at a time, 20,000 in all, and sequenced after each write:
+
+  | Operation | Cost |
+  |---|---|
+  | Sequencing a write's ten events: the first hundred writes | 0.9 ms |
+  | The same, the last hundred, at 20,000 events | 1.6 ms |
+  | `store_seq` of one event | 0.3 ms |
+  | A page of 256 events from the middle of the feed | 2.5 ms |
+  | `confirmed()`, with 2,000 runs | 37 ms |
+  | The full check of that store | 0.75 s |
+
+  - The first version of sequencing read every event, and the hub's records again, at every
+    write: 37 ms a write at 20,000 events. It now reads only each device's events after its last
+    covered position.
+  - `store_seq` and the feed spend most of their time preparing statements, as every read of
+    the store does, so a statement cache would help them all. `confirmed()` reads every run;
+    the UI will need a confirmed start kept for each device instead.
+  - Over 5,000 simulator seeds, the hub wrote 367,065 records, numbering 597,945 events: 1.6
+    events a record, as expected when events arrive a few at a time.
+
 ## Consequences
 
 **Positive**

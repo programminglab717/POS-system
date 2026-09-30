@@ -11,9 +11,12 @@ use core::num::NonZeroU32;
 use core::time::Duration;
 use std::collections::{BTreeMap, BTreeSet};
 
+use keel_domain::schema::DomainEvent;
+use keel_domain::sequence::{Assigned, Run, SequenceEvent};
 use keel_events::cbor::Value;
 use keel_events::envelope::{
-    Actor, Device, Event, Location, Payload, SchemaName, SchemaRef, StreamKind, StreamRef,
+    Actor, Component, Device, Event, Location, Payload, SchemaName, SchemaRef, StreamKind,
+    StreamRef,
 };
 use keel_events::event::SignedEvent;
 use keel_events::keys::{SignatureAlgorithm, Signer, SoftwareSigner};
@@ -90,7 +93,8 @@ pub struct Failed;
 
 /// A replica in memory that appends to its device's log and receives events as `keel-store`
 /// does: verified with the registry, for its location, each device's log in order, the first of
-/// two events at one position kept, and what it refuses quarantined.
+/// two events at one position kept, and what it refuses quarantined. As the Store Hub, it numbers
+/// what it holds in `sequence.assigned` records, as `keel-store` does, all runs in one record.
 #[derive(Debug)]
 pub struct Model {
     location: Id<Location>,
@@ -99,6 +103,10 @@ pub struct Model {
     writer: LogWriter<SoftwareSigner, SeededEntropy>,
     logs: BTreeMap<Id<Device>, Vec<SignedEvent>>,
     ids: BTreeSet<Id<Event>>,
+    /// Every event it holds, in the order it came to: its device and position.
+    arrivals: Vec<(Id<Device>, u64)>,
+    /// How many times it was asked to sequence.
+    pub sequenced: u64,
     /// What it refused, and why.
     pub quarantine: Vec<(Reason, Vec<u8>)>,
     /// Whether its next receive fails, storing nothing.
@@ -125,6 +133,8 @@ impl Model {
             writer: LogWriter::new(config, signer(n), SeededEntropy::new(u64::from(n))),
             logs: BTreeMap::new(),
             ids: BTreeSet::new(),
+            arrivals: Vec::new(),
+            sequenced: 0,
             quarantine: Vec::new(),
             fail_next: false,
             decline_next: false,
@@ -154,8 +164,48 @@ impl Model {
     }
 
     fn hold(&mut self, event: SignedEvent) {
-        self.ids.insert(event.body().event_id);
-        self.logs.entry(event.body().origin_device).or_default().push(event);
+        let body = event.body();
+        self.ids.insert(body.event_id);
+        self.arrivals.push((body.origin_device, body.origin_seq.get()));
+        self.logs.entry(body.origin_device).or_default().push(event);
+    }
+
+    /// The events it holds that no record covers, except records, in the order it came to hold
+    /// them: for each device, those after the last position a record covers.
+    pub fn unsequenced(&self) -> Vec<(Id<Device>, u64)> {
+        let mut covered: BTreeMap<Id<Device>, u64> = BTreeMap::new();
+        for record in self.records() {
+            for run in &record.1.runs {
+                let to = covered.entry(run.device).or_insert(0);
+                *to = (*to).max(run.to);
+            }
+        }
+        self.arrivals
+            .iter()
+            .copied()
+            .filter(|&(device, position)| {
+                let event = &self.logs[&device][usize::try_from(position - 1).unwrap()];
+                position > covered.get(&device).copied().unwrap_or(0) && !is_record(event)
+            })
+            .collect()
+    }
+
+    /// The records it holds, with their authors.
+    pub fn records(&self) -> Vec<(Id<Device>, Assigned)> {
+        self.logs
+            .values()
+            .flatten()
+            .filter(|event| is_record(event))
+            .map(|event| {
+                let body = event.body();
+                let Ok(SequenceEvent::Assigned(record)) =
+                    SequenceEvent::decode(&body.schema, &body.payload)
+                else {
+                    panic!("an unreadable record");
+                };
+                (body.origin_device, record)
+            })
+            .collect()
     }
 
     fn refuse(&mut self, bytes: &[u8], reason: Reason) -> Received {
@@ -239,6 +289,48 @@ impl Replica for Model {
             .collect())
     }
 
+    fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, Failed> {
+        self.sequenced += 1;
+        let pending = self.unsequenced();
+        if pending.is_empty() {
+            return Ok(Vec::new());
+        }
+        let first = self
+            .records()
+            .iter()
+            .filter(|(author, record)| *author == self.device && record.epoch == epoch)
+            .map(|(_, record)| record.last() + 1)
+            .max()
+            .unwrap_or(1);
+        let mut runs: Vec<Run> = Vec::new();
+        for (device, position) in pending {
+            let last = self.logs[&device][usize::try_from(position - 1).unwrap()].hash();
+            match runs.last_mut() {
+                Some(run) if run.device == device && run.to + 1 == position => {
+                    run.to = position;
+                    run.last = last;
+                }
+                _ => runs.push(Run { device, from: position, to: position, last }),
+            }
+        }
+        let record = Assigned::new(epoch, first, runs).unwrap();
+        let (schema, payload) = SequenceEvent::Assigned(record).encode().unwrap();
+        let stream = StreamRef {
+            kind: StreamKind::new("sequence").unwrap(),
+            id: self.writer.generate_id(now).unwrap(),
+        };
+        let draft = EventDraft {
+            stream,
+            schema,
+            payload,
+            actor: Actor::System(Component::new("sequencer").unwrap()),
+            ..draft(0)
+        };
+        let event = self.writer.prepare(draft, now).unwrap().commit();
+        self.hold(event.clone());
+        Ok(vec![event])
+    }
+
     fn receive(&mut self, events: &[Vec<u8>], now: Timestamp) -> Result<Vec<Received>, Failed> {
         if core::mem::take(&mut self.fail_next) {
             return Err(Failed);
@@ -254,4 +346,9 @@ impl Replica for Model {
         }
         Ok(events.iter().map(|bytes| self.take(bytes, now)).collect())
     }
+}
+
+/// Whether `event` is a sequencing record.
+pub fn is_record(event: &SignedEvent) -> bool {
+    event.body().stream.kind.as_str() == "sequence"
 }

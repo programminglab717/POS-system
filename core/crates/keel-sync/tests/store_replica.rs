@@ -19,7 +19,7 @@ use keel_events::event::SignedEvent;
 use keel_events::keys::SoftwareSigner;
 use keel_events::verify::DeviceRegistry;
 use keel_store::{Faults, Point, Store, StoreConfig, StoreError, StoreKey};
-use keel_sync::{Frame, Have, Outgoing, Replicator, StoreReplica, SyncConfig};
+use keel_sync::{Frame, Have, Outgoing, Replicator, Roles, StoreReplica, SyncConfig};
 use keel_types::SeededEntropy;
 use support::{DRIFT, at, device, draft, here, registry, signer};
 
@@ -110,12 +110,22 @@ fn two_stores_replicate_through_their_replicators() {
     let plan = Plan::default();
     let (mut a, mut hub) = (open(&a_dir, 1, &plan), open(&hub_dir, 3, &plan));
     let config = SyncConfig::DEFAULT;
-    let (mut a_sync, a_hello) =
-        Replicator::start(&mut StoreReplica::new(&mut a, &registry), [device(3)], config, at(0))
-            .unwrap();
-    let (mut hub_sync, hub_hello) =
-        Replicator::start(&mut StoreReplica::new(&mut hub, &registry), [device(1)], config, at(0))
-            .unwrap();
+    let (mut a_sync, a_hello) = Replicator::start(
+        &mut StoreReplica::new(&mut a, &registry),
+        [device(3)],
+        config,
+        Roles::default(),
+        at(0),
+    )
+    .unwrap();
+    let (mut hub_sync, hub_hello) = Replicator::start(
+        &mut StoreReplica::new(&mut hub, &registry),
+        [device(1)],
+        config,
+        Roles::default(),
+        at(0),
+    )
+    .unwrap();
     // Each asks what the other holds, and is told at once.
     let hub_answer = deliver(&mut hub_sync, &mut hub, &registry, 1, &a_hello, 1).unwrap();
     let a_answer = deliver(&mut a_sync, &mut a, &registry, 3, &hub_hello, 1).unwrap();
@@ -146,12 +156,22 @@ fn a_store_interrupted_mid_write_stores_nothing_and_is_sent_the_events_again() {
     let (a_plan, hub_plan) = (Plan::default(), Plan::default());
     let (mut a, mut hub) = (open(&a_dir, 1, &a_plan), open(&hub_dir, 3, &hub_plan));
     let config = SyncConfig::DEFAULT;
-    let (mut a_sync, _) =
-        Replicator::start(&mut StoreReplica::new(&mut a, &registry), [device(3)], config, at(0))
-            .unwrap();
-    let (mut hub_sync, hub_hello) =
-        Replicator::start(&mut StoreReplica::new(&mut hub, &registry), [device(1)], config, at(0))
-            .unwrap();
+    let (mut a_sync, _) = Replicator::start(
+        &mut StoreReplica::new(&mut a, &registry),
+        [device(3)],
+        config,
+        Roles::default(),
+        at(0),
+    )
+    .unwrap();
+    let (mut hub_sync, hub_hello) = Replicator::start(
+        &mut StoreReplica::new(&mut hub, &registry),
+        [device(1)],
+        config,
+        Roles::default(),
+        at(0),
+    )
+    .unwrap();
     deliver(&mut a_sync, &mut a, &registry, 3, &hub_hello, 1).unwrap();
     let events = append(&mut a, 2, 10);
     let batches =

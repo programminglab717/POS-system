@@ -1222,4 +1222,195 @@ fn projection_row_holds(
         "        if EventHash::of(&message).as_bytes()[..] != digest[..]",
         "        if EventHash::of(&message).as_bytes()[..] != digest[..] && digest.is_empty()",
     ),
+    # Sequencing (ADR-0020).
+    (
+        "sequencing: an epoch out of range goes unchecked",
+        "src/sequencing.rs",
+        "        if !(1..=MAX_NUMBER).contains(&epoch) {",
+        "        if epoch > MAX_NUMBER {",
+        # Epoch 0 is refused when a record is made; only with nothing to number does the
+        # unchecked epoch pass, which only a unit test tries.
+        "unit",
+    ),
+    (
+        "sequencing: records are numbered",
+        "src/sequencing.rs",
+        "         AND stream_kind <> ?3 ORDER BY origin_seq\",",
+        "         AND stream_kind <> ?3 OR ?3 = ?3 AND origin_device = ?1 AND origin_seq > ?2 ORDER BY origin_seq\",",
+    ),
+    (
+        "sequencing: the last covered event numbered again",
+        "src/sequencing.rs",
+        "        \"SELECT message, hash, arrival FROM events WHERE origin_device = ?1 AND origin_seq > ?2 \\",
+        "        \"SELECT message, hash, arrival FROM events WHERE origin_device = ?1 AND origin_seq >= ?2 \\",
+    ),
+    (
+        "sequencing: numbered device by device, not as received",
+        "src/sequencing.rs",
+        "    pending.sort_unstable_by_key(|event| event.arrival);",
+        "    pending.sort_unstable_by_key(|event| event.device);",
+    ),
+    (
+        "sequencing: numbers don't follow on from the last record",
+        "src/sequencing.rs",
+        "             ORDER BY number DESC LIMIT 1\",",
+        "             ORDER BY number LIMIT 1\",",
+    ),
+    (
+        "sequencing: numbers follow on from other devices' records",
+        "src/sequencing.rs",
+        "SELECT number + (to_seq - from_seq) FROM sequence WHERE author = ?1 AND epoch = ?2 \\",
+        "SELECT number + (to_seq - from_seq) FROM sequence WHERE ?1 = ?1 AND epoch = ?2 \\",
+        # Only another device's records in the hub's epoch tell the two apart, which only a unit
+        # test writes.
+        "unit",
+    ),
+    (
+        "sequencing: numbers start at 0",
+        "src/sequencing.rs",
+        "    Ok(last.saturating_add(1))",
+        "    Ok(last)",
+    ),
+    (
+        "sequencing: every event a run of its own",
+        "src/sequencing.rs",
+        "            Some(run) if run.device == event.device && follows(run.to) => {",
+        "            Some(run) if run.device == event.device && follows(run.to) && false => {",
+    ),
+    (
+        "sequencing: a device that doesn't follow on stays in the record",
+        "src/sequencing.rs",
+        "                    && ends.get(&event.device).is_none_or(|&end| follows(end));",
+        "                    && ends.get(&event.device).is_none_or(|&end| end > 0 || follows(end));",
+        # A device's events stop following on only around a record in its own log, which only a
+        # unit test writes.
+        "unit",
+    ),
+    (
+        "sequencing: a full record takes one run more",
+        "src/sequencing.rs",
+        "                let fits = runs.len() < MAX_RUNS",
+        "                let fits = runs.len() <= MAX_RUNS",
+        # A record fills up at 1,024 runs, which only a unit test makes.
+        "unit",
+    ),
+    (
+        "sequencing: a record dated as its first event",
+        "src/sequencing.rs",
+        "        date = Some(date.map_or(event.business_date, |date| date.max(event.business_date)));",
+        "        date = Some(date.map_or(event.business_date, |date| date.min(event.business_date)));",
+        # The property test's events are all of one business date.
+        "unit",
+    ),
+    (
+        "sequencing: runs confirmed by position alone",
+        "src/sequencing.rs",
+        "    e.origin_seq = s.to_seq AND e.hash = s.last_hash\";",
+        "    e.origin_seq = s.to_seq\";",
+    ),
+    (
+        "sequencing: runs confirmed by their first event",
+        "src/sequencing.rs",
+        "    e.origin_seq = s.to_seq AND e.hash = s.last_hash\";",
+        "    e.origin_seq = s.from_seq\";",
+    ),
+    (
+        "sequencing: records don't count as confirmed",
+        "src/sequencing.rs",
+        "        stretches.entry(device).or_default().push((position, position));",
+        "        let _ = (device, position);",
+    ),
+    (
+        "sequencing: the confirmed start of a log passes a gap",
+        "src/sequencing.rs",
+        "            if reach.checked_add(1).is_none_or(|next| from > next) {",
+        "            if reach.checked_add(1).is_none_or(|next| from > next) && reach > 0 {",
+    ),
+    (
+        "sequencing: an event's latest number counts",
+        "src/sequencing.rs",
+        "                 ORDER BY s.epoch, s.number LIMIT 1\"",
+        "                 ORDER BY s.epoch DESC, s.number DESC LIMIT 1\"",
+        # Records disagree only in a unit test.
+        "unit",
+    ),
+    (
+        "sequencing: an event's number off by one",
+        "src/sequencing.rs",
+        "\"SELECT s.epoch, s.number + (?2 - s.from_seq) FROM {CONFIRMING} WHERE \\",
+        "\"SELECT s.epoch, s.number + (?2 - s.from_seq) + (s.to_seq > s.from_seq) FROM {CONFIRMING} WHERE \\",
+    ),
+    (
+        "sequencing: the search for an event's runs stops short of the longest",
+        "src/sequencing.rs",
+        "position_value.saturating_add(longest)],",
+        "position_value.saturating_add(longest).saturating_sub(1)],",
+    ),
+    (
+        "sequencing: the feed looks for runs from the page's own number",
+        "src/sequencing.rs",
+        "        after_value.saturating_sub(longest).saturating_sub(1)",
+        "        after_value",
+    ),
+    (
+        "sequencing: runs numbered earlier looked for within the run alone",
+        "src/sequencing.rs",
+        "                    seq_value(run.to)?.saturating_add(reach)",
+        "                    seq_value(run.to)?",
+        # Records disagree only in a unit test.
+        "unit",
+    ),
+    (
+        "sequencing: every device's log numbered after its own latest record",
+        "src/sequencing.rs",
+        "        if device[..] == own[..] {",
+        "        if device[..] == own[..] || device[..] != own[..] {",
+        # Only a device other than the hub writing a record between its events tells, which only
+        # a unit test does.
+        "unit",
+    ),
+    (
+        "sequencing: the feed starts at the page's run",
+        "src/sequencing.rs",
+        "        let skipped = after.saturating_add(1).saturating_sub(run.number);",
+        "        let skipped = after.saturating_sub(run.number);",
+    ),
+    (
+        "sequencing: the feed gives a page one too long",
+        "src/sequencing.rs",
+        "            if feed.len() == limit {",
+        "            if feed.len() > limit {",
+    ),
+    (
+        "sequencing: the feed gives an event under each of its numbers",
+        "src/sequencing.rs",
+        "            if taken.iter().any(|&(from, to)| (from..=to).contains(&position)) {",
+        "            if taken.iter().any(|&(from, to)| (from..=to).contains(&position)) && taken.is_empty() {",
+        # Records disagree only in a unit test.
+        "unit",
+    ),
+    (
+        "sequencing: a record's author not kept",
+        "src/projection.rs",
+        "            &body.origin_device.to_bytes()[..],",
+        "            &body.stream.id.to_bytes()[..],",
+    ),
+    (
+        "sequencing: each run numbered from the record's first number",
+        "src/projection.rs",
+        "            seq_value(number)?,",
+        "            seq_value(record.first)?,",
+    ),
+    (
+        "sequencing: the full check compares a stream's first row alone",
+        "src/check.rs",
+        """    while let Some(row) = rows.next()? {
+        all.push((0..columns).map(|column| row.get(column)).collect::<Result<_, _>>()?);
+    }""",
+        """    if let Some(row) = rows.next()? {
+        all.push((0..columns).map(|column| row.get(column)).collect::<Result<_, _>>()?);
+    }""",
+        # Only rows changed behind the store's back tell, which only a unit test changes.
+        "unit",
+    ),
 ]

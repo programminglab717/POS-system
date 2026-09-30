@@ -14,6 +14,7 @@ keel-store.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+keel-domain.workspace = true
 proptest.workspace = true
 
 [lints]

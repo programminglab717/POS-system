@@ -1,9 +1,10 @@
-//! Projections: what the store derives from events, one row per stream (ADR-0017).
+//! Projections: what the store derives from events, stream by stream (ADR-0017).
 //!
-//! A projection follows one kind of stream. Its row for a stream is computed from the stream's
+//! A projection follows one kind of stream. Its rows for a stream are computed from the stream's
 //! events alone: the store folds them in canonical order with the aggregate's fold, and maps the
 //! state to columns. So replicas holding the same events hold the same rows, byte for byte,
-//! whatever order the events arrived in.
+//! whatever order the events arrived in. Orders and payments have a row per stream; sequencing
+//! records a row per run (ADR-0020).
 //!
 //! Each write recomputes the rows of the streams it touched, before it commits. A projection
 //! whose version the store didn't build is dropped and rebuilt from every stored stream of its
@@ -16,6 +17,8 @@ use core::str::FromStr;
 use keel_domain::aggregate::{Aggregate, fold};
 use keel_domain::order::{Channel, Mode, Order, OrderInfo, OrderStatus, Stage};
 use keel_domain::payment::{Payment, PaymentInfo, PaymentStatus, Tender};
+use keel_domain::schema::DomainEvent;
+use keel_domain::sequence::{self, SequenceEvent};
 use keel_events::envelope::{self, Event, StreamRef};
 use keel_events::event::SignedEvent;
 use keel_types::{BusinessDate, Currency, Hlc, Id, Money};
@@ -23,13 +26,14 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::error::StoreError;
-use crate::rows;
+use crate::rows::{self, seq_value};
 use crate::schema::{hlc, hlc_bytes, id};
 
-/// Replaces the row of stream `id` in a projection, given the stream's events in canonical order.
+/// Replaces the rows of stream `id` in a projection, given the stream's events in canonical
+/// order.
 type Project = fn(&Connection, Id<envelope::Aggregate>, &[SignedEvent]) -> Result<(), StoreError>;
 
-/// A projection: a table with one row per stream of a kind.
+/// A projection: a table with rows for each stream of a kind.
 pub(crate) struct Projection {
     /// Its table.
     pub(crate) name: &'static str,
@@ -37,8 +41,10 @@ pub(crate) struct Projection {
     pub(crate) version: i64,
     /// The kind of stream it follows.
     pub(crate) kind: &'static str,
-    /// The column that holds each row's stream identifier: the table's primary key.
+    /// The column that holds each row's stream identifier.
     pub(crate) key: &'static str,
+    /// The columns that order a stream's rows: with `key`, the table's primary key.
+    pub(crate) order: &'static str,
     /// Creates its table.
     create: &'static str,
     /// Drops its table.
@@ -48,10 +54,10 @@ pub(crate) struct Projection {
 }
 
 /// Every projection.
-pub(crate) const ALL: [Projection; 2] = [ORDERS, PAYMENTS];
+pub(crate) const ALL: [Projection; 3] = [ORDERS, PAYMENTS, SEQUENCE];
 
 impl Projection {
-    /// Replaces the row of stream `id`, given its events in canonical order.
+    /// Replaces the rows of stream `id`, given its events in canonical order.
     pub(crate) fn project(
         &self,
         db: &Connection,
@@ -166,6 +172,7 @@ const ORDERS: Projection = Projection {
     version: 1,
     kind: "order",
     key: "order_id",
+    order: "order_id",
     create: "
         CREATE TABLE orders (
             order_id BLOB PRIMARY KEY CHECK (length(order_id) = 16),
@@ -410,6 +417,7 @@ const PAYMENTS: Projection = Projection {
     version: 1,
     kind: "payment",
     key: "payment_id",
+    order: "payment_id",
     create: "
         CREATE TABLE payments (
             payment_id BLOB PRIMARY KEY CHECK (length(payment_id) = 16),
@@ -691,4 +699,81 @@ pub(crate) fn load<A: Aggregate>(db: &Connection, mut aggregate: A) -> Result<A,
         fold(&mut aggregate, event);
     }
     Ok(aggregate)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sequencing records.
+
+/// A row for each run of each sequencing record: which record it is in and where, who wrote the
+/// record and where in their log, and the numbers it gives the stretch of a device's log it
+/// covers (ADR-0020). A row a run, not an event, since a record may claim a run of any length.
+/// Each run's length is indexed, so that a search for the runs covering an event need look no
+/// further than the longest run of its device. Whether the run confirms anything depends on the
+/// events the store holds, so it is worked out as the store is read, not kept
+/// ([`crate::sequencing`]).
+const SEQUENCE: Projection = Projection {
+    name: "sequence",
+    version: 1,
+    kind: sequence::STREAM,
+    key: "record",
+    order: "record, run",
+    create: "
+        CREATE TABLE sequence (
+            record BLOB NOT NULL CHECK (length(record) = 16),
+            run INTEGER NOT NULL CHECK (run >= 0),
+            author BLOB NOT NULL CHECK (length(author) = 16),
+            author_seq INTEGER NOT NULL CHECK (author_seq >= 1),
+            epoch INTEGER NOT NULL CHECK (epoch >= 1),
+            number INTEGER NOT NULL CHECK (number >= 1),
+            device BLOB NOT NULL CHECK (length(device) = 16),
+            from_seq INTEGER NOT NULL CHECK (from_seq >= 1),
+            to_seq INTEGER NOT NULL CHECK (to_seq >= from_seq),
+            last_hash BLOB NOT NULL CHECK (length(last_hash) = 32),
+            PRIMARY KEY (record, run)
+        ) STRICT;
+        CREATE INDEX sequence_by_event ON sequence (device, to_seq);
+        CREATE INDEX sequence_by_number ON sequence (epoch, number);
+        CREATE INDEX sequence_by_author ON sequence (author, epoch, number);
+        CREATE INDEX sequence_by_record ON sequence (author, author_seq);
+        CREATE INDEX sequence_by_run_length ON sequence (device, to_seq - from_seq);
+        CREATE INDEX sequence_by_epoch_run_length ON sequence (epoch, to_seq - from_seq);
+    ",
+    drop: "DROP TABLE IF EXISTS sequence",
+    project: project_sequence,
+};
+
+/// The runs of the record `stream`, whose first event in canonical order is the record: a record
+/// is a stream of one event. A record this kernel can't read numbers nothing.
+fn project_sequence(
+    db: &Connection,
+    stream: Id<envelope::Aggregate>,
+    events: &[SignedEvent],
+) -> Result<(), StoreError> {
+    let record_id = stream.to_bytes();
+    db.execute("DELETE FROM sequence WHERE record = ?1", [&record_id[..]])?;
+    let Some(first) = events.first() else { return Ok(()) };
+    let body = first.body();
+    let Ok(SequenceEvent::Assigned(record)) = SequenceEvent::decode(&body.schema, &body.payload)
+    else {
+        return Ok(());
+    };
+    let mut statement = db.prepare(
+        "INSERT INTO sequence (record, run, author, author_seq, epoch, number, device, from_seq, \
+         to_seq, last_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
+    for (index, (number, run)) in record.numbered().enumerate() {
+        statement.execute(params![
+            &record_id[..],
+            count(index)?,
+            &body.origin_device.to_bytes()[..],
+            seq_value(body.origin_seq.get())?,
+            seq_value(record.epoch)?,
+            seq_value(number)?,
+            &run.device.to_bytes()[..],
+            seq_value(run.from)?,
+            seq_value(run.to)?,
+            &run.last.as_bytes()[..],
+        ])?;
+    }
+    Ok(())
 }

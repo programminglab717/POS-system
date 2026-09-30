@@ -244,6 +244,16 @@ impl<S: Signer, E: Entropy> LogWriter<S, E> {
         self.clock.observe(remote, now)
     }
 
+    /// A fresh identifier, drawn at physical time `now` as the writer draws its events'
+    /// identifiers: for an aggregate the device creates as it writes, such as a sequencing
+    /// record's stream.
+    ///
+    /// # Errors
+    /// [`IdError`] if the entropy source fails.
+    pub fn generate_id<T>(&mut self, now: Timestamp) -> Result<Id<T>, IdError> {
+        self.ids.generate(now)
+    }
+
     /// Makes and signs the next event from `draft`, at physical time `now`. It becomes part of the
     /// log only when committed.
     ///
@@ -425,6 +435,18 @@ mod tests {
         assert_eq!(writer.head().hlc(), second.body().hlc);
         assert_eq!(writer.device(), golden::body().origin_device);
         assert_eq!(second.body().location, golden::body().location);
+    }
+
+    #[test]
+    fn identifiers_drawn_between_events_are_fresh_and_in_order() {
+        let mut writer = writer(LogHead::EMPTY);
+        let before: Id<()> = writer.generate_id(at(0)).unwrap();
+        let event = writer.prepare(draft(), at(0)).unwrap().commit();
+        let after: Id<()> = writer.generate_id(at(0)).unwrap();
+        let event_id = event.body().event_id.to_bytes();
+        assert!(before.to_bytes() < event_id && event_id < after.to_bytes());
+        // Drawing one changes nothing of the log.
+        assert_eq!(writer.head(), LogHead::of(&event));
     }
 
     #[test]

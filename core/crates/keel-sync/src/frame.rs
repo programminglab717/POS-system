@@ -1,5 +1,5 @@
-//! The frames replicas exchange (ADR-0019): `have`, what a replica holds, and `events`, a batch
-//! of signed events.
+//! The frames replicas exchange (ADR-0019, ADR-0020): `have`, what a replica holds; `events`, a
+//! batch of signed events; and `durable`, how far the store's durable replica holds.
 //!
 //! Each frame is one canonical CBOR array beginning with the protocol version:
 //!
@@ -11,6 +11,9 @@
 //!   recipient's `have` in return, having heard none from it since it started.
 //! - `[1, 1, batch, [event, ...]]`: `events`. The batch's number, and the events as their
 //!   devices signed and the sender stored them, each device's in order.
+//! - `[1, 2, location, [[device, position], ...]]`: `durable`. How far into each device's log the
+//!   location's durable replica, the cloud, holds, as far as the sender knows: the durable-ack
+//!   watermark. Listed as in `have`.
 
 use std::collections::BTreeMap;
 
@@ -29,6 +32,8 @@ pub const MAX_FRAME: usize = 1 << 20;
 const HAVE: u64 = 0;
 /// The kind of an `events` frame.
 const EVENTS: u64 = 1;
+/// The kind of a `durable` frame.
+const DURABLE: u64 = 2;
 
 /// How far into each device's log a replica holds: for each device, the last position it holds,
 /// with every position before it. A device the replica holds nothing of isn't listed.
@@ -41,6 +46,8 @@ pub enum Frame {
     Have(Have),
     /// A batch of events.
     Events(Events),
+    /// How far the durable replica holds.
+    Durable(Durable),
 }
 
 /// What a replica holds, and the last batch it received from the frame's recipient.
@@ -66,6 +73,16 @@ pub struct Events {
     pub events: Vec<Vec<u8>>,
 }
 
+/// How far into each device's log the location's durable replica holds, as far as the sender
+/// knows: the durable-ack watermark (ADR-0020).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Durable {
+    /// The location.
+    pub location: Id<Location>,
+    /// The watermark. Entries of 0 aren't sent.
+    pub vv: VersionVector,
+}
+
 /// Why a frame was dropped.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -79,7 +96,7 @@ pub enum FrameError {
     /// The frame is for a protocol version this kernel doesn't speak.
     #[error("protocol version {0} isn't spoken here")]
     Version(u64),
-    /// The frame's contents aren't a `have` or an `events` frame.
+    /// The frame's contents aren't a `have`, `events` or `durable` frame.
     #[error("the frame is malformed")]
     Malformed,
 }
@@ -92,20 +109,15 @@ impl Frame {
                 Value::Unsigned(PROTOCOL),
                 Value::Unsigned(HAVE),
                 Value::Bytes(have.location.to_bytes().to_vec()),
-                Value::Array(
-                    have.vv
-                        .iter()
-                        .filter(|(_, position)| **position > 0)
-                        .map(|(device, position)| {
-                            Value::Array(vec![
-                                Value::Bytes(device.to_bytes().to_vec()),
-                                Value::Unsigned(*position),
-                            ])
-                        })
-                        .collect(),
-                ),
+                vv_value(&have.vv),
                 Value::Unsigned(have.acked),
                 Value::Bool(have.asks),
+            ]),
+            Frame::Durable(durable) => Value::Array(vec![
+                Value::Unsigned(PROTOCOL),
+                Value::Unsigned(DURABLE),
+                Value::Bytes(durable.location.to_bytes().to_vec()),
+                vv_value(&durable.vv),
             ]),
             Frame::Events(events) => Value::Array(vec![
                 Value::Unsigned(PROTOCOL),
@@ -142,6 +154,9 @@ impl Frame {
                 acked: acked.as_u64().ok_or(FrameError::Malformed)?,
                 asks: asks.as_bool().ok_or(FrameError::Malformed)?,
             })),
+            (Some(DURABLE), [location, vv]) => {
+                Ok(Frame::Durable(Durable { location: id(location)?, vv: version_vector(vv)? }))
+            }
             (Some(EVENTS), [batch, events]) => Ok(Frame::Events(Events {
                 batch: batch.as_u64().ok_or(FrameError::Malformed)?,
                 events: events
@@ -154,6 +169,21 @@ impl Frame {
             _ => Err(FrameError::Malformed),
         }
     }
+}
+
+/// The encoding of `vv`: each device listed once, in ascending order, with a position from 1.
+fn vv_value(vv: &VersionVector) -> Value {
+    Value::Array(
+        vv.iter()
+            .filter(|(_, position)| **position > 0)
+            .map(|(device, position)| {
+                Value::Array(vec![
+                    Value::Bytes(device.to_bytes().to_vec()),
+                    Value::Unsigned(*position),
+                ])
+            })
+            .collect(),
+    )
 }
 
 /// The identifier in `value`, 16 bytes.

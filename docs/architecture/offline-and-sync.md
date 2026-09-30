@@ -180,6 +180,15 @@ sequenceDiagram
   It assumes nothing of delivery: a lost, duplicated or reordered frame costs time, never an event.
   Scopes, certificates, protocol negotiation, priority lanes and compression come with the
   transport.
+- **As built: the watermark** (`keel-sync`, [ADR-0020](../adr/0020-hub-sequencing.md)). A third
+  frame, `durable`, carries a location and a version vector.
+  - A replica may name one peer its durable peer: the hub names the cloud. That peer's `have` is
+    the watermark.
+  - A replica keeps the pointwise maximum of every watermark it hears, so its own only rises.
+  - When the watermark rises, the replica passes it to every peer but the one it came from and its
+    durable peer. It also sends it with every round, and in answer to a `have` that asks, so a
+    device that starts learns it at once.
+  - Pruning below the watermark comes with retention (§9).
 
 ### 3.3 Transport, discovery and security
 - **Transport**: WebSocket over TLS 1.3 with CBOR frames, which works in every runtime including
@@ -225,6 +234,22 @@ sequenceDiagram
   - Events carrying a `store_seq` are **confirmed**.
   - Events not yet sequenced (just created, or created in island mode) are **provisional**. The UI shows
     provisional state where it matters, e.g. "not yet confirmed by store" on a split made in island mode.
+  - **As built** (`keel-store`, [ADR-0020](../adr/0020-hub-sequencing.md)):
+    - The hub records its numbers as `sequence.assigned` events in its own log. Each is a list of
+      runs, where a run is a device, a stretch of its log, and the hash of the stretch's last
+      event. Records are signed and replicate like any other event, so the hub needs no
+      broadcast of its own.
+    - The hub doesn't validate what it numbers: events are facts (below), and the fold flags what
+      is invalid.
+    - The hub numbers after each write that stores events, once its own log is settled, never
+      before. For each device, it numbers the events after the last position any record covers,
+      records aside, in the order it received them.
+    - A replica confirms an event when it holds a record whose run covers it, and the run's last
+      hash matches its own copy. So a forked version never confirms. Where records disagree, an
+      event's first number, by epoch and number, counts.
+    - The store answers how far each device's log is confirmed (`confirmed()`), an event's number
+      (`store_seq`), and the gapless feed of an epoch (`sequenced`).
+    - The epoch is 1 until slice 4 elects hubs.
 - **Canonical order** is `(hlc, origin_device, origin_seq)` for every event, confirmed or provisional
   ([ADR-0019](../adr/0019-replication-and-deterministic-simulation.md)).
   - Every replica folds a stream in that order, so the same events make the same state everywhere:
@@ -441,6 +466,10 @@ waitlist failures during the October 2025 cloud outage ([R01](../research/01-res
   by at least two replicas (the origin plus the hub or standby), which is typically within 100 ms. An
   isolated device keeps selling but shows a subtle "not yet backed up" indicator. This bounds data
   loss if a device is dropped in the fryer.
+  - **As built** (`keel-sync`, [ADR-0020](../adr/0020-hub-sequencing.md)): a replicator reports
+    `store_durable()`, the most any peer has said it holds of the device's own log. Peers say what
+    they hold only once it's committed, so this needs no frame of its own. The simulator checks
+    that no event a device was told was store-durable is lost to a rollback.
 
 ## 8. Degraded-mode matrix
 
@@ -597,10 +626,18 @@ in the style of FoundationDB and TigerBeetle:
     After healing, the replicas must agree within a bound. Then come the invariants: convergence
     (exact logs and projections), no loss, causality, no forks or quarantine except a device's
     that wrote as an island after a rollback, and stores that check clean.
-  - **Cost:** a real store makes a seed cost about 0.4 s, so CI runs 64 seeds per commit and a
+  - **Cost:** a real store makes a seed cost about 0.5 s, so CI runs 64 seeds per commit and a
     soak runs thousands. The protocol's property tests run a model store, and are fast.
   - Slice 1 covers the first two invariants of the list above, for replication. The rest arrive
     with the features they guard.
+  - **Slice 2** ([ADR-0020](../adr/0020-hub-sequencing.md)) adds sequencing. The hub sequences in
+    epoch 1, and names the cloud its durable peer. As a run goes, every `durable` frame is checked
+    against what the cloud holds, and every watermark must only rise. At the end:
+    - every event but the records is numbered once, gaplessly, each device's log in order;
+    - every replica confirms each event as the hub numbered it, a forked device's other version
+      aside;
+    - each replica's feed gives its events in number order;
+    - no event a device was told was store-durable was lost.
 
 ## 13. Performance budgets (enforced in CI and in production telemetry)
 

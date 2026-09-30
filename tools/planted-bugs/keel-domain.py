@@ -1599,4 +1599,143 @@ BUGS = [
         "        let ended = matches!(self.order.status(), OrderStatus::Voided(_) | OrderStatus::Abandoned);",
         "        let ended = false;",
     ),
+    # Sequencing records.
+    (
+        "sequencing: an epoch of 0 accepted",
+        "src/sequence.rs",
+        "        if !in_range(self.epoch) {",
+        "        if self.epoch > MAX_NUMBER {",
+    ),
+    (
+        "sequencing: a first number past the largest accepted",
+        "src/sequence.rs",
+        "        if !in_range(self.first) {",
+        "        if self.first == 0 {",
+        # A first number past the largest takes the last number past it too, which the last
+        # number's rule refuses: only the error, which a unit test checks, tells the two apart.
+        "unit",
+    ),
+    (
+        "sequencing: a record without runs accepted",
+        "src/sequence.rs",
+        "        if self.runs.is_empty() || self.runs.len() > MAX_RUNS {",
+        "        if self.runs.len() > MAX_RUNS {",
+        # A record without runs numbers nothing, which the last number's rule refuses too: only
+        # the error, which a unit test checks, tells the two apart.
+        "unit",
+    ),
+    (
+        "sequencing: one run too many accepted",
+        "src/sequence.rs",
+        "        if self.runs.is_empty() || self.runs.len() > MAX_RUNS {",
+        "        if self.runs.is_empty() || self.runs.len() > MAX_RUNS + 1 {",
+    ),
+    (
+        "sequencing: a run from position 0 accepted",
+        "src/sequence.rs",
+        "            if !in_range(run.from) || !in_range(run.to) || run.from > run.to {",
+        "            if run.from > MAX_NUMBER || !in_range(run.to) || run.from > run.to {",
+    ),
+    (
+        "sequencing: a run past the largest position accepted",
+        "src/sequence.rs",
+        "            if !in_range(run.from) || !in_range(run.to) || run.from > run.to {",
+        "            if !in_range(run.from) || run.to == 0 || run.from > run.to {",
+    ),
+    (
+        "sequencing: a reversed run accepted",
+        "src/sequence.rs",
+        "            if !in_range(run.from) || !in_range(run.to) || run.from > run.to {",
+        "            if !in_range(run.from) || !in_range(run.to) {",
+    ),
+    (
+        "sequencing: neighbouring runs of one device accepted",
+        "src/sequence.rs",
+        "            if previous == Some(run.device) {",
+        "            if previous.is_some() && false {",
+    ),
+    (
+        "sequencing: gaps between a device's runs accepted",
+        "src/sequence.rs",
+        "                && end.checked_add(1) != Some(run.from)",
+        "                && end >= run.from",
+    ),
+    (
+        "sequencing: a device's runs may overlap",
+        "src/sequence.rs",
+        "                && end.checked_add(1) != Some(run.from)",
+        "                && end.checked_add(1).is_some_and(|next| next < run.from)",
+    ),
+    (
+        "sequencing: numbers past the largest accepted",
+        "src/sequence.rs",
+        "        if !last.is_some_and(in_range) {",
+        "        if last.is_none() {",
+    ),
+    (
+        "sequencing: numbers one past the largest accepted",
+        "src/sequence.rs",
+        "        let last = count.checked_sub(1).and_then(|after| self.first.checked_add(after));",
+        "        let last = count.checked_sub(1).map(|after| self.first.saturating_add(after).saturating_sub(1));",
+    ),
+    (
+        "sequencing: counting a record's events wraps",
+        "src/sequence.rs",
+        "            count = count.checked_add(run.count()).ok_or(PayloadError::Invalid(\"last number\"))?;",
+        "            count = count.wrapping_add(run.count());",
+    ),
+    (
+        "sequencing: runs numbered from the wrong number",
+        "src/sequence.rs",
+        "        self.runs.iter().scan(self.first, |next, run| {",
+        "        self.runs.iter().scan(self.first.saturating_add(1), |next, run| {",
+    ),
+    (
+        "sequencing: each run numbered from the one before's start",
+        "src/sequence.rs",
+        "            *next = next.saturating_add(run.count());",
+        "            *next = next.saturating_add(run.count().saturating_sub(1));",
+    ),
+    (
+        "sequencing: event numbers off by one",
+        "src/sequence.rs",
+        "            .map(|(number, run)| number.saturating_add(position.saturating_sub(run.from)))",
+        "            .map(|(number, run)| number.saturating_add(position.saturating_sub(run.from.saturating_sub(1))))",
+    ),
+    (
+        "sequencing: a record's numbers ignore the device",
+        "src/sequence.rs",
+        "        self.device == device && (self.from..=self.to).contains(&position)",
+        "        (self.from..=self.to).contains(&position)",
+    ),
+    (
+        "sequencing: a run covers the event after it",
+        "src/sequence.rs",
+        "        self.device == device && (self.from..=self.to).contains(&position)",
+        "        self.device == device && (self.from..=self.to.saturating_add(1)).contains(&position)",
+    ),
+    (
+        "sequencing: a run counts one event short",
+        "src/sequence.rs",
+        "        self.to.saturating_sub(self.from).saturating_add(1)",
+        "        self.to.saturating_sub(self.from).max(1)",
+    ),
+    (
+        "sequencing: a run's hash lost in decoding",
+        "src/sequence.rs",
+        "            last: EventHash::from_bytes(last),",
+        "            last: EventHash::from_bytes([last[0]; 32]),",
+    ),
+    (
+        "sequencing: a run with extra entries accepted",
+        "src/sequence.rs",
+        "        let [device, from, to, last] = value.as_array()? else { return None };",
+        "        let [device, from, to, last, ..] = value.as_array()? else { return None };",
+    ),
+    (
+        "sequencing: another version's payload accepted",
+        "src/sequence.rs",
+        "        if !ASSIGNED.matches(schema) {",
+        "        if schema.name.as_str() != ASSIGNED.name {",
+    ),
 ]

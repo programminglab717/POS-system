@@ -8,6 +8,12 @@
 //! pushed at once to every peer that lacks them. None of this assumes anything of delivery: a
 //! lost, duplicated, reordered or delayed frame costs time, never an event, since every `have`
 //! says exactly what its sender holds, and receiving an event twice changes nothing.
+//!
+//! Replicas may have roles (ADR-0020). The Store Hub sequences: once its log is settled, after
+//! every write that stores events, it numbers them in records it appends and pushes like any new
+//! events. A replica may name a durable peer, the cloud, whose `have` is the durable-ack
+//! watermark; replicas relay the watermark to each other in `durable` frames, and keep the most
+//! each peer has told them.
 
 use core::time::Duration;
 use std::collections::BTreeMap;
@@ -17,7 +23,7 @@ use keel_events::event::SignedEvent;
 use keel_store::Received;
 use keel_types::{Id, Timestamp};
 
-use crate::frame::{Events, Frame, Have, VersionVector};
+use crate::frame::{Durable, Events, Frame, Have, VersionVector};
 use crate::replica::Replica;
 
 /// How the replicator paces itself.
@@ -41,6 +47,16 @@ impl SyncConfig {
         batch_events: 256,
         batch_bytes: 256 * 1024,
     };
+}
+
+/// What a replica does besides replicating (ADR-0020).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Roles {
+    /// The epoch it sequences in, as the Store Hub; `None` for any other replica.
+    pub sequencer: Option<u64>,
+    /// Its durable peer, whose `have` is the durable-ack watermark: the cloud, for the hub or a
+    /// merchant's only device. `None` for a replica that learns the watermark from its peers.
+    pub durable: Option<Id<Device>>,
 }
 
 /// A frame to send to a peer.
@@ -130,6 +146,7 @@ struct Waiting {
 #[derive(Clone, Debug)]
 pub struct Replicator {
     config: SyncConfig,
+    roles: Roles,
     location: Id<Location>,
     device: Id<Device>,
     /// What the replica holds, kept in step with the store as events are stored.
@@ -137,12 +154,15 @@ pub struct Replicator {
     peers: BTreeMap<Id<Device>, Peer>,
     /// Whether a peer has shown it holds no more of the device's own log than the replica.
     settled: bool,
+    /// The durable-ack watermark: the most of each device's log the durable replica is known to
+    /// hold.
+    durable: VersionVector,
     stats: Stats,
 }
 
 impl Replicator {
-    /// Starts replicating `replica` with `peers`, at time `now`: returns the replicator and the
-    /// `have` frames to send them.
+    /// Starts replicating `replica` with `peers`, in `roles`, at time `now`: returns the
+    /// replicator and the `have` frames to send them.
     ///
     /// # Errors
     /// If the replica's store can't be read.
@@ -150,6 +170,7 @@ impl Replicator {
         replica: &mut R,
         peers: impl IntoIterator<Item = Id<Device>>,
         config: SyncConfig,
+        roles: Roles,
         now: Timestamp,
     ) -> Result<(Replicator, Vec<Outgoing>), R::Error> {
         let ours = replica.version_vector()?;
@@ -175,11 +196,13 @@ impl Replicator {
             .collect();
         let replicator = Replicator {
             config,
+            roles,
             location: replica.location(),
             device,
             ours,
             peers,
             settled: false,
+            durable: VersionVector::new(),
             stats: Stats::default(),
         };
         let outgoing = replicator.peers.keys().map(|&to| replicator.have(to)).collect();
@@ -207,7 +230,10 @@ impl Replicator {
                 self.on_have(replica, from, have, now)
             }
             Ok(Frame::Events(events)) => self.on_events(replica, from, &events, now),
-            Ok(Frame::Have(_)) | Err(_) => Ok(self.drop_frame()),
+            Ok(Frame::Durable(durable)) if durable.location == self.location => {
+                Ok(self.learn_durable(&durable.vv, from))
+            }
+            Ok(Frame::Have(_) | Frame::Durable(_)) | Err(_) => Ok(self.drop_frame()),
         }
     }
 
@@ -237,6 +263,7 @@ impl Replicator {
                 peer.round_at = now;
                 peer.stalled = false;
                 outgoing.push(self.have(to));
+                outgoing.extend(self.durable_for(to));
             }
             outgoing.extend(self.push(replica, to, now)?);
         }
@@ -244,11 +271,27 @@ impl Replicator {
     }
 
     /// Takes in events the replica's own device appended, once the write storing them has
-    /// committed, and returns the batches that send them to peers lacking them.
+    /// committed, and returns the batches that send them to peers lacking them. The Store Hub
+    /// sequences them, once its log is settled.
     ///
     /// # Errors
-    /// If the replica's store can't be read.
+    /// If the replica's store can't be read, or, for the hub, written.
     pub fn appended<R: Replica>(
+        &mut self,
+        replica: &mut R,
+        events: &[SignedEvent],
+        now: Timestamp,
+    ) -> Result<Vec<Outgoing>, R::Error> {
+        let mut outgoing = self.take_in(replica, events, now)?;
+        if !events.is_empty() {
+            outgoing.extend(self.sequence(replica, now)?);
+        }
+        Ok(outgoing)
+    }
+
+    /// Takes in events the replica's own device appended, and returns the batches that send them
+    /// to peers lacking them.
+    fn take_in<R: Replica>(
         &mut self,
         replica: &mut R,
         events: &[SignedEvent],
@@ -265,6 +308,24 @@ impl Replicator {
         self.push_all(replica, now)
     }
 
+    /// As the Store Hub, once the replica's log is settled: numbers what no record covers, and
+    /// returns the batches that send the records to peers lacking them.
+    fn sequence<R: Replica>(
+        &mut self,
+        replica: &mut R,
+        now: Timestamp,
+    ) -> Result<Vec<Outgoing>, R::Error> {
+        let Some(epoch) = self.roles.sequencer else { return Ok(Vec::new()) };
+        if !self.settled {
+            return Ok(Vec::new());
+        }
+        let records = replica.sequence(epoch, now)?;
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.take_in(replica, &records, now)
+    }
+
     /// Whether the device's own log is settled: a peer has shown it holds no more of that log
     /// than the replica, after sending whatever more it held. After a start, the device mustn't
     /// write before its log is settled, or, if it can reach no peer, before it must (ADR-0019).
@@ -275,6 +336,22 @@ impl Replicator {
     /// What the replica holds, as the replicator knows it.
     pub const fn version_vector(&self) -> &VersionVector {
         &self.ours
+    }
+
+    /// How far into the device's own log a peer has said it holds: the device's events up to
+    /// there are store-durable, held by two replicas; after it, "not yet backed up" (ADR-0020).
+    pub fn store_durable(&self) -> u64 {
+        self.peers
+            .values()
+            .filter_map(|peer| peer.known.as_ref()?.get(&self.device).copied())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The durable-ack watermark: how far into each device's log the location's durable replica
+    /// is known to hold. It only rises.
+    pub const fn durable(&self) -> &VersionVector {
+        &self.durable
     }
 
     /// What the peer `peer` holds, as far as the replica knows; `None` before its first `have`.
@@ -302,6 +379,42 @@ impl Replicator {
             })
             .flatten()
             .min()
+    }
+
+    /// Takes in a watermark `from` told: relayed to the other peers if it raised the replica's.
+    fn learn_durable(&mut self, vv: &VersionVector, from: Id<Device>) -> Vec<Outgoing> {
+        if self.merge_durable(vv) { self.relay_durable(from) } else { Vec::new() }
+    }
+
+    /// Raises the watermark to `vv`, device by device: whether it rose.
+    fn merge_durable(&mut self, vv: &VersionVector) -> bool {
+        let mut rose = false;
+        for (&device, &position) in vv {
+            let held = self.durable.entry(device).or_insert(0);
+            if position > *held {
+                *held = position;
+                rose = true;
+            }
+        }
+        rose
+    }
+
+    /// The watermark, for every peer but `except` and the durable peer, which knows it best.
+    fn relay_durable(&self, except: Id<Device>) -> Vec<Outgoing> {
+        self.peers
+            .keys()
+            .filter(|&&to| to != except)
+            .filter_map(|&to| self.durable_for(to))
+            .collect()
+    }
+
+    /// The watermark, for `to`: none if the replica knows none, or `to` is its durable peer.
+    fn durable_for(&self, to: Id<Device>) -> Option<Outgoing> {
+        if self.durable.is_empty() || self.roles.durable == Some(to) {
+            return None;
+        }
+        let durable = Durable { location: self.location, vv: self.durable.clone() };
+        Some(Outgoing { to, frame: Frame::Durable(durable).encode() })
     }
 
     fn drop_frame(&mut self) -> Vec<Outgoing> {
@@ -335,12 +448,26 @@ impl Replicator {
             }
             peer.waiting = None;
         }
-        peer.known = Some(have.vv);
+        let was_settled = self.settled;
+        let mut outgoing = Vec::new();
+        // The durable peer's `have` is the watermark.
+        if self.roles.durable == Some(from) && self.merge_durable(&have.vv) {
+            outgoing.extend(self.relay_durable(from));
+        }
+        if let Some(peer) = self.peers.get_mut(&from) {
+            peer.known = Some(have.vv);
+        }
         self.settle();
         // A peer that has heard nothing from the replica since it started asks what the replica
-        // holds, to settle its own log: tell it at once.
-        let mut outgoing = if have.asks { vec![self.have(from)] } else { Vec::new() };
+        // holds, to settle its own log: tell it at once, and the watermark with it.
+        if have.asks {
+            outgoing.push(self.have(from));
+            outgoing.extend(self.durable_for(from));
+        }
         outgoing.extend(self.push(replica, from, now)?);
+        if self.settled && !was_settled {
+            outgoing.extend(self.sequence(replica, now)?);
+        }
         Ok(outgoing)
     }
 
@@ -384,10 +511,14 @@ impl Replicator {
         if let Some(peer) = self.peers.get_mut(&from) {
             peer.received = batch.batch;
         }
+        let was_settled = self.settled;
         self.settle();
         let mut outgoing = vec![self.have(from)];
         if stored_any {
             outgoing.extend(self.push_all(replica, now)?);
+        }
+        if stored_any || (self.settled && !was_settled) {
+            outgoing.extend(self.sequence(replica, now)?);
         }
         Ok(outgoing)
     }

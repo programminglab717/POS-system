@@ -1,8 +1,9 @@
-//! Known answers for frames (ADR-0019): pinned byte for byte, and every way a frame is refused.
+//! Known answers for frames (ADR-0019, ADR-0020): pinned byte for byte, and every way a frame is
+//! refused.
 
 use keel_types::Id;
 
-use crate::frame::{Events, Frame, FrameError, Have, MAX_FRAME, VersionVector};
+use crate::frame::{Durable, Events, Frame, FrameError, Have, MAX_FRAME, VersionVector};
 
 fn id<T>(n: u64) -> Id<T> {
     Id::parse(&format!("0192f0c1-0000-7000-8000-{n:012x}")).unwrap()
@@ -45,10 +46,27 @@ fn an_events_frame_is_pinned_byte_for_byte() {
 }
 
 #[test]
+fn a_durable_frame_is_pinned_byte_for_byte() {
+    let durable = Frame::Durable(Durable { location: id(0x10), vv: vv(&[(1, 3), (2, 300)]) });
+    // [1, 2, location, [[device 1, 3], [device 2, 300]]]
+    let mut expected = vec![0x84, 0x01, 0x02];
+    expected.extend(id_cbor(0x10));
+    expected.extend([0x82, 0x82]);
+    expected.extend(id_cbor(1));
+    expected.push(0x03);
+    expected.push(0x82);
+    expected.extend(id_cbor(2));
+    expected.extend([0x19, 0x01, 0x2c]);
+    assert_eq!(durable.encode(), expected);
+    assert_eq!(Frame::decode(&expected), Ok(durable));
+}
+
+#[test]
 fn an_empty_have_and_an_empty_batch_round_trip() {
     for frame in [
         Frame::Have(Have { location: id(0x10), vv: VersionVector::new(), acked: 0, asks: false }),
         Frame::Events(Events { batch: 0, events: Vec::new() }),
+        Frame::Durable(Durable { location: id(0x10), vv: VersionVector::new() }),
     ] {
         assert_eq!(Frame::decode(&frame.encode()), Ok(frame));
     }
@@ -118,7 +136,63 @@ fn refused_frames() -> Vec<(&'static str, Vec<u8>, FrameError)> {
         ),
     ];
     refused.extend(refused_haves());
+    refused.extend(refused_durables());
     refused
+}
+
+/// `durable` frames that are refused, and why: as a `have`'s parts are.
+fn refused_durables() -> Vec<(&'static str, Vec<u8>, FrameError)> {
+    let durable = |location: &[u8], entries: &[Vec<u8>]| {
+        let mut frame = vec![0x84, 0x01, 0x02];
+        frame.extend(location);
+        frame.push(0x80 | u8::try_from(entries.len()).unwrap());
+        for entry in entries {
+            frame.extend(entry);
+        }
+        frame
+    };
+    let location = id_cbor(0x10);
+    vec![
+        (
+            "a durable frame without its version vector",
+            {
+                let mut frame = durable(&location, &[]);
+                frame[0] = 0x83;
+                frame.pop();
+                frame
+            },
+            FrameError::Malformed,
+        ),
+        (
+            "a durable frame with an extra item",
+            {
+                let mut frame = durable(&location, &[]);
+                frame[0] = 0x85;
+                frame.push(0x00);
+                frame
+            },
+            FrameError::Malformed,
+        ),
+        (
+            "a durable frame's location of 15 bytes",
+            {
+                let mut short = vec![0x4f];
+                short.extend(&location[1..16]);
+                durable(&short, &[])
+            },
+            FrameError::Malformed,
+        ),
+        (
+            "a durable frame's devices out of order",
+            durable(&location, &[entry(id_cbor(2), 1), entry(id_cbor(1), 1)]),
+            FrameError::Malformed,
+        ),
+        (
+            "a durable frame's device at position 0",
+            durable(&location, &[entry(id_cbor(1), 0)]),
+            FrameError::Malformed,
+        ),
+    ]
 }
 
 /// `have` frames that are refused, and why.
