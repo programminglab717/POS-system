@@ -1,5 +1,10 @@
 //! The database's settings and schema.
 //!
+//! Every connection gives SQLCipher the store's key first, as a raw key, and pins SQLCipher 4's
+//! settings: 4 KiB pages, each encrypted with AES-256-CBC and authenticated with HMAC-SHA512
+//! (ADR-0018). Then it sets the WAL journal, commits that wait for the disk, and temporary
+//! storage in memory, and checks SQLite runs with them.
+//!
 //! The schema version is `PRAGMA user_version`. Opening a store brings it up to the latest
 //! version in one transaction, whatever version it was at. Version 1:
 //!
@@ -18,12 +23,15 @@
 //! - `projections`: the version of each projection the store built. The projections' own tables
 //!   are theirs to create and drop ([`crate::projection`]).
 
+use std::path::Path;
+
 use keel_events::envelope::{Device, Location};
 use keel_types::{Hlc, Id};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 use crate::error::StoreError;
 use crate::faults::{Faults, Point, proceed};
+use crate::key::StoreKey;
 
 /// The latest schema version this kernel knows.
 pub(crate) const VERSION: i64 = 2;
@@ -83,18 +91,99 @@ CREATE TABLE projections (
 ) STRICT;
 ";
 
-/// Sets the durability settings, and checks that SQLite runs with them: the WAL journal, and
-/// every commit on disk before it returns.
-pub(crate) fn configure(db: &Connection) -> Result<(), StoreError> {
+/// Opens the database at `path`, creating it if there is none, with `key`: SQLCipher encrypts
+/// it with SQLCipher 4's settings (ADR-0018). Then sets the durability settings, and checks that
+/// SQLite runs with them.
+///
+/// # Errors
+/// [`StoreError::KeyRejected`] if the key doesn't open the database, [`StoreError::Settings`]
+/// if SQLite won't run with a setting, and [`StoreError::Database`] if the file can't be opened.
+pub(crate) fn connect(path: &Path, key: &StoreKey) -> Result<Connection, StoreError> {
+    let db = Connection::open(path)?;
+    // SQLCipher logs to standard error, or the device's log; the store reports what goes wrong
+    // through its errors instead. The setting is the process's.
+    db.execute_batch("PRAGMA cipher_log_level = NONE")?;
+    db.execute_batch(&key.pragma("key"))?;
+    // Pinned, so a later SQLCipher with other defaults still opens the store.
+    db.execute_batch("PRAGMA cipher_compatibility = 4")?;
+    // The first read of the file, so the first to meet a key that doesn't open it: SQLCipher
+    // finds the first page doesn't authenticate. A file SQLite finds malformed, such as one cut
+    // short, is damaged.
+    if let Err(error) = db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)) {
+        return Err(if error.sqlite_error_code() == Some(ErrorCode::NotADatabase) {
+            StoreError::KeyRejected
+        } else {
+            error.into()
+        });
+    }
+    configure(&db)?;
+    Ok(db)
+}
+
+/// Checks that `key` opens the database at `path`, through a connection that can't write. A
+/// connection that can write moves the WAL into the database file and removes it as it closes,
+/// even one whose key was refused; this one leaves the WAL as it found it, so the store can
+/// still tell it wasn't closed cleanly. Used only when there is a WAL: where there is none, this
+/// connection would leave an empty one behind.
+///
+/// # Errors
+/// [`StoreError::KeyRejected`] if the key doesn't open the database. Anything else is left for
+/// opening the database to report.
+pub(crate) fn check_key(path: &Path, key: &StoreKey) -> Result<(), StoreError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let Ok(db) = Connection::open_with_flags(path, flags) else { return Ok(()) };
+    let read = db
+        .execute_batch("PRAGMA cipher_log_level = NONE")
+        .and_then(|()| db.execute_batch(&key.pragma("key")))
+        .and_then(|()| db.execute_batch("PRAGMA cipher_compatibility = 4"))
+        .and_then(|()| db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)));
+    match read {
+        Err(error) if error.sqlite_error_code() == Some(ErrorCode::NotADatabase) => {
+            Err(StoreError::KeyRejected)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Whether the connection can still read the database: `false` once it has met a damaged page.
+///
+/// SQLCipher gives SQLite a page that fails its authentication as zeros, and fails every read of
+/// the connection after it. A b-tree page of zeros is malformed, which SQLite reports; but the
+/// last page of a long value holds nothing but the value's bytes, so a read of it returns zeros
+/// in the value, without an error. One more read, of the database's header, fails if the read
+/// before met a damaged page: SQLite empties its cache after a failed read, so the header comes
+/// from the file again (ADR-0018). Otherwise it comes from the cache, at no cost.
+pub(crate) fn sound(db: &Connection) -> bool {
+    match db.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0)) {
+        Ok(_) => true,
+        // SQLCipher's failure after a damaged page reads as SQLite running out of memory.
+        Err(error) => !matches!(
+            error.sqlite_error_code(),
+            Some(ErrorCode::OutOfMemory | ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase)
+        ),
+    }
+}
+
+/// Sets the durability settings, and checks that SQLite runs with them: the WAL journal, every
+/// commit on disk before it returns, and temporary tables and indexes in memory, never in a
+/// file that isn't encrypted.
+fn configure(db: &Connection) -> Result<(), StoreError> {
     let journal: String = db.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
     if !journal.eq_ignore_ascii_case("wal") {
         return Err(StoreError::Settings("the WAL journal"));
     }
-    db.execute_batch("PRAGMA synchronous = FULL; PRAGMA trusted_schema = OFF;")?;
+    db.execute_batch(
+        "PRAGMA synchronous = FULL; PRAGMA trusted_schema = OFF; PRAGMA temp_store = MEMORY;",
+    )?;
     // FULL is 2.
     let synchronous: i64 = db.query_row("PRAGMA synchronous", [], |row| row.get(0))?;
     if synchronous != 2 {
         return Err(StoreError::Settings("synchronous commits"));
+    }
+    // MEMORY is 2.
+    let temp_store: i64 = db.query_row("PRAGMA temp_store", [], |row| row.get(0))?;
+    if temp_store != 2 {
+        return Err(StoreError::Settings("temporary storage in memory"));
     }
     Ok(())
 }

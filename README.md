@@ -14,10 +14,10 @@ hash-chained event log), [`keel-domain`](./core/crates/keel-domain/) (event sche
 business aggregates: orders, their lines and their split among checks, payments in cash and by
 card, and closing checks and orders) and [`keel-pricing`](./core/crates/keel-pricing/) v0, which
 prices each check: line amounts, shares of split lines, discounts, US sales tax, rounding and the
-calculation trace. [`keel-store`](./core/crates/keel-store/) keeps events on the device in SQLite:
-so far the event log, with the device's own events and those it receives from other replicas,
-projections of orders and payments, and an outbox of effects, all written in crash-tested
-transactions.
+calculation trace. [`keel-store`](./core/crates/keel-store/) keeps events on the device in SQLite,
+encrypted with SQLCipher: the event log, with the device's own events and those it receives from
+other replicas, projections of orders and payments, and an outbox of effects, all written in
+crash-tested transactions, with checks that find damage and fail closed.
 [docs/progress.md](./docs/progress.md) tracks the build step by step.
 
 ## What makes Keel different
@@ -108,5 +108,6 @@ Read [docs/engineering/conventions.md](./docs/engineering/conventions.md) before
 ## Next step
 
 Phase 0 (Foundations) in the [roadmap](./docs/roadmap.md#8-first-engineering-milestones-the-next-build-steps):
-after `keel-types` and `keel-events`, the order/pricing core (in progress: pricing v0 and checks
-are built; payments are next), then the SQLite store and the deterministic sync simulator.
+after `keel-types`, `keel-events` and the order/pricing core, the SQLite store (its last slice,
+encryption at rest and integrity checks, is built and waiting for review), then the deterministic
+sync simulator.

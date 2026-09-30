@@ -1,7 +1,7 @@
 [package]
 name = "keel-store"
 version = "0.1.0"
-description = "Keel's device store: the event log, projections and the effect outbox in SQLite, one transaction per write, with crash-tested durability."
+description = "Keel's device store: the event log, projections and the effect outbox in SQLite, encrypted with SQLCipher, one transaction per write, with crash-tested durability and integrity checks."
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
@@ -13,6 +13,7 @@ keel-events = { workspace = true, features = ["stored"] }
 keel-domain.workspace = true
 rusqlite.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

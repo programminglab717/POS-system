@@ -1,9 +1,10 @@
-//! Points where a write can be interrupted, for crash-safety tests and the simulator.
+//! Points where a write or a change of key can be interrupted, for crash-safety tests and the
+//! simulator.
 //!
-//! The store asks its [`Faults`] whether to go on at each [`Point`] of a write. In production it
-//! always goes on ([`NoFaults`]). A test can refuse, and the write must roll back and leave the
-//! store usable; or it can end the process there, and the store must reopen with every write
-//! either done or not done at all.
+//! The store asks its [`Faults`] whether to go on at each [`Point`] of a write or a rekey. In
+//! production it always goes on ([`NoFaults`]). A test can refuse, and the write must roll back
+//! and leave the store usable; or it can end the process there, and the store must reopen with
+//! every write either done or not done at all, under one key or the other.
 
 use crate::error::StoreError;
 
@@ -24,24 +25,32 @@ pub enum Point {
     /// The write has committed, and the store is about to return. Only a crash can interrupt the
     /// store here: the write has happened, so refusing changes nothing.
     Committed,
+    /// The store is about to re-encrypt itself with a new key.
+    Rekeying,
+    /// The store has been re-encrypted with its new key, and is about to return. Only a crash can
+    /// interrupt the store here: the new key is the store's, so refusing changes nothing.
+    Rekeyed,
 }
 
 impl Point {
     /// Every point, in the order a store passes them.
-    pub const ALL: [Point; 6] = [
+    pub const ALL: [Point; 8] = [
         Point::Migrating,
         Point::Rebuilding,
         Point::Began,
         Point::Stored,
         Point::Committing,
         Point::Committed,
+        Point::Rekeying,
+        Point::Rekeyed,
     ];
 }
 
 /// Decides whether a write goes on at each point.
 pub trait Faults {
     /// Whether the store goes on at `point`. `false` interrupts the write, which rolls back and
-    /// fails with [`StoreError::Interrupted`], except at [`Point::Committed`].
+    /// fails with [`StoreError::Interrupted`], except at [`Point::Committed`] and
+    /// [`Point::Rekeyed`].
     fn proceed(&mut self, point: Point) -> bool;
 }
 

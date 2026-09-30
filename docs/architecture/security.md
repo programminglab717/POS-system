@@ -108,7 +108,8 @@ Additional controls:
   Certificate pinning to the Keel CA for device connections.
 - **At rest on devices**: the SQLite database is encrypted (SQLCipher-class AES-256) with a key
   wrapped by the platform keystore. A device powered off and removed from the store reveals nothing
-  without its secure-hardware key.
+  without its secure-hardware key. Every page is authenticated too, so a page changed without the
+  key fails to read ([ADR-0018](../adr/0018-encryption-at-rest-and-integrity-checks.md)).
 - **At rest in the cloud**: AES-256 storage encryption, **per-tenant data keys** in a KMS, and
   bring-your-own-key for enterprise tenants.
 - **Personal data**: the PII vault with per-person keys and crypto-shredding for erasure (see the

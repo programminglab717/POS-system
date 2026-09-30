@@ -250,8 +250,9 @@ Keel, and **never lose a sale to Keel**.
    crash-safety tests. *Status: in progress, in three slices
    ([ADR-0016](./adr/0016-device-store.md)). Slice 1, the event log store, and slice 2,
    projections and the outbox ([ADR-0017](./adr/0017-projections-and-outbox.md)), are built and
-   reviewed; slice 3, encryption at rest and integrity checks, is being designed. See
-   [progress](./progress.md).*
+   reviewed; slice 3, encryption at rest and integrity checks
+   ([ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md)), is built and waiting for
+   review. See [progress](./progress.md).*
 6. **`keel-sim` + `keel-sync` (v0)**: two devices, one hub and one cloud in simulation. Replication,
    hub sequencing, ownership leases, failover. The invariant suite runs in CI.
 7. **Android register shell**: ring an order with modifiers, pay cash, print a receipt (ESC/POS over

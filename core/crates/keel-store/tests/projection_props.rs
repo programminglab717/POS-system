@@ -39,7 +39,7 @@ use keel_types::{Hlc, Id, SeededEntropy};
 use proptest::prelude::*;
 use support::{
     DRIFT, OWN, PEERS, REPLICA, Scratch, at, check_closed, config_of, created, device,
-    domain_draft, here, id, key, line_added, projection_rows, reason, registry, usd,
+    domain_draft, here, id, line_added, projection_rows, reason, registry, signer, store_key, usd,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -227,7 +227,7 @@ fn peer_logs(specs: &[Vec<(Spec, u8)>; 2]) -> [Vec<SignedEvent>; 2] {
             latest_hlc: Hlc::ZERO,
             max_forward_drift: DRIFT,
         };
-        let mut writer = LogWriter::new(config, key(n), SeededEntropy::new(u64::from(n)));
+        let mut writer = LogWriter::new(config, signer(n), SeededEntropy::new(u64::from(n)));
         specs[p]
             .iter()
             .enumerate()
@@ -428,7 +428,8 @@ fn first_touched(events: &[SignedEvent]) -> Vec<StreamRef> {
 }
 
 fn open(scratch: &Scratch, n: u8, seed: u64) -> TestStore {
-    Store::open(scratch.db(), config_of(n), key(n), SeededEntropy::new(seed)).unwrap()
+    Store::open(scratch.db(), store_key(), config_of(n), signer(n), SeededEntropy::new(seed))
+        .unwrap()
 }
 
 proptest! {
@@ -490,9 +491,9 @@ proptest! {
                     store = open(&scratch, OWN, 100 + reopened);
                 }
                 Op::Rebuild => {
-                    let before = projection_rows(&scratch);
+                    let before = projection_rows(&scratch, 0x4B);
                     store.rebuild_projections().unwrap();
-                    prop_assert_eq!(projection_rows(&scratch), before, "a rebuild changed the projections");
+                    prop_assert_eq!(projection_rows(&scratch, 0x4B), before, "a rebuild changed the projections");
                 }
             }
             agrees(&store, &stored)?;
@@ -545,7 +546,7 @@ proptest! {
                 }
             }
             agrees(&store, &all)?;
-            dumps.push(projection_rows(&scratch));
+            dumps.push(projection_rows(&scratch, 0x4B));
         }
         prop_assert_eq!(&dumps[0], &dumps[1]);
     }

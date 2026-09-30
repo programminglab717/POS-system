@@ -342,9 +342,9 @@ fn an_interrupted_rebuild_changes_nothing_and_opening_again_finishes_it() {
     }
     let faults = Box::new(RefuseAt { point: Point::Rebuilding, nth: 1, seen: 0 });
     let opened =
-        Store::open_with_faults(dir.db(), config(), own().1, SeededEntropy::new(7), faults);
+        Store::open_with_faults(dir.db(), key(), config(), own().1, SeededEntropy::new(7), faults);
     assert!(matches!(opened, Err(StoreError::Interrupted(Point::Rebuilding))));
-    let db = Connection::open(dir.db()).unwrap();
+    let db = raw(&dir.db());
     let lines: i64 = db.query_row("SELECT live_lines FROM orders", [], |row| row.get(0)).unwrap();
     assert_eq!(lines, 99);
     drop(db);

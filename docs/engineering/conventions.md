@@ -130,15 +130,29 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
   fractions (`core/crates/keel-pricing/tests/golden/generate.py`). CI regenerates the baskets and
   fails if they change, so the committed expectations always come from the oracle.
 - **Crash tests** (`keel-store/tests/crash.rs`) run the test binary again as a child process that
-  works through a fixed sequence of writes and dies partway: at each fault point in turn, or
-  killed. The parent reopens the store and checks that every acknowledged write is there, whole.
-  The parent kills a child only after reading a chosen write's acknowledgement, not after a fixed
-  sleep, so that kills land among the writes on a fast machine and a slow one alike.
+  works through a fixed sequence of writes and a change of key, and dies partway: at each fault
+  point in turn, or killed. The parent reopens the store and checks that exactly one key opens
+  it, that every acknowledged write is there, whole, and that its full check finds nothing. The
+  parent kills a child only after reading a chosen write's acknowledgement, not after a fixed
+  sleep, so that kills land among the writes on a fast machine and a slow one alike; kills during
+  the rekey are spread over its length, as measured by a child that isn't killed.
 - **Convergence.** What replicas derive from events must depend on the events alone. Tests feed
   two stores the same events in different orders and in different writes, some of which fail, and
   compare their projections byte for byte.
 - **Golden rows** pin each projection's rows for a fixed history. When they change, the projection
   changed: bump its version, so that every store rebuilds it, then update the rows.
+- **Golden stores** (`keel-store/tests/golden/`) are stores made once, encrypted with a fixed
+  key, and kept: every later kernel must open each and read it as it was made, so an upgrade of
+  SQLCipher, OpenSSL or the kernel can't leave devices unable to open their stores. Never
+  regenerate one. A new schema version adds a golden store of its own, made with
+  `KEEL_STORE_MAKE_GOLDEN=1 cargo test -p keel-store --test golden_store -- --ignored`, and keeps
+  the old ones.
+- **Damage.** A store must never return what was damaged. Its property tests damage the file as a
+  failing disk would, flipping bits, cutting it short and adding to it, and require every read to
+  give what the sound store gave or report the damage; and they change rows with the key, as a
+  bug would, and require the full check to report exactly what a model predicts. Check what the
+  code gives back, not only whether it fails: SQLCipher hands SQLite a damaged page as zeros, and
+  the first read of the last page of a long value returned them without an error.
 - **Exhaustive sweeps**, such as every time zone transition from 1970 to 2037, are `#[ignore]`d
   for quick local runs. CI runs them with `-- --include-ignored`.
 - **Case counts.** Locally, property tests run proptest's default of 256 cases. CI runs 4,096
@@ -164,7 +178,10 @@ below, and must be:
 **Platform crates** are the exception to "pure Rust". `keel-store`, and later the bindings and
 drivers, do I/O, and may use a native library that an ADR chooses. They aren't built for
 `wasm32`, and the portable kernel crates (`keel-types`, `keel-events`, `keel-domain`,
-`keel-pricing`) never depend on them.
+`keel-pricing`) never depend on them. Such a library may draw on the operating system's
+randomness where nothing the kernel computes depends on it: SQLCipher gives each page a random
+IV, so a store's bytes differ from run to run, and tests compare what a store holds, never its
+bytes.
 
 | Crate | Used by | Why |
 |---|---|---|
@@ -176,7 +193,9 @@ drivers, do I/O, and may use a native library that an ADR chooses. They aren't b
 | `sha2` | keel-events | SHA-256, for event hashes and key identifiers. Default features off. |
 | `p256`, `ecdsa` | keel-events | ECDSA on P-256 (ES256), the algorithm secure hardware supports: verification, low-S normalization, DER decoding of hardware signatures, and deterministic signing (RFC 6979) for software keys. Default features off. |
 | `ed25519-dalek` | keel-events | Ed25519, for devices without secure hardware, with strict verification. Default features off: keys come from injected entropy, never from the operating system directly. |
-| `rusqlite` (and `libsqlite3-sys`) | keel-store | SQLite, compiled in (`bundled`, SQLite 3.53.2 today), so every platform runs the same version ([ADR-0016](../adr/0016-device-store.md)). A platform dependency: it builds C code with `cc`. Default features off. MIT; SQLite itself is in the public domain. Its other dependencies (`bitflags`, `fallible-iterator`, `fallible-streaming-iterator`, `smallvec`) and build tools (`cc`, `pkg-config`, `vcpkg`, with theirs) are MIT or Apache-2.0. |
+| `rusqlite` (and `libsqlite3-sys`) | keel-store | SQLite, compiled in as SQLCipher (`bundled-sqlcipher-vendored-openssl`: SQLCipher 4.14.0 on SQLite 3.51.3 today), so every platform runs the same version and encrypts the same way ([ADR-0016](../adr/0016-device-store.md), [ADR-0018](../adr/0018-encryption-at-rest-and-integrity-checks.md)). A platform dependency: it builds C code with `cc`. Default features off. MIT; SQLite itself is in the public domain, and SQLCipher's community edition is BSD-licensed. Its other dependencies (`bitflags`, `fallible-iterator`, `fallible-streaming-iterator`, `smallvec`) and build tools (`cc`, `pkg-config`, `vcpkg`, with theirs) are MIT or Apache-2.0. |
+| `openssl-sys`, `openssl-src` | keel-store, through `libsqlite3-sys` | OpenSSL's crypto, for SQLCipher: built from source (OpenSSL 3.6.3 today) and linked statically, the same on every platform, rather than each platform's own ([ADR-0018](../adr/0018-encryption-at-rest-and-integrity-checks.md)). Building it takes Perl and a `make`. SQLCipher uses only its ciphers, hashes and random generator. Follow OpenSSL's security advisories through `openssl-src` releases. `openssl-sys` is MIT, `openssl-src` MIT or Apache-2.0, and OpenSSL 3 Apache-2.0. |
+| `zeroize` | keel-store | Zeroes the store's key in memory when it is dropped, without the compiler optimizing the writes away. Already in the tree through `ed25519-dalek`. Default features off but `alloc`. Apache-2.0 or MIT. |
 
 Test-only dependencies must be permissively licensed, but need not build for `wasm32`:
 

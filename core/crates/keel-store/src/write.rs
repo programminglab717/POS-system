@@ -1,5 +1,7 @@
 //! Writing: the device's own events, events received from other replicas, and the outbox.
 
+use core::cell::Cell;
+
 use keel_domain::aggregate::Aggregate;
 use keel_events::envelope::{Location, StreamRef};
 use keel_events::event::SignedEvent;
@@ -15,6 +17,7 @@ use crate::faults::{Faults, Point, proceed};
 use crate::outbox::{self, Effect, EffectState, Enqueued, Queued};
 use crate::projection;
 use crate::rows;
+use crate::store::{Health, noted};
 
 /// A write in progress: everything it stores commits together, or not at all. See
 /// [`crate::Store::write`].
@@ -25,6 +28,8 @@ pub struct Writing<'a, S, E> {
     pub(crate) location: Id<Location>,
     /// The streams the write stored events in, in the order it first did.
     pub(crate) touched: Vec<StreamRef>,
+    /// The store's health, noted when the write finds the store damaged.
+    pub(crate) health: &'a Cell<Health>,
 }
 
 /// What became of a received event.
@@ -159,7 +164,7 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
     /// write. The write then fails as a whole.
     pub fn append(&mut self, draft: EventDraft, now: Timestamp) -> Result<SignedEvent, StoreError> {
         let pending = self.writer.prepare(draft, now)?;
-        rows::insert(self.tx, pending.event())?;
+        rows::insert(self.tx, pending.event()).map_err(|error| noted(self.health, error))?;
         let event = pending.commit();
         self.touch(&event);
         proceed(self.faults, Point::Stored)?;
@@ -188,7 +193,7 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
     /// [`StoreError::Database`] if the stream can't be read, and [`StoreError::Corrupt`] if an
     /// event doesn't read back as stored.
     pub fn load<A: Aggregate>(&self, aggregate: A) -> Result<A, StoreError> {
-        projection::load(self.tx, aggregate)
+        projection::load(self.tx, aggregate).map_err(|error| noted(self.health, error))
     }
 
     /// Enqueues `effect`, due at `now`, to commit with the write. Enqueuing an effect the outbox
@@ -199,7 +204,7 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
     /// stored, or its key or payload is out of bounds; [`StoreError::Database`] if the outbox
     /// can't be read or written.
     pub fn enqueue(&mut self, effect: &Effect, now: Timestamp) -> Result<Enqueued, StoreError> {
-        outbox::enqueue(self.tx, effect, now)
+        outbox::enqueue(self.tx, effect, now).map_err(|error| noted(self.health, error))
     }
 
     /// Starts the pending effect with key `key` at `now`, counting an attempt. Act on it only once
@@ -209,7 +214,7 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
     /// [`StoreError::Effect`] if no effect has the key, it isn't pending, or it isn't due by
     /// `now`; [`StoreError::Database`] if the outbox can't be read or written.
     pub fn start(&mut self, key: &[u8], now: Timestamp) -> Result<Queued, StoreError> {
-        outbox::start(self.tx, key, now)
+        outbox::start(self.tx, key, now).map_err(|error| noted(self.health, error))
     }
 
     /// Finishes the running effect with key `key`: it is done.
@@ -218,7 +223,7 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
     /// [`StoreError::Effect`] if no effect has the key or it isn't running;
     /// [`StoreError::Database`] if the outbox can't be read or written.
     pub fn finish(&mut self, key: &[u8]) -> Result<(), StoreError> {
-        outbox::end(self.tx, key, EffectState::Done)
+        outbox::end(self.tx, key, EffectState::Done).map_err(|error| noted(self.health, error))
     }
 
     /// Makes the running effect with key `key` pending again, due at `due`.
@@ -226,7 +231,7 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
     /// # Errors
     /// As [`Writing::finish`].
     pub fn retry(&mut self, key: &[u8], due: Timestamp) -> Result<(), StoreError> {
-        outbox::retry(self.tx, key, due)
+        outbox::retry(self.tx, key, due).map_err(|error| noted(self.health, error))
     }
 
     /// Fails the running effect with key `key` for good, for a person to look at.
@@ -234,7 +239,7 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
     /// # Errors
     /// As [`Writing::finish`].
     pub fn fail(&mut self, key: &[u8]) -> Result<(), StoreError> {
-        outbox::end(self.tx, key, EffectState::Failed)
+        outbox::end(self.tx, key, EffectState::Failed).map_err(|error| noted(self.health, error))
     }
 
     /// Takes in `bytes`, an event received from another replica at physical time `now`. The
@@ -247,6 +252,16 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
     /// [`StoreError::Interrupted`] if a fault hook interrupts the write. A refused event is not
     /// an error: it is quarantined.
     pub fn receive(
+        &mut self,
+        bytes: &[u8],
+        registry: &DeviceRegistry,
+        now: Timestamp,
+    ) -> Result<Received, StoreError> {
+        let health = self.health;
+        self.take(bytes, registry, now).map_err(|error| noted(health, error))
+    }
+
+    fn take(
         &mut self,
         bytes: &[u8],
         registry: &DeviceRegistry,

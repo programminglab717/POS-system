@@ -19,6 +19,7 @@ use keel_events::envelope::Event;
 use keel_types::{Id, Timestamp};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
+use crate::check::Problem;
 use crate::error::StoreError;
 use crate::rows;
 use crate::schema::id;
@@ -238,6 +239,33 @@ pub(crate) fn in_state(db: &Connection, state: EffectState) -> Result<Vec<Queued
         db.prepare(&format!("SELECT {COLUMNS} FROM outbox WHERE state = ?1 ORDER BY seq"))?;
     let rows = statement.query_map([state.code()], queued)?;
     rows.map(|row| row?).collect()
+}
+
+/// Checks every effect: that it reads, its cause is stored, and its state, attempts and start
+/// time agree. An effect is started once for each attempt, and keeps its last start time.
+pub(crate) fn check(db: &Connection, problems: &mut Vec<Problem>) -> Result<(), StoreError> {
+    let mut statement = db.prepare(&format!("SELECT {COLUMNS} FROM outbox ORDER BY seq"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let key: Vec<u8> = row.get(0)?;
+        let sound = match queued(row)? {
+            Ok(queued) => {
+                let caused = match queued.effect.cause {
+                    Some(cause) => rows::has_id(db, &cause.to_bytes())?,
+                    None => true,
+                };
+                caused
+                    && (queued.attempts == 0) == queued.started.is_none()
+                    && (queued.state == EffectState::Pending || queued.attempts > 0)
+            }
+            Err(StoreError::Corrupt(_)) => false,
+            Err(error) => return Err(error),
+        };
+        if !sound {
+            problems.push(Problem::Effect { key });
+        }
+    }
+    Ok(())
 }
 
 /// Every effect, in the order they were enqueued.

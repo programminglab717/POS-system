@@ -1,5 +1,6 @@
 //! Known-answer tests: each rule of the store, worked through with a few devices.
 
+use core::fmt::Write as _;
 use core::num::{NonZeroU32, NonZeroU64};
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
@@ -18,6 +19,8 @@ use rusqlite::Connection;
 
 use super::*;
 
+mod encryption;
+mod integrity;
 mod outbox;
 mod projections;
 
@@ -101,8 +104,48 @@ impl Drop for TempDir {
 
 type TestStore = Store<SoftwareSigner, SeededEntropy>;
 
+/// A key for the tests' stores: its bytes step from `n`, so a key given in another order is
+/// another key.
+fn key_of(n: u8) -> StoreKey {
+    StoreKey::new(&mut key_bytes(n))
+}
+
+/// The bytes of [`key_of`]`(n)`.
+fn key_bytes(n: u8) -> [u8; 32] {
+    let mut bytes = [n; 32];
+    for (step, byte) in (0_u8..).zip(bytes.iter_mut()) {
+        *byte = n.wrapping_add(step.wrapping_mul(37));
+    }
+    bytes
+}
+
+fn key() -> StoreKey {
+    key_of(0x4B)
+}
+
 fn open(path: &Path) -> TestStore {
-    Store::open(path, config(), own().1, SeededEntropy::new(7)).unwrap()
+    Store::open(path, key(), config(), own().1, SeededEntropy::new(7)).unwrap()
+}
+
+/// A connection of its own to the database at `path`, with the key [`key_of`]`(n)`.
+fn raw_with(path: &Path, n: u8) -> Connection {
+    let db = Connection::open(path).unwrap();
+    let hex: String = key_bytes(n).iter().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02X}");
+        hex
+    });
+    db.execute_batch(&format!(
+        "PRAGMA cipher_log_level = NONE; PRAGMA key = \"x'{hex}'\"; \
+         PRAGMA cipher_compatibility = 4;"
+    ))
+    .unwrap();
+    db
+}
+
+/// A connection of its own to the database at `path`, with the tests' key, to look at it or
+/// change it behind the store's back.
+fn raw(path: &Path) -> Connection {
+    raw_with(path, 0x4B)
 }
 
 /// Every device in these tests, enrolled here, and device 9, enrolled elsewhere.
@@ -250,7 +293,7 @@ fn a_reopened_store_continues_its_log_and_clock() {
     };
     // A restarted device draws fresh entropy: the same seed at the same time would mint the
     // same event identifiers, which the store refuses to store twice.
-    let mut store = Store::open(dir.db(), config(), own().1, SeededEntropy::new(8)).unwrap();
+    let mut store = Store::open(dir.db(), key(), config(), own().1, SeededEntropy::new(8)).unwrap();
     assert_eq!(store.clock(), clock);
     assert_eq!(store.head(own().0).unwrap(), LogHead::of(&first[1]));
     let next = append(&mut store, vec![draft(1, 3)], at(0));
@@ -409,14 +452,14 @@ fn a_store_opens_only_for_its_device_location_and_key() {
     let other_device = StoreConfig { device: device(2).0, ..config() };
     let other_location = StoreConfig { location: elsewhere(), ..config() };
     for config in [other_device, other_location] {
-        let opened = Store::open(dir.db(), config, own().1, SeededEntropy::new(1));
+        let opened = Store::open(dir.db(), key(), config, own().1, SeededEntropy::new(1));
         assert!(matches!(opened, Err(StoreError::NotThisDevice)), "{config:?}");
     }
-    let wrong_key = Store::open(dir.db(), config(), device(3).1, SeededEntropy::new(1));
-    assert!(matches!(wrong_key, Err(StoreError::WrongKey)));
+    let wrong_signer = Store::open(dir.db(), key(), config(), device(3).1, SeededEntropy::new(1));
+    assert!(matches!(wrong_signer, Err(StoreError::WrongSigner)));
     // A newer kernel's database is refused.
     open(&dir.db()).db().execute_batch("PRAGMA user_version = 3").unwrap();
-    let newer = Store::open(dir.db(), config(), own().1, SeededEntropy::new(1));
+    let newer = Store::open(dir.db(), key(), config(), own().1, SeededEntropy::new(1));
     assert!(matches!(newer, Err(StoreError::NewerSchema { found: 3, known: 2 })));
 }
 
@@ -448,9 +491,15 @@ fn an_interrupted_write_rolls_back_but_a_committed_one_stands() {
     ] {
         let dir = TempDir::new();
         let faults = Box::new(RefuseAt { point, nth, seen: 0 });
-        let mut store =
-            Store::open_with_faults(dir.db(), config(), own().1, SeededEntropy::new(7), faults)
-                .unwrap();
+        let mut store = Store::open_with_faults(
+            dir.db(),
+            key(),
+            config(),
+            own().1,
+            SeededEntropy::new(7),
+            faults,
+        )
+        .unwrap();
         let first = append(&mut store, vec![draft(1, 1)], at(0));
         let theirs = log_of(2, here(), 1);
         let written: Result<SignedEvent, StoreError> = store.write(|w| {
@@ -481,7 +530,7 @@ fn a_failed_write_gives_back_the_clock_it_moved() {
     let dir = TempDir::new();
     let faults = Box::new(RefuseAt { point: Point::Stored, nth: 1, seen: 0 });
     let mut store =
-        Store::open_with_faults(dir.db(), config(), own().1, SeededEntropy::new(7), faults)
+        Store::open_with_faults(dir.db(), key(), config(), own().1, SeededEntropy::new(7), faults)
             .unwrap();
     // The device's own first event, written elsewhere an hour ahead.
     let config = LogConfig {
@@ -507,10 +556,10 @@ fn an_interrupted_migration_leaves_no_store() {
     let dir = TempDir::new();
     let faults = Box::new(RefuseAt { point: Point::Migrating, nth: 1, seen: 0 });
     let opened =
-        Store::open_with_faults(dir.db(), config(), own().1, SeededEntropy::new(7), faults);
+        Store::open_with_faults(dir.db(), key(), config(), own().1, SeededEntropy::new(7), faults);
     assert!(matches!(opened, Err(StoreError::Interrupted(Point::Migrating))));
     // Nothing of the schema was kept.
-    let db = Connection::open(dir.db()).unwrap();
+    let db = raw(&dir.db());
     let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
     let tables: i64 =
         db.query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0)).unwrap();

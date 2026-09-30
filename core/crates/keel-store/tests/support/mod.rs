@@ -7,6 +7,7 @@
     reason = "each test crate uses its own part of the support module"
 )]
 
+use core::fmt::Write as _;
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
@@ -32,7 +33,7 @@ use keel_events::hash::EventHash;
 use keel_events::keys::{SignatureAlgorithm, Signer, SoftwareSigner};
 use keel_events::log::{EventDraft, LogConfig, LogHead, LogWriter};
 use keel_events::verify::{DeviceRegistry, Revocation};
-use keel_store::StoreConfig;
+use keel_store::{StoreConfig, StoreKey};
 use keel_types::{Currency, Hlc, Id, Money, Quantity, SeededEntropy, Timestamp, Unit};
 
 pub fn id<T>(n: u64) -> Id<T> {
@@ -53,9 +54,58 @@ pub fn device(n: u8) -> Id<Device> {
     id(u64::from(n))
 }
 
-/// Device `n`'s key: its secret is `n` repeated.
-pub fn key(n: u8) -> SoftwareSigner {
+/// Device `n`'s signing key: its secret is `n` repeated.
+pub fn signer(n: u8) -> SoftwareSigner {
     SoftwareSigner::from_secret(SignatureAlgorithm::EdDsa, &[n; 32]).unwrap()
+}
+
+/// The key the tests' stores are encrypted with.
+pub fn store_key() -> StoreKey {
+    store_key_of(0x4B)
+}
+
+/// Another store key: its bytes step from `n`, so a key given in another order is another key.
+pub fn store_key_of(n: u8) -> StoreKey {
+    StoreKey::new(&mut key_bytes(n))
+}
+
+/// The bytes of [`store_key_of`]`(n)`.
+pub fn key_bytes(n: u8) -> [u8; 32] {
+    let mut bytes = [n; 32];
+    for (step, byte) in (0_u8..).zip(bytes.iter_mut()) {
+        *byte = n.wrapping_add(step.wrapping_mul(37));
+    }
+    bytes
+}
+
+/// A connection of its own to the database at `path`, opened with the tests' key, to look at it
+/// or change it behind the store's back.
+pub fn raw(path: &std::path::Path) -> rusqlite::Connection {
+    raw_with(path, 0x4B)
+}
+
+/// As [`raw`], with the key [`store_key_of`]`(n)`.
+pub fn raw_with(path: &std::path::Path, n: u8) -> rusqlite::Connection {
+    keyed(rusqlite::Connection::open(path).unwrap(), n)
+}
+
+/// As [`raw`], through a connection that can't write. Unlike one that can, it leaves the WAL
+/// as it found it when it closes, as a crash left it; where there is none, it leaves an empty
+/// one.
+pub fn raw_reader(path: &std::path::Path, n: u8) -> rusqlite::Connection {
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+    keyed(rusqlite::Connection::open_with_flags(path, flags).unwrap(), n)
+}
+
+fn keyed(db: rusqlite::Connection, n: u8) -> rusqlite::Connection {
+    db.execute_batch("PRAGMA cipher_log_level = NONE").unwrap();
+    let hex: String = key_bytes(n).iter().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02X}");
+        hex
+    });
+    db.execute_batch(&format!("PRAGMA key = \"x'{hex}'\"; PRAGMA cipher_compatibility = 4;"))
+        .unwrap();
+    db
 }
 
 /// The device the store belongs to.
@@ -132,7 +182,7 @@ pub fn next_event(
         max_forward_drift: DRIFT,
     };
     let seed = variant.wrapping_mul(0x9E37_79B9).wrapping_add(u64::from(n));
-    let mut writer = LogWriter::new(config, key(n), SeededEntropy::new(seed));
+    let mut writer = LogWriter::new(config, signer(n), SeededEntropy::new(seed));
     writer.prepare(draft(stream_n, variant), now).unwrap().commit()
 }
 
@@ -146,9 +196,9 @@ pub fn trusted_first() -> SignedEvent {
 pub fn registry() -> DeviceRegistry {
     let mut registry = DeviceRegistry::new();
     for n in [OWN, PEERS[0], PEERS[1], REVOKED, REPLICA] {
-        registry.enroll(device(n), here(), key(n).public_key().clone()).unwrap();
+        registry.enroll(device(n), here(), signer(n).public_key().clone()).unwrap();
     }
-    registry.enroll(device(FOREIGN), elsewhere(), key(FOREIGN).public_key().clone()).unwrap();
+    registry.enroll(device(FOREIGN), elsewhere(), signer(FOREIGN).public_key().clone()).unwrap();
     let revocation = Revocation { after_seq: 1, last_trusted: trusted_first().hash() };
     registry.revoke(device(REVOKED), revocation).unwrap();
     registry
@@ -158,7 +208,7 @@ pub fn registry() -> DeviceRegistry {
 pub fn resigned(event: &SignedEvent, n: u8, change: impl FnOnce(&mut EventBody)) -> SignedEvent {
     let mut body = event.body().clone();
     change(&mut body);
-    SignedEvent::sign(body, &key(n)).unwrap()
+    SignedEvent::sign(body, &signer(n)).unwrap()
 }
 
 /// A hash no event has.
@@ -272,12 +322,13 @@ pub fn check_closed(
     })
 }
 
-/// Every row of the projections of the store in `scratch`, table by table, read directly from its
-/// database.
+/// Every row of the projections of the store in `scratch`, encrypted with the key made of `key`
+/// repeated, table by table, read directly from its database.
 pub fn projection_rows(
     scratch: &Scratch,
+    key: u8,
 ) -> BTreeMap<&'static str, Vec<Vec<rusqlite::types::Value>>> {
-    let db = rusqlite::Connection::open(scratch.db()).unwrap();
+    let db = raw_with(&scratch.db(), key);
     [("orders", "order_id"), ("payments", "payment_id")]
         .into_iter()
         .map(|(table, key)| {

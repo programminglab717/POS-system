@@ -11,8 +11,11 @@
 //!
 //! Each write appends events, one of them to a real order, receives another device's events, and
 //! moves effects along: it enqueues one, starts the one before, and finishes the one before that.
+//! Halfway, the store changes its key.
 //!
 //! After each crash, the parent reopens the store and checks that:
+//! - exactly one key opens it: the old one before the rekey committed, the new one after;
+//! - it knows it wasn't closed cleanly, and its full check finds nothing wrong;
 //! - every acknowledged write is stored, and so is the write in flight when the crash came
 //!   after its commit; no other write is;
 //! - each write is stored whole or not at all, its projections and effects included: the
@@ -43,6 +46,7 @@ use std::time::Duration;
 
 use keel_domain::order::{Line, Order};
 use keel_events::event::SignedEvent;
+use keel_events::keys::SoftwareSigner;
 use keel_events::log::{Link, LogHead};
 use keel_events::verify::DeviceRegistry;
 use keel_store::{
@@ -50,8 +54,8 @@ use keel_store::{
 };
 use keel_types::{Hlc, Id, SeededEntropy};
 use support::{
-    OWN, PEERS, Scratch, at, config, created, device, domain_draft, draft, here, id, key,
-    line_added, next_event, projection_rows, registry,
+    OWN, PEERS, Scratch, at, config, created, device, domain_draft, draft, here, id, line_added,
+    next_event, projection_rows, raw_reader, registry, signer, store_key_of,
 };
 
 /// Set in the child: the directory of the store it works on.
@@ -68,6 +72,23 @@ const ACK: &str = "keel-store acknowledged write ";
 const REACHED: &str = "keel-store reached ";
 /// What the child prints just before it aborts at a point.
 const DIES: &str = "keel-store dies at ";
+/// What the child prints just before it changes the store's key, and after, with how long it
+/// took in microseconds.
+const REKEYING: &str = "keel-store rekeying";
+const REKEYED: &str = "keel-store rekeyed in ";
+
+/// What the child prints at the end: SQLCipher's log level, which is the process's. The child is
+/// a process of its own, where only the store sets it.
+const LOG_LEVEL: &str = "keel-store cipher log level ";
+
+/// The store's key, before and after the rekey: each byte of it.
+const OLD_KEY: u8 = 0x4B;
+const NEW_KEY: u8 = 0x4C;
+
+/// The store changes its key before this write.
+fn rekey_before(writes: usize) -> usize {
+    writes / 2
+}
 
 /// The peer whose events the workload receives.
 const PEER: u8 = PEERS[0];
@@ -139,6 +160,8 @@ fn point_name(point: Point) -> &'static str {
         Point::Stored => "stored",
         Point::Committing => "committing",
         Point::Committed => "committed",
+        Point::Rekeying => "rekeying",
+        Point::Rekeyed => "rekeyed",
         _ => panic!("a new point: {point:?}"),
     }
 }
@@ -175,12 +198,20 @@ fn crash_child() {
     let writes: usize = std::env::var(WRITES).unwrap().parse().unwrap();
     let faults = Box::new(AbortAt(crash));
     let path = std::path::Path::new(&dir).join("store.db");
+    let key = store_key_of(OLD_KEY);
     let mut store =
-        Store::open_with_faults(path, config(), key(OWN), SeededEntropy::new(11), faults).unwrap();
+        Store::open_with_faults(path, key, config(), signer(OWN), SeededEntropy::new(11), faults)
+            .unwrap();
     let registry = registry();
     let peer = peer_log(writes);
     let mut received = 0;
     for i in 0..writes {
+        if i == rekey_before(writes) {
+            println!("{REKEYING}");
+            let started = std::time::Instant::now();
+            store.rekey(store_key_of(NEW_KEY)).unwrap();
+            println!("{REKEYED}{}", started.elapsed().as_micros());
+        }
         let now = at(20_000 + i64::try_from(i).unwrap() * 100);
         let incoming = &peer[received..received + receives(i)];
         store
@@ -219,6 +250,9 @@ fn crash_child() {
     for (point, times) in Point::ALL.into_iter().zip(&TIMES) {
         println!("{REACHED}{} {}", point_name(point), times.load(Ordering::Relaxed));
     }
+    let any = rusqlite::Connection::open_in_memory().unwrap();
+    let level: String = any.query_row("PRAGMA cipher_log_level", [], |row| row.get(0)).unwrap();
+    println!("{LOG_LEVEL}{level}");
 }
 
 /// Runs the child on `scratch` for `writes` writes, dying at `crash` if given.
@@ -264,12 +298,57 @@ fn reached(stdout: &str) -> Vec<(String, usize)> {
         .collect()
 }
 
-/// Checks the store in `scratch` after a crash, given the peer's log: it holds exactly the first
-/// `written` writes of the workload, for a `written` in `candidates`; every log verifies; and
-/// the device carries on. Returns `written`.
-fn check_store(scratch: &Scratch, peer: &[SignedEvent], candidates: &[usize]) -> usize {
-    let mut store =
-        Store::open(scratch.db(), config(), key(OWN), SeededEntropy::new(4242)).unwrap();
+/// The keys that may open the store after a child printed `stdout`: the old one until the rekey
+/// began, the new one once it returned, and either in between.
+fn keys_after(stdout: &str) -> &'static [u8] {
+    if stdout.contains(REKEYED) {
+        &[NEW_KEY]
+    } else if stdout.contains(REKEYING) {
+        &[OLD_KEY, NEW_KEY]
+    } else {
+        &[OLD_KEY]
+    }
+}
+
+type TestStore = Store<SoftwareSigner, SeededEntropy>;
+
+/// Opens the store in `scratch` with each key: exactly one must open it, one of `keys`. Returns
+/// the store, and the key that opened it.
+fn open_with_one_key(scratch: &Scratch, keys: &[u8]) -> (TestStore, u8) {
+    let open = |key: u8| {
+        Store::open(
+            scratch.db(),
+            store_key_of(key),
+            config(),
+            signer(OWN),
+            SeededEntropy::new(4242),
+        )
+    };
+    match (open(OLD_KEY), open(NEW_KEY)) {
+        (Ok(store), Err(StoreError::KeyRejected)) if keys.contains(&OLD_KEY) => (store, OLD_KEY),
+        (Err(StoreError::KeyRejected), Ok(store)) if keys.contains(&NEW_KEY) => (store, NEW_KEY),
+        (old, new) => panic!(
+            "with the old key {:?}, with the new {:?}, where {keys:?} may open it",
+            old.map(|_| ()),
+            new.map(|_| ())
+        ),
+    }
+}
+
+/// Checks the store in `scratch` after a crash, or after a whole workload if not `crashed`,
+/// given the peer's log: exactly one of `keys` opens it; it holds exactly the first `written`
+/// writes of the workload, for a `written` in `candidates`; every log verifies; and the device
+/// carries on. Returns `written`, and the key that opened the store.
+fn check_store(
+    scratch: &Scratch,
+    peer: &[SignedEvent],
+    candidates: &[usize],
+    keys: &[u8],
+    crashed: bool,
+) -> (usize, u8) {
+    let (mut store, key) = open_with_one_key(scratch, keys);
+    assert_eq!(store.recovered(), crashed, "whether the store was closed cleanly");
+    assert_eq!(store.check().unwrap(), [], "the full check");
     let all_own = store.log(device(OWN), 0, 10_000).unwrap();
     let (own, ordered): (Vec<SignedEvent>, Vec<SignedEvent>) = all_own
         .iter()
@@ -301,9 +380,9 @@ fn check_store(scratch: &Scratch, peer: &[SignedEvent], candidates: &[usize]) ->
     assert_eq!(theirs, peer[..theirs.len()], "the peer's events, in order");
     // The projections are what the stored events make: a rebuild changes nothing. The order has a
     // line for each write.
-    let kept = projection_rows(scratch);
+    let kept = projection_rows(scratch, key);
     store.rebuild_projections().unwrap();
-    assert_eq!(projection_rows(scratch), kept, "the projections disagree with the events");
+    assert_eq!(projection_rows(scratch, key), kept, "the projections disagree with the events");
     match store.order(order()).unwrap() {
         None => assert_eq!(written, 0),
         Some(summary) => {
@@ -341,14 +420,15 @@ fn check_store(scratch: &Scratch, peer: &[SignedEvent], candidates: &[usize]) ->
     let before = all_own.last().map_or(LogHead::EMPTY, LogHead::of);
     assert_eq!(before.link(&next), Ok(Link::Next));
     assert!(next.body().hlc > latest);
-    written
+    (written, key)
 }
 
 /// How often a workload of `writes` writes reaches `point`.
 fn occurrences(point: Point, writes: usize) -> usize {
     match point {
-        // A new store migrates, and builds its projections, once.
-        Point::Migrating | Point::Rebuilding => 1,
+        // A new store migrates, and builds its projections, once; the workload changes its key
+        // once.
+        Point::Migrating | Point::Rebuilding | Point::Rekeying | Point::Rekeyed => 1,
         Point::Stored => (0..writes).map(|i| appends(i) + order_events(i) + receives(i)).sum(),
         _ => writes,
     }
@@ -372,15 +452,21 @@ fn a_crash_at_any_point_keeps_every_acknowledged_write_whole() {
             assert!(last.ends_with(&format!("{DIES}{} {nth}", point_name(point))), "{last}");
             let acked = acknowledged(&stdout);
             if point == Point::Migrating {
-                // Nothing of the interrupted migration was kept.
-                let db = rusqlite::Connection::open(scratch.db()).unwrap();
+                // Nothing of the interrupted migration was kept. Looking can't tidy the WAL.
+                let db = raw_reader(&scratch.db(), OLD_KEY);
                 let version: i64 =
                     db.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
                 assert_eq!(version, 0, "an interrupted migration left version {version}");
             }
             // A crash after a write committed leaves it stored though never acknowledged.
             let expected = if point == Point::Committed { acked + 1 } else { acked };
-            let written = check_store(&scratch, &peer, &[expected]);
+            // A crash before the rekey leaves the old key, and after it the new one.
+            let keys = match point {
+                Point::Rekeying => &[OLD_KEY],
+                Point::Rekeyed => &[NEW_KEY],
+                _ => keys_after(&stdout),
+            };
+            let (written, _) = check_store(&scratch, &peer, &[expected], keys, true);
             assert_eq!(written, expected, "{point:?} {nth}");
         }
     }
@@ -423,8 +509,56 @@ fn a_kill_at_any_moment_keeps_every_acknowledged_write_whole() {
         let acked = acknowledged(&output);
         // The kill may land after a commit and before its acknowledgement.
         let candidates = if acked == WRITES_EACH { vec![acked] } else { vec![acked, acked + 1] };
-        check_store(&scratch, &peer, &candidates);
+        check_store(&scratch, &peer, &candidates, keys_after(&output), acked < WRITES_EACH);
     }
+}
+
+/// A child killed at moments spread over its rekey: exactly one key opens the store, and it holds
+/// every acknowledged write.
+#[test]
+fn a_kill_during_a_rekey_leaves_the_store_under_one_key_or_the_other() {
+    const WRITES_EACH: usize = 200;
+    const KILLS: u32 = 16;
+    let peer = peer_log(WRITES_EACH);
+    // How long the rekey takes, from a child that isn't killed.
+    let timed = Scratch::new("rekey-time");
+    let whole = spawn_child(&timed, WRITES_EACH, None);
+    let stdout = String::from_utf8(whole.wait_with_output().unwrap().stdout).unwrap();
+    let took: u64 = stdout
+        .lines()
+        .find_map(|line| line.split_once(REKEYED))
+        .map(|(_, micros)| micros.trim().parse().unwrap())
+        .unwrap();
+    let mut opened_by = [0; 2];
+    for kill in 0..KILLS {
+        // Delays spread from the rekey's start to half again its length.
+        let delay = Duration::from_micros(took * 3 * u64::from(kill) / (2 * u64::from(KILLS)));
+        let scratch = Scratch::new("rekey-kill");
+        let mut child = spawn_child(&scratch, WRITES_EACH, None);
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut output = String::new();
+        loop {
+            let mut line = String::new();
+            assert_ne!(stdout.read_line(&mut line).unwrap(), 0, "the child ended early");
+            output.push_str(&line);
+            if line.contains(REKEYING) {
+                break;
+            }
+        }
+        std::thread::sleep(delay);
+        let _ = child.kill();
+        stdout.read_to_string(&mut output).unwrap();
+        let _ = child.wait().unwrap();
+        let acked = acknowledged(&output);
+        let candidates = if acked == WRITES_EACH { vec![acked] } else { vec![acked, acked + 1] };
+        let (_, key) =
+            check_store(&scratch, &peer, &candidates, keys_after(&output), acked < WRITES_EACH);
+        opened_by[usize::from(key == NEW_KEY)] += 1;
+    }
+    println!(
+        "rekey of {took} µs: {} kills left the old key, {} the new",
+        opened_by[0], opened_by[1]
+    );
 }
 
 /// Without a crash the workload runs to the end, and reaches each point as often as the crash
@@ -442,5 +576,9 @@ fn a_whole_workload_reaches_each_point_as_often_as_the_crash_test_assumes() {
         .map(|point| (point_name(point).to_owned(), occurrences(point, WRITES_EACH)))
         .collect();
     assert_eq!(reached(&stdout), expected);
-    assert_eq!(check_store(&scratch, &peer_log(WRITES_EACH), &[WRITES_EACH]), WRITES_EACH);
+    // The store turned SQLCipher's logging off: it reports what goes wrong itself.
+    let level = stdout.lines().find_map(|line| line.split_once(LOG_LEVEL)).map(|(_, level)| level);
+    assert_eq!(level, Some("NONE"));
+    let checked = check_store(&scratch, &peer_log(WRITES_EACH), &[WRITES_EACH], &[NEW_KEY], false);
+    assert_eq!(checked, (WRITES_EACH, NEW_KEY));
 }

@@ -2,14 +2,16 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-09-29.
+> Last updated: 2026-09-30.
 
 ## Where we are
 
 **Phase 0 (Foundations), step 5 of 8:** `keel-store`, the SQLite event store, projections and
 outbox, in three slices ([ADR-0016](./adr/0016-device-store.md)). Slice 1, the event log store,
 and slice 2, projections and the outbox ([ADR-0017](./adr/0017-projections-and-outbox.md)), are
-built and reviewed. Slice 3, encryption at rest and integrity checks, is being designed.
+built and reviewed. Slice 3, encryption at rest and integrity checks
+([ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), proposed), is built and
+waiting for review.
 Step 4, `keel-domain` and `keel-pricing` v0, is done: built in four slices, each reviewed.
 
 ## Phase 0 milestones
@@ -22,7 +24,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 2 | `keel-types`: value types | Done, 2026-09-27 | [`core/crates/keel-types`](../core/crates/keel-types/) |
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
-| 5 | `keel-store`: SQLite events, projections and outbox | In progress: slices 1 and 2 of 3 built and reviewed; slice 3 being designed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md) |
+| 5 | `keel-store`: SQLite events, projections and outbox | In progress: slices 1 and 2 of 3 built and reviewed; slice 3 built, waiting for review | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) (proposed) |
 | 6 | `keel-sim` and `keel-sync` v0 | Not started | |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
@@ -52,26 +54,138 @@ Step 5 comes in three slices, each ending with a review
 2. **Projections and the outbox** (built and reviewed 2026-09-29): order and payment
    projections recomputed in each write's transaction, rebuilt from the log when their version
    changes; and an outbox of effects that commit with the events that cause them.
-3. **Encryption at rest and integrity checks**: SQLCipher-class encryption with its key from the
-   platform keystore, and checks when the store opens.
+3. **Encryption at rest and integrity checks** (built 2026-09-30, waiting for review): SQLCipher
+   encryption with a key the platform protects, a store that fails closed when damaged, cheap
+   checks when it opens, and a full check on request.
 
 Retention, snapshots and backups follow the sync engine (step 6).
 
 ## Current slice
 
-Slice 3, encryption at rest and integrity checks, is being designed: the database encrypted with
-a key the platform keystore protects ([security §4](./architecture/security.md#4-data-protection)),
-and the checks the store makes when it opens.
+Slice 3, encryption at rest and integrity checks, is built and waiting for review, with its
+design in [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), proposed: SQLCipher
+with a vendored OpenSSL, a raw key the platform protects, cheap checks every time the store
+opens, and a full check on request.
 
 | Piece | Status |
 |---|---|
-| Design: the cipher and its build, the key and who holds it, what the store checks when it opens | In progress |
-| Encryption at rest | Not started |
-| Integrity checks when the store opens | Not started |
-| Known-answer tests, property tests against models, crash tests | Not started |
-| Planted bugs, coverage probes, 100,000-case soak, CI-equivalent run | Not started |
+| Design: the cipher and its build, the key and who holds it, what the store checks and when | Done |
+| Encryption at rest: the key, pinned settings, refusing other keys, changing the key | Done |
+| A damaged store fails closed; whether the store was closed cleanly | Done |
+| The full check: pages, structure, events and chains, projections, the outbox and quarantine | Done |
+| Known-answer tests, a golden store, property tests against models, damage tests, crash tests | Done |
+| Planted bugs and coverage probes | Done |
+| 100,000-case soak, CI-equivalent run, measurements | Done |
+| Review, and accepting ADR-0018 | Waiting |
 
 ## Completed
+
+### Encryption at rest and integrity checks: step 5, slice 3 (2026-09-30)
+
+Commit to follow. Waiting for review.
+
+- **Built** ([ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md)):
+  - encryption at rest: SQLCipher 4.14, compiled in with OpenSSL 3.6 built from source, the same
+    on every platform. Every page, the WAL's too, is encrypted with AES-256 and authenticated
+    with HMAC-SHA512, with SQLCipher 4's settings pinned, and temporary storage stays in memory.
+    The store opens only with its key: 32 bytes the platform keeps safe, zeroed when dropped;
+  - changing the key, in one transaction, proved by opening the file again: SQLCipher's rekey
+    reports success when it fails, so the store never trusts it;
+  - a damaged store fails closed: a page that fails its authentication, or a file SQLite finds
+    malformed, makes the store refuse everything until it is reopened, and it never returns
+    what it read there;
+  - checks: opening checks what costs the same whatever the store holds, and says whether the
+    store was closed cleanly last time; a full check, for when the device is idle, reports every
+    problem with the file's pages, SQLite's structure, the events and each device's log, the
+    store's identity and clock, the projections against a rebuild, the outbox and the
+    quarantine;
+  - fault points for rekeys. The error for a signer that didn't sign the device's events is now
+    `WrongSigner`, beside the errors about the store's key.
+- **Verified:**
+  - Known-answer tests: 20 more in `keel-store` (53 in all). Among them: nothing in the clear in
+    the database or its WAL; only the store's key opens it, and neither an unencrypted database
+    nor a file of garbage opens; the pinned settings; rekeys, interrupted and failed ones
+    included; a journal left behind; a damaged page failing the store closed, and one that
+    reads as zeros; a damaged first page; files cut short and added to; each change behind the
+    store's back the check finds, an event from another location, and a forged event whose
+    clock runs backward; a malformed database, which stops the check; a check another reader
+    holds up.
+  - The golden store: made once with a fixed key, kept in the repository, and read back as it
+    was made, against pinned heads and a store stocked afresh.
+  - Property tests against models:
+    - keys: only the store's key opens it, through writes, rekeys, interrupted and refused
+      rekeys, and reopenings with four keys, and it holds what was written;
+    - damage to the file: bits flipped anywhere, bytes added or cut. Every read, and every
+      write that loads an aggregate, gives what the sound store gave or reports the damage, and
+      after it, so does every read and write; a damaged first page refuses the key; the check
+      reports exactly the damaged pages;
+    - changes behind the store's back, with the key: events changed, refiled, deleted or
+      forged, streams dropped, projection rows changed, added or deleted, effects' causes and
+      attempts, the clock, quarantined digests and the store's identity. The check reports
+      exactly the problems a model predicts, and the same again.
+  - Every earlier test now runs on encrypted stores. The crash tests change the key halfway
+    through their workload. After every crash, exactly one key opens the store, it knows it
+    wasn't closed cleanly, and its full check finds nothing. Kills spread over a rekey of about
+    4 ms left the old key in 3 cases and the new one in 13.
+  - Coverage probes, over 1,000 cases:
+    - damage to the file: none in 157, bits flipped in 765, bytes added in 164 and cut in 159
+      (a whole page in 81); several pages in 603, overflow pages in 265, the last page of a long
+      value, which reads as zeros, in 107, and the first page in 52. The key refused in 52, the
+      damage met by opening in 439, by a read in 250 (a write, first, in 43), and by the check
+      alone in 102;
+    - changes: every kind of problem, in 79 to 396 cases each; several problems at once in 456;
+      a forgery breaking the link after it in 108; a changed row in a stream with an unreadable
+      event, which can't be judged, in 23; a stream that lost some of its events in 153, and all
+      of them, with its row, in 75;
+    - keys: two rekeys or more in 646, back to an earlier key in 364, to the same key in 478; a
+      reopening right after a rekey in 392, after an interrupted one in 165, trying another key
+      first in 676; a write right after a rekey in 538.
+  - Planted bugs, all caught: 139 in `keel-store`, 45 of them new, aimed at the key, encryption,
+    damage and the check, and 9 re-aimed at code this slice changed. The property and crash
+    tests alone catch 120, two of which only the unit tests reached before: a journal that isn't
+    the WAL, which the crash tests now see in a crashed store that looks closed cleanly, and a
+    stored event's hash left unchecked, which the full check now meets. The other 19 only the
+    unit tests reach: settings and versions nothing else can see, invalid input, and failures
+    only a unit test provokes, such as a rekey SQLCipher can't do.
+  - Every property test in `keel-store` passed 100,000 cases.
+  - The CI-equivalent run passed locally; CI on the commit to follow.
+- **Decisions:** [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md), proposed,
+  with the details the build settled under "As built":
+  - opening tells a key that doesn't open the store from a file SQLite finds malformed. When a
+    journal was left behind, the store checks the key through a connection that can't write
+    first, since one that can would tidy the journal away, the only sign of a crash;
+  - after each read, one more, from the cache, proves the connection met no damage, at a cost
+    of about 2 µs; a damaged store refuses everything until it is reopened, and its check opens
+    the file afresh;
+  - costs, against the same store unencrypted on the development machine: a write of one event
+    90 to 210 µs more, the more pages it touches; for a store of 100,000 events, 72 MB, opening
+    in 0.8 ms, the full check in 2.7 s, and a rekey in 1.1 s;
+  - the check reports its problems in order, each by page, row, device and position, projection
+    and stream, or effect, and stops after damaged pages or a malformed database;
+  - the golden store of schema version 2, 94 KB, holds something of everything the store keeps.
+- **Found and fixed during the build:**
+  - SQLCipher hands SQLite a page that fails its authentication as zeros, and fails the reads
+    after it. The damage property test found the last page of a long value read back with zeros
+    in it and no error: events caught it by their hashes, but an effect's payload or a
+    quarantined message wouldn't have. The store now proves every read with one more.
+  - A connection that can write moves the WAL into the database and deletes it as it closes,
+    even when its key was refused: a shell trying its current key, then the pending one, after
+    a crash during a rotation, would have hidden the crash. The store now checks the key through
+    a connection that can't write first, when there is a WAL.
+  - Opening took any failure of its first read for a refused key, so a file cut short by a whole
+    page was reported as `KeyRejected`; it is now `Damaged`.
+  - Planted bugs the tests first missed:
+    - the tests' keys were 32 equal bytes, so a key given in reverse was the same key. They now
+      differ, and the golden store was made again;
+    - no property test met damage first in a write: the damage property's reads now include
+      writes that load an aggregate;
+    - SQLCipher's log level is the process's, which the tests' own connections set too: the
+      crash test's child, a process of its own, now reports the level its store left.
+  - Two planted bugs changed nothing anyone could see, and were planted again: dropping the
+    check that temporary storage is in memory, while still asking for it; and the check keeping
+    one stream's rebuild, which the rollback of its transaction undid anyway.
+  - The golden store's maker, a test ignored by default, would have run in CI, which runs
+    ignored tests: it now runs only when an environment variable asks.
 
 ### Projections and the outbox: step 5, slice 2 (2026-09-29)
 
@@ -617,8 +731,20 @@ Work deliberately left for later, so it isn't forgotten:
 - **`keel-store`:**
   - Power-loss tests, which need keel-sim's simulated disk; until then the durability settings
     are checked as SQLite reports them.
-  - Encryption at rest and integrity checks (slice 3); retention, snapshots and backups, after
-    the sync engine.
+  - Retention, snapshots and backups, after the sync engine.
+  - Salvaging a damaged store: reading what still reads, above all the device's own events not
+    yet sent, and starting again from its peers. A store that can't open, because a page opening
+    reads is damaged, can't be checked yet either.
+  - A store that lost its latest writes, to an older copy restored over it or a damaged WAL,
+    can't tell: before such a device writes again, the sync engine must check its own log's head
+    against its peers', or its next events fork its log.
+  - The platform shells make, wrap, store and rotate the store's key (steps 7 and 8), as ADR-0018
+    describes. Rotation follows the protocol the store's crash tests check.
+  - SQLCipher's HMAC-SHA512 may be slow on ARM cores without SHA-512 instructions: measure on the
+    reference register (step 7), and switch to HMAC-SHA256 before the first deployment if so.
+  - `rusqlite` bundles SQLCipher 4.14.0, on SQLite 3.51.3, while SQLCipher is at 4.19: follow its
+    releases. Its rekey reports success when it fails, which the store works around (ADR-0018):
+    check each upgrade against the store's tests.
   - Check balances in a projection: they need the location's pricing rules in the store.
   - Folding only what's new: each write folds the streams it touches from the start, about
     2.3 µs an event on the development machine. Long-lived streams, such as a gift card's, will

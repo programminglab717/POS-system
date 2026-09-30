@@ -17,6 +17,8 @@ Read `docs/engineering/conventions.md`. In short:
 - New dependencies need an entry in the conventions' dependency policy.
 - Event payloads follow ADR-0013: any payload change, even a new optional field, is a new schema
   version with a pinned example payload. Never change what an existing version decodes.
+- Golden stores (`core/crates/keel-store/tests/golden/`) pin what devices hold on disk: never
+  regenerate one. A new store schema version adds a golden store of its own (ADR-0018).
 - Update the architecture docs in the same change when code makes them outdated.
 - Keep [`docs/progress.md`](docs/progress.md) current: update it as each piece of work lands, and
   record each finished slice there with how it was verified.
@@ -34,6 +36,7 @@ cargo build -p keel-types -p keel-events -p keel-domain -p keel-pricing --no-def
 python3 tools/planted-bugs/run.py <crate> [--props]    # plant the crate's known bugs, one at a time
 python3 core/crates/keel-pricing/tests/golden/generate.py  # after changing how pricing works
 python3 core/crates/keel-types/tools/gen_currency_table.py  # after changing the ISO 4217 snapshot
+KEEL_STORE_MAKE_GOLDEN=1 cargo test -p keel-store --test golden_store -- --ignored  # once, for a new store schema version
 ```
 
 ## Testing expectations

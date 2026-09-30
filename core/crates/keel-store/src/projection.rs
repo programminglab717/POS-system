@@ -37,6 +37,8 @@ pub(crate) struct Projection {
     pub(crate) version: i64,
     /// The kind of stream it follows.
     pub(crate) kind: &'static str,
+    /// The column that holds each row's stream identifier: the table's primary key.
+    pub(crate) key: &'static str,
     /// Creates its table.
     create: &'static str,
     /// Drops its table.
@@ -48,6 +50,18 @@ pub(crate) struct Projection {
 /// Every projection.
 pub(crate) const ALL: [Projection; 2] = [ORDERS, PAYMENTS];
 
+impl Projection {
+    /// Replaces the row of stream `id`, given its events in canonical order.
+    pub(crate) fn project(
+        &self,
+        db: &Connection,
+        id: Id<envelope::Aggregate>,
+        events: &[SignedEvent],
+    ) -> Result<(), StoreError> {
+        (self.project)(db, id, events)
+    }
+}
+
 /// Recomputes the rows of `streams`: those a write touched.
 pub(crate) fn update(db: &Connection, streams: &[StreamRef]) -> Result<(), StoreError> {
     for stream in streams {
@@ -55,7 +69,7 @@ pub(crate) fn update(db: &Connection, streams: &[StreamRef]) -> Result<(), Store
             ALL.iter().find(|projection| projection.kind == stream.kind.as_str())
         {
             let events = rows::stream_events(db, projection.kind, stream.id)?;
-            (projection.project)(db, stream.id, &events)?;
+            projection.project(db, stream.id, &events)?;
         }
     }
     Ok(())
@@ -93,7 +107,7 @@ pub(crate) fn rebuild(db: &Connection, projection: &Projection) -> Result<(), St
     for stream in streams {
         let stream = id(&stream)?;
         let events = rows::stream_events(db, projection.kind, stream)?;
-        (projection.project)(db, stream, &events)?;
+        projection.project(db, stream, &events)?;
     }
     db.execute(
         "INSERT INTO projections (name, version) VALUES (?1, ?2) \
@@ -151,6 +165,7 @@ const ORDERS: Projection = Projection {
     name: "orders",
     version: 1,
     kind: "order",
+    key: "order_id",
     create: "
         CREATE TABLE orders (
             order_id BLOB PRIMARY KEY CHECK (length(order_id) = 16),
@@ -394,6 +409,7 @@ const PAYMENTS: Projection = Projection {
     name: "payments",
     version: 1,
     kind: "payment",
+    key: "payment_id",
     create: "
         CREATE TABLE payments (
             payment_id BLOB PRIMARY KEY CHECK (length(payment_id) = 16),

@@ -40,7 +40,8 @@ use proptest::prelude::*;
 use proptest::sample::Index;
 use support::{
     DRIFT, FOREIGN, OWN, PEERS, REVOKED, Scratch, UNKNOWN, at, config, device, draft, elsewhere,
-    here, key, next_event, registry, resigned, stray_hash, trusted_first,
+    here, next_event, registry, resigned, signer, store_key, store_key_of, stray_hash,
+    trusted_first,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -108,8 +109,10 @@ enum Stranger {
     Device,
     /// The device, enrolled at another location.
     Location,
-    /// The device, with another device's key.
-    Key,
+    /// The device, with another device's signing key.
+    Signer,
+    /// The device, with another store's key.
+    StoreKey,
 }
 
 #[derive(Clone, Debug)]
@@ -181,7 +184,12 @@ fn any_op() -> impl Strategy<Value = Op> {
         8 => (prop::collection::vec((any_step(), prop::bool::weighted(0.3)), 1..6), any_ending())
             .prop_map(|(steps, ending)| Op::Write(steps, ending)),
         1 => Just(Op::Reopen),
-        1 => prop_oneof![Just(Stranger::Device), Just(Stranger::Location), Just(Stranger::Key)]
+        1 => prop_oneof![
+            Just(Stranger::Device),
+            Just(Stranger::Location),
+            Just(Stranger::Signer),
+            Just(Stranger::StoreKey),
+        ]
             .prop_map(Op::OpenAs),
     ]
 }
@@ -499,8 +507,9 @@ type TestStore = Store<keel_events::keys::SoftwareSigner, SeededEntropy>;
 fn open(scratch: &Scratch, plan: &Plan, seed: u64) -> TestStore {
     Store::open_with_faults(
         scratch.db(),
+        store_key(),
         config(),
-        key(OWN),
+        signer(OWN),
         SeededEntropy::new(seed),
         Box::new(plan.clone()),
     )
@@ -650,20 +659,27 @@ impl Case {
     /// reopens it as the device.
     fn open_as(&mut self, stranger: Stranger) -> Result<(), TestCaseError> {
         self.store = None;
-        let (config, signer) = match stranger {
-            Stranger::Device => {
-                (StoreConfig { device: device(PEERS[0]), ..config() }, key(PEERS[0]))
+        let (key, config, signer) = match stranger {
+            Stranger::Device => (
+                store_key(),
+                StoreConfig { device: device(PEERS[0]), ..config() },
+                signer(PEERS[0]),
+            ),
+            Stranger::Location => {
+                (store_key(), StoreConfig { location: elsewhere(), ..config() }, signer(OWN))
             }
-            Stranger::Location => (StoreConfig { location: elsewhere(), ..config() }, key(OWN)),
-            Stranger::Key => (config(), key(PEERS[0])),
+            Stranger::Signer => (store_key(), config(), signer(PEERS[0])),
+            Stranger::StoreKey => (store_key_of(0x4C), config(), signer(OWN)),
         };
-        let opened = Store::open(self.scratch.db(), config, signer, SeededEntropy::new(99));
-        // The key is checked against the device's own events: a store without any can't tell.
+        let opened = Store::open(self.scratch.db(), key, config, signer, SeededEntropy::new(99));
+        // The signer is checked against the device's own events: a store without any can't
+        // tell.
         let unsigned = self.model.log(OWN).is_empty();
         match (stranger, opened) {
-            (Stranger::Device | Stranger::Location, Err(StoreError::NotThisDevice)) => {}
-            (Stranger::Key, Err(StoreError::WrongKey)) if !unsigned => {}
-            (Stranger::Key, Ok(_)) if unsigned => {}
+            (Stranger::Device | Stranger::Location, Err(StoreError::NotThisDevice))
+            | (Stranger::StoreKey, Err(StoreError::KeyRejected)) => {}
+            (Stranger::Signer, Err(StoreError::WrongSigner)) if !unsigned => {}
+            (Stranger::Signer, Ok(_)) if unsigned => {}
             (stranger, opened) => {
                 prop_assert!(false, "{stranger:?} opening the store: {:?}", opened.map(|_| ()));
             }

@@ -24,7 +24,7 @@ use keel_store::{
 };
 use keel_types::{Id, SeededEntropy, Timestamp};
 use proptest::prelude::*;
-use support::{OWN, Scratch, at, config, draft, id, key};
+use support::{OWN, Scratch, at, config, draft, id, signer, store_key};
 
 const KEYS: [&[u8]; 4] = [b"k0", b"k1", b"k2", b"key-3"];
 const KINDS: [&str; 2] = ["print.receipt", "payment.card_sale"];
@@ -226,7 +226,8 @@ proptest! {
     fn the_outbox_does_what_the_model_says(ops in prop::collection::vec(any_op(), 1..12)) {
         let scratch = Scratch::new("outbox");
         let open = |seed: u64| -> TestStore {
-            Store::open(scratch.db(), config(), key(OWN), SeededEntropy::new(seed)).unwrap()
+            Store::open(scratch.db(), store_key(), config(), signer(OWN), SeededEntropy::new(seed))
+                .unwrap()
         };
         let mut store = open(1);
         let mut model = Model::default();

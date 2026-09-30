@@ -456,9 +456,10 @@ workflow, not a surprise on a statement.
 - **Local store**: SQLite in WAL mode. The event tables, projection tables and outbox are all in one
   database, so *event append + projection update + outbox enqueue* is a single atomic transaction.
   Every commit is fsynced (`synchronous = FULL`), so none can pass for durable when it isn't. The
-  database is encrypted at rest with a key protected by the platform keystore. See
-  [ADR-0016](../adr/0016-device-store.md) and [ADR-0017](../adr/0017-projections-and-outbox.md):
-  the event log, projections and the outbox are built; encryption follows.
+  database is encrypted at rest with SQLCipher, with a key protected by the platform keystore.
+  See [ADR-0016](../adr/0016-device-store.md), [ADR-0017](../adr/0017-projections-and-outbox.md)
+  and [ADR-0018](../adr/0018-encryption-at-rest-and-integrity-checks.md): the event log,
+  projections, the outbox, encryption at rest and integrity checks are built.
 - **Retention**:
   - Hub: 90 days of full events (configurable).
   - Terminals: 14 days.
@@ -471,8 +472,13 @@ workflow, not a surprise on a statement.
 - **Bootstrap a new or replaced device**: enroll → receive certificate → pull the reference-data
   snapshot and the location event window **from the hub over LAN** (fast even with poor internet) →
   verify → ready. The target is under 2 minutes for a 100k-SKU catalog.
-- **Corruption recovery**: page checksums detect local corruption. The device rebuilds from the hub,
-  the standby or the cloud. Its own unsynced events are protected by the WAL plus a rolling local backup file.
+- **Corruption recovery**: every page is authenticated, so damage is found at the first read of
+  it, and the store fails closed; a full check, run when the device is idle, finds damage no read
+  has met ([ADR-0018](../adr/0018-encryption-at-rest-and-integrity-checks.md)). The device rebuilds
+  from the hub, the standby or the cloud. Its own unsynced events are protected by the WAL plus a
+  rolling local backup file. A store can't tell when it has lost its latest writes, to an older
+  copy restored over it or a damaged WAL: before such a device writes again, it learns its own
+  log's head from its peers, or its next events would fork its log.
 
 ## 10. Side effects: the outbox and effect ownership
 

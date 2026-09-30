@@ -33,8 +33,10 @@ keel-domain = { path = "core/crates/keel-domain", default-features = false }
 
 # Platform dependencies: native libraries that platform crates (keel-store) use, each chosen by
 # an ADR, never used by the portable kernel crates. SQLite is compiled in, so every platform runs
-# the same version (ADR-0016).
-rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
+# the same version (ADR-0016), as SQLCipher, with OpenSSL built from source for its crypto
+# (ADR-0018). zeroize clears the store's key from memory when it is dropped.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled-sqlcipher-vendored-openssl"] }
+zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
 
 # Test-only dependencies. num-bigint (with num-integer) is the exact-arithmetic oracle that
 # property tests check money and rounding against; ciborium is the independent CBOR implementation
