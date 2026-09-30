@@ -129,6 +129,7 @@ fn open(path: &Path) -> TestStore {
 
 /// A connection of its own to the database at `path`, with the key [`key_of`]`(n)`.
 fn raw_with(path: &Path, n: u8) -> Connection {
+    init_sqlite();
     let db = Connection::open(path).unwrap();
     let hex: String = key_bytes(n).iter().fold(String::new(), |mut hex, byte| {
         let _ = write!(hex, "{byte:02X}");

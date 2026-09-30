@@ -1,7 +1,8 @@
 //! The database's settings and schema.
 //!
-//! Every connection gives SQLCipher the store's key first, as a raw key, and pins SQLCipher 4's
-//! settings: 4 KiB pages, each encrypted with AES-256-CBC and authenticated with HMAC-SHA512
+//! The first connection the store opens in a process initializes SQLite and SQLCipher, alone
+//! ([`init_sqlite`]). Every connection gives SQLCipher the store's key first, as a raw key, and
+//! pins SQLCipher 4's settings: 4 KiB pages, each encrypted with AES-256-CBC and authenticated with HMAC-SHA512
 //! (ADR-0018). Then it sets the WAL journal, commits that wait for the disk, and temporary
 //! storage in memory, and checks SQLite runs with them.
 //!
@@ -24,6 +25,7 @@
 //!   are theirs to create and drop ([`crate::projection`]).
 
 use std::path::Path;
+use std::sync::Once;
 
 use keel_events::envelope::{Device, Location};
 use keel_types::{Hlc, Id};
@@ -91,6 +93,23 @@ CREATE TABLE projections (
 ) STRICT;
 ";
 
+/// Initializes SQLite, and SQLCipher with it, once in the process. The store calls it before
+/// each connection it opens; a process that opens SQLite connections of its own calls it before
+/// its first.
+///
+/// SQLite runs SQLCipher's initialization only after it has marked itself initialized and let
+/// other threads on. A connection opened on another thread meanwhile finds SQLCipher not ready,
+/// and its `PRAGMA key` fails, as if the key were empty. So the process's first connection is
+/// opened here, alone, and a thread that calls this meanwhile waits until SQLite and SQLCipher
+/// are both ready. A connection opened anywhere else before the first call returns would bring
+/// the race back.
+pub fn init_sqlite() {
+    static SQLITE: Once = Once::new();
+    // Whatever goes wrong initializing, the connection that follows meets it again and reports
+    // it.
+    SQLITE.call_once(|| drop(Connection::open_in_memory()));
+}
+
 /// Opens the database at `path`, creating it if there is none, with `key`: SQLCipher encrypts
 /// it with SQLCipher 4's settings (ADR-0018). Then sets the durability settings, and checks that
 /// SQLite runs with them.
@@ -99,6 +118,7 @@ CREATE TABLE projections (
 /// [`StoreError::KeyRejected`] if the key doesn't open the database, [`StoreError::Settings`]
 /// if SQLite won't run with a setting, and [`StoreError::Database`] if the file can't be opened.
 pub(crate) fn connect(path: &Path, key: &StoreKey) -> Result<Connection, StoreError> {
+    init_sqlite();
     let db = Connection::open(path)?;
     // SQLCipher logs to standard error, or the device's log; the store reports what goes wrong
     // through its errors instead. The setting is the process's.
@@ -131,6 +151,7 @@ pub(crate) fn connect(path: &Path, key: &StoreKey) -> Result<Connection, StoreEr
 /// opening the database to report.
 pub(crate) fn check_key(path: &Path, key: &StoreKey) -> Result<(), StoreError> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    init_sqlite();
     let Ok(db) = Connection::open_with_flags(path, flags) else { return Ok(()) };
     let read = db
         .execute_batch("PRAGMA cipher_log_level = NONE")

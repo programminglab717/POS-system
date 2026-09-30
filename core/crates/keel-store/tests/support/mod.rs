@@ -79,13 +79,15 @@ pub fn key_bytes(n: u8) -> [u8; 32] {
 }
 
 /// A connection of its own to the database at `path`, opened with the tests' key, to look at it
-/// or change it behind the store's back.
+/// or change it behind the store's back. Like the store's, it is opened after SQLite and
+/// SQLCipher are initialized ([`keel_store::init_sqlite`]): it may be the process's first.
 pub fn raw(path: &std::path::Path) -> rusqlite::Connection {
     raw_with(path, 0x4B)
 }
 
 /// As [`raw`], with the key [`store_key_of`]`(n)`.
 pub fn raw_with(path: &std::path::Path, n: u8) -> rusqlite::Connection {
+    keel_store::init_sqlite();
     keyed(rusqlite::Connection::open(path).unwrap(), n)
 }
 
@@ -94,6 +96,7 @@ pub fn raw_with(path: &std::path::Path, n: u8) -> rusqlite::Connection {
 /// one.
 pub fn raw_reader(path: &std::path::Path, n: u8) -> rusqlite::Connection {
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY;
+    keel_store::init_sqlite();
     keyed(rusqlite::Connection::open_with_flags(path, flags).unwrap(), n)
 }
 

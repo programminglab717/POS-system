@@ -140,6 +140,13 @@ Details settled in building it, for review with it:
   first page doesn't authenticate: `KeyRejected`) from a file SQLite finds malformed
   (`Damaged`). A file cut short by a whole page is damaged when it opens; cut inside its last
   page, it opens, and the check finds that page.
+- **A process's first connection** (added after acceptance, when CI failed). SQLite runs
+  SQLCipher's initialization only after it has marked itself initialized and let other threads
+  on. A connection keyed on another thread meanwhile is refused, as if its key were empty: stores
+  opened at once as a process's first use of SQLite failed to open about once in 200 tries. So
+  the store opens the process's first connection alone, and other threads wait for it
+  (`init_sqlite`). Code that opens SQLite connections of its own, in a process with stores,
+  calls it before its first. SQLCipher, up to 4.19, still initializes this way.
 - **A journal left behind** says the store wasn't closed cleanly (`Store::recovered`). Building
   it found that a connection that can write moves the WAL into the database file and removes it
   as it closes, even one whose key was refused: a shell trying its current key, then the pending

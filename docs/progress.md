@@ -100,6 +100,28 @@ proposed:
 
 ## Completed
 
+### A race opening a process's first stores (2026-09-30)
+
+Found when CI failed on `28aed7a`, the commit accepting ADR-0019.
+
+- **What failed:** 1 ms into the `keel-store` unit tests, as their threads opened their first
+  stores at once, one store didn't open. SQLCipher refused its key: "An error occurred with
+  PRAGMA key or rekey". The same code had passed CI twice.
+- **Why:** SQLite runs SQLCipher's initialization only after it has marked itself initialized
+  and let other threads on. A connection keyed on another thread meanwhile finds SQLCipher not
+  ready, and its key is refused. SQLCipher, up to 4.19, still initializes this way.
+- **Fixed:** the store opens the process's first connection alone, under a `Once`, before every
+  connection it opens (`keel_store::init_sqlite`); other threads wait for it. The tests' own
+  connections call it too, and so must any code that opens SQLite connections in a process with
+  stores. ADR-0018's "As built" records it.
+- **Verified:** a new test opens 32 stores at once on 32 threads, as its process's first use of
+  SQLite. Run 2,000 times, four processes at a time, alternating with the same test built
+  without the fix: without it, 44 runs failed; with it, none. Of 1,000 more runs without it, 19
+  failed, each with SQLCipher refusing the key of 1 to 23 of the 32 stores, as in CI. The race
+  needs the thread initializing SQLite to stop within a few instructions, so no test can force
+  it: the test catches it only as often as it happens, about 1 run in 50 on a loaded machine and
+  1 in 200 on an idle one. So no planted bug stands for it: the fix closes it by construction.
+
 ### Replication and the simulator: step 6, slice 1 (2026-09-30)
 
 Commit `c5240e1`. Reviewed 2026-09-30.
@@ -895,6 +917,10 @@ Work deliberately left for later, so it isn't forgotten:
     no tools yet.
   - Two processes opening one store at once: a store is one process's. Opening re-checks the
     schema version inside its transaction, but no test races two openers.
+  - Code that opens SQLite connections of its own, in a process with stores, must call
+    `init_sqlite` before its first, or SQLCipher's initialization can race again: the shells
+    (steps 7 and 8). SQLite now offers a hook that initializes under its lock
+    (`SQLITE_EXTRA_INIT_MUTEXED`); SQLCipher could use it, which is worth reporting.
 - **`keel-sync`:**
   - Slices 2 to 4 of step 6: hub sequencing, ownership leases, and hub election and failover.
   - The transport (offline-and-sync §3.2–3.3): WebSocket over TLS, discovery, scopes, device

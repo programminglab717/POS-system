@@ -63,5 +63,6 @@ pub use outbox::{
     Effect, EffectError, EffectKind, EffectState, Enqueued, MAX_KEY, MAX_PAYLOAD, Queued,
 };
 pub use projection::{OrderState, OrderSummary, PaymentState, PaymentSummary};
+pub use schema::init_sqlite;
 pub use store::{Store, StoreConfig};
 pub use write::{Quarantined, Reason, Received, Writing};
