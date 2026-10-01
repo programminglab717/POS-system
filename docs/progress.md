@@ -9,10 +9,10 @@
 **Phase 0 (Foundations), step 6 of 8:** `keel-sim` and `keel-sync` v0, the deterministic
 simulator and the sync engine, in four slices
 ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)). Slice 1, replication and
-the simulator, and slice 2, hub sequencing ([ADR-0020](./adr/0020-hub-sequencing.md)), are built
-and reviewed. Slice 3, ownership leases, is built and verified, and awaits review
-([ADR-0021](./adr/0021-ownership-leases.md), proposed). Step 5, `keel-store`, is done: built in
-three slices, each reviewed.
+the simulator, slice 2, hub sequencing ([ADR-0020](./adr/0020-hub-sequencing.md)), and slice 3,
+ownership leases ([ADR-0021](./adr/0021-ownership-leases.md)), are built and reviewed. Slice 4,
+hub election and failover, is being designed. Step 5, `keel-store`, is done: built in three
+slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -25,7 +25,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 and 2 of 4 built and reviewed; slice 3 built, awaiting review | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 to 3 of 4 built and reviewed; slice 4 being designed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -70,45 +70,29 @@ Step 6 is built in four slices, each ending with a review
    [ADR-0020](./adr/0020-hub-sequencing.md)):
    `store_seq` per epoch, confirmed and provisional events, store durability, and the cloud's
    durable-ack watermark.
-3. **Ownership leases** (designed and built 2026-10-01,
+3. **Ownership leases** (built and reviewed 2026-10-01,
    [ADR-0021](./adr/0021-ownership-leases.md)): the hub grants and transfers orders' ownership;
    island mode and the manager's override.
-4. **Hub election and failover:** priorities, heartbeats, the hot standby, epochs and fencing,
-   and a split brain healing.
+4. **Hub election and failover** (being designed): priorities, heartbeats, the hot standby,
+   epochs and fencing, and a split brain healing.
 
 ## Current slice
 
-Step 6, slice 3, ownership leases, is built and verified (see "Completed"), as
-[ADR-0021](./adr/0021-ownership-leases.md), proposed, describes:
+Step 6, slice 4, hub election and failover, begins with its design
+([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), decision 8):
 
-- An order's owning device is part of the order, decided by its own events: the device that
-  opened it, under lease 0, then each device it passes to. Every change of owner names the
-  lease it replaces, so two changes from one lease never both apply.
-- A device asks for an order with a request; the hub answers each request it holds, granting it
-  unless the lease has moved on, the device already owns the order, or a payment is in
-  progress.
-- Structural and money commands need ownership, checked on the device; commutative ones don't.
-  What a device does without owning the order stands, and is flagged.
-- Where the hub can't be reached, a manager's override takes an order, flagged for
-  reconciliation.
+- hubs chosen by priority, and their heartbeats;
+- the hot standby, which takes over when the hub fails;
+- epochs, and fencing a deposed hub's records and grants;
+- a split brain healing.
 
-| Piece | Status |
-|---|---|
-| Design, in ADR-0021 | Done |
-| `keel-domain`: the four ownership events, ownership in the order's fold, the commands' check, and the hub's answers | Done |
-| `keel-domain`: checkout's payments need ownership | Done |
-| `keel-store`: the orders projection, version 2, and answering requests as the hub | Done |
-| `keel-sync`: the hub answers requests before it sequences | Done |
-| `keel-sim`: requests, overrides, and the new invariants | Done |
-| Known answers, property tests, the simulator's seeds, planted bugs and probes | Done |
-| Soak, CI-equivalent run, docs | Done |
-| Review, and accepting ADR-0021 | Next |
+It will be recorded in a proposed ADR, and built, verified and reviewed like slices 1 to 3.
 
 ## Completed
 
 ### Ownership leases: step 6, slice 3 (2026-10-01)
 
-Commit `710ed27`, with CI green on it (33.6 minutes). Awaiting review.
+Commit `710ed27`, with CI green on it (33.6 minutes). Reviewed 2026-10-01.
 
 - **Built** ([ADR-0021](./adr/0021-ownership-leases.md)):
   - `keel-domain`:
@@ -221,8 +205,8 @@ Commit `710ed27`, with CI green on it (33.6 minutes). Awaiting review.
     lint runs, the tests with the exhaustive sweeps and 4,096 cases a property (17 minutes), the
     tests without default features (16), the docs, the `wasm32` build, the currency table and
     the golden baskets.
-- **Decisions:** [ADR-0021](./adr/0021-ownership-leases.md), proposed, with what the build
-  settled under "As built":
+- **Decisions:** [ADR-0021](./adr/0021-ownership-leases.md), accepted 2026-10-01 after review,
+  with what the build settled under "As built":
   - refusals coded from 0, as every code is, and an override's reason with an optional note;
   - an answer names its request wherever it folds, even before the order's creation;
   - the order of the checks: the order's state, then ownership, then the command's own rules,

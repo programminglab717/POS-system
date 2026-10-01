@@ -1,6 +1,7 @@
 # ADR-0021: Ownership leases: an order's owning device in its own events, requests answered by the hub, and a manager's override when the hub can't be reached
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-01) after review, with the details settled in building it, under
+  "As built"
 - **Date:** 2026-10-01
 
 ## Context
