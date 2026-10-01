@@ -235,7 +235,8 @@ fn changes() -> [(&'static str, Change); 10] {
                 "INSERT INTO orders SELECT ?1, state, stage, location, channel, mode, currency, \
                  created_by, revenue_center, table_id, guest_count, customer, owner, \
                  business_date, live_lines, open_checks, closed_checks, conflicts, unreadable, \
-                 events, first_hlc, last_hlc FROM orders WHERE order_id = ?2",
+                 events, first_hlc, last_hlc, owning_device, lease, requests FROM orders \
+                 WHERE order_id = ?2",
                 [&id::<Order>(0x7001).to_bytes()[..], &stock.order.to_bytes()[..]],
             ).unwrap();
             vec![Problem::Projection {

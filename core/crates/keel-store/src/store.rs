@@ -457,6 +457,21 @@ impl<S: Signer, E: Entropy> Store<S, E> {
         self.write(|writing| writing.sequence(epoch, now))
     }
 
+    /// Answers, as the Store Hub in `epoch`, every request for an order the store holds that no
+    /// answer names yet, at physical time `now`, in a write of its own (ADR-0021): each is
+    /// granted, or refused if its lease has moved on, its device already owns the order, or a
+    /// payment of the order is in progress. Returns the answers: none when no request waits.
+    ///
+    /// # Errors
+    /// As [`Store::write`], and [`StoreError::OutOfRange`] if the epoch isn't from 1 to 2^63 − 1.
+    pub fn answer_requests(
+        &mut self,
+        epoch: u64,
+        now: Timestamp,
+    ) -> Result<Vec<SignedEvent>, StoreError> {
+        self.write(|writing| writing.answer_requests(epoch, now))
+    }
+
     /// For each device, how far into its log the store holds confirmed events: the longest start
     /// of its log in which each event is confirmed, or a sequencing record (ADR-0020).
     ///

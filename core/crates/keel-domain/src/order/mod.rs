@@ -16,12 +16,15 @@
 //!   it, with its share of the lines it shares with other checks.
 //! - [`CheckClosed`] is a closed check's snapshot. Closing a check needs its payments, so
 //!   [`crate::checkout`] decides it.
+//! - [`Ownership`] is which device owns the order (ADR-0021): only it may make the order's
+//!   structural and money changes. [`Order::answers`] is how the hub answers requests for it.
 
 mod basket;
 mod checks;
 mod closing;
 mod commands;
 mod events;
+mod ownership;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -31,6 +34,7 @@ pub use checks::{Allocation, Check, CheckShare, LinesAllocated};
 pub use closing::{CheckClosed, LineCharge, TaxCharge};
 pub use commands::{CommandError, OrderCommand};
 pub use events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
+pub use ownership::{Epoch, Lease, Ownership, OwnershipGranted, Refusal, Request};
 pub use state::{Conflict, ConflictKind, Line, LineStatus, Order, OrderInfo, OrderStatus, Stage};
 
 pub use crate::aggregate::Skipped;

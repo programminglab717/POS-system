@@ -107,6 +107,9 @@ pub struct Model {
     arrivals: Vec<(Id<Device>, u64)>,
     /// How many times it was asked to sequence.
     pub sequenced: u64,
+    /// How many times it was asked to answer requests for orders: it holds no orders, so it
+    /// never has any to answer.
+    pub answered: u64,
     /// What it refused, and why.
     pub quarantine: Vec<(Reason, Vec<u8>)>,
     /// Whether its next receive fails, storing nothing.
@@ -135,6 +138,7 @@ impl Model {
             ids: BTreeSet::new(),
             arrivals: Vec::new(),
             sequenced: 0,
+            answered: 0,
             quarantine: Vec::new(),
             fail_next: false,
             decline_next: false,
@@ -289,7 +293,15 @@ impl Replica for Model {
             .collect())
     }
 
+    fn answer_requests(&mut self, _: u64, _: Timestamp) -> Result<Vec<SignedEvent>, Failed> {
+        // The hub answers before it numbers.
+        assert_eq!(self.answered, self.sequenced, "the hub numbered before it answered");
+        self.answered += 1;
+        Ok(Vec::new())
+    }
+
     fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, Failed> {
+        assert_eq!(self.answered, self.sequenced + 1, "the hub numbered before it answered");
         self.sequenced += 1;
         let pending = self.unsequenced();
         if pending.is_empty() {

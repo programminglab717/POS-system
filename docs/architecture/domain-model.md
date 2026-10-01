@@ -436,9 +436,10 @@ returns and channels.
 ### 6.5 As built: order events v1
 
 `keel-domain` implements the first part of this section: creating an order, changing its
-attributes, its lines, splitting them among checks, and closing checks and orders
-([ADR-0015](../adr/0015-checks-and-payments.md)); payments are in §7.1. Adjustments, ownership,
-and the PartiallyPaid and Paid stages come later. Payloads follow
+attributes, its lines, splitting them among checks, closing checks and orders
+([ADR-0015](../adr/0015-checks-and-payments.md)), and which device owns the order
+([ADR-0021](../adr/0021-ownership-leases.md)); payments are in §7.1. Adjustments, and the
+PartiallyPaid and Paid stages, come later. Payloads follow
 [ADR-0013](../adr/0013-event-payloads-and-schema-evolution.md), and their key tables are in
 `core/crates/keel-domain/src/order/events.rs`.
 
@@ -459,6 +460,10 @@ and the PartiallyPaid and Paid stages come later. Payloads follow
 | `order.check_closed` | A check was closed: what it was charged (each line's part, with its gross, net and tax; each tax's taxable amount and tax; the total), the version of the pricing rules, and the payments that settled it. |
 | `order.closed` | The order was closed: every check holding a live line was closed. |
 | `order.reopened` | A closed order, or one with closed checks, was reopened, with a reason: the order and every check are open again. |
+| `order.ownership_requested` | A device asked for the order, from the lease it saw. |
+| `order.ownership_granted` | The hub gave the order to the device that asked, under the next lease, in its epoch. |
+| `order.ownership_refused` | The hub refused a request: the lease had moved on, the device already owned the order, or a payment was in progress. |
+| `order.ownership_overridden` | A device took the order on a manager's word, from the lease it saw, with a reason. |
 
 - **A line's life.** A line is *pending* until it is fired, then *fired*. A pending line can be
   removed; a fired line can only be voided. Removed and voided lines no longer count, but a line
@@ -493,15 +498,26 @@ and the PartiallyPaid and Paid stages come later. Payloads follow
   closed order takes no command but a reopening. Reopening, with a reason, makes the order and
   every check open again, so the lines can change and the checks close again with new
   snapshots; the old ones stay in the log. A voided or abandoned order is final.
+- **Ownership.** The device that records `order.created` owns the order, under lease 0. Each
+  change of owner, a grant or an override, names the lease it replaces and takes the next; it
+  applies only if that lease is still the order's at that point in canonical order. Changing,
+  removing, voiding and comping lines, opening checks and allocating lines, closing, reopening,
+  voiding and abandoning the order, and starting a payment need ownership; creating the order,
+  adding and firing lines, and changing its attributes don't. The hub answers each request it
+  holds: refused if the lease has moved on, the device already owns the order, or a payment of
+  it is in progress; granted otherwise ([offline-and-sync.md §5](./offline-and-sync.md#5-check-ownership-and-conflict-semantics)).
 - **Commands** are checked against the device's view of the order. A command needs a created,
-  active order at the device's location. Prices must be in the order's currency, and a change must
+  active order at the device's location, and one that needs ownership needs the device to own
+  it. Prices must be in the order's currency, and a change must
   change every field it gives. Removing or changing a line needs it pending; voiding needs it
   fired; comping needs it live and not yet comped; abandoning needs every line removed before it
   was fired. A check is opened with an identifier not yet in use; an allocation needs live lines
   and existing, open checks, and must change each line's allocation. What a line on a closed
   check costs can't change, and the line can't move; an order with a closed check can't be
   voided or abandoned: reopen it first. Closing the order needs a live line, and every check
-  holding one closed; reopening needs the order, or one of its checks, closed.
+  holding one closed; reopening needs the order, or one of its checks, closed. A device may ask
+  for an active or closed order it doesn't own, unless its own request still waits, or take it
+  on a manager's word, with a reason.
 
 **Concurrent edits** fold by the rules of
 [offline-and-sync.md §5.2](./offline-and-sync.md#52-conflict-rules). Every event stays in the log;
@@ -537,6 +553,11 @@ the conflicts listed are derived by the fold, identically on every replica:
 | A line on a closed check is changed in quantity or modifiers, removed, voided or comped | Applied: the kitchen must know. The snapshot stands | `ChangedOnClosedCheck` |
 | An allocation moves a line onto or off a closed check | Not applied to that line | `AllocatedOnClosedCheck` |
 | The order is closed while a check holding a live line is open | Closed; that check's lines are unpaid | `ClosedWithOpenCheck` |
+| An event only the owner may record is recorded by another device | Applied | `NotOwner`, naming the device and the owner |
+| The hub grants from a lease that had already moved on, by an override it hadn't heard of | Not applied | `StaleGrant` |
+| A device takes the order on a manager's word | Applied, for reconciliation | `Overridden`, naming the device it took the order from |
+| An override names a lease that had already moved on | Not applied | `StaleOverride` |
+| The hub's answer folds before the request it answers, or even before the order's creation | The request never waits; an answer before the creation doesn't apply | `BeforeCreation`, for an answer before the creation |
 
 A post-close check's identifier is that of the event that opened it, so every replica opens the
 same one.

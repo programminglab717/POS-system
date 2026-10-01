@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fb94fbc1e37b035400d43ea5b536cdf6a830037ed71d72e422bd27bf357acb7a # shrinks to event = OwnershipRequested { lease: Lease(0) }, payment = Initiated(PaymentInitiated { order: Id<Order>(0192f0c1-0000-7000-8000-000000000000), check: Id<Check>(0192f0c1-0000-7000-8000-000000000000), tender: Cash, amount: Money(USD 0.01) }), record = Assigned { epoch: 1, first: 1, runs: [Run { device: Id<Device>(0192f0c1-0000-7000-8000-000000000001), from: 1, to: 1, last: EventHash(000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f) }] }

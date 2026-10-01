@@ -6,17 +6,23 @@
 //!
 //! - **Nodes:** two or three devices, the hub and the cloud, in a star: devices to the hub, the
 //!   hub to the cloud. Each has its own key, signer and clock, off virtual time by up to 25 s.
-//!   The hub sequences, in epoch 1, and names the cloud its durable peer (ADR-0020).
+//!   The hub answers requests for orders (ADR-0021) and sequences, in epoch 1, and names the
+//!   cloud its durable peer (ADR-0020).
 //! - **The network** delivers frames after random delays, so they arrive out of order, and while
 //!   it is faulty loses and duplicates some; partitions cut links for a while.
 //! - **Faults:** nodes crash, between writes or in the middle of one, and restart; a device's
 //!   store is restored from an older copy of itself; clocks jump.
 //! - **Workload:** devices ring orders and take cash through `keel-domain`'s commands and
-//!   checkout, each decided against the device's own view.
+//!   checkout, each decided against the device's own view, half their moves on other orders
+//!   aimed at the latest few. A move that needs an order another device owns becomes a request
+//!   for it, which waits for the hub, or, from a device a partition or the hub's crash cuts off
+//!   from the hub, a manager's override.
 //! - **A run** works under faults for 30 virtual seconds, heals, and runs until the replicas
 //!   agree and every watermark reaches what the cloud holds, then checks the invariants:
-//!   convergence, no loss, causality, no forks or quarantine, stores that check clean, and the
-//!   hub's numbering, every replica confirming alike, and no store-durable event lost (see
+//!   convergence, no loss, causality, no forks or quarantine, stores that check clean, the
+//!   hub's numbering, every replica confirming alike, no store-durable event lost, and the
+//!   hub's answers to requests for orders: exactly one each, its grants' leases rising, a stale
+//!   grant only after an override, and every replica agreeing on each order's owner (see
 //!   [`simulate`]). All along, it checks each batch replicas send against the protocol's rules for
 //!   batches, each `durable` frame against what the cloud holds, and that every replicator's
 //!   watermark only rises. Its [`Config`] is drawn from a seed, and every

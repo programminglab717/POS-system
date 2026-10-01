@@ -25,15 +25,29 @@
 //! Events recorded before the order was created, or by a device at another location, aren't
 //! applied either. Nothing is lost: every event stays in the log, and every one that isn't
 //! applied, or applies with surprising effect, leaves a conflict.
+//!
+//! Who owns the order follows its ownership events (ADR-0021, [`super::ownership`]):
+//! - The device that created the order owns it under lease 0.
+//! - A grant, or a manager's override, from the order's current lease gives the order to its
+//!   device under the next lease. One from a lease that has moved on doesn't apply, and is
+//!   flagged; an override that applies is flagged too, for reconciliation.
+//! - A request waits until an answer names it, wherever the answer folds: a hub whose clock is
+//!   behind can answer before the request in canonical order, or even before the order's
+//!   creation, where the answer itself doesn't apply.
+//! - An event only the owner may record, recorded by another device, still applies, and is
+//!   flagged.
 
 use core::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 
-use keel_events::envelope::{self, Customer, Event, Location, SchemaRef, TeamMember};
+use std::collections::BTreeSet;
+
+use keel_events::envelope::{self, Customer, Device, Event, Location, SchemaRef, TeamMember};
 use keel_types::{Currency, Id, Quantity};
 
 use super::checks::{Check, CheckShare, LinesAllocated};
 use super::closing::CheckClosed;
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
+use super::ownership::{Lease, Ownership, OwnershipGranted, Request};
 use super::types::{Channel, ChosenModifier, ItemSnapshot, Mode, Reason, modifier_currency};
 use crate::aggregate::{Aggregate, EventMeta, Skipped};
 use crate::codec::{Change, Note};
@@ -48,6 +62,9 @@ pub struct Order {
     lines: Vec<Line>,
     checks: Vec<Check>,
     status: OrderStatus,
+    ownership: Option<Ownership>,
+    requests: Vec<Request>,
+    answered: BTreeSet<Id<Event>>,
     conflicts: Vec<Conflict>,
     skipped: Vec<Skipped>,
 }
@@ -263,6 +280,22 @@ pub enum ConflictKind {
     /// The order was closed while a check holding a live line was still open: its lines are
     /// unpaid.
     ClosedWithOpenCheck(Id<Check>),
+    /// An event that only the order's owner may record was recorded by another device: it
+    /// applied, and a person should look.
+    NotOwner {
+        /// The device that recorded it.
+        by: Id<Device>,
+        /// The device that owned the order.
+        owner: Id<Device>,
+    },
+    /// The hub gave the order away from a lease that had already moved on, by an override it
+    /// hadn't heard of; the grant didn't apply.
+    StaleGrant,
+    /// A device took the order on a manager's word from the device named, without the hub: for
+    /// reconciliation.
+    Overridden(Id<Device>),
+    /// A device overrode a lease that had already moved on; the override didn't apply.
+    StaleOverride,
 }
 
 impl Order {
@@ -274,6 +307,9 @@ impl Order {
             lines: Vec::new(),
             checks: Vec::new(),
             status: OrderStatus::Active,
+            ownership: None,
+            requests: Vec::new(),
+            answered: BTreeSet::new(),
             conflicts: Vec::new(),
             skipped: Vec::new(),
         }
@@ -292,6 +328,16 @@ impl Order {
     /// Whether the order is still being worked on.
     pub const fn status(&self) -> &OrderStatus {
         &self.status
+    }
+
+    /// Who owns the order, and under which lease; `None` until it is created.
+    pub const fn ownership(&self) -> Option<Ownership> {
+        self.ownership
+    }
+
+    /// The requests for the order that no answer names yet, in canonical order.
+    pub fn requests(&self) -> &[Request] {
+        &self.requests
     }
 
     /// Where an active order is in its life.
@@ -419,7 +465,41 @@ impl Order {
             customer: created.customer,
             owner: created.owner,
         });
+        self.ownership = Some(Ownership { device: meta.origin_device, lease: Lease::FIRST });
         self.checks.push(Check { id: self.main_check(), number: NonZeroU32::MIN, closed: None });
+    }
+
+    fn apply_requested(&mut self, meta: &EventMeta, lease: Lease) {
+        if !self.answered.contains(&meta.event_id) {
+            let request = Request { event: meta.event_id, device: meta.origin_device, lease };
+            self.requests.push(request);
+        }
+    }
+
+    /// Notes that an answer names `request`: it no longer waits, even if it folds later.
+    fn answer(&mut self, request: Id<Event>) {
+        self.answered.insert(request);
+        self.requests.retain(|waiting| waiting.event != request);
+    }
+
+    fn apply_granted(&mut self, meta: &EventMeta, granted: &OwnershipGranted) {
+        let current = self.ownership.and_then(|ownership| ownership.lease.next());
+        if current == Some(granted.lease) {
+            self.ownership = Some(Ownership { device: granted.device, lease: granted.lease });
+        } else {
+            self.conflict(meta, ConflictKind::StaleGrant);
+        }
+    }
+
+    fn apply_overridden(&mut self, meta: &EventMeta, lease: Lease) {
+        let current = self.ownership.filter(|ownership| ownership.lease == lease);
+        match current.zip(lease.next()) {
+            Some((previous, next)) => {
+                self.ownership = Some(Ownership { device: meta.origin_device, lease: next });
+                self.conflict(meta, ConflictKind::Overridden(previous.device));
+            }
+            None => self.conflict(meta, ConflictKind::StaleOverride),
+        }
     }
 
     fn apply_attributes(info: &mut OrderInfo, changed: &AttributesChanged) {
@@ -720,6 +800,13 @@ impl Aggregate for Order {
     }
 
     fn apply(&mut self, meta: &EventMeta, event: &OrderEvent) {
+        // An answer names its request wherever it folds, so that the request never waits for
+        // another, even when the answer folds before the order's creation and doesn't apply.
+        if let OrderEvent::OwnershipGranted(OwnershipGranted { request, .. })
+        | OrderEvent::OwnershipRefused { request, .. } = event
+        {
+            self.answer(*request);
+        }
         if let OrderEvent::Created(created) = event {
             return self.apply_created(meta, created);
         }
@@ -730,8 +817,17 @@ impl Aggregate for Order {
             return self.conflict(meta, ConflictKind::WrongLocation);
         }
         let currency = info.currency;
+        if event.needs_ownership()
+            && let Some(owner) = self.ownership
+            && owner.device != meta.origin_device
+        {
+            let by = meta.origin_device;
+            self.conflict(meta, ConflictKind::NotOwner { by, owner: owner.device });
+        }
         match event {
-            OrderEvent::Created(_) => {}
+            // Applied above: the creation, and a refusal's answering its request, which is all a
+            // refusal does.
+            OrderEvent::Created(_) | OrderEvent::OwnershipRefused { .. } => {}
             OrderEvent::AttributesChanged(changed) => {
                 if let Some(info) = &mut self.info {
                     Order::apply_attributes(info, changed);
@@ -756,6 +852,9 @@ impl Aggregate for Order {
             OrderEvent::CheckClosed(closed) => self.apply_check_closed(meta, currency, closed),
             OrderEvent::Closed => self.apply_order_closed(meta),
             OrderEvent::Reopened { .. } => self.apply_reopened(),
+            OrderEvent::OwnershipRequested { lease } => self.apply_requested(meta, *lease),
+            OrderEvent::OwnershipGranted(granted) => self.apply_granted(meta, granted),
+            OrderEvent::OwnershipOverridden { lease, .. } => self.apply_overridden(meta, *lease),
         }
     }
 

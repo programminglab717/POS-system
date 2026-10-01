@@ -168,6 +168,11 @@ impl Working {
         }
     }
 
+    /// The device's identifier.
+    fn me(&self) -> Id<Device> {
+        id(self.device)
+    }
+
     /// A new identifier in `space`, which no other device uses. Identifiers are handed out in no
     /// particular order, so a check's lines aren't in order of identifier by chance: an odd
     /// multiplier shuffles the first 4,096.
@@ -325,15 +330,20 @@ impl Working {
         }
     }
 
-    /// What checkout decides about starting a payment or closing a check, without recording
-    /// it; `None` for other actions.
-    fn decide(&self, act: &Act, from: Id<Location>) -> Option<Result<(), CheckoutError>> {
+    /// What checkout decides about starting a payment or closing a check, from `device`, without
+    /// recording it; `None` for other actions.
+    fn decide(
+        &self,
+        act: &Act,
+        from: Id<Location>,
+        device: Id<Device>,
+    ) -> Option<Result<(), CheckoutError>> {
         let checkout = self.checkout();
         Some(match *act {
             Act::Start { payment, check, tender, amount } => {
-                checkout.start_payment(from, payment, check, tender, amount).map(|_| ())
+                checkout.start_payment(from, device, payment, check, tender, amount).map(|_| ())
             }
-            Act::Close(check) => checkout.close_check(from, check).map(|_| ()),
+            Act::Close(check) => checkout.close_check(from, device, check).map(|_| ()),
             _ => return None,
         })
     }
@@ -352,11 +362,12 @@ impl Working {
                 return closed;
             }
             Act::Order(command) => {
-                let Ok(event) = self.order.decide(from, command) else { return false };
+                let Ok(event) = self.order.decide(from, self.me(), command) else { return false };
                 self.record_order(event, from);
             }
             Act::Start { payment, check, tender, amount } => {
-                let started = self.checkout().start_payment(from, payment, check, tender, amount);
+                let started =
+                    self.checkout().start_payment(from, self.me(), payment, check, tender, amount);
                 let Ok(event) = started else { return false };
                 self.record_payment(payment, event, from);
             }
@@ -366,7 +377,9 @@ impl Working {
                 self.record_payment(payment, event, from);
             }
             Act::Close(check) => {
-                let Ok(event) = self.checkout().close_check(from, check) else { return false };
+                let Ok(event) = self.checkout().close_check(from, self.me(), check) else {
+                    return false;
+                };
                 self.record_order(event, from);
             }
             Act::Forge { payment, check, amount } => {
@@ -521,6 +534,7 @@ fn model_decides(
     payments: &[Payment],
     act: &Act,
     from: Id<Location>,
+    device: Id<Device>,
 ) -> Option<Result<(), CheckoutError>> {
     let check = match act {
         Act::Start { check, .. } | Act::Close(check) => *check,
@@ -533,6 +547,13 @@ fn model_decides(
     }
     if *order.status() != OrderStatus::Active {
         return refused(CommandError::OrderClosed);
+    }
+    // Only the owner may start a payment, or close a check: starting checks it before the check,
+    // closing once the check is known to have something to close.
+    let owner = order.ownership().unwrap().device;
+    let not_owner = Err(CheckoutError::Order(CommandError::NotOwner(owner)));
+    if matches!(act, Act::Start { .. }) && device != owner {
+        return Some(not_owner);
     }
     match order.check(check) {
         None => return refused(CommandError::UnknownCheck(check)),
@@ -559,6 +580,8 @@ fn model_decides(
         }
     } else if !order.live_lines().any(on_check) {
         Err(CheckoutError::Order(CommandError::NothingToClose))
+    } else if device != owner {
+        not_owner
     } else if let Some(unresolved) = unresolved {
         Err(CheckoutError::Unresolved(unresolved))
     } else if balance.due() > 0 {
@@ -701,8 +724,13 @@ fn closed_as_priced(
 /// Runs an action on one device, checking what the model says of it: whether checkout accepts
 /// it, and if not why, what a close records, and every balance and issue afterwards.
 fn run_checked(device: &mut Working, act: &Act, from: Id<Location>) -> Result<(), TestCaseError> {
-    let expected = model_decides(&device.order, &device.payments, act, from);
-    prop_assert_eq!(device.decide(act, from), expected.clone(), "{:?} from {:?}", act, from);
+    // A device that doesn't own the order is refused as the model says, too.
+    let stranger = id(7);
+    let theirs = model_decides(&device.order, &device.payments, act, from, stranger);
+    prop_assert_eq!(device.decide(act, from, stranger), theirs, "{:?} from {:?}", act, from);
+    let expected = model_decides(&device.order, &device.payments, act, from, device.me());
+    let decided = device.decide(act, from, device.me());
+    prop_assert_eq!(decided, expected.clone(), "{:?} from {:?}", act, from);
     let before = (device.order.clone(), device.payments.clone());
     let accepted = device.run(act.clone(), from);
     if let Some(expected) = expected {
@@ -761,9 +789,10 @@ proptest! {
         }
     }
 
-    /// Devices working the same table at once, on stale views: the merged order and payments
-    /// have exactly the issues and balances the model computes, and so does each device's view
-    /// of the merged order with only the payments it knows.
+    /// Devices working the same table at once, on stale views, each having overridden its owner
+    /// as an island would: the merged order and payments have exactly the issues and balances the
+    /// model computes, and so does each device's view of the merged order with only the payments
+    /// it knows.
     #[test]
     fn concurrent_tables_have_the_issues_the_model_finds(
         prefix in prop::collection::vec(any_step(), 0..24),
@@ -776,6 +805,9 @@ proptest! {
         let mut working = vec![first.clone()];
         for (number, steps) in (2..).zip(&devices) {
             let mut device = Working::new(number, first.order.clone(), first.payments.clone(), first.hlc);
+            // As an island would, it takes the order on a manager's word, so devices do take
+            // payments and close checks at once.
+            device.run(Act::Order(OrderCommand::OverrideOwnership(reason(9))), location());
             for step in steps {
                 device.step(step);
             }

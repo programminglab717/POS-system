@@ -53,6 +53,18 @@ pub trait Replica {
     /// # Errors
     /// If the store can't be written, in which case it appended nothing.
     fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, Self::Error>;
+
+    /// Answers, as the Store Hub in `epoch`, every request for an order the replica holds that
+    /// no answer names yet, in a write of its own at physical time `now`, and returns the answers
+    /// it appended to its device's log: none when no request waits (ADR-0021).
+    ///
+    /// # Errors
+    /// If the store can't be written, in which case it appended nothing.
+    fn answer_requests(
+        &mut self,
+        epoch: u64,
+        now: Timestamp,
+    ) -> Result<Vec<SignedEvent>, Self::Error>;
 }
 
 /// A [`Replica`] that is `keel-store`'s store, verifying the events it receives with a device
@@ -106,5 +118,13 @@ impl<S: Signer, E: Entropy> Replica for StoreReplica<'_, S, E> {
 
     fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, StoreError> {
         self.store.sequence(epoch, now)
+    }
+
+    fn answer_requests(
+        &mut self,
+        epoch: u64,
+        now: Timestamp,
+    ) -> Result<Vec<SignedEvent>, StoreError> {
+        self.store.answer_requests(epoch, now)
     }
 }

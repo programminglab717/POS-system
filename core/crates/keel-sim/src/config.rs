@@ -39,7 +39,7 @@ impl Config {
         let faults = |rng: &mut Rng, most: u64| u8::try_from(rng.below(most)).unwrap_or(0);
         Config {
             seed,
-            devices: if rng.chance(300) { 3 } else { 2 },
+            devices: if rng.chance(500) { 3 } else { 2 },
             working: 30_000,
             agree_within: 60_000,
             delay: (1, rng.between(2, 120)),

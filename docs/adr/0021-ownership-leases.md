@@ -59,8 +59,8 @@ needs heartbeats, which come with election in slice 4.
    |---|---|---|
    | `order.ownership_requested` | a device that wants the order | 1 the lease it saw |
    | `order.ownership_granted` | the hub | 1 the request (an event identifier), 2 the device, 3 the new lease, 4 the hub's epoch |
-   | `order.ownership_refused` | the hub | 1 the request, 2 why: 1 the lease had moved on, 2 the device already owned the order, 3 a payment was in progress |
-   | `order.ownership_overridden` | a device, on a manager's word | 1 the lease it overrides, 2 the reason |
+   | `order.ownership_refused` | the hub | 1 the request, 2 why: 0 the lease had moved on, 1 the device already owned the order, 2 a payment was in progress |
+   | `order.ownership_overridden` | a device, on a manager's word | 1 the lease it overrides, 2 the reason's code, 3 its note (optional) |
 
    A grant names its device and lease, so a replica that holds it before the request still
    knows the owner. It carries the hub's epoch, so that slice 4 can fence a deposed hub's grants
@@ -104,7 +104,7 @@ needs heartbeats, which come with election in slice 4.
      for the order from the same lease is refused.
 
    A request for an order whose creation the hub doesn't hold yet waits for it. The answers are
-   a pure function of what the hub holds (`Order::answer`), so they are tested as a function,
+   a pure function of what the hub holds (`Order::answers`), so they are tested as a function,
    and every request has exactly one answer from a hub that holds it.
 6. **Island mode** is these same rules where the hub can't be reached: a device works on what it
    owns, and its requests wait. A manager's override is the one way to take an order without the
@@ -151,6 +151,109 @@ needs heartbeats, which come with election in slice 4.
      - a stale grant only ever follows an override;
      - every replica agrees on each order's owner, lease and pending requests;
    - planted bugs in `keel-domain`, `keel-store` and `keel-sync`, and coverage probes.
+
+## As built
+
+Details settled in building it, for review with it:
+
+- **The payloads** are as decision 2 describes, pinned byte for byte in payloads Python's
+  `cbor2` encoded from the key tables. Refusals are coded from 0, as every code in the payloads
+  is: 0 the lease had moved on, 1 the device already owned the order, 2 a payment was in
+  progress; the design's table first said 1 to 3. An override's reason is a code and an
+  optional note, as for voids and reopenings: 2 the code, 3 the note. A lease is from 0 to
+  2^63 − 1, so that it fits the store; a grant's lease and its epoch are from 1.
+- **The fold** keeps the owner, the lease, and the requests that wait, in canonical order.
+  - An event only the owner may record (`OrderEvent::needs_ownership`), recorded by another
+    device, is flagged before it applies, naming the device and the owner at that point:
+    `NotOwner`. It then applies as it always has.
+  - The four other conflicts: `StaleGrant`; `Overridden`, naming the device the override took
+    the order from; `StaleOverride`; and nothing for a refusal.
+  - **Answered requests are remembered.** An answer names its request wherever it folds, so a
+    request whose answer folded first never waits. The design assumed a request always folds
+    before its answer, but a store keeps an event from a device whose clock is too far ahead
+    without moving its own clock past it, so the hub's answer can sort before the request it
+    answers, and, with the hub's clock far enough behind, before the order's creation too, where
+    the answer itself doesn't apply. Without the memory, such a request would wait for ever,
+    and the hub would answer it again at every write. A hub more than a minute behind the
+    devices can't give their new orders away, then: its grants sort before the orders exist.
+    Slice 4's heartbeats can tell such a hub.
+  - No lease follows the largest: an override of it is stale, and the hub refuses a request
+    from it as if the lease had moved on.
+- **The commands:** `Order::decide(location, device, command)`. `OrderCommand::needs_ownership`
+  lists the commands of decision 4. A command on that list from another device is refused,
+  `NotOwner`, naming the owner, once the order is found active at the device's location and
+  before the command's own rules. A closed order takes three commands: reopening, from its
+  owner; a request; and an override. Both a request and an override from the owner are refused,
+  `AlreadyOwner`; a request from a device whose request still waits is refused,
+  `RequestPending`, and an override doesn't wait for it. Checkout's `start_payment` and
+  `close_check` take the device and check ownership the same way.
+- **The hub's answers:** `Order::answers(paying, epoch)` checks the lease first, then the
+  device, then the payment, each request in canonical order, as if the answers before it had
+  applied.
+- **`keel-store`:**
+  - The orders projection, version 2, adds `owning_device`, `lease` and `requests`, and a
+    partial index of the orders with requests waiting. `OrderSummary` gains `ownership` and
+    `requests`, the number waiting.
+  - `Store::answer_requests(epoch, now)` refuses an epoch out of range first. Then, in one
+    write, for each order with requests waiting, by identifier, it folds the order and answers
+    with the order's rules, a payment of the order in progress when the store holds one
+    initiated with no outcome. It skips an order whose creation it doesn't hold. Each answer is
+    an event on the order's stream, from the hub as `System("hub")`, caused by the request it
+    answers, under the order's own business date.
+- **`keel-sync`:** `Replica::answer_requests` is the store's. A replicator with the sequencer
+  role answers whenever it would sequence (after a write that stores events it received, after
+  its own appends, and when its log settles; never before) and then numbers what it wrote,
+  answers included, in the same pass. Both go out like any new events.
+- **`keel-sim`:**
+  - A move that needs an order another device owns becomes a request, which waits for the hub;
+    or, from a device that can't reach the hub (its link is cut, or the hub is down), a
+    manager's override. A device also asks for an order it sees another device owns in 3 of
+    every 100 moves it makes on any order, rather than on the sale it is working on.
+  - Half the moves on any order go to the two latest active orders, so that devices contend
+    for the same orders, and half the runs have three devices rather than three in ten: a grant
+    made stale takes a third device, asking the hub for an order an island has taken.
+  - Checked at the end, beyond decision 9's invariants: each answer is on its request's order,
+    later in canonical order; a grant gives the requesting device the lease after the one it
+    saw, in epoch 1; and no request waits on any replica, the orders a forked device wrote to
+    aside.
+  - A stale grant follows an override of the very lease it replaced. The hub grants each lease
+    of an order once, so when a grant doesn't apply, only an override it hadn't heard of can
+    have taken that lease first; the check is that strong.
+  - The hub never refuses a request because its device already owns the order. In the
+    simulator's star, a device hears of other devices' events only through the hub, so the
+    hub's view of an order holds the device's, and a device's waiting request holds back
+    another until its answer arrives. Only the known answers and the property tests reach it.
+- **Costs**, measured on the development machine in a release build, on a RAM disk, with other
+  tests running, at a hub holding 200 orders of about 20 events:
+
+  | Operation | Cost |
+  |---|---|
+  | Answering, with nothing waiting: what each of the hub's writes pays | 7 µs |
+  | Storing a request, a write like any other | 0.5 to 0.65 ms |
+  | Answering it, a write of its own | 0.6 to 0.75 ms |
+  | Answering ten requests on ten orders at once | 4 to 6 ms |
+
+  A transfer costs the hub under 2 ms of the 100 ms the design allows it (see Context); the rest
+  is the network's.
+- **Verification**, beyond decision 9, much of it added when planted bugs went unnoticed:
+  - `keel-store`'s property uses the order's own rules, `Order::answers`, as its model of what
+    the hub writes, to check what the store feeds them: which orders, which payments are in
+    progress, and how each answer is recorded. So `keel-domain`'s ownership property checks
+    `Order::answers` against a model of its own: the grants form a chain from the owner, each
+    to the first request after the last that saw the chain's lease. It also folds the answers
+    after everything, and finds no request left waiting and the order with the last grant's
+    device. Its steps sometimes fold the order's creation after the first few.
+  - A payload property of its own for the four schemas, as payments and sequencing records
+    have, and a sweep of every lease and epoch across the ends of its range: among every order
+    schema, a grant's lease or epoch of 0 came up about once in 3,000 cases.
+  - Commands, against the command model: in merged orders, every other racing device asks for
+    the order before it overrides, so requests wait; commands, those anyone may make included,
+    are tried from the owner, from each device whose request waits, and from one with none;
+    the device carrying on asks twice, then overrides, and the requests it leaves must be the
+    model's, leases included. Checkout's decisions are checked for a device that doesn't own
+    the order.
+  - `keel-store`'s property draws the hub's epoch, and dates its two orders a day apart.
+    `keel-sync`'s known answer runs its hub in epoch 2.
 
 ## Consequences
 

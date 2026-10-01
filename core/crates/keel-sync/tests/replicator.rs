@@ -503,6 +503,8 @@ fn the_hub_numbers_what_it_stores_once_its_log_is_settled() {
     // A tick numbers nothing.
     replicator.on_tick(&mut hub, at(60_000)).unwrap();
     assert_eq!(hub.sequenced, 3);
+    // Each time, it answered the requests for orders that wait first (ADR-0021).
+    assert_eq!(hub.answered, 3);
 }
 
 #[test]
@@ -515,7 +517,7 @@ fn a_replica_that_isnt_the_hub_numbers_nothing() {
     let own = a.append(1, at(3_000));
     replicator.appended(&mut a, &[own], at(3_000)).unwrap();
     assert!(replicator.settled());
-    assert_eq!((a.sequenced, a.records().len()), (0, 0));
+    assert_eq!((a.sequenced, a.answered, a.records().len()), (0, 0, 0));
 }
 
 #[test]

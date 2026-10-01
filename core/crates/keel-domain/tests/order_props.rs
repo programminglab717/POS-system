@@ -37,9 +37,10 @@ use keel_domain::checkout::Checkout;
 use keel_domain::codec::{CatalogVersion, Change, IdSet, Name, Note, ReasonCode, RulesVersion};
 use keel_domain::order::{
     Allocation, AttributesChanged, Channel, Check, CheckClosed, CheckShare, ChosenModifier,
-    CommandError, ConflictKind, ItemSnapshot, Line, LineAdded, LineChanged, LineCharge, LineStatus,
-    LinesAllocated, Mode, Order, OrderCommand, OrderCreated, OrderEvent, OrderInfo, OrderStatus,
-    Placement, Prefix, Reason, Stage,
+    CommandError, ConflictKind, Epoch, ItemSnapshot, Lease, Line, LineAdded, LineChanged,
+    LineCharge, LineStatus, LinesAllocated, Mode, Order, OrderCommand, OrderCreated, OrderEvent,
+    OrderInfo, OrderStatus, Ownership, OwnershipGranted, Placement, Prefix, Reason,
+    Refusal as Answer, Request, Stage,
 };
 use keel_domain::payment::{CashTendered, Payment, PaymentCaptured, PaymentCommand, Tender};
 use keel_domain::schema::{DecodeError, DomainEvent};
@@ -51,7 +52,7 @@ use keel_pricing::{Dining, Rules, price};
 use keel_types::{Currency, Hlc, Id, Money, Quantity, SeededEntropy, Timestamp, Unit};
 use proptest::prelude::*;
 use proptest::sample::Index;
-use support::{any_event, id, usd};
+use support::{any_epoch, any_event, id, usd};
 
 fn location() -> Id<Location> {
     id(0x100)
@@ -290,7 +291,8 @@ enum Action {
 }
 
 /// What a step stands for on the device's view, and the location it comes from: mostly line
-/// work, sometimes the attributes or the checks, rarely voiding, closing or reopening the order.
+/// work, sometimes the attributes or the checks, rarely voiding, closing or reopening the order,
+/// or asking for it or overriding its owner.
 /// Lines are picked among those the device knows, or a fresh identifier when it knows none.
 /// Fault 1 adds a line that exists, opens a check that exists, or works on a line or check that
 /// doesn't; fault 5 acts from another location.
@@ -305,7 +307,7 @@ fn action(
         |index: &Index| if lines.is_empty() { fresh } else { lines[index.index(lines.len())] };
     let pick = |index: &Index| if step.fault == 1 { fresh } else { known(index) };
     let from = if step.fault == 5 { other_location() } else { location() };
-    let command = match (step.kind % 56, step.fault) {
+    let command = match (step.kind % 60, step.fault) {
         (0..=9, 1) => OrderCommand::AddLine(line_added(known(&step.pick), step)),
         (0..=9, _) => OrderCommand::AddLine(line_added(fresh, step)),
         (10..=13, _) => OrderCommand::ChangeLine(line_changed(known(&step.pick), step)),
@@ -337,7 +339,9 @@ fn action(
             return (Action::CloseCheck(picked.unwrap_or(fresh_check)), from);
         }
         (52..=53, _) => OrderCommand::Close,
-        _ => OrderCommand::Reopen(reason(step.amount)),
+        (54..=55, _) => OrderCommand::Reopen(reason(step.amount)),
+        (56..=57, _) => OrderCommand::RequestOwnership,
+        _ => OrderCommand::OverrideOwnership(reason(step.amount)),
     };
     (Action::Order(command), from)
 }
@@ -516,6 +520,37 @@ struct Model {
     status: OrderStatus,
     /// Each check, in the order it was opened, with the lines it was charged for once closed.
     checks: Vec<Opened>,
+    /// Who owns the order, and the devices whose requests for it wait for the hub, with the
+    /// lease each saw.
+    ownership: Ownership,
+    requests: Vec<(Id<Device>, Lease)>,
+}
+
+/// The requests for `order` that wait: each device, and the lease it saw.
+fn requests_of(order: &Order) -> Vec<(Id<Device>, Lease)> {
+    order.requests().iter().map(|request| (request.device, request.lease)).collect()
+}
+
+/// Whether only the order's owner may issue `command`: its structural and money changes.
+fn owners_only(command: &OrderCommand) -> bool {
+    match command {
+        OrderCommand::ChangeLine(_)
+        | OrderCommand::RemoveLine(_)
+        | OrderCommand::VoidLine { .. }
+        | OrderCommand::CompLine { .. }
+        | OrderCommand::Void(_)
+        | OrderCommand::Abandon
+        | OrderCommand::OpenCheck(_)
+        | OrderCommand::AllocateLines(_)
+        | OrderCommand::Close
+        | OrderCommand::Reopen(_) => true,
+        OrderCommand::Create(_)
+        | OrderCommand::ChangeAttributes(_)
+        | OrderCommand::AddLine(_)
+        | OrderCommand::FireLines(_)
+        | OrderCommand::RequestOwnership
+        | OrderCommand::OverrideOwnership(_) => false,
+    }
 }
 
 /// Whether every price in `modifiers`, at any depth, is zero or more.
@@ -550,6 +585,9 @@ enum Refusal {
     LineOnClosedCheck(Id<Line>),
     NothingToClose,
     NothingToReopen,
+    NotOwner(Id<Device>),
+    AlreadyOwner,
+    RequestPending,
     /// The event wouldn't satisfy its schema, such as a negative price or a zero quantity.
     Invalid,
 }
@@ -577,6 +615,9 @@ fn refusal_of(error: &CommandError) -> Refusal {
         CommandError::LineOnClosedCheck(line) => Refusal::LineOnClosedCheck(line),
         CommandError::NothingToClose => Refusal::NothingToClose,
         CommandError::NothingToReopen => Refusal::NothingToReopen,
+        CommandError::NotOwner(owner) => Refusal::NotOwner(owner),
+        CommandError::AlreadyOwner => Refusal::AlreadyOwner,
+        CommandError::RequestPending => Refusal::RequestPending,
         CommandError::Invalid(_) => Refusal::Invalid,
         ref other => panic!("no command here should be refused with {other:?}"),
     }
@@ -592,12 +633,14 @@ fn differs<T: PartialEq>(current: Option<&T>, change: Option<&Change<T>>) -> boo
 }
 
 impl Model {
-    fn new(info: OrderInfo) -> Model {
+    fn new(info: OrderInfo, creator: Id<Device>) -> Model {
         Model {
             info,
             lines: Vec::new(),
             status: OrderStatus::Active,
             checks: vec![(main_check(), None)],
+            ownership: Ownership { device: creator, lease: Lease::FIRST },
+            requests: Vec::new(),
         }
     }
 
@@ -612,6 +655,8 @@ impl Model {
                 .into_iter()
                 .map(|(check, _, charged)| (check, charged))
                 .collect(),
+            ownership: order.ownership().unwrap(),
+            requests: requests_of(order),
         }
     }
 
@@ -643,33 +688,58 @@ impl Model {
         self.lines.iter_mut().find(|line| line.id == id).unwrap()
     }
 
-    /// Whether the model allows `action` from `from`. Closing a check goes through checkout
-    /// once the device has paid what it owes: an open check with live lines closes.
-    fn allows(&self, action: &Action, from: Id<Location>) -> bool {
+    /// Whether the model allows `action` from `device` at `from`. Closing a check goes through
+    /// checkout once the owner has paid what it owes: an open check with live lines closes.
+    fn allows(&self, action: &Action, from: Id<Location>, device: Id<Device>) -> bool {
         match action {
             Action::CloseCheck(check) => {
                 from == self.info.location
                     && self.status == OrderStatus::Active
+                    && device == self.ownership.device
                     && self.is_open(*check)
                     && !self.on(*check).is_empty()
             }
-            Action::Order(command) => self.refusal(command, from).is_none(),
+            Action::Order(command) => self.refusal(command, from, device).is_none(),
         }
     }
 
-    /// Why the model refuses `command` from `from`: the first rule it breaks, taking the rules
-    /// in the order the kernel checks them (the order and the device's location, then the
-    /// command's own rules, then the event's schema), or `None` if it is allowed.
-    fn refusal(&self, command: &OrderCommand, from: Id<Location>) -> Option<Refusal> {
+    /// Why the model refuses `command` from `device` at `from`: the first rule it breaks, taking
+    /// the rules in the order the kernel checks them (the order and the device's location, then
+    /// ownership, then the command's own rules, then the event's schema), or `None` if it is
+    /// allowed.
+    fn refusal(
+        &self,
+        command: &OrderCommand,
+        from: Id<Location>,
+        device: Id<Device>,
+    ) -> Option<Refusal> {
         if let OrderCommand::Create(_) = command {
             return Some(Refusal::AlreadyCreated);
         }
         if from != self.info.location {
             return Some(Refusal::WrongLocation);
         }
-        // A closed order takes only a reopening; an active one, when a check is closed.
+        let owner = self.ownership.device;
+        let not_owner = (device != owner).then_some(Refusal::NotOwner(owner));
+        // A closed order takes only a reopening, from its owner, and requests and overrides for
+        // it; an active one, when a check is closed.
         match (&self.status, command) {
-            (OrderStatus::Closed, OrderCommand::Reopen(_)) => None,
+            (OrderStatus::Closed, OrderCommand::Reopen(_)) => not_owner,
+            (
+                OrderStatus::Active | OrderStatus::Closed,
+                OrderCommand::RequestOwnership | OrderCommand::OverrideOwnership(_),
+            ) => {
+                if device == owner {
+                    Some(Refusal::AlreadyOwner)
+                } else if matches!(command, OrderCommand::RequestOwnership)
+                    && self.requests.iter().any(|(asking, _)| *asking == device)
+                {
+                    Some(Refusal::RequestPending)
+                } else {
+                    None
+                }
+            }
+            (OrderStatus::Active, _) if owners_only(command) && not_owner.is_some() => not_owner,
             (OrderStatus::Active, _) => self.refused(command).err(),
             _ => Some(Refusal::OrderClosed),
         }
@@ -692,6 +762,8 @@ impl Model {
             self.checks.iter().find(|(_, charged)| charged.is_some()).map(|(check, _)| *check);
         match command {
             OrderCommand::Create(_) => Err(Refusal::AlreadyCreated),
+            // Taken before the command's own rules.
+            OrderCommand::RequestOwnership | OrderCommand::OverrideOwnership(_) => Ok(()),
             OrderCommand::Reopen(_) => first_closed.map(|_| ()).ok_or(Refusal::NothingToReopen),
             OrderCommand::ChangeAttributes(changed) => {
                 let current = &self.info;
@@ -835,7 +907,7 @@ impl Model {
     }
 
     /// Applies an accepted action, whose event had identifier `event`.
-    fn apply(&mut self, action: &Action, event: Id<Event>) {
+    fn apply(&mut self, action: &Action, event: Id<Event>, device: Id<Device>) {
         let command = match action {
             Action::CloseCheck(check) => {
                 let mut charged = self.on(*check);
@@ -851,6 +923,11 @@ impl Model {
         };
         match command {
             OrderCommand::Create(_) => {}
+            OrderCommand::RequestOwnership => self.requests.push((device, self.ownership.lease)),
+            OrderCommand::OverrideOwnership(_) => {
+                let lease = self.ownership.lease.next().unwrap();
+                self.ownership = Ownership { device, lease };
+            }
             // A new line goes to the first open check, or to a new one with the event's
             // identifier.
             OrderCommand::AddLine(added) => {
@@ -980,7 +1057,7 @@ impl Working {
         };
         let adds = matches!(command, OrderCommand::AddLine(_));
         let opens = matches!(command, OrderCommand::OpenCheck(_));
-        let Ok(event) = self.view.decide(from, command) else { return false };
+        let Ok(event) = self.view.decide(from, id(self.device), command) else { return false };
         if adds {
             self.lines_minted += 1;
         }
@@ -1006,15 +1083,17 @@ impl Working {
         else {
             return false;
         };
+        let me = id(self.device);
         if balance.due.is_positive() {
-            let id = self.fresh_payment();
+            let payment_id = self.fresh_payment();
             let checkout = Checkout::new(&self.view, &self.payments, &rules, version);
-            let Ok(started) = checkout.start_payment(from, id, check, Tender::Cash, balance.due)
-            else {
+            let started =
+                checkout.start_payment(from, me, payment_id, check, Tender::Cash, balance.due);
+            let Ok(started) = started else {
                 return false;
             };
             self.payments_minted += 1;
-            let mut payment = Payment::new(id);
+            let mut payment = Payment::new(payment_id);
             let meta = self.next_meta(from, delay);
             payment.apply(&meta, &started);
             let cash = CashTendered { tendered: balance.due, rounding: None };
@@ -1030,7 +1109,7 @@ impl Working {
             self.payments.push(payment);
         }
         let checkout = Checkout::new(&self.view, &self.payments, &rules, version);
-        let Ok(event) = checkout.close_check(from, check) else { return false };
+        let Ok(event) = checkout.close_check(from, me, check) else { return false };
         self.record(event, from, delay);
         true
     }
@@ -1057,8 +1136,8 @@ struct Merged {
     latest: u64,
 }
 
-/// Device 1 creates the order and works through `prefix`; then devices 2 and on each work
-/// through their steps at once, from the view device 1 left.
+/// Device 1 creates the order and works through `prefix`; then devices 2 and on each override
+/// its owner and work through their steps at once, from the view device 1 left.
 fn merge(prefix: &[Step], devices: &[Vec<Step>]) -> Merged {
     let mut first = Working::new(1, Order::new(order_id()), 1_000);
     assert!(first.run(Action::Order(OrderCommand::Create(created())), location(), 0));
@@ -1070,9 +1149,15 @@ fn merge(prefix: &[Step], devices: &[Vec<Step>]) -> Merged {
     let mut payments = first.payments.clone();
     let mut latest = start;
     for (number, steps) in (2..).zip(devices) {
-        // Each device starts from the shared view, with the payments taken so far.
+        // Each device starts from the shared view, with the payments taken so far, and takes
+        // the order on a manager's word, as an island would: devices then act on it at once.
+        // Every other device asks the hub for it first, so its request waits in the merge.
         let mut device = Working::new(number, first.view.clone(), start);
         device.payments.clone_from(&first.payments);
+        if number % 2 == 1 {
+            device.run(Action::Order(OrderCommand::RequestOwnership), location(), 0);
+        }
+        device.run(Action::Order(OrderCommand::OverrideOwnership(reason(9))), location(), 0);
         for step in steps {
             device.step(step);
         }
@@ -1084,13 +1169,39 @@ fn merge(prefix: &[Step], devices: &[Vec<Step>]) -> Merged {
     Merged { order, events, payments, latest }
 }
 
-/// Commands on the whole order: ending, closing and reopening it.
+/// Commands on the whole order: adding a line and changing its attributes, as any device may,
+/// and opening a check, as only its owner may; ending, closing and reopening it; and asking for
+/// it or overriding its owner.
 fn order_wide() -> Vec<OrderCommand> {
+    let added = LineAdded {
+        line: id(0xADD),
+        item: ItemSnapshot {
+            variant: id(0x400),
+            catalog_version: CatalogVersion::from_bytes([1; 32]),
+            name: Name::new("Flat white").unwrap(),
+            tax_category: id(0x500),
+            unit_price: Money::from_minor(450, usd()),
+        },
+        quantity: quantity_of(1, Unit::Each),
+        modifiers: Vec::new(),
+        seat: None,
+        course: None,
+        notes: None,
+    };
+    let guests = AttributesChanged {
+        guest_count: Some(Change::Set(NonZeroU16::new(9).unwrap())),
+        ..AttributesChanged::default()
+    };
     vec![
+        OrderCommand::AddLine(added),
+        OrderCommand::ChangeAttributes(guests),
+        OrderCommand::OpenCheck(id(0xC4EC)),
         OrderCommand::Void(reason(0)),
         OrderCommand::Abandon,
         OrderCommand::Close,
         OrderCommand::Reopen(reason(1)),
+        OrderCommand::RequestOwnership,
+        OrderCommand::OverrideOwnership(reason(4)),
     ]
 }
 
@@ -1120,29 +1231,38 @@ fn battery(order: &Order) -> Vec<OrderCommand> {
     commands
 }
 
-/// For an order command, checks that `order` refuses it exactly when `model` does, and for the
-/// same reason, without recording it.
+/// For an order command, checks that `order` refuses it from `device` exactly when `model`
+/// does, and for the same reason, without recording it.
 fn check_refusal(
     order: &Order,
     model: &Model,
     action: &Action,
     from: Id<Location>,
+    device: Id<Device>,
 ) -> Result<(), TestCaseError> {
     if let Action::Order(command) = action {
-        let refused = order.decide(from, command.clone()).err().map(|error| refusal_of(&error));
-        prop_assert_eq!(refused, model.refusal(command, from), "{:?} from {:?}", command, from);
+        let refused =
+            order.decide(from, device, command.clone()).err().map(|error| refusal_of(&error));
+        let expected = model.refusal(command, from, device);
+        prop_assert_eq!(refused, expected, "{:?} from {:?} at {:?}", command, device, from);
     }
     Ok(())
 }
 
-/// Checks `commands` on `order`, from the order's location and another, against the model of
-/// it, without recording them.
+/// Checks `commands` on `order`, from its owner, from each device whose request waits, and from
+/// another device, at the order's location and another, against the model of it, without
+/// recording them.
 fn check_commands(order: &Order, commands: Vec<OrderCommand>) -> Result<(), TestCaseError> {
     let model = Model::of(order);
+    let owner = order.ownership().unwrap().device;
+    let asking = order.requests().iter().map(|request| request.device);
+    let devices: BTreeSet<Id<Device>> = asking.chain([owner, id(7)]).collect();
     for command in commands {
         let action = Action::Order(command);
-        check_refusal(order, &model, &action, location())?;
-        check_refusal(order, &model, &action, other_location())?;
+        for &device in &devices {
+            check_refusal(order, &model, &action, location(), device)?;
+            check_refusal(order, &model, &action, other_location(), device)?;
+        }
     }
     Ok(())
 }
@@ -1159,27 +1279,45 @@ fn check_commands_on(merged: &Merged) -> Result<(), TestCaseError> {
     check_commands(&order, battery(&order))
 }
 
-/// A device carrying on with a merged order, knowing every payment: each of its actions is
-/// accepted exactly when the model of the order it sees allows it, causes no conflict, and
-/// leaves the order as the model predicts.
+/// A device carrying on with a merged order, knowing every payment, once it has asked the hub
+/// for the order, asked again while its request waits, and overridden its owner: each of its
+/// actions is accepted exactly when the model of the order it sees allows it, causes no
+/// conflict but the one an override always leaves, and leaves the order, and the requests that
+/// wait with the leases they saw, as the model predicts.
 fn carry_on(merged: &Merged, steps: &[Step]) -> Result<(), TestCaseError> {
     let mut device = Working::new(9, merged.order.clone(), merged.latest);
     device.payments.clone_from(&merged.payments);
-    for step in steps {
-        let (action, from) = action(&device.view, step, device.fresh(), device.fresh_check());
+    let me = id(9);
+    let takeover = [
+        Action::Order(OrderCommand::RequestOwnership),
+        Action::Order(OrderCommand::RequestOwnership),
+        Action::Order(OrderCommand::OverrideOwnership(reason(9))),
+    ];
+    for k in 0..takeover.len() + steps.len() {
+        let (action, from) = if let Some(action) = takeover.get(k) {
+            (action.clone(), location())
+        } else {
+            let step = &steps[k - takeover.len()];
+            action(&device.view, step, device.fresh(), device.fresh_check())
+        };
         let mut model = Model::of(&device.view);
-        check_refusal(&device.view, &model, &action, from)?;
-        let allowed = model.allows(&action, from);
+        check_refusal(&device.view, &model, &action, from, me)?;
+        let allowed = model.allows(&action, from, me);
         let conflicts = device.view.conflicts().len();
         let accepted = device.run(action.clone(), from, 0);
         prop_assert_eq!(accepted, allowed, "{:?} from {:?}", action, from);
         if accepted {
-            model.apply(&action, device.log.last().unwrap().0.event_id);
+            model.apply(&action, device.log.last().unwrap().0.event_id, me);
         }
-        prop_assert_eq!(device.view.conflicts().len(), conflicts, "{:?}", action);
+        let overrode =
+            accepted && matches!(action, Action::Order(OrderCommand::OverrideOwnership(_)));
+        let left = conflicts + usize::from(overrode);
+        prop_assert_eq!(device.view.conflicts().len(), left, "{:?}", action);
         prop_assert_eq!(lines_of(&device.view), model.lines.clone());
         prop_assert_eq!(device.view.status(), &model.status);
         prop_assert_eq!(checks_of(&device.view), with_numbers(&model.checks));
+        prop_assert_eq!(device.view.ownership(), Some(model.ownership));
+        prop_assert_eq!(requests_of(&device.view), model.requests.clone());
     }
     invariants(&device.view)
 }
@@ -1193,7 +1331,138 @@ struct Expected {
     lines: Vec<ModelLine>,
     status: OrderStatus,
     checks: Vec<ModelCheck>,
+    ownership: Option<Ownership>,
+    requests: Vec<Request>,
     conflicts: Vec<(Id<Event>, ConflictKind)>,
+}
+
+/// Whether only the order's owner may record `event`: its structural and money changes.
+fn owners_only_event(event: &OrderEvent) -> bool {
+    match event {
+        OrderEvent::LineChanged(_)
+        | OrderEvent::LineRemoved { .. }
+        | OrderEvent::LineVoided { .. }
+        | OrderEvent::LineComped { .. }
+        | OrderEvent::Voided { .. }
+        | OrderEvent::Abandoned
+        | OrderEvent::CheckOpened { .. }
+        | OrderEvent::LinesAllocated(_)
+        | OrderEvent::CheckClosed(_)
+        | OrderEvent::Closed
+        | OrderEvent::Reopened { .. } => true,
+        OrderEvent::Created(_)
+        | OrderEvent::AttributesChanged(_)
+        | OrderEvent::LineAdded(_)
+        | OrderEvent::LinesFired { .. }
+        | OrderEvent::OwnershipRequested { .. }
+        | OrderEvent::OwnershipGranted(_)
+        | OrderEvent::OwnershipRefused { .. }
+        | OrderEvent::OwnershipOverridden { .. } => false,
+    }
+}
+
+/// Who owns the order, and the requests that wait, as queries over the events that apply
+/// (`applying`, in canonical order) after the creation at `creation`. A change of owner applies
+/// when the lease it replaces is the number of changes applied before it; the owner just
+/// before an event is the device of the last change applied before it, or else the creator.
+/// An event only the owner may record, recorded by another device, is flagged. A request waits
+/// while no answer names it, wherever the answer folds, even where it doesn't apply.
+fn ownership_model(
+    events: &[(EventMeta, OrderEvent)],
+    creation: usize,
+    applying: &[usize],
+    conflicts: &mut Vec<(Id<Event>, ConflictKind)>,
+) -> (Ownership, Vec<Request>) {
+    let creator = events[creation].0.origin_device;
+    let mut changes: Vec<Id<Device>> = Vec::new();
+    for &i in applying {
+        let (meta, event) = &events[i];
+        let owner = changes.last().copied().unwrap_or(creator);
+        if owners_only_event(event) && meta.origin_device != owner {
+            let by = meta.origin_device;
+            conflicts.push((meta.event_id, ConflictKind::NotOwner { by, owner }));
+        }
+        let applied = u64::try_from(changes.len()).unwrap();
+        match event {
+            OrderEvent::OwnershipGranted(granted) => {
+                if granted.lease.get().checked_sub(1) == Some(applied) {
+                    changes.push(granted.device);
+                } else {
+                    conflicts.push((meta.event_id, ConflictKind::StaleGrant));
+                }
+            }
+            OrderEvent::OwnershipOverridden { lease, .. } => {
+                if lease.get() == applied && applied < Lease::MAX.get() {
+                    conflicts.push((meta.event_id, ConflictKind::Overridden(owner)));
+                    changes.push(meta.origin_device);
+                } else {
+                    conflicts.push((meta.event_id, ConflictKind::StaleOverride));
+                }
+            }
+            _ => {}
+        }
+    }
+    let device = changes.last().copied().unwrap_or(creator);
+    let lease = Lease::new(u64::try_from(changes.len()).unwrap()).unwrap();
+    let answered: BTreeSet<Id<Event>> = events
+        .iter()
+        .filter_map(|(_, event)| match event {
+            OrderEvent::OwnershipGranted(granted) => Some(granted.request),
+            OrderEvent::OwnershipRefused { request, .. } => Some(*request),
+            _ => None,
+        })
+        .collect();
+    let requests = applying
+        .iter()
+        .filter_map(|&i| match &events[i] {
+            (meta, OrderEvent::OwnershipRequested { lease })
+                if !answered.contains(&meta.event_id) =>
+            {
+                Some(Request { event: meta.event_id, device: meta.origin_device, lease: *lease })
+            }
+            _ => None,
+        })
+        .collect();
+    (Ownership { device, lease }, requests)
+}
+
+/// The hub's answers to the requests that wait (ADR-0021), as the model sees them: the grants
+/// form a chain from the order's owner and lease, each to the first request after the one
+/// before that saw the chain's last lease, from another device, while no payment is in
+/// progress, and gives that device the lease after it. Every other request is refused for the
+/// first of: its lease isn't the chain's last, its device is the chain's last owner, a payment
+/// is in progress, or no lease follows its own.
+fn expected_answers(
+    ownership: Ownership,
+    requests: &[Request],
+    paying: bool,
+    epoch: Epoch,
+) -> Vec<OrderEvent> {
+    let mut chain = vec![(ownership.device, ownership.lease.get())];
+    requests
+        .iter()
+        .map(|request| {
+            let (owner, lease) = *chain.last().unwrap();
+            let why = [
+                (request.lease.get() != lease, Answer::LeaseMoved),
+                (request.device == owner, Answer::AlreadyOwner),
+                (paying, Answer::PaymentInProgress),
+                (Lease::new(lease + 1).is_none(), Answer::LeaseMoved),
+            ]
+            .into_iter()
+            .find_map(|(refused, why)| refused.then_some(why));
+            if let Some(refusal) = why {
+                return OrderEvent::OwnershipRefused { request: request.event, refusal };
+            }
+            chain.push((request.device, lease + 1));
+            OrderEvent::OwnershipGranted(OwnershipGranted {
+                request: request.event,
+                device: request.device,
+                lease: Lease::new(lease + 1).unwrap(),
+                epoch,
+            })
+        })
+        .collect()
 }
 
 /// The lines an event refers to, other than by adding them or charging for them.
@@ -1640,7 +1909,15 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
         // Nothing applies to an order that hasn't been created.
         conflicts.extend((0..events.len()).map(|i| (at(i), ConflictKind::BeforeCreation)));
         let status = OrderStatus::Active;
-        return Expected { info: None, lines: Vec::new(), status, checks: Vec::new(), conflicts };
+        return Expected {
+            info: None,
+            lines: Vec::new(),
+            status,
+            checks: Vec::new(),
+            ownership: None,
+            requests: Vec::new(),
+            conflicts,
+        };
     };
     let (meta, OrderEvent::Created(created)) = &events[creation] else { unreachable!() };
     let (location, currency) = (meta.location, created.currency);
@@ -1667,6 +1944,7 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
         .iter()
         .copied()
         .find(|&i| matches!(events[i].1, OrderEvent::Voided { .. } | OrderEvent::Abandoned));
+    let (ownership, requests) = ownership_model(events, creation, &applying, &mut conflicts);
     let timeline = Timeline { events, applying: &applying, end };
     let lives = lives_of(&timeline, currency, &mut info, &mut conflicts);
     let pass = pass_checks(events, &timeline, &lives, currency, &mut conflicts);
@@ -1693,7 +1971,15 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
     if let Some(end) = end.filter(|_| status == OrderStatus::Abandoned && ordered_at_end) {
         conflicts.push((at(end), ConflictKind::AbandonedWithLines));
     }
-    Expected { info: Some(info), lines, status, checks: with_numbers(&pass.checks), conflicts }
+    Expected {
+        info: Some(info),
+        lines,
+        status,
+        checks: with_numbers(&pass.checks),
+        ownership: Some(ownership),
+        requests,
+        conflicts,
+    }
 }
 
 fn sorted(conflicts: Vec<(Id<Event>, ConflictKind)>) -> Vec<(Id<Event>, String)> {
@@ -1711,6 +1997,8 @@ fn check(order: &Order, events: &[(EventMeta, OrderEvent)]) -> Result<(), TestCa
     prop_assert_eq!(order.status(), &expected.status);
     prop_assert_eq!(order.stage(), stage_of(&expected.lines));
     prop_assert_eq!(checks_of(order), expected.checks);
+    prop_assert_eq!(order.ownership(), expected.ownership);
+    prop_assert_eq!(order.requests(), expected.requests.as_slice());
     let actual = order.conflicts().iter().map(|conflict| (conflict.event, conflict.kind)).collect();
     prop_assert_eq!(sorted(actual), sorted(expected.conflicts));
     Ok(())
@@ -2176,6 +2464,96 @@ fn numbered(events: Vec<(bool, OrderEvent)>) -> Vec<(EventMeta, OrderEvent)> {
         .collect()
 }
 
+/// A step in an order's ownership, by device 1 to 3, or by the hub: an event a device records
+/// (only the owner, or anyone, may), a request or override from a lease, or the hub's answer to
+/// one of the requests, picked among them, or to none.
+#[derive(Clone, Debug)]
+enum Owned {
+    Event(u64, OrderEvent),
+    Request(u64, Lease),
+    Override(u64, Lease),
+    Grant { pick: Index, device: u64, lease: Lease },
+    Refusal { pick: Index, why: Answer },
+}
+
+/// The hub, in the ownership steps.
+const HUB: u64 = 9;
+
+fn small_lease(most: u64) -> impl Strategy<Value = Lease> {
+    (0..=most).prop_map(|n| Lease::new(n).unwrap())
+}
+
+fn any_owned() -> impl Strategy<Value = Owned> {
+    prop_oneof![
+        4 => (1_u64..=3, any_fold_event())
+            .prop_map(|(device, (_, event))| Owned::Event(device, event)),
+        3 => (1_u64..=3, small_lease(3)).prop_map(|(device, lease)| Owned::Request(device, lease)),
+        2 => (1_u64..=3, small_lease(3)).prop_map(|(device, lease)| Owned::Override(device, lease)),
+        3 => (any::<Index>(), 1_u64..=3, (1_u64..=4).prop_map(|n| Lease::new(n).unwrap()))
+            .prop_map(|(pick, device, lease)| Owned::Grant { pick, device, lease }),
+        1 => (any::<Index>(), prop::sample::select(Answer::ALL))
+            .prop_map(|(pick, why)| Owned::Refusal { pick, why }),
+    ]
+}
+
+/// The ownership steps' events, after device 1 creates the order, each at an HLC a little after
+/// the step before's, so that neighbours fold in either order: an answer can fold before its
+/// request, as when the hub's clock is behind. The creation folds after the first `late` steps,
+/// as when the hub's clock is far behind the creator's. Answers name the request they pick, or a
+/// request no device made when there is none. In canonical order.
+fn owned(steps: Vec<(Owned, u8)>, late: u8) -> Vec<(EventMeta, OrderEvent)> {
+    let requests: Vec<usize> =
+        (0..steps.len()).filter(|&k| matches!(steps[k].0, Owned::Request(..))).collect();
+    let mut seqs: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut events = Vec::new();
+    let mut metas: Vec<EventMeta> = Vec::new();
+    let mut next = |device: u64, k: usize, jitter: u8| {
+        let seq = seqs.entry(device).or_insert(0);
+        *seq += 1;
+        let hlc = 2_000 + 4 * u64::try_from(k).unwrap() + u64::from(jitter % 6);
+        meta_at(device, *seq, hlc, location())
+    };
+    let mut creation = next(1, 0, 0);
+    creation.hlc = Hlc::new(2_002 + 4 * u64::from(late), 0).unwrap();
+    events.push((creation, OrderEvent::Created(created())));
+    for (k, (step, jitter)) in steps.iter().enumerate() {
+        let device = match step {
+            Owned::Event(device, _) | Owned::Request(device, _) | Owned::Override(device, _) => {
+                *device
+            }
+            Owned::Grant { .. } | Owned::Refusal { .. } => HUB,
+        };
+        metas.push(next(device, k + 1, *jitter));
+    }
+    let ids: Vec<Id<Event>> = requests.iter().map(|&k| metas[k].event_id).collect();
+    let picked = |pick: &Index| match ids.len() {
+        0 => id::<Event>(0xDEAD),
+        n => ids[pick.index(n)],
+    };
+    for (meta, (step, _)) in metas.into_iter().zip(steps) {
+        let event = match step {
+            Owned::Event(_, event) => event,
+            Owned::Request(_, lease) => OrderEvent::OwnershipRequested { lease },
+            Owned::Override(_, lease) => {
+                OrderEvent::OwnershipOverridden { lease, reason: reason(5) }
+            }
+            Owned::Grant { pick, device, lease } => {
+                OrderEvent::OwnershipGranted(OwnershipGranted {
+                    request: picked(&pick),
+                    device: id(device),
+                    lease,
+                    epoch: Epoch::new(1).unwrap(),
+                })
+            }
+            Owned::Refusal { pick, why } => {
+                OrderEvent::OwnershipRefused { request: picked(&pick), refusal: why }
+            }
+        };
+        events.push((meta, event));
+    }
+    replica(events).1
+}
+
 /// Signs events in one device's log, each for its stream: an order's identifier, and the stream
 /// kind.
 fn signed(events: &[(Id<Order>, &str, OrderEvent)]) -> Vec<SignedEvent> {
@@ -2281,6 +2659,49 @@ proptest! {
         invariants_with(&order, !forged(&events))?;
     }
 
+    /// The same for ownership: devices request the order and override its owner, the hub answers
+    /// requests, sometimes from a lease that has moved on or before the request folds, and
+    /// devices record events only the owner may, and events anyone may, all in any canonical
+    /// order. Who owns the order, the requests that wait, and the conflicts are the model's, and
+    /// so are the hub's answers to the requests, with a payment in progress or not. Recorded
+    /// after every event, the answers leave no request waiting, each grant applies, and the
+    /// order goes to the last.
+    #[test]
+    fn the_fold_matches_the_model_on_ownership(
+        steps in prop::collection::vec((any_owned(), any::<u8>()), 0..30),
+        late in prop_oneof![4 => Just(0_u8), 1 => 1_u8..6],
+        epoch in any_epoch(),
+    ) {
+        let events = owned(steps, late);
+        let order = folded(&events)?;
+        check(&order, &events)?;
+        invariants(&order)?;
+        let expected = expected(&events);
+        let ownership = expected.ownership.unwrap();
+        for paying in [false, true] {
+            prop_assert_eq!(
+                order.answers(paying, epoch),
+                expected_answers(ownership, &expected.requests, paying, epoch)
+            );
+        }
+        let answers = order.answers(false, epoch);
+        let mut answered = order.clone();
+        let hub = events.iter().filter(|(meta, _)| meta.origin_device == id(HUB)).count();
+        for (k, answer) in (1_u64..).zip(&answers) {
+            let seq = u64::try_from(hub).unwrap() + k;
+            answered.apply(&meta_at(HUB, seq, 10_000 + k, location()), answer);
+        }
+        prop_assert!(answered.requests().is_empty());
+        prop_assert_eq!(answered.conflicts(), order.conflicts());
+        let last = answers.iter().rev().find_map(|answer| match answer {
+            OrderEvent::OwnershipGranted(granted) => {
+                Some(Ownership { device: granted.device, lease: granted.lease })
+            }
+            _ => None,
+        });
+        prop_assert_eq!(answered.ownership(), last.or(order.ownership()));
+    }
+
     /// Signed events fold into their own aggregate only: the events of another order, or of
     /// another kind of stream with the same identifier, are skipped, and the order is exactly
     /// what its own events make it.
@@ -2325,15 +2746,16 @@ proptest! {
     fn commands_do_what_the_model_says(steps in prop::collection::vec(any_step(), 1..60)) {
         let mut device = Working::new(1, Order::new(order_id()), 1_000);
         prop_assert!(device.run(Action::Order(OrderCommand::Create(created())), location(), 0));
-        let mut model = Model::new(info_of(&device.log[0].0, &created()));
+        let me = id(1);
+        let mut model = Model::new(info_of(&device.log[0].0, &created()), me);
         for step in &steps {
             let (action, from) = action(&device.view, step, device.fresh(), device.fresh_check());
-            check_refusal(&device.view, &model, &action, from)?;
-            let allowed = model.allows(&action, from);
+            check_refusal(&device.view, &model, &action, from, me)?;
+            let allowed = model.allows(&action, from, me);
             let accepted = device.run(action.clone(), from, 0);
             prop_assert_eq!(accepted, allowed, "{:?} from {:?}", action, from);
             if accepted {
-                model.apply(&action, device.log.last().unwrap().0.event_id);
+                model.apply(&action, device.log.last().unwrap().0.event_id, me);
             }
             prop_assert!(device.view.conflicts().is_empty());
             prop_assert_eq!(device.view.info(), Some(&model.info));

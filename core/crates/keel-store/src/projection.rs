@@ -15,7 +15,7 @@
 use core::str::FromStr;
 
 use keel_domain::aggregate::{Aggregate, fold};
-use keel_domain::order::{Channel, Mode, Order, OrderInfo, OrderStatus, Stage};
+use keel_domain::order::{Channel, Lease, Mode, Order, OrderInfo, OrderStatus, Ownership, Stage};
 use keel_domain::payment::{Payment, PaymentInfo, PaymentStatus, Tender};
 use keel_domain::schema::DomainEvent;
 use keel_domain::sequence::{self, SequenceEvent};
@@ -169,7 +169,7 @@ fn bytes<T>(id: Option<Id<T>>) -> Option<Vec<u8>> {
 
 const ORDERS: Projection = Projection {
     name: "orders",
-    version: 1,
+    version: 2,
     kind: "order",
     key: "order_id",
     order: "order_id",
@@ -197,9 +197,13 @@ const ORDERS: Projection = Projection {
             unreadable INTEGER NOT NULL,
             events INTEGER NOT NULL,
             first_hlc BLOB NOT NULL CHECK (length(first_hlc) = 8),
-            last_hlc BLOB NOT NULL CHECK (length(last_hlc) = 8)
+            last_hlc BLOB NOT NULL CHECK (length(last_hlc) = 8),
+            owning_device BLOB CHECK (length(owning_device) = 16),
+            lease INTEGER CHECK (lease >= 0),
+            requests INTEGER NOT NULL CHECK (requests >= 0)
         ) STRICT;
         CREATE INDEX orders_by_state ON orders (state, first_hlc, order_id);
+        CREATE INDEX orders_with_requests ON orders (order_id) WHERE requests > 0;
     ",
     drop: "DROP TABLE IF EXISTS orders",
     project: project_order,
@@ -302,6 +306,10 @@ pub struct OrderSummary {
     pub first: Hlc,
     /// The HLC of its last event, in canonical order.
     pub last: Hlc,
+    /// The device that owns it, and under which lease (ADR-0021); `None` until it is created.
+    pub ownership: Option<Ownership>,
+    /// The requests for it that wait for the hub's answer.
+    pub requests: u64,
 }
 
 fn project_order(
@@ -321,8 +329,8 @@ fn project_order(
         "INSERT OR REPLACE INTO orders (order_id, state, stage, location, channel, mode, currency, \
          created_by, revenue_center, table_id, guest_count, customer, owner, business_date, \
          live_lines, open_checks, closed_checks, conflicts, unreadable, events, first_hlc, \
-         last_hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-         ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+         last_hlc, owning_device, lease, requests) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, \
+         ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
         params![
             &order.id().to_bytes()[..],
             OrderState::of(&order).code(),
@@ -346,6 +354,9 @@ fn project_order(
             span.events,
             &span.first[..],
             &span.last[..],
+            bytes(order.ownership().map(|ownership| ownership.device)),
+            order.ownership().map(|ownership| seq_value(ownership.lease.get())).transpose()?,
+            count(order.requests().len())?,
         ],
     )?;
     Ok(())
@@ -355,11 +366,11 @@ fn project_order(
 pub(crate) const ORDER_COLUMNS: &str = "order_id, state, stage, location, channel, mode, \
     currency, created_by, revenue_center, table_id, guest_count, customer, owner, \
     business_date, live_lines, open_checks, closed_checks, conflicts, unreadable, events, \
-    first_hlc, last_hlc";
+    first_hlc, last_hlc, owning_device, lease, requests";
 
 /// Reads an order summary from a row of [`ORDER_COLUMNS`].
 pub(crate) fn order_summary(row: &Row<'_>) -> rusqlite::Result<Result<OrderSummary, StoreError>> {
-    let values: Vec<Value> = (0..22).map(|column| row.get(column)).collect::<Result<_, _>>()?;
+    let values: Vec<Value> = (0..25).map(|column| row.get(column)).collect::<Result<_, _>>()?;
     Ok(read_order(&values))
 }
 
@@ -406,6 +417,18 @@ fn read_order(values: &[Value]) -> Result<OrderSummary, StoreError> {
         events: at.unsigned(19)?,
         first: hlc(&at.blob(20)?)?,
         last: hlc(&at.blob(21)?)?,
+        ownership: match (at.optional_id(22)?, at.optional_integer(23)?) {
+            (Some(device), Some(lease)) => Some(Ownership {
+                device,
+                lease: u64::try_from(lease)
+                    .ok()
+                    .and_then(Lease::new)
+                    .ok_or(StoreError::Corrupt("an order's lease"))?,
+            }),
+            (None, None) => None,
+            _ => return Err(StoreError::Corrupt("an order's ownership")),
+        },
+        requests: at.unsigned(24)?,
     })
 }
 

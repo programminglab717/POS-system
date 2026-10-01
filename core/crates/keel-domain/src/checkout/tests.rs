@@ -115,7 +115,7 @@ impl Table {
     }
 
     fn run(&mut self, command: OrderCommand) -> Result<(), CommandError> {
-        let event = self.order.decide(location(), command)?;
+        let event = self.order.decide(location(), id(0xD), command)?;
         self.record(&event);
         Ok(())
     }
@@ -137,8 +137,14 @@ impl Table {
         tender: Tender,
         amount: i64,
     ) -> Result<(), CheckoutError> {
-        let event =
-            self.checkout().start_payment(location(), id(n), id(check), tender, usd(amount))?;
+        let event = self.checkout().start_payment(
+            location(),
+            id(0xD),
+            id(n),
+            id(check),
+            tender,
+            usd(amount),
+        )?;
         let meta = self.meta();
         let mut payment = Payment::new(id(n));
         payment.apply(&meta, &event);
@@ -156,7 +162,7 @@ impl Table {
 
     /// Closes `check`, and returns its snapshot.
     fn close(&mut self, check: u64) -> Result<CheckClosed, CheckoutError> {
-        let event = self.checkout().close_check(location(), id(check))?;
+        let event = self.checkout().close_check(location(), id(0xD), id(check))?;
         self.record(&event);
         let OrderEvent::CheckClosed(closed) = event else { panic!("a check's close") };
         assert_eq!(self.order.conflicts(), [], "closing a check caused a conflict");
@@ -302,7 +308,7 @@ fn payments_start_only_on_open_checks_with_nothing_unresolved() {
     table.run(OrderCommand::AddLine(added(1, 1000))).unwrap();
     // 10.00 with 8.875% tax is 10.8875, so 10.89.
     let start = |table: &Table, n: u64, check: u64, amount: Money| {
-        table.checkout().start_payment(location(), id(n), id(check), Tender::Card, amount)
+        table.checkout().start_payment(location(), id(0xD), id(n), id(check), Tender::Card, amount)
     };
     assert_eq!(start(&table, 1, 0xA, usd(1090)), Err(CheckoutError::TooMuch { due: usd(1089) }));
     assert_eq!(start(&table, 1, 0xA, usd(0)), Err(CheckoutError::InvalidAmount));
@@ -313,7 +319,7 @@ fn payments_start_only_on_open_checks_with_nothing_unresolved() {
         Err(CheckoutError::Order(CommandError::UnknownCheck(id(0xC9))))
     );
     assert_eq!(
-        table.checkout().start_payment(id(0x101), id(1), id(0xA), Tender::Card, usd(100)),
+        table.checkout().start_payment(id(0x101), id(0xD), id(1), id(0xA), Tender::Card, usd(100)),
         Err(CheckoutError::Order(CommandError::WrongLocation))
     );
 
@@ -339,6 +345,33 @@ fn payments_start_only_on_open_checks_with_nothing_unresolved() {
     );
     table.run(OrderCommand::Close).unwrap();
     assert_eq!(start(&table, 3, 0xA, usd(1)), Err(CheckoutError::Order(CommandError::OrderClosed)));
+}
+
+#[test]
+fn only_the_owning_device_starts_payments_and_closes_checks() {
+    // Device 0xD made the order: another device must ask for it first (ADR-0021).
+    let mut table = Table::new();
+    table.run(OrderCommand::AddLine(added(1, 1000))).unwrap();
+    let not_owner = CheckoutError::Order(CommandError::NotOwner(id(0xD)));
+    let started = table.checkout().start_payment(
+        location(),
+        id(0xD2),
+        id(0xB1),
+        id(0xA),
+        Tender::Cash,
+        usd(1089),
+    );
+    assert_eq!(started, Err(not_owner.clone()));
+    table.start(0xB1, 0xA, Tender::Cash, 1089).unwrap();
+    // Its outcome is recorded whoever owns the order by then: payments don't check ownership.
+    table.pay(0xB1, in_cash(1089, 1089)).unwrap();
+    assert_eq!(table.checkout().close_check(location(), id(0xD2), id(0xA)), Err(not_owner));
+    // The order's location comes first.
+    assert_eq!(
+        table.checkout().close_check(id(0x101), id(0xD2), id(0xA)),
+        Err(CheckoutError::Order(CommandError::WrongLocation))
+    );
+    table.close(0xA).unwrap();
 }
 
 #[test]
@@ -385,7 +418,7 @@ fn money_that_does_not_fit_the_order_is_reported() {
     for n in [0xB1, 0xB2] {
         let event = table
             .checkout()
-            .start_payment(location(), id(n), id(0xA), Tender::Card, usd(1089))
+            .start_payment(location(), id(0xD), id(n), id(0xA), Tender::Card, usd(1089))
             .unwrap();
         taken.push((n, event));
     }
@@ -399,7 +432,7 @@ fn money_that_does_not_fit_the_order_is_reported() {
         table.payments.push(payment);
     }
     let first = Checkout::new(&table.order, &table.payments[..1], &table.rules, version());
-    let close = first.close_check(location(), id(0xA)).unwrap();
+    let close = first.close_check(location(), id(0xD), id(0xA)).unwrap();
     table.record(&close);
     assert_eq!(
         table.checkout().issues(),

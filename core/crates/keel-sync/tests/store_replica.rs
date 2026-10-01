@@ -1,5 +1,6 @@
-//! The replicator over `keel-store`'s store (ADR-0019): two encrypted stores replicate, and a
-//! store whose write is interrupted stores nothing and is sent the events again.
+//! The replicator over `keel-store`'s store (ADR-0019): two encrypted stores replicate, a store
+//! whose write is interrupted stores nothing and is sent the events again, and a hub answers a
+//! request for an order, then numbers its answer (ADR-0021).
 
 #![allow(
     clippy::unwrap_used,
@@ -15,12 +16,21 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use keel_domain::order::{
+    Channel, Mode, Order, OrderCommand, OrderCreated, OrderEvent, OwnershipGranted,
+};
+use keel_domain::schema::DomainEvent;
+use keel_domain::sequence::SequenceEvent;
+use keel_events::envelope::{StreamKind, StreamRef};
 use keel_events::event::SignedEvent;
 use keel_events::keys::SoftwareSigner;
+use keel_events::log::EventDraft;
 use keel_events::verify::DeviceRegistry;
-use keel_store::{Faults, Point, Store, StoreConfig, StoreError, StoreKey};
-use keel_sync::{Frame, Have, Outgoing, Replicator, Roles, StoreReplica, SyncConfig};
-use keel_types::SeededEntropy;
+use keel_store::{Faults, Point, Received, Store, StoreConfig, StoreError, StoreKey};
+use keel_sync::{
+    Events, Frame, Have, Outgoing, Replicator, Roles, StoreReplica, SyncConfig, VersionVector,
+};
+use keel_types::{Currency, Id, SeededEntropy};
 use support::{DRIFT, at, device, draft, here, registry, signer};
 
 /// A directory of its own, in memory where there is one, removed when dropped.
@@ -187,4 +197,127 @@ fn a_store_interrupted_mid_write_stores_nothing_and_is_sent_the_events_again() {
     deliver(&mut hub_sync, &mut hub, &registry, 1, &again, 2_011).unwrap();
     assert_eq!(hub.log(device(1), 0, 10).unwrap(), events);
     assert_eq!(hub_sync.version_vector(), &hub.version_vector().unwrap());
+}
+
+/// An event of the order `order`, as a draft.
+fn order_draft(order: Id<Order>, event: &OrderEvent) -> EventDraft {
+    let (schema, payload) = event.encode().unwrap();
+    let stream = StreamRef { kind: StreamKind::new(OrderEvent::STREAM).unwrap(), id: order.cast() };
+    EventDraft { stream, schema, payload, ..draft(0) }
+}
+
+#[test]
+fn a_hub_answers_a_request_for_an_order_then_numbers_its_answer() {
+    let registry = registry([1, 2, 3]);
+    let (a_dir, b_dir, hub_dir) = (Scratch::new("a"), Scratch::new("b"), Scratch::new("hub"));
+    let plan = Plan::default();
+    let (mut a, mut b, mut hub) =
+        (open(&a_dir, 1, &plan), open(&b_dir, 2, &plan), open(&hub_dir, 3, &plan));
+    // Device 1 opens an order; device 2 holds it, and asks for it.
+    let order: Id<Order> = Id::parse("0192f0c1-0000-7000-8000-000000007000").unwrap();
+    let created = OrderEvent::Created(OrderCreated {
+        channel: Channel::Pos,
+        mode: Mode::DineIn,
+        currency: Currency::from_code("USD").unwrap(),
+        revenue_center: None,
+        table: None,
+        guest_count: None,
+        customer: None,
+        owner: None,
+    });
+    let creation = a.write(|w| w.append(order_draft(order, &created), at(10))).unwrap();
+    let received = b.write(|w| w.receive(&creation.to_bytes(), &registry, at(20))).unwrap();
+    assert!(matches!(received, Received::Stored(_)));
+    let view = b.load(Order::new(order)).unwrap();
+    let asked = view.decide(here(), device(2), OrderCommand::RequestOwnership).unwrap();
+    let request = b.write(|w| w.append(order_draft(order, &asked), at(30))).unwrap();
+
+    // The hub, settled, in epoch 2, takes both in from device 2.
+    let roles = Roles { sequencer: Some(2), durable: None };
+    let (mut hub_sync, _) = Replicator::start(
+        &mut StoreReplica::new(&mut hub, &registry),
+        [device(1), device(2)],
+        SyncConfig::DEFAULT,
+        roles,
+        at(0),
+    )
+    .unwrap();
+    let settle =
+        Frame::Have(Have { location: here(), vv: VersionVector::new(), acked: 0, asks: false });
+    deliver(
+        &mut hub_sync,
+        &mut hub,
+        &registry,
+        1,
+        &[Outgoing { to: device(3), frame: settle.encode() }],
+        40,
+    )
+    .unwrap();
+    assert!(hub_sync.settled());
+    // Device 2 says what it holds, then sends it.
+    let holds = Frame::Have(Have {
+        location: here(),
+        vv: [(device(1), 1), (device(2), 1)].into_iter().collect(),
+        acked: 0,
+        asks: false,
+    });
+    deliver(
+        &mut hub_sync,
+        &mut hub,
+        &registry,
+        2,
+        &[Outgoing { to: device(3), frame: holds.encode() }],
+        45,
+    )
+    .unwrap();
+    let batch =
+        Frame::Events(Events { batch: 1, events: vec![creation.to_bytes(), request.to_bytes()] });
+    let out = deliver(
+        &mut hub_sync,
+        &mut hub,
+        &registry,
+        2,
+        &[Outgoing { to: device(3), frame: batch.encode() }],
+        50,
+    )
+    .unwrap();
+
+    // It granted the request, and numbered everything, its grant too.
+    let own = hub.log(device(3), 0, 10).unwrap();
+    assert_eq!(own.len(), 2, "the grant, then the record");
+    let body = own[0].body();
+    let grant = OrderEvent::decode(&body.schema, &body.payload).unwrap();
+    let OrderEvent::OwnershipGranted(OwnershipGranted {
+        request: answered, device: to, epoch, ..
+    }) = grant
+    else {
+        panic!("not a grant: {grant:?}")
+    };
+    assert_eq!((answered, to, epoch.get()), (request.body().event_id, device(2), 2));
+    let record = own[1].body();
+    let Ok(SequenceEvent::Assigned(record)) =
+        SequenceEvent::decode(&record.schema, &record.payload)
+    else {
+        panic!("not a record")
+    };
+    assert_eq!(record.epoch, 2);
+    assert!(record.runs.iter().any(|run| run.device == device(3) && run.from == 1));
+    let summary = hub.order(order).unwrap().unwrap();
+    assert_eq!(summary.ownership.map(|ownership| ownership.device), Some(device(2)));
+    assert_eq!(summary.requests, 0);
+    // Both go out to the device that asked, which holds the rest.
+    assert_eq!(sent_to(&out, device(2)), own);
+}
+
+/// The events batches in `out` send to `to`.
+fn sent_to(out: &[Outgoing], to: Id<keel_events::envelope::Device>) -> Vec<SignedEvent> {
+    out.iter()
+        .filter(|outgoing| outgoing.to == to)
+        .filter_map(|outgoing| match Frame::decode(&outgoing.frame) {
+            Ok(Frame::Events(events)) => Some(events.events),
+            _ => None,
+        })
+        .flatten()
+        .map(|bytes| SignedEvent::from_stored(&bytes).unwrap())
+        .collect()
 }

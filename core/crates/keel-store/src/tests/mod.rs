@@ -22,6 +22,7 @@ use super::*;
 mod encryption;
 mod integrity;
 mod outbox;
+mod ownership;
 mod projections;
 mod sequencing;
 
@@ -94,6 +95,11 @@ impl TempDir {
 
     fn db(&self) -> PathBuf {
         self.0.join("store.db")
+    }
+
+    /// Another store's database file, beside the first.
+    fn file(&self, name: &str) -> PathBuf {
+        self.0.join(name)
     }
 }
 

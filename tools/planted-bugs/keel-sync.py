@@ -509,4 +509,34 @@ BUGS = [
         "const DURABLE: u64 = 2;",
         "const DURABLE: u64 = 1;",
     ),
+    # Ownership (ADR-0021): the hub answers requests for orders, then numbers what it wrote.
+    (
+        "ownership: the hub doesn't answer requests",
+        "src/replicator.rs",
+        "        let mut written = replica.answer_requests(epoch, now)?;",
+        "        let mut written = Vec::new();",
+    ),
+    (
+        "ownership: the hub numbers before it answers",
+        "src/replicator.rs",
+        """        let mut written = replica.answer_requests(epoch, now)?;
+        written.extend(replica.sequence(epoch, now)?);""",
+        """        let mut written = replica.sequence(epoch, now)?;
+        written.extend(replica.answer_requests(epoch, now)?);""",
+    ),
+    (
+        "ownership: the store answers in epoch 1",
+        "src/replica.rs",
+        "        self.store.answer_requests(epoch, now)",
+        "        self.store.answer_requests(epoch.min(1), now)",
+        # Every hub in the simulator is in epoch 1, and the protocol property's model replica
+        # holds no orders: only the known answers, in epoch 2, see it.
+        "unit",
+    ),
+    (
+        "ownership: the store never answers",
+        "src/replica.rs",
+        "        self.store.answer_requests(epoch, now)",
+        "        let _ = (epoch, now);\n        Ok(Vec::new())",
+    ),
 ]

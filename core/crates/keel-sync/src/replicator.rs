@@ -10,10 +10,10 @@
 //! says exactly what its sender holds, and receiving an event twice changes nothing.
 //!
 //! Replicas may have roles (ADR-0020). The Store Hub sequences: once its log is settled, after
-//! every write that stores events, it numbers them in records it appends and pushes like any new
-//! events. A replica may name a durable peer, the cloud, whose `have` is the durable-ack
-//! watermark; replicas relay the watermark to each other in `durable` frames, and keep the most
-//! each peer has told them.
+//! every write that stores events, it answers the requests for orders that wait (ADR-0021), and
+//! numbers the events in records it appends, pushing both like any new events. A replica may
+//! name a durable peer, the cloud, whose `have` is the durable-ack watermark; replicas relay the
+//! watermark to each other in `durable` frames, and keep the most each peer has told them.
 
 use core::time::Duration;
 use std::collections::BTreeMap;
@@ -308,8 +308,9 @@ impl Replicator {
         self.push_all(replica, now)
     }
 
-    /// As the Store Hub, once the replica's log is settled: numbers what no record covers, and
-    /// returns the batches that send the records to peers lacking them.
+    /// As the Store Hub, once the replica's log is settled: answers the requests for orders that
+    /// wait (ADR-0021), numbers what no record covers, answers included, and returns the batches
+    /// that send the answers and records to peers lacking them.
     fn sequence<R: Replica>(
         &mut self,
         replica: &mut R,
@@ -319,11 +320,12 @@ impl Replicator {
         if !self.settled {
             return Ok(Vec::new());
         }
-        let records = replica.sequence(epoch, now)?;
-        if records.is_empty() {
+        let mut written = replica.answer_requests(epoch, now)?;
+        written.extend(replica.sequence(epoch, now)?);
+        if written.is_empty() {
             return Ok(Vec::new());
         }
-        self.take_in(replica, &records, now)
+        self.take_in(replica, &written, now)
     }
 
     /// Whether the device's own log is settled: a peer has shown it holds no more of that log

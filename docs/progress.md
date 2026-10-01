@@ -10,8 +10,9 @@
 simulator and the sync engine, in four slices
 ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)). Slice 1, replication and
 the simulator, and slice 2, hub sequencing ([ADR-0020](./adr/0020-hub-sequencing.md)), are built
-and reviewed. Slice 3, ownership leases, is designed ([ADR-0021](./adr/0021-ownership-leases.md),
-proposed) and being built. Step 5, `keel-store`, is done: built in three slices, each reviewed.
+and reviewed. Slice 3, ownership leases, is built and verified, and awaits review
+([ADR-0021](./adr/0021-ownership-leases.md), proposed). Step 5, `keel-store`, is done: built in
+three slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -24,7 +25,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 and 2 of 4 built and reviewed; slice 3 designed, being built | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 and 2 of 4 built and reviewed; slice 3 built, awaiting review | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -69,15 +70,16 @@ Step 6 is built in four slices, each ending with a review
    [ADR-0020](./adr/0020-hub-sequencing.md)):
    `store_seq` per epoch, confirmed and provisional events, store durability, and the cloud's
    durable-ack watermark.
-3. **Ownership leases** (designed 2026-10-01, [ADR-0021](./adr/0021-ownership-leases.md)): the
-   hub grants and transfers orders' ownership; island mode and the manager's override.
+3. **Ownership leases** (designed and built 2026-10-01,
+   [ADR-0021](./adr/0021-ownership-leases.md)): the hub grants and transfers orders' ownership;
+   island mode and the manager's override.
 4. **Hub election and failover:** priorities, heartbeats, the hot standby, epochs and fencing,
    and a split brain healing.
 
 ## Current slice
 
-Step 6, slice 3, ownership leases, is designed in [ADR-0021](./adr/0021-ownership-leases.md),
-proposed:
+Step 6, slice 3, ownership leases, is built and verified (see "Completed"), as
+[ADR-0021](./adr/0021-ownership-leases.md), proposed, describes:
 
 - An order's owning device is part of the order, decided by its own events: the device that
   opened it, under lease 0, then each device it passes to. Every change of owner names the
@@ -93,16 +95,166 @@ proposed:
 | Piece | Status |
 |---|---|
 | Design, in ADR-0021 | Done |
-| `keel-domain`: the four ownership events, ownership in the order's fold, the commands' check, and the hub's answers | Next |
-| `keel-domain`: checkout's payments need ownership | |
-| `keel-store`: the orders projection, version 2, and answering requests as the hub | |
-| `keel-sync`: the hub answers requests before it sequences | |
-| `keel-sim`: requests, overrides, and the new invariants | |
-| Known answers, property tests, the simulator's seeds, planted bugs and probes | |
-| Soak, CI-equivalent run, docs | |
-| Review, and accepting ADR-0021 | |
+| `keel-domain`: the four ownership events, ownership in the order's fold, the commands' check, and the hub's answers | Done |
+| `keel-domain`: checkout's payments need ownership | Done |
+| `keel-store`: the orders projection, version 2, and answering requests as the hub | Done |
+| `keel-sync`: the hub answers requests before it sequences | Done |
+| `keel-sim`: requests, overrides, and the new invariants | Done |
+| Known answers, property tests, the simulator's seeds, planted bugs and probes | Done |
+| Soak, CI-equivalent run, docs | Done |
+| Review, and accepting ADR-0021 | Next |
 
 ## Completed
+
+### Ownership leases: step 6, slice 3 (2026-10-01)
+
+Built and verified; awaiting review. Its commit and CI run are recorded once it is pushed.
+
+- **Built** ([ADR-0021](./adr/0021-ownership-leases.md)):
+  - `keel-domain`:
+    - Four order events, version 1: `order.ownership_requested`, `_granted`, `_refused` and
+      `_overridden`. `Lease` counts an order's changes of owner, from 0; `Epoch` is the hub's.
+    - The order's fold keeps its owner, lease and waiting requests. The creator owns the order
+      under lease 0; a grant or an override applies only from the current lease. An answer
+      names its request wherever it folds. Four new conflicts: `NotOwner`, `StaleGrant`,
+      `Overridden` and `StaleOverride`.
+    - `Order::decide` takes the device: commands that need ownership are refused to any other
+      device, `NotOwner`, and requests and overrides are commands of their own. Checkout's
+      `start_payment` and `close_check` need ownership too.
+    - `Order::answers(paying, epoch)`: the hub's grants and refusals, a pure function of the
+      order and whether a payment of it is in progress.
+  - `keel-store`: the orders projection, version 2, with each order's owner, lease and waiting
+    requests, and `Store::answer_requests(epoch, now)`, the hub's answers in a write of their
+    own, each caused by the request it answers.
+  - `keel-sync`: `Replica::answer_requests`. The hub answers whenever it would sequence, then
+    numbers its answers with everything else.
+  - `keel-sim`:
+    - A move that needs an order another device owns becomes a request, or, from a device cut
+      off from the hub, an override. Devices also ask for each other's orders, and half the
+      moves on other orders go to the latest two, so that devices contend for them.
+    - Three devices in half the runs, up from three in ten.
+    - Four new invariants, checked at the end of each run, and the hub's answers and the
+      orders' ownership conflicts counted in its report.
+  - CI: the job's time limit rises from 30 minutes to 45. Slice 2's commit took 28.6 of them,
+    in two test passes of 14 minutes each, and this slice's tests add to both.
+- **Verified:**
+  - Known answers:
+    - `keel-domain`, 14 tests of ownership:
+      - the four payloads pinned byte for byte, in payloads Python's `cbor2` encoded from the
+        key tables, and each way each is refused;
+      - the fold: the creator's ownership, a grant, a stale grant, a refusal, an override and a
+        stale one, every owner-only event recorded by another device, an answer before its
+        request, and one before the order's creation;
+      - each command's ownership check, requests one at a time, and a closed order asked for;
+      - each of the hub's answers;
+      - leases and epochs in range.
+    - Checkout: only the owner starts a payment or closes a check, and a payment's outcome is
+      recorded whoever owns the order by then.
+    - `keel-store`, 5 tests: the hub granting, every store seeing the new owner; a payment in
+      flight holding the order where an authorized one doesn't; two requests from one lease;
+      a request waiting for its order's creation; an interrupted answering leaving nothing.
+    - `keel-sync`: a hub, in epoch 2, answering a request it receives and numbering its answer
+      in the same pass.
+  - Property tests:
+    - `keel-domain`:
+      - the payloads against the codec's model, with a property of their own changing one field
+        at a time, and a sweep of every lease and epoch across the ends of its range;
+      - the fold against a model of ownership, over requests, grants, refusals and overrides
+        from three devices and the hub in any canonical order, sometimes before the order's
+        creation;
+      - the hub's answers against a model of their own, the grants a chain from the owner, with
+        a payment in progress or not; folded after everything, they leave no request waiting;
+      - commands tried from the owner, from each device whose request waits, and from a device
+        with none, on every state merged orders pass through; a device asking twice, then
+        overriding, with the requests it leaves and their leases the model's;
+      - checkout's decisions for a device that doesn't own the order.
+    - `keel-store`: a hub in an epoch of its own takes in two devices' logs a few events at a
+      time, asks for orders itself, and answers, sometimes interrupted. Each answer must be the
+      order's rules applied to what it holds; at the end every request has one answer, and
+      another replica, taking every log in any order, agrees.
+    - `keel-sync`: the protocol property, its model replica asserting that the hub answers
+      before it numbers, every time.
+    - 100,000 cases each passed, in release builds: `keel-domain`'s payload properties in
+      112 s, its order properties in 211 s and checkout's in 85 s; the store's ownership
+      property in 40 minutes and its projection properties in 29; and the protocol property in
+      11 minutes.
+  - The simulator: 5,000 seeds passed in a release build, in 46 minutes, alongside other runs,
+    three devices in 2,438 of them.
+    - Devices made 43,783 requests and 3,173 overrides. The hub held 43,219 of the requests,
+      the rest lost to rollbacks, and answered each once: 34,975 grants, 1,205 refusals of a
+      moved lease, 7,039 of a payment in progress, and none of an owner, which the simulator's
+      star rules out.
+    - In the orders' folds on the hub: 2,783 overrides applied, in 1,812 seeds; 192 stale
+      overrides, in 177; 243 stale grants, in 221, each after an override of the lease it
+      replaced; and 3,298 events recorded without ownership, in 1,617.
+    - The runs met what slice 2's did: 672,198 events appended; 5.2 million frames, of which
+      265,000 were lost, 287,000 duplicated, 124,000 cut off and 71,000 sent to a node that was
+      down; 3,530 crashes between writes, 3,422 in the middle of one, 3,633 rollbacks, 7,526
+      clock jumps and 7,575 cuts; 5,159 events lost to rollbacks, held by no other replica, and
+      528 devices forked. The hub wrote 406,327 records, numbering 700,104 events, and replicas
+      sent 1.1 million `durable` frames.
+    - The replicas agreed after healing within 1.5 s at the median, 2.1 s at the 90th
+      percentile, 5.1 s at the 99th, and 10.1 s at most.
+  - Coverage probes, all passing:
+    - the fold property, over 1,000 cases: stale grants in 81%, applied overrides in 40%, stale
+      overrides in 73%, events flagged `NotOwner` in 76%, an answer before its request in 71%,
+      leases of 2 or more in 41%; the hub's answers refused a moved lease in 46%, an owner in
+      7% and a payment in progress in 15%, granted in 15%, and granted twice in 1.8%;
+    - commands, over 1,000 merged orders: a request from another device waited in every one,
+      and in 69% of the 22,500 states tried; the device carrying on had its first request
+      accepted and its second refused as pending in 649, the rest ended orders;
+    - checkout: of 7,206 payments a device that didn't own the order tried to start, 75% were
+      refused for that, and 36% of 9,430 closes; the others failed earlier rules first;
+    - the store property, over 1,000 cases: 4,053 answering passes, 1,789 with answers: 553
+      grants, 3,009 refusals of a moved lease, 647 of an owner and 355 of a payment in
+      progress; 760 passes answered both orders, 67 granted twice; 993 answers were
+      interrupted, 325 with answers to lose; 505 of 3,000 passes held a request for an order
+      not yet created.
+  - Planted bugs, all caught: 51 in `keel-domain`, 15 in `keel-store` and 4 in `keel-sync`.
+    The property tests alone catch all but two: no fold reaches the largest lease, after 2^63 − 1
+    changes of owner; and every simulated hub is in epoch 1, so only the known answer, in epoch
+    2, sees a store answering in the wrong one. Of `keel-sync`'s other three, the simulator
+    catches all three and the protocol property two: the third is the store's, which its model
+    replica stands in for.
+  - A CI-equivalent run passed every step, in 34 minutes alongside the soaks: formatting, both
+    lint runs, the tests with the exhaustive sweeps and 4,096 cases a property (17 minutes), the
+    tests without default features (16), the docs, the `wasm32` build, the currency table and
+    the golden baskets.
+- **Decisions:** [ADR-0021](./adr/0021-ownership-leases.md), proposed, with what the build
+  settled under "As built":
+  - refusals coded from 0, as every code is, and an override's reason with an optional note;
+  - an answer names its request wherever it folds, even before the order's creation;
+  - the order of the checks: the order's state, then ownership, then the command's own rules,
+    and the hub's lease, then device, then payment;
+  - the hub's answers recorded by `System("hub")`, caused by their requests, under the order's
+    business date;
+  - the simulator's devices contending for the latest orders, and three of them in half the
+    runs.
+- **Found and fixed during the build:**
+  - The design assumed a request folds before its answer. A store keeps an event from a device
+    whose clock is too far ahead without moving its own clock past it, so the hub's answer can
+    sort first: the request would have waited for ever, and the hub answered it at every write.
+    The fold now remembers every request an answer names.
+  - Reviewing the fold found the same with an answer before the order's creation, which the
+    fold sets aside: a hub more than a minute behind two devices would answer the same request
+    at every write. Answers are now noted before anything else.
+  - Writing the planted bugs showed that `keel-store`'s property uses the order's own rules as
+    its model of the hub's answers, so no property checked the rules themselves.
+    `keel-domain`'s ownership property now has a model of the answers.
+  - The first run of the planted bugs missed nine of 50, in five places the property tests
+    didn't reach:
+    - a grant's lease or epoch of 0 came up once in thousands of cases: a payload property for
+      the four schemas, and a sweep of their numbers, now reach them every time;
+    - every racing device overrode the order first, so no merged order had a request waiting:
+      one device in two now asks first, commands are tried from each device whose request
+      waits, and the device carrying on asks twice before it overrides;
+    - no command anyone may make was tried from another device;
+    - requests were compared by device, not by the lease they name;
+    - checkout's model ignored ownership.
+  - The first simulator runs never met the race that makes a grant stale, in 64 seeds: devices
+    spread their moves over too many orders, and three devices were too rare. Moves on other
+    orders now go to the latest two half the time, an island always overrides, and three
+    devices run in half the seeds: 12 stale grants in 256 seeds.
 
 ### Hub sequencing: step 6, slice 2 (2026-09-30)
 
@@ -1071,7 +1223,7 @@ Work deliberately left for later, so it isn't forgotten:
   - Records of two devices in one epoch, which slice 4's fencing rules out, can give two events
     one number: the feed gives both, and a page that ends between them skips the second.
 - **`keel-sync`:**
-  - Slices 3 and 4 of step 6: ownership leases, and hub election and failover.
+  - Slice 4 of step 6: hub election and failover.
   - Until slice 4, a record from any device enrolled at the location counts. A record from a
     device that isn't the hub could leave a stretch of a log below its highest covered position
     that nothing ever numbers. Slice 4 also brings a hub restored from an older copy of its
@@ -1090,13 +1242,29 @@ Work deliberately left for later, so it isn't forgotten:
     for up to the acknowledgement timeout (2 s).
   - A clock set back less than a round delays the rounds by as much. Timers on a monotonic clock
     would need a second kind of time passed in, beside the clock the store stamps events with.
+- **Ownership** (ADR-0021, decision 8):
+  - Heartbeats, with slice 4: the hub taking an order back from a device it hasn't heard from in
+    a while, and telling a device that it is an island. Until then an order whose owner died in
+    the middle of a payment can be taken only by override, and the simulator, which knows its
+    partitions, decides when a device overrides.
+  - A hub whose clock is more than a minute behind the devices can't give their new orders
+    away: its grants sort before the orders' creation, where they don't apply. Heartbeats can
+    tell such a hub.
+  - Grants only from the hub elected for their epoch, with slice 4.
+  - Who may override: a manager, checked with `keel-policy`.
+  - The owner handing an order to another device without that device asking.
+  - A payment started by a device that didn't own its order is flagged by the device's check
+    and checkout's issues, not in the payment's own fold, which can't see the order.
+  - Other leases: tables, store-wide order numbers, limited quantities (offline-and-sync §6.3).
+  - In the simulator's star the hub never refuses a request from the device that owns the
+    order: only the known answers and the property tests reach that refusal.
 - **`keel-sim`:**
   - Disk faults, torn writes and lost fsyncs, wait for a simulated disk: a SQLite VFS, which
     needs `unsafe` code.
-  - The invariants of later slices and features: one lease holder per order, one hub per epoch;
-    payments, the ledger and fiscal chains (offline-and-sync §12).
+  - The invariants of later slices and features: one hub per epoch; payments, the ledger and
+    fiscal chains (offline-and-sync §12).
 - **Orders:**
-  - Permissions, approvals and ownership leases aren't checked yet (`keel-policy`, `keel-sync`).
+  - Permissions and approvals aren't checked yet (`keel-policy`).
   - An order with payments on its open checks can be voided, and checkout reports the payments:
     refusing it needs the payments, and refunds come with returns.
   - Check names, and putting a new line straight onto the check it is for (a new version of

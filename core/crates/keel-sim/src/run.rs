@@ -26,7 +26,7 @@ use crate::config::Config;
 use crate::monitor::Monitor;
 use crate::node::{CLOUD, HUB, Node, SimError, device, registry, text};
 use crate::rng::Rng;
-use crate::workload::{self, Made, Move, WorkError};
+use crate::workload::{self, Made, Move, Station, WorkError};
 
 /// How long a device waits for its own log to settle before it works anyway, as an island.
 pub(crate) const SETTLE_WAIT: i64 = 3_000;
@@ -136,6 +136,12 @@ pub struct Report {
     pub sequenced: [u64; 2],
     /// `durable` frames sent.
     pub durable_frames: u64,
+    /// The requests for orders the hub held (ADR-0021), its grants, and its refusals because the
+    /// lease had moved on, the device already owned the order, and a payment was in progress.
+    pub answers: [u64; 5],
+    /// In the orders' folds on the hub: overrides that applied, stale overrides, stale grants,
+    /// and events recorded by a device that didn't own the order.
+    pub ownership: [u64; 4],
 }
 
 /// A failed run: its seed, and what went wrong.
@@ -706,6 +712,9 @@ impl Run {
             self.at(now.saturating_add(200), Action::Work { node: n, incarnation });
             return Ok(());
         }
+        // Whether the device is cut off from the hub, which only the simulator knows.
+        let island = self.cut(n, HUB) || !self.nodes.get(&HUB).is_some_and(Node::is_up);
+        let station = Station { device: device(n), island };
         let result = {
             let Some(node) = self.nodes.get_mut(&n) else { return Ok(()) };
             let time = node.time(now);
@@ -724,7 +733,8 @@ impl Run {
                 let head = store.head(origin).map_err(|error| SimError::Store(n, text(&error)))?;
                 after = after.max(head.hlc());
             }
-            workload::work(store, ids, &mut self.rng, focus, time).map(|made| (made, after))
+            workload::work(store, ids, &mut self.rng, focus, station, time)
+                .map(|made| (made, after))
         };
         match result {
             Ok(((r#move, made), after)) => {

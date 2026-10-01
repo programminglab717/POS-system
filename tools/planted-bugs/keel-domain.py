@@ -1738,4 +1738,422 @@ BUGS = [
         "        if !ASSIGNED.matches(schema) {",
         "        if schema.name.as_str() != ASSIGNED.name {",
     ),
+    # Ownership (ADR-0021): leases and epochs.
+    (
+        "ownership: a lease may be 2^63",
+        "src/order/ownership.rs",
+        "        if n <= Lease::MAX.0 { Some(Lease(n)) } else { None }",
+        "        if n <= Lease::MAX.0.saturating_add(1) { Some(Lease(n)) } else { None }",
+    ),
+    (
+        "ownership: an epoch may be 0",
+        "src/order/ownership.rs",
+        "        if n >= 1 && n <= Lease::MAX.0 { Some(Epoch(n)) } else { None }",
+        "        if n <= Lease::MAX.0 { Some(Epoch(n)) } else { None }",
+    ),
+    (
+        "ownership: the largest lease is followed by itself",
+        "src/order/ownership.rs",
+        "            Some(n) => Lease::new(n),",
+        """            Some(n) => match Lease::new(n) {
+                None => Some(Lease::MAX),
+                lease => lease,
+            },""",
+        # No fold reaches the largest lease: it takes 2^63 - 1 changes of owner.
+        "unit",
+    ),
+    # Ownership: the payloads.
+    (
+        "ownership: refusal codes from 1",
+        "src/order/ownership.rs",
+        """        LeaseMoved = 0,
+        /// The device already owned the order.
+        AlreadyOwner = 1,
+        /// A payment of the order was in progress: started, with no outcome yet.
+        PaymentInProgress = 2,""",
+        """        LeaseMoved = 1,
+        /// The device already owned the order.
+        AlreadyOwner = 2,
+        /// A payment of the order was in progress: started, with no outcome yet.
+        PaymentInProgress = 3,""",
+    ),
+    (
+        "ownership: a grant may give lease 0",
+        "src/order/events.rs",
+        """    if granted.lease == Lease::FIRST {
+        return Err(PayloadError::Invalid("lease"));
+    }""",
+        """    let _ = Lease::FIRST;""",
+    ),
+    (
+        "ownership: a grant's request and device swapped in decoding",
+        "src/order/events.rs",
+        """        request: fields.required(1, "request")?,
+        device: fields.required(2, "device")?,""",
+        """        device: fields.required(1, "request")?,
+        request: fields.required(2, "device")?,""",
+    ),
+    (
+        "ownership: an override's note isn't recorded",
+        "src/order/events.rs",
+        "                record.field(1, lease).field(2, &reason.code).optional(3, reason.note.as_ref())",
+        "                record.field(1, lease).field(2, &reason.code)",
+    ),
+    # Ownership: the hub's answers.
+    (
+        "ownership: a request from a lease that moved on is granted",
+        "src/order/ownership.rs",
+        """            let refusal = if request.lease != ownership.lease {
+                Some(Refusal::LeaseMoved)
+            } else if request.device == ownership.device {""",
+        """            let refusal = if request.device == ownership.device {""",
+    ),
+    (
+        "ownership: the owner's request is granted",
+        "src/order/ownership.rs",
+        """            } else if request.device == ownership.device {
+                Some(Refusal::AlreadyOwner)
+            } else if paying {""",
+        """            } else if paying {""",
+    ),
+    (
+        "ownership: a payment in progress doesn't hold the order",
+        "src/order/ownership.rs",
+        """            } else if paying {
+                Some(Refusal::PaymentInProgress)
+            } else {
+                None
+            };""",
+        """            } else {
+                let _ = paying;
+                None
+            };""",
+    ),
+    (
+        "ownership: the hub checks the owner before the lease",
+        "src/order/ownership.rs",
+        """            let refusal = if request.lease != ownership.lease {
+                Some(Refusal::LeaseMoved)
+            } else if request.device == ownership.device {
+                Some(Refusal::AlreadyOwner)""",
+        """            let refusal = if request.device == ownership.device {
+                Some(Refusal::AlreadyOwner)
+            } else if request.lease != ownership.lease {
+                Some(Refusal::LeaseMoved)""",
+    ),
+    (
+        "ownership: the hub checks the payment before the lease",
+        "src/order/ownership.rs",
+        """            let refusal = if request.lease != ownership.lease {
+                Some(Refusal::LeaseMoved)
+            } else if request.device == ownership.device {
+                Some(Refusal::AlreadyOwner)
+            } else if paying {
+                Some(Refusal::PaymentInProgress)""",
+        """            let refusal = if paying {
+                Some(Refusal::PaymentInProgress)
+            } else if request.lease != ownership.lease {
+                Some(Refusal::LeaseMoved)
+            } else if request.device == ownership.device {
+                Some(Refusal::AlreadyOwner)""",
+    ),
+    (
+        "ownership: a grant doesn't move the lease for the requests after it",
+        "src/order/ownership.rs",
+        "                    ownership = Ownership { device: request.device, lease };\n",
+        "",
+    ),
+    (
+        "ownership: a grant moves the lease but not the owner, for the requests after it",
+        "src/order/ownership.rs",
+        "                    ownership = Ownership { device: request.device, lease };",
+        "                    ownership = Ownership { device: ownership.device, lease };",
+    ),
+    (
+        "ownership: grants are in epoch 1",
+        "src/order/ownership.rs",
+        """                        lease,
+                        epoch,
+                    })""",
+        """                        lease,
+                        epoch: Epoch::new(1).unwrap_or(epoch),
+                    })""",
+    ),
+    (
+        "ownership: every refusal names the first request waiting",
+        "src/order/ownership.rs",
+        """                None => OrderEvent::OwnershipRefused {
+                    request: request.event,""",
+        """                None => OrderEvent::OwnershipRefused {
+                    request: self.requests().first().map_or(request.event, |first| first.event),""",
+    ),
+    # Ownership: the fold.
+    (
+        "ownership: the creator holds lease 1",
+        "src/order/state.rs",
+        "        self.ownership = Some(Ownership { device: meta.origin_device, lease: Lease::FIRST });",
+        "        self.ownership = Some(Ownership { device: meta.origin_device, lease: Lease::FIRST.next().unwrap_or(Lease::FIRST) });",
+    ),
+    (
+        "ownership: a request already answered waits",
+        "src/order/state.rs",
+        "        if !self.answered.contains(&meta.event_id) {",
+        "        if self.answered.len() < usize::MAX {",
+    ),
+    (
+        "ownership: an answer before its request isn't remembered",
+        "src/order/state.rs",
+        "        self.answered.insert(request);\n",
+        "",
+    ),
+    (
+        "ownership: a refusal leaves its request waiting",
+        "src/order/state.rs",
+        """        if let OrderEvent::OwnershipGranted(OwnershipGranted { request, .. })
+        | OrderEvent::OwnershipRefused { request, .. } = event
+        {""",
+        """        if let OrderEvent::OwnershipGranted(OwnershipGranted { request, .. }) = event {""",
+    ),
+    (
+        "ownership: a grant leaves its request waiting",
+        "src/order/state.rs",
+        """        if let OrderEvent::OwnershipGranted(OwnershipGranted { request, .. })
+        | OrderEvent::OwnershipRefused { request, .. } = event
+        {""",
+        """        if let OrderEvent::OwnershipRefused { request, .. } = event {""",
+    ),
+    (
+        "ownership: an answer before the order's creation leaves its request waiting",
+        "src/order/state.rs",
+        """            self.answer(*request);
+        }
+        if let OrderEvent::Created(created) = event {
+            return self.apply_created(meta, created);
+        }""",
+        """            if self.info.is_some() {
+                self.answer(*request);
+            }
+        }
+        if let OrderEvent::Created(created) = event {
+            return self.apply_created(meta, created);
+        }""",
+    ),
+    (
+        "ownership: an answer drops every request of its device",
+        "src/order/state.rs",
+        "        self.requests.retain(|waiting| waiting.event != request);",
+        "        let device = self.requests.iter().find(|waiting| waiting.event == request).map(|waiting| waiting.device);\n        self.requests.retain(|waiting| Some(waiting.device) != device);",
+    ),
+    (
+        "ownership: a grant applies from any lease",
+        "src/order/state.rs",
+        "        if current == Some(granted.lease) {",
+        "        if current.is_some() {",
+    ),
+    (
+        "ownership: a grant applies from the lease it gives",
+        "src/order/state.rs",
+        "        let current = self.ownership.and_then(|ownership| ownership.lease.next());",
+        "        let current = self.ownership.map(|ownership| ownership.lease);",
+    ),
+    (
+        "ownership: a stale grant isn't flagged",
+        "src/order/state.rs",
+        """        } else {
+            self.conflict(meta, ConflictKind::StaleGrant);
+        }""",
+        """        }""",
+    ),
+    (
+        "ownership: a grant gives the order to the hub",
+        "src/order/state.rs",
+        "            self.ownership = Some(Ownership { device: granted.device, lease: granted.lease });",
+        "            self.ownership = Some(Ownership { device: meta.origin_device, lease: granted.lease });",
+    ),
+    (
+        "ownership: an override of a lease that moved on applies",
+        "src/order/state.rs",
+        "        let current = self.ownership.filter(|ownership| ownership.lease == lease);",
+        "        let current = self.ownership;",
+    ),
+    (
+        "ownership: an override keeps the lease",
+        "src/order/state.rs",
+        "        match current.zip(lease.next()) {",
+        "        match current.zip(Some(lease)) {",
+    ),
+    (
+        "ownership: an override isn't flagged",
+        "src/order/state.rs",
+        "                self.conflict(meta, ConflictKind::Overridden(previous.device));\n",
+        "                let _ = previous;\n",
+    ),
+    (
+        "ownership: an override names its own device as the one it took from",
+        "src/order/state.rs",
+        "ConflictKind::Overridden(previous.device)",
+        "ConflictKind::Overridden(meta.origin_device)",
+    ),
+    (
+        "ownership: a stale override isn't flagged",
+        "src/order/state.rs",
+        "            None => self.conflict(meta, ConflictKind::StaleOverride),",
+        "            None => {}",
+    ),
+    (
+        "ownership: the owner's events are flagged, not another device's",
+        "src/order/state.rs",
+        "            && owner.device != meta.origin_device\n",
+        "            && owner.device == meta.origin_device\n",
+    ),
+    (
+        "ownership: not the owner's names the owner as the device that recorded it",
+        "src/order/state.rs",
+        "            let by = meta.origin_device;",
+        "            let by = owner.device;",
+    ),
+    (
+        "ownership: an event of another device doesn't apply",
+        "src/order/state.rs",
+        "            self.conflict(meta, ConflictKind::NotOwner { by, owner: owner.device });\n        }",
+        "            return self.conflict(meta, ConflictKind::NotOwner { by, owner: owner.device });\n        }",
+    ),
+    (
+        "ownership: comping a line needs no ownership, in the fold",
+        "src/order/events.rs",
+        """                | OrderEvent::LineComped { .. }
+                | OrderEvent::Voided { .. }""",
+        """                | OrderEvent::Voided { .. }""",
+    ),
+    (
+        "ownership: closing a check needs no ownership, in the fold",
+        "src/order/events.rs",
+        """                | OrderEvent::CheckClosed(_)
+                | OrderEvent::Closed
+                | OrderEvent::Reopened { .. }
+        )""",
+        """                | OrderEvent::Closed
+                | OrderEvent::Reopened { .. }
+        )""",
+    ),
+    (
+        "ownership: firing lines needs ownership, in the fold",
+        "src/order/events.rs",
+        """            OrderEvent::LineChanged(_)
+                | OrderEvent::LineRemoved { .. }""",
+        """            OrderEvent::LineChanged(_)
+                | OrderEvent::LinesFired { .. }
+                | OrderEvent::LineRemoved { .. }""",
+    ),
+    # Ownership: the commands.
+    (
+        "ownership: another device's command is decided",
+        "src/order/commands.rs",
+        """                if command.needs_ownership() {
+                    self.check_owner(device)?;
+                }""",
+        """                let _ = command.needs_ownership();""",
+    ),
+    (
+        "ownership: another device may reopen the order",
+        "src/order/commands.rs",
+        """                self.check_location(location)?;
+                self.check_owner(device)?;
+                OrderEvent::Reopened { reason }""",
+        """                self.check_location(location)?;
+                OrderEvent::Reopened { reason }""",
+    ),
+    (
+        "ownership: comping a line needs no ownership",
+        "src/order/commands.rs",
+        """                | OrderCommand::CompLine { .. }
+                | OrderCommand::Void(_)""",
+        """                | OrderCommand::Void(_)""",
+    ),
+    (
+        "ownership: adding a line needs ownership",
+        "src/order/commands.rs",
+        """            OrderCommand::ChangeLine(_)
+                | OrderCommand::RemoveLine(_)""",
+        """            OrderCommand::ChangeLine(_)
+                | OrderCommand::AddLine(_)
+                | OrderCommand::RemoveLine(_)""",
+    ),
+    (
+        "ownership: the owner may request its own order",
+        "src/order/commands.rs",
+        """        if ownership.device == device {
+            return Err(CommandError::AlreadyOwner);
+        }""",
+        "",
+    ),
+    (
+        "ownership: a device requests again while its request waits",
+        "src/order/commands.rs",
+        """        if self.requests().iter().any(|request| request.device == device) {
+            return Err(CommandError::RequestPending);
+        }""",
+        "",
+    ),
+    (
+        "ownership: another device's request waiting holds a request back",
+        "src/order/commands.rs",
+        "        if self.requests().iter().any(|request| request.device == device) {",
+        "        if !self.requests().is_empty() {",
+    ),
+    (
+        "ownership: a request names the next lease",
+        "src/order/commands.rs",
+        "        Ok(OrderEvent::OwnershipRequested { lease: ownership.lease })",
+        "        Ok(OrderEvent::OwnershipRequested { lease: ownership.lease.next().unwrap_or(ownership.lease) })",
+    ),
+    (
+        "ownership: an override waits for the device's request",
+        "src/order/commands.rs",
+        """        if let Some(reason) = reason {
+            return Ok(OrderEvent::OwnershipOverridden { lease: ownership.lease, reason });
+        }
+        if self.requests().iter().any(|request| request.device == device) {
+            return Err(CommandError::RequestPending);
+        }""",
+        """        if self.requests().iter().any(|request| request.device == device) {
+            return Err(CommandError::RequestPending);
+        }
+        if let Some(reason) = reason {
+            return Ok(OrderEvent::OwnershipOverridden { lease: ownership.lease, reason });
+        }""",
+    ),
+    (
+        "ownership: a closed order can't be requested",
+        "src/order/commands.rs",
+        """            OrderCommand::RequestOwnership if closed => {
+                self.check_location(location)?;
+                self.decide_ownership(device, None)?
+            }""",
+        "",
+    ),
+    (
+        "ownership: a closed order is requested from another location",
+        "src/order/commands.rs",
+        """            OrderCommand::RequestOwnership if closed => {
+                self.check_location(location)?;""",
+        """            OrderCommand::RequestOwnership if closed => {
+                let _ = location;""",
+    ),
+    (
+        "ownership: checkout starts a payment on another device's order",
+        "src/checkout/mod.rs",
+        """        let info = self.order.check_active(location)?;
+        self.order.check_owner(device)?;""",
+        """        let info = self.order.check_active(location)?;
+        let _ = device;""",
+    ),
+    (
+        "ownership: checkout closes another device's check",
+        "src/checkout/mod.rs",
+        """        let currency = self.order.check_closable(location, check)?.currency;
+        self.order.check_owner(device)?;""",
+        """        let currency = self.order.check_closable(location, check)?.currency;
+        let _ = device;""",
+    ),
 ]

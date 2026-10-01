@@ -895,7 +895,7 @@ impl Device {
     }
 
     fn run(&mut self, command: OrderCommand) -> Result<(), CommandError> {
-        let event = self.order.decide(location(), command)?;
+        let event = self.order.decide(location(), id(0xD), command)?;
         self.record(&event);
         Ok(())
     }
@@ -916,7 +916,7 @@ fn commands_need_an_active_order_at_the_devices_location() {
     device.run(OrderCommand::Create(created())).unwrap();
     assert_eq!(device.run(OrderCommand::Create(created())), Err(CommandError::AlreadyCreated));
     assert_eq!(
-        device.order.decide(id(0x101), OrderCommand::Abandon),
+        device.order.decide(id(0x101), id(0xD), OrderCommand::Abandon),
         Err(CommandError::WrongLocation)
     );
     device.run(OrderCommand::Void(reason("walkout"))).unwrap();
@@ -1123,7 +1123,7 @@ fn closed_checks_freeze_their_lines_for_commands() {
         assert_eq!(device.run(command), Err(CommandError::OrderClosed));
     }
     assert_eq!(
-        device.order.decide(id(0x101), OrderCommand::Reopen(reason("wrong_tender"))),
+        device.order.decide(id(0x101), id(0xD), OrderCommand::Reopen(reason("wrong_tender"))),
         Err(CommandError::WrongLocation)
     );
 
@@ -1224,7 +1224,7 @@ fn too_deep_modifiers_are_refused() {
     let mut line = added(1, usd(100));
     line.modifiers = vec![deep];
     assert_eq!(
-        order.decide(location(), OrderCommand::AddLine(line)),
+        order.decide(location(), id(0xD), OrderCommand::AddLine(line)),
         Err(CommandError::Schema(crate::schema::SchemaError::TooDeep))
     );
 }
@@ -1313,6 +1313,21 @@ fn golden_events() -> Vec<OrderEvent> {
                 note: Some(Note::new("paid by card").unwrap()),
             },
         },
+        OrderEvent::OwnershipRequested { lease: Lease::new(2).unwrap() },
+        OrderEvent::OwnershipGranted(OwnershipGranted {
+            request: id(0xE1),
+            device: id(0xD2),
+            lease: Lease::new(3).unwrap(),
+            epoch: Epoch::new(1).unwrap(),
+        }),
+        OrderEvent::OwnershipRefused { request: id(0xE1), refusal: Refusal::PaymentInProgress },
+        OrderEvent::OwnershipOverridden {
+            lease: Lease::new(1).unwrap(),
+            reason: Reason {
+                code: ReasonCode::new("hub_unreachable").unwrap(),
+                note: Some(Note::new("bar is offline").unwrap()),
+            },
+        },
     ]
 }
 
@@ -1390,9 +1405,9 @@ fn bytes(hex: &str) -> Vec<u8> {
 
 /// The order payloads, pinned forever: one example of each schema. Python's `cbor2` decoded
 /// each one, confirmed it is canonical, and matched it field by field against the documented
-/// key tables; it encoded the check payloads, and the closing and reopening ones, itself, from
-/// the key tables. If this test fails, a payload format changed, and stored events would no
-/// longer decode.
+/// key tables; it encoded the check payloads, the closing and reopening ones, and the ownership
+/// ones (ADR-0021), itself, from the key tables. If this test fails, a payload format changed,
+/// and stored events would no longer decode.
 #[test]
 fn the_payload_formats_are_pinned() {
     let pinned = [
@@ -1432,6 +1447,16 @@ fn the_payload_formats_are_pinned() {
         ),
         ("order.closed", "a0"),
         ("order.reopened", "a2016c77726f6e675f74656e646572026c706169642062792063617264"),
+        ("order.ownership_requested", "a10102"),
+        (
+            "order.ownership_granted",
+            "a401500192f0c10000700080000000000000e102500192f0c10000700080000000000000d203030401",
+        ),
+        ("order.ownership_refused", "a201500192f0c10000700080000000000000e10202"),
+        (
+            "order.ownership_overridden",
+            "a30101026f6875625f756e726561636861626c65036e626172206973206f66666c696e65",
+        ),
     ];
     let events = golden_events();
     assert_eq!(events.len(), pinned.len());

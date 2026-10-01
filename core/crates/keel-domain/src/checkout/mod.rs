@@ -12,6 +12,9 @@
 //!   twice.
 //! - **Closing a check** needs no unresolved payment on it, and captured payments that cover
 //!   its total. The check's snapshot records what pricing charged it, and those payments.
+//! - **Ownership.** Only the order's owning device may start a payment or close a check
+//!   (ADR-0021). A payment's outcome is recorded by the device that started it, whoever owns
+//!   the order by then: money that moved is a fact.
 //! - **Issues.** Money that doesn't fit the order is reported, never hidden: the payments stand,
 //!   and a manager decides.
 //!
@@ -22,7 +25,7 @@ mod tests;
 
 use core::cmp::Ordering;
 
-use keel_events::envelope::Location;
+use keel_events::envelope::{Device, Location};
 use keel_pricing::{PricingError, Rules, Totals};
 use keel_types::{Id, Money, MoneyError};
 
@@ -225,23 +228,25 @@ impl<'a> Checkout<'a> {
         Ok(Balance { check, total, captured, tips, due: total.checked_sub(captured)?, unresolved })
     }
 
-    /// Starts a payment of `amount` on `check`, by `tender`, from a device at `location`: the
+    /// Starts a payment of `amount` on `check`, by `tender`, from `device` at `location`: the
     /// event that initiates payment `id`.
     ///
     /// # Errors
     /// [`CheckoutError`] saying why the payment can't start: the order isn't active at
-    /// `location`, the check is unknown or closed, a payment on it is unresolved, `id` is
-    /// already a payment's, or the amount isn't more than zero, is in another currency, or is
-    /// more than the check owes.
+    /// `location`, another device owns it, the check is unknown or closed, a payment on it is
+    /// unresolved, `id` is already a payment's, or the amount isn't more than zero, is in
+    /// another currency, or is more than the check owes.
     pub fn start_payment(
         &self,
         location: Id<Location>,
+        device: Id<Device>,
         id: Id<Payment>,
         check: Id<Check>,
         tender: Tender,
         amount: Money,
     ) -> Result<PaymentEvent, CheckoutError> {
         let info = self.order.check_active(location)?;
+        self.order.check_owner(device)?;
         let found = self.order.check(check).ok_or(CommandError::UnknownCheck(check))?;
         if !found.is_open() {
             return Err(CommandError::CheckClosed(check).into());
@@ -272,19 +277,21 @@ impl<'a> Checkout<'a> {
         Ok(event)
     }
 
-    /// Closes `check`, from a device at `location`: the event that records what the check was
+    /// Closes `check`, from `device` at `location`: the event that records what the check was
     /// charged, as pricing charges it now, and the payments that settled it.
     ///
     /// # Errors
     /// [`CheckoutError`] saying why the check can't close: the order isn't active at `location`,
-    /// the check is unknown, closed or holds no live line, a payment on it is unresolved, its
-    /// captured payments don't cover it, or it can't be priced.
+    /// another device owns it, the check is unknown, closed or holds no live line, a payment on
+    /// it is unresolved, its captured payments don't cover it, or it can't be priced.
     pub fn close_check(
         &self,
         location: Id<Location>,
+        device: Id<Device>,
         check: Id<Check>,
     ) -> Result<OrderEvent, CheckoutError> {
         let currency = self.order.check_closable(location, check)?.currency;
+        self.order.check_owner(device)?;
         if let Some(unresolved) = self.payments_on(check).find(|payment| payment.is_unresolved()) {
             return Err(CheckoutError::Unresolved(unresolved.id()));
         }

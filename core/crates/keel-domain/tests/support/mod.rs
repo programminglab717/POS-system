@@ -8,9 +8,9 @@ use keel_domain::codec::{
     CatalogVersion, Change, IdSet, Name, Note, ProcessorRef, ReasonCode, RulesVersion,
 };
 use keel_domain::order::{
-    Allocation, AttributesChanged, Channel, CheckClosed, ChosenModifier, ItemSnapshot, LineAdded,
-    LineChanged, LineCharge, LinesAllocated, Mode, OrderCreated, OrderEvent, Placement, Prefix,
-    Reason, TaxCharge,
+    Allocation, AttributesChanged, Channel, CheckClosed, ChosenModifier, Epoch, ItemSnapshot,
+    Lease, LineAdded, LineChanged, LineCharge, LinesAllocated, Mode, OrderCreated, OrderEvent,
+    OwnershipGranted, Placement, Prefix, Reason, Refusal, TaxCharge,
 };
 use keel_domain::payment::{
     CashTendered, PaymentAuthorized, PaymentCaptured, PaymentEnded, PaymentEvent, PaymentInitiated,
@@ -348,6 +348,38 @@ pub(crate) fn any_payment_event() -> impl Strategy<Value = PaymentEvent> {
     ]
 }
 
+/// A lease: mostly a few changes of owner in, sometimes at the end of the range.
+pub(crate) fn any_lease() -> impl Strategy<Value = Lease> {
+    prop_oneof![4 => 0_u64..=4, 1 => (Lease::MAX.get() - 2)..=Lease::MAX.get()]
+        .prop_map(|n| Lease::new(n).unwrap())
+}
+
+/// A hub's epoch: mostly the first few, sometimes at the end of the range.
+pub(crate) fn any_epoch() -> impl Strategy<Value = Epoch> {
+    prop_oneof![4 => 1_u64..=4, 1 => (Lease::MAX.get() - 1)..=Lease::MAX.get()]
+        .prop_map(|n| Epoch::new(n).unwrap())
+}
+
+/// Any of the hub's grants: a lease from 1, since a grant replaces one.
+pub(crate) fn any_granted() -> impl Strategy<Value = OwnershipGranted> {
+    (any_id(), any_id(), any_lease(), any_epoch()).prop_map(|(request, device, lease, epoch)| {
+        let lease = if lease == Lease::FIRST { Lease::new(1).unwrap() } else { lease };
+        OwnershipGranted { request, device, lease, epoch }
+    })
+}
+
+/// Any of the events that move an order's ownership (ADR-0021).
+pub(crate) fn any_ownership_event() -> impl Strategy<Value = OrderEvent> {
+    prop_oneof![
+        any_lease().prop_map(|lease| OrderEvent::OwnershipRequested { lease }),
+        any_granted().prop_map(OrderEvent::OwnershipGranted),
+        (any_id(), any_code(Refusal::ALL))
+            .prop_map(|(request, refusal)| OrderEvent::OwnershipRefused { request, refusal }),
+        (any_lease(), any_reason())
+            .prop_map(|(lease, reason)| OrderEvent::OwnershipOverridden { lease, reason }),
+    ]
+}
+
 /// Any order event, of any kind.
 pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
     prop_oneof![
@@ -366,5 +398,11 @@ pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
         any_check_closed().prop_map(OrderEvent::CheckClosed),
         Just(OrderEvent::Closed),
         any_reason().prop_map(|reason| OrderEvent::Reopened { reason }),
+        any_lease().prop_map(|lease| OrderEvent::OwnershipRequested { lease }),
+        any_granted().prop_map(OrderEvent::OwnershipGranted),
+        (any_id(), any_code(Refusal::ALL))
+            .prop_map(|(request, refusal)| OrderEvent::OwnershipRefused { request, refusal }),
+        (any_lease(), any_reason())
+            .prop_map(|(lease, reason)| OrderEvent::OwnershipOverridden { lease, reason }),
     ]
 }

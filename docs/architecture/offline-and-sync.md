@@ -294,6 +294,25 @@ device that opened it; ownership is transferred explicitly through the hub, whic
   from any device (a bartender adding a round to Table 12). They merge as a union.
 - Other devices see the order live and can request ownership with one tap. With the hub reachable,
   it's granted instantly unless the owner is mid-payment.
+- **As built** (`keel-domain`, `keel-store`, `keel-sync`,
+  [ADR-0021](../adr/0021-ownership-leases.md)). Ownership is part of the order, decided by its
+  own events, so every replica folding them finds the same owner:
+  - The device that records `order.created` owns the order under **lease** 0. A device asks for
+    the order with `order.ownership_requested`, naming the lease it saw; the hub answers with
+    `order.ownership_granted`, under the next lease, or `order.ownership_refused`. A device that
+    can't reach the hub takes the order on a manager's word with `order.ownership_overridden`.
+    A change of owner applies only if the lease it names is still the order's at that point in
+    canonical order, so two changes from one lease never both apply.
+  - The hub answers every request it holds after each write that stores events, once its log is
+    settled, and before it sequences, so its answers are numbered with what it stored. It
+    refuses a request whose lease has moved on, one from the owner, and any while a payment of
+    the order is initiated with no outcome; an authorized card, such as a tab's, doesn't hold
+    the order.
+  - Commands that need ownership are refused on the device; an event recorded without it by a
+    device whose view was stale, or an island, still applies, flagged `NotOwner`. Grants and
+    overrides that lose their race are flagged stale and change nothing.
+  - Taking an order back from a device the hub hasn't heard from, and telling a device it is an
+    island, need heartbeats, which come with hub election.
 
 ### 5.1 Island mode
 
@@ -353,7 +372,7 @@ The hub hands out **leases** (short, renewable, e.g. 15 s heartbeats):
 
 | Use | Online (hub reachable) | Partitioned (no hub) |
 |---|---|---|
-| **Order ownership** (§5) | Owner lease per open order; commutative edits from anyone; ownership transfer in < 100 ms | Island mode: structural and money operations only on owned orders; manager override otherwise |
+| **Order ownership** (§5) | Owner lease per open order; commutative edits from anyone; ownership transfer in < 100 ms. Built: the lease counts the order's changes of owner, in its own events ([ADR-0021](../adr/0021-ownership-leases.md)) | Island mode: structural and money operations only on owned orders; manager override otherwise |
 | **Table assignment** | Lease per table | Optimistic, with conflict flag |
 | **Store-wide order numbers** (pickup screens) | Hub allocates sequentially | Each device holds a pre-allocated **block** of numbers (e.g. 20) and burns from it |
 | **Limited-quantity items** ("5 specials left") | Hub holds the counter and serializes decrements over LAN RPC (<20 ms) | **Escrow / demarcation**: the remaining quantity is pre-split across active devices. Each device sells within its share plus a configured oversell tolerance, and rebalances on reconnect. |
@@ -638,6 +657,14 @@ in the style of FoundationDB and TigerBeetle:
       aside;
     - each replica's feed gives its events in number order;
     - no event a device was told was store-durable was lost.
+  - **Slice 3** ([ADR-0021](../adr/0021-ownership-leases.md)) adds ownership. A move that needs
+    an order another device owns becomes a request, which waits for the hub, or, from a device
+    cut off from the hub, a manager's override; half the moves on other orders go to the latest
+    few, so that devices contend for them. At the end:
+    - every request the hub holds has exactly one answer, from the hub, after it;
+    - the hub's grants for each order name each lease once, in increasing order;
+    - a stale grant only ever follows an override of the lease it replaced;
+    - every replica agrees with the hub on each order's owner and lease, and no request waits.
 
 ## 13. Performance budgets (enforced in CI and in production telemetry)
 

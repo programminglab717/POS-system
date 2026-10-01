@@ -14,12 +14,19 @@
 //!   from 1 in its epoch, and each device's log in order; every replica confirms the same, and
 //!   holds every event confirmed but a forked device's other version; the feed gives them in
 //!   number order. No event a device was told is store-durable is lost to a rollback.
+//! - **Ownership** (ADR-0021): every request for an order the hub holds has exactly one answer,
+//!   from the hub, after it, on the order's stream, and a grant gives the requesting device the
+//!   lease after the one it saw; the hub's grants for each order name each lease once, in
+//!   increasing order in its log; a stale grant only ever follows an override of the lease it
+//!   replaced; and every replica agrees with the hub on each order's owner and lease, with no
+//!   request left waiting.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use keel_domain::order::{ConflictKind, Lease, Order, OrderEvent, Refusal};
 use keel_domain::schema::DomainEvent;
 use keel_domain::sequence::SequenceEvent;
-use keel_events::envelope::{Aggregate, Device};
+use keel_events::envelope::{Aggregate, Device, Event};
 use keel_events::event::SignedEvent;
 use keel_store::{OrderState, Reason, Store, StoreConfig, StoreKey, StoreSeq};
 use keel_types::{Id, SeededEntropy};
@@ -45,6 +52,7 @@ pub(crate) fn after(run: &mut Run) -> Result<(), String> {
     causality(run, &logs, &forked)?;
     quarantine(run, &forked)?;
     sequencing(run, &logs, &forked)?;
+    ownership(run, &logs, &forked)?;
     for (&n, node) in &mut run.nodes {
         let (Some(store), Some(replicator)) = (node.store.as_mut(), node.replicator.as_ref())
         else {
@@ -269,6 +277,225 @@ fn sequencing(
         }
     }
     Ok(())
+}
+
+/// The ownership events the hub holds (ADR-0021), decoded, by identifier.
+type Owning<'a> = BTreeMap<Id<Event>, (OrderEvent, &'a SignedEvent)>;
+
+/// The ownership events in `logs`, decoded.
+fn ownership_events(logs: &BTreeMap<Id<Device>, Vec<SignedEvent>>) -> Result<Owning<'_>, String> {
+    let mut events = BTreeMap::new();
+    for event in logs.values().flatten() {
+        let body = event.body();
+        if body.stream.kind.as_str() != OrderEvent::STREAM {
+            continue;
+        }
+        let decoded = OrderEvent::decode(&body.schema, &body.payload).map_err(text)?;
+        if matches!(
+            decoded,
+            OrderEvent::OwnershipRequested { .. }
+                | OrderEvent::OwnershipGranted(_)
+                | OrderEvent::OwnershipRefused { .. }
+                | OrderEvent::OwnershipOverridden { .. }
+        ) {
+            events.insert(body.event_id, (decoded, event));
+        }
+    }
+    Ok(events)
+}
+
+/// Checks the hub's answers to requests for orders against the logs, the orders' folds on the
+/// hub, and every replica's view of each order's ownership; counts what the run did.
+fn ownership(
+    run: &mut Run,
+    logs: &BTreeMap<Id<Device>, Vec<SignedEvent>>,
+    forked: &BTreeSet<Id<Device>>,
+) -> Result<(), String> {
+    let events = ownership_events(logs)?;
+    let answers = answers(&events)?;
+    grants_in_order(logs, &events)?;
+    let orders: BTreeSet<Id<Aggregate>> = logs
+        .values()
+        .flatten()
+        .map(|event| &event.body().stream)
+        .filter(|stream| stream.kind.as_str() == OrderEvent::STREAM)
+        .map(|stream| stream.id)
+        .collect();
+    let hub = store_of(run, HUB)?;
+    let folds = folds_on_hub(hub, &orders, &events)?;
+    // Every replica agrees with the hub on each order's owner and lease, and no request waits,
+    // but for the orders a forked device wrote to, which replicas hold different versions of.
+    let touched = touched_by_forks(run, forked)?;
+    for &n in run.nodes.keys() {
+        let store = store_of(run, n)?;
+        for order in orders.difference(&touched) {
+            let (theirs, hubs) =
+                (store.load(Order::new(order.cast())), hub.load(Order::new(order.cast())));
+            let (theirs, hubs) = (theirs.map_err(text)?, hubs.map_err(text)?);
+            if theirs.ownership() != hubs.ownership() || !theirs.requests().is_empty() {
+                return Err(format!(
+                    "node {n} sees order {order:?} owned as {:?} with {} requests waiting; the \
+                     hub, as {:?}",
+                    theirs.ownership(),
+                    theirs.requests().len(),
+                    hubs.ownership()
+                ));
+            }
+        }
+    }
+    run.report.answers = answers;
+    run.report.ownership = folds;
+    Ok(())
+}
+
+/// Checks that every request the hub holds has exactly one answer, and each answer is the
+/// hub's, after the request it names, on the same order, and a grant gives the requesting
+/// device the lease after the request's, in the hub's epoch. Counts the requests, the grants,
+/// and the refusals for each reason.
+fn answers(events: &Owning<'_>) -> Result<[u64; 5], String> {
+    let mut answered: BTreeMap<Id<Event>, u64> = BTreeMap::new();
+    let mut answers = [0_u64; 5];
+    for (decoded, answer) in events.values() {
+        let (request, refusal) = match decoded {
+            OrderEvent::OwnershipGranted(granted) => (granted.request, None),
+            OrderEvent::OwnershipRefused { request, refusal } => (*request, Some(*refusal)),
+            _ => continue,
+        };
+        let body = answer.body();
+        if body.origin_device != device(HUB) {
+            return Err(format!("{:?} answered request {request:?}", body.origin_device));
+        }
+        let Some((OrderEvent::OwnershipRequested { lease }, asked)) = events.get(&request) else {
+            return Err(format!("the hub answered {request:?}, which it holds no request as"));
+        };
+        let asked = asked.body();
+        if asked.stream != body.stream || asked.hlc >= body.hlc {
+            return Err(format!("the hub's answer to {request:?} isn't after it on its order"));
+        }
+        if let OrderEvent::OwnershipGranted(granted) = decoded
+            && (granted.device != asked.origin_device
+                || Some(granted.lease) != lease.next()
+                || granted.epoch.get() != EPOCH)
+        {
+            return Err(format!("the hub's grant for {request:?} is wrong: {granted:?}"));
+        }
+        let count = answered.entry(request).or_insert(0);
+        *count = count.saturating_add(1);
+        let kind = match refusal {
+            None => 1,
+            Some(Refusal::LeaseMoved) => 2,
+            Some(Refusal::AlreadyOwner) => 3,
+            Some(Refusal::PaymentInProgress) => 4,
+        };
+        if let Some(sum) = answers.get_mut(kind) {
+            *sum = sum.saturating_add(1);
+        }
+    }
+    for (id, (decoded, _)) in events {
+        if matches!(decoded, OrderEvent::OwnershipRequested { .. }) {
+            let count = answered.get(id).copied().unwrap_or(0);
+            if count != 1 {
+                return Err(format!("request {id:?} has {count} answers"));
+            }
+            answers[0] = answers[0].saturating_add(1);
+        }
+    }
+    Ok(answers)
+}
+
+/// Checks that the hub's grants for each order name each lease once, in increasing order in its
+/// log.
+fn grants_in_order(
+    logs: &BTreeMap<Id<Device>, Vec<SignedEvent>>,
+    events: &Owning<'_>,
+) -> Result<(), String> {
+    let mut granted: BTreeMap<Id<Aggregate>, Lease> = BTreeMap::new();
+    for event in logs.get(&device(HUB)).into_iter().flatten() {
+        let body = event.body();
+        let Some((OrderEvent::OwnershipGranted(grant), _)) = events.get(&body.event_id) else {
+            continue;
+        };
+        if let Some(before) = granted.insert(body.stream.id, grant.lease)
+            && before >= grant.lease
+        {
+            return Err(format!(
+                "the hub granted lease {} of order {:?} after lease {}",
+                grant.lease.get(),
+                body.stream.id,
+                before.get()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Checks that, in each order's fold on the hub, a stale grant only ever follows an override of
+/// the lease it replaced: the hub grants each lease once, so only an override, which the hub
+/// hadn't heard of when it granted, can have taken that lease first. Counts the overrides that
+/// applied, the stale overrides, the stale grants, and the events recorded without ownership.
+fn folds_on_hub(
+    hub: &SimStore,
+    orders: &BTreeSet<Id<Aggregate>>,
+    events: &Owning<'_>,
+) -> Result<[u64; 4], String> {
+    let mut counts = [0_u64; 4];
+    for &order in orders {
+        let folded = hub.load(Order::new(order.cast())).map_err(text)?;
+        let mut overridden: BTreeSet<Lease> = BTreeSet::new();
+        for conflict in folded.conflicts() {
+            let kind = match conflict.kind {
+                ConflictKind::Overridden(_) => {
+                    let Some((OrderEvent::OwnershipOverridden { lease, .. }, _)) =
+                        events.get(&conflict.event)
+                    else {
+                        return Err(format!("order {order:?}: an override that isn't one"));
+                    };
+                    overridden.insert(*lease);
+                    0
+                }
+                ConflictKind::StaleOverride => 1,
+                ConflictKind::StaleGrant => {
+                    let Some((OrderEvent::OwnershipGranted(grant), _)) =
+                        events.get(&conflict.event)
+                    else {
+                        return Err(format!("order {order:?}: a stale grant that isn't one"));
+                    };
+                    let replaced = grant.lease.get().checked_sub(1).and_then(Lease::new);
+                    if !replaced.is_some_and(|lease| overridden.contains(&lease)) {
+                        return Err(format!(
+                            "order {order:?}: the hub's grant of lease {} is stale, and no \
+                             override of the lease before it came first",
+                            grant.lease.get()
+                        ));
+                    }
+                    2
+                }
+                ConflictKind::NotOwner { .. } => 3,
+                _ => continue,
+            };
+            if let Some(sum) = counts.get_mut(kind) {
+                *sum = sum.saturating_add(1);
+            }
+        }
+    }
+    Ok(counts)
+}
+
+/// The streams a forked device wrote to, in any replica's version of its log.
+fn touched_by_forks(
+    run: &Run,
+    forked: &BTreeSet<Id<Device>>,
+) -> Result<BTreeSet<Id<Aggregate>>, String> {
+    let mut touched = BTreeSet::new();
+    for &n in run.nodes.keys() {
+        let store = store_of(run, n)?;
+        for origin in forked {
+            for event in store.log(*origin, 0, u32::MAX).map_err(text)? {
+                touched.insert(event.body().stream.id);
+            }
+        }
+    }
+    Ok(touched)
 }
 
 /// Checks that no replica refused anything but a forked device's fork.

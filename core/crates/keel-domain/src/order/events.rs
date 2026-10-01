@@ -20,11 +20,16 @@
 //! | `order.check_closed` | 1 check, 2 rules version, 3 lines (an array of line charges, not empty), 4 taxes (an array of tax charges, possibly empty), 5 total, 6 payments (optional, a set) |
 //! | `order.closed` | no keys: an empty map |
 //! | `order.reopened` | 1 reason code, 2 note (optional) |
+//! | `order.ownership_requested` | 1 lease: the one the device saw, which the request would replace |
+//! | `order.ownership_granted` | 1 request (an event identifier), 2 device, 3 lease (from 1), 4 epoch (from 1) |
+//! | `order.ownership_refused` | 1 request (an event identifier), 2 refusal |
+//! | `order.ownership_overridden` | 1 lease: the one it overrides, 2 reason code, 3 note (optional) |
 //!
 //! A chosen modifier is a map: 1 modifier, 2 name, 3 prefix, 4 quantity, 5 placement, 6 unit
 //! price, 7 modifiers (an array, possibly empty). An allocation is a map: 1 line, 2 check, 3
 //! shares (a count up to 65,535). A line charge is a map: 1 line, 2 gross, 3 net, 4 tax. A tax
-//! charge is a map: 1 tax, 2 taxable amount, 3 tax.
+//! charge is a map: 1 tax, 2 taxable amount, 3 tax. A lease and an epoch are unsigned integers
+//! of at most 2^63 − 1 (ADR-0021).
 //!
 //! Beyond the types, payloads must satisfy these rules:
 //! - quantities are positive, and prices are zero or more;
@@ -41,11 +46,12 @@
 use core::num::{NonZeroU8, NonZeroU16};
 
 use keel_events::cbor::Value;
-use keel_events::envelope::{Customer, SchemaRef, TeamMember};
+use keel_events::envelope::{Customer, Event, SchemaRef, TeamMember};
 use keel_types::{Currency, Id, Quantity};
 
 use super::checks::{Check, LinesAllocated};
 use super::closing::CheckClosed;
+use super::ownership::{Lease, OwnershipGranted, Refusal};
 use super::state::Line;
 use super::types::{Channel, ChosenModifier, ItemSnapshot, Mode, Reason, modifier_currency};
 use crate::codec::{Change, Fields, IdSet, PayloadError, Record};
@@ -211,6 +217,48 @@ pub enum OrderEvent {
         /// Why.
         reason: Reason,
     },
+    /// A device asked the hub for the order (ADR-0021).
+    OwnershipRequested {
+        /// The lease the device saw, which the request would replace.
+        lease: Lease,
+    },
+    /// The hub gave the order to the device that asked for it.
+    OwnershipGranted(OwnershipGranted),
+    /// The hub didn't give the order to the device that asked for it.
+    OwnershipRefused {
+        /// The request it answers.
+        request: Id<Event>,
+        /// Why.
+        refusal: Refusal,
+    },
+    /// A device took the order on a manager's word, without the hub.
+    OwnershipOverridden {
+        /// The lease it overrode, which it replaces.
+        lease: Lease,
+        /// Why.
+        reason: Reason,
+    },
+}
+
+impl OrderEvent {
+    /// Whether only the order's owning device may record the event: its structural and money
+    /// changes (ADR-0021). The fold flags one recorded by any other device.
+    pub const fn needs_ownership(&self) -> bool {
+        matches!(
+            self,
+            OrderEvent::LineChanged(_)
+                | OrderEvent::LineRemoved { .. }
+                | OrderEvent::LineVoided { .. }
+                | OrderEvent::LineComped { .. }
+                | OrderEvent::Voided { .. }
+                | OrderEvent::Abandoned
+                | OrderEvent::CheckOpened { .. }
+                | OrderEvent::LinesAllocated(_)
+                | OrderEvent::CheckClosed(_)
+                | OrderEvent::Closed
+                | OrderEvent::Reopened { .. }
+        )
+    }
 }
 
 /// The schemas, in the order of `OrderEvent`'s variants.
@@ -229,6 +277,10 @@ const LINES_ALLOCATED: SchemaId = SchemaId { name: "order.lines_allocated", vers
 const CHECK_CLOSED: SchemaId = SchemaId { name: "order.check_closed", version: 1 };
 const CLOSED: SchemaId = SchemaId { name: "order.closed", version: 1 };
 const REOPENED: SchemaId = SchemaId { name: "order.reopened", version: 1 };
+const OWNERSHIP_REQUESTED: SchemaId = SchemaId { name: "order.ownership_requested", version: 1 };
+const OWNERSHIP_GRANTED: SchemaId = SchemaId { name: "order.ownership_granted", version: 1 };
+const OWNERSHIP_REFUSED: SchemaId = SchemaId { name: "order.ownership_refused", version: 1 };
+const OWNERSHIP_OVERRIDDEN: SchemaId = SchemaId { name: "order.ownership_overridden", version: 1 };
 
 impl DomainEvent for OrderEvent {
     const STREAM: &'static str = "order";
@@ -249,6 +301,10 @@ impl DomainEvent for OrderEvent {
         CHECK_CLOSED,
         CLOSED,
         REOPENED,
+        OWNERSHIP_REQUESTED,
+        OWNERSHIP_GRANTED,
+        OWNERSHIP_REFUSED,
+        OWNERSHIP_OVERRIDDEN,
     ];
 
     fn schema(&self) -> SchemaId {
@@ -268,6 +324,10 @@ impl DomainEvent for OrderEvent {
             OrderEvent::CheckClosed(_) => CHECK_CLOSED,
             OrderEvent::Closed => CLOSED,
             OrderEvent::Reopened { .. } => REOPENED,
+            OrderEvent::OwnershipRequested { .. } => OWNERSHIP_REQUESTED,
+            OrderEvent::OwnershipGranted(_) => OWNERSHIP_GRANTED,
+            OrderEvent::OwnershipRefused { .. } => OWNERSHIP_REFUSED,
+            OrderEvent::OwnershipOverridden { .. } => OWNERSHIP_OVERRIDDEN,
         }
     }
 
@@ -321,6 +381,18 @@ impl DomainEvent for OrderEvent {
             OrderEvent::Abandoned | OrderEvent::Closed => record,
             OrderEvent::CheckOpened { check } => record.field(1, check),
             OrderEvent::LinesAllocated(allocated) => record.field(1, allocated),
+            OrderEvent::OwnershipRequested { lease } => record.field(1, lease),
+            OrderEvent::OwnershipGranted(granted) => record
+                .field(1, &granted.request)
+                .field(2, &granted.device)
+                .field(3, &granted.lease)
+                .field(4, &granted.epoch),
+            OrderEvent::OwnershipRefused { request, refusal } => {
+                record.field(1, request).field(2, refusal)
+            }
+            OrderEvent::OwnershipOverridden { lease, reason } => {
+                record.field(1, lease).field(2, &reason.code).optional(3, reason.note.as_ref())
+            }
         }
         .build()
     }
@@ -369,6 +441,23 @@ impl DomainEvent for OrderEvent {
             OrderEvent::CheckOpened { check: fields.required(1, "check")? }
         } else if LINES_ALLOCATED.matches(schema) {
             OrderEvent::LinesAllocated(fields.required(1, "allocations")?)
+        } else if OWNERSHIP_REQUESTED.matches(schema) {
+            OrderEvent::OwnershipRequested { lease: fields.required(1, "lease")? }
+        } else if OWNERSHIP_GRANTED.matches(schema) {
+            OrderEvent::OwnershipGranted(read_granted(&mut fields)?)
+        } else if OWNERSHIP_REFUSED.matches(schema) {
+            OrderEvent::OwnershipRefused {
+                request: fields.required(1, "request")?,
+                refusal: fields.required(2, "refusal")?,
+            }
+        } else if OWNERSHIP_OVERRIDDEN.matches(schema) {
+            OrderEvent::OwnershipOverridden {
+                lease: fields.required(1, "lease")?,
+                reason: Reason {
+                    code: fields.required(2, "reason")?,
+                    note: fields.optional(3, "note")?,
+                },
+            }
         } else {
             return Err(DecodeError::UnknownSchema);
         };
@@ -388,6 +477,20 @@ fn read_created(fields: &mut Fields<'_>) -> Result<OrderCreated, PayloadError> {
         customer: fields.optional(7, "customer")?,
         owner: fields.optional(8, "owner")?,
     })
+}
+
+fn read_granted(fields: &mut Fields<'_>) -> Result<OwnershipGranted, PayloadError> {
+    let granted = OwnershipGranted {
+        request: fields.required(1, "request")?,
+        device: fields.required(2, "device")?,
+        lease: fields.required(3, "lease")?,
+        epoch: fields.required(4, "epoch")?,
+    };
+    // A grant replaces a lease, so it never gives the first.
+    if granted.lease == Lease::FIRST {
+        return Err(PayloadError::Invalid("lease"));
+    }
+    Ok(granted)
 }
 
 fn read_attributes_changed(fields: &mut Fields<'_>) -> Result<AttributesChanged, PayloadError> {

@@ -5,11 +5,15 @@
 //! state it was checked against. Conflicts only arise when devices act concurrently on
 //! different views, and the fold resolves those (see [`super::state`]).
 //!
+//! Only the order's owning device may make its structural and money changes (ADR-0021): a
+//! command that [needs ownership](OrderCommand::needs_ownership), from any other device, is
+//! refused. A device asks for the order with [`OrderCommand::RequestOwnership`], which the hub
+//! answers, or takes it on a manager's word with [`OrderCommand::OverrideOwnership`].
+//!
 //! Closing a check needs its payments, which are other aggregates: [`crate::checkout`] decides
-//! it. Permissions, approvals and the owning device's lease are checked by other parts of the
-//! kernel.
+//! it. Permissions and approvals are checked by other parts of the kernel.
 
-use keel_events::envelope::Location;
+use keel_events::envelope::{Device, Location};
 use keel_types::Id;
 
 use super::checks::{Check, LinesAllocated};
@@ -64,6 +68,33 @@ pub enum OrderCommand {
     /// Reopen a closed order, or an order with closed checks: the order and every check are
     /// open again, and the lines on them can change.
     Reopen(Reason),
+    /// Ask the hub for the order: an active or closed order the device doesn't own, with no
+    /// request of its own still waiting.
+    RequestOwnership,
+    /// Take the order on a manager's word, without the hub: an active or closed order the
+    /// device doesn't own. It is flagged for reconciliation.
+    OverrideOwnership(Reason),
+}
+
+impl OrderCommand {
+    /// Whether only the order's owning device may issue it: the order's structural and money
+    /// changes. Creating the order, adding and firing lines, and changing its attributes are
+    /// anyone's; so is asking for the order.
+    pub const fn needs_ownership(&self) -> bool {
+        matches!(
+            self,
+            OrderCommand::ChangeLine(_)
+                | OrderCommand::RemoveLine(_)
+                | OrderCommand::VoidLine { .. }
+                | OrderCommand::CompLine { .. }
+                | OrderCommand::Void(_)
+                | OrderCommand::Abandon
+                | OrderCommand::OpenCheck(_)
+                | OrderCommand::AllocateLines(_)
+                | OrderCommand::Close
+                | OrderCommand::Reopen(_)
+        )
+    }
 }
 
 /// Why a command was refused.
@@ -136,6 +167,15 @@ pub enum CommandError {
     /// Neither the order nor any of its checks is closed.
     #[error("nothing in the order is closed")]
     NothingToReopen,
+    /// Only the order's owning device, named, may do this: ask for the order first.
+    #[error("device {0} owns the order")]
+    NotOwner(Id<Device>),
+    /// The device already owns the order.
+    #[error("the device already owns the order")]
+    AlreadyOwner,
+    /// The device's request for the order still waits for the hub's answer.
+    #[error("the device's request for the order is waiting")]
+    RequestPending,
     /// The event wouldn't satisfy its schema, such as a negative price or quantity.
     #[error("invalid event: {0}")]
     Invalid(PayloadError),
@@ -145,7 +185,7 @@ pub enum CommandError {
 }
 
 impl Order {
-    /// Checks `command`, from a device at `location`, against the order as this device sees
+    /// Checks `command`, from `device` at `location`, against the order as this device sees
     /// it, and returns the event to record.
     ///
     /// # Errors
@@ -153,8 +193,10 @@ impl Order {
     pub fn decide(
         &self,
         location: Id<Location>,
+        device: Id<Device>,
         command: OrderCommand,
     ) -> Result<OrderEvent, CommandError> {
+        let closed = *self.status() == OrderStatus::Closed;
         let event = match command {
             OrderCommand::Create(created) => {
                 if self.info().is_some() {
@@ -162,18 +204,58 @@ impl Order {
                 }
                 OrderEvent::Created(created)
             }
-            // Reopening is the one command a closed order takes.
-            OrderCommand::Reopen(reason) if *self.status() == OrderStatus::Closed => {
+            // Reopening, and taking the order to reopen it, are what a closed order takes.
+            OrderCommand::Reopen(reason) if closed => {
                 self.check_location(location)?;
+                self.check_owner(device)?;
                 OrderEvent::Reopened { reason }
+            }
+            OrderCommand::RequestOwnership if closed => {
+                self.check_location(location)?;
+                self.decide_ownership(device, None)?
+            }
+            OrderCommand::OverrideOwnership(reason) if closed => {
+                self.check_location(location)?;
+                self.decide_ownership(device, Some(reason))?
             }
             command => {
                 let info = self.check_active(location)?;
-                self.decide_on_active(info, command)?
+                if command.needs_ownership() {
+                    self.check_owner(device)?;
+                }
+                self.decide_on_active(info, device, command)?
             }
         };
         check_recordable(&event)?;
         Ok(event)
+    }
+
+    /// Refuses a command from `device` if another device owns the order.
+    pub(crate) fn check_owner(&self, device: Id<Device>) -> Result<(), CommandError> {
+        let ownership = self.ownership().ok_or(CommandError::NotCreated)?;
+        if ownership.device != device {
+            return Err(CommandError::NotOwner(ownership.device));
+        }
+        Ok(())
+    }
+
+    /// A request for the order by `device`, or its override for `reason`.
+    fn decide_ownership(
+        &self,
+        device: Id<Device>,
+        reason: Option<Reason>,
+    ) -> Result<OrderEvent, CommandError> {
+        let ownership = self.ownership().ok_or(CommandError::NotCreated)?;
+        if ownership.device == device {
+            return Err(CommandError::AlreadyOwner);
+        }
+        if let Some(reason) = reason {
+            return Ok(OrderEvent::OwnershipOverridden { lease: ownership.lease, reason });
+        }
+        if self.requests().iter().any(|request| request.device == device) {
+            return Err(CommandError::RequestPending);
+        }
+        Ok(OrderEvent::OwnershipRequested { lease: ownership.lease })
     }
 
     /// The order's details, if it is created at `location`.
@@ -229,10 +311,13 @@ impl Order {
     fn decide_on_active(
         &self,
         info: &OrderInfo,
+        device: Id<Device>,
         command: OrderCommand,
     ) -> Result<OrderEvent, CommandError> {
         match command {
             OrderCommand::Create(_) => Err(CommandError::AlreadyCreated),
+            OrderCommand::RequestOwnership => self.decide_ownership(device, None),
+            OrderCommand::OverrideOwnership(reason) => self.decide_ownership(device, Some(reason)),
             OrderCommand::Reopen(reason) => {
                 self.closed_check().ok_or(CommandError::NothingToReopen)?;
                 Ok(OrderEvent::Reopened { reason })
@@ -318,20 +403,21 @@ impl Order {
                 self.check_allocation(&allocated)?;
                 Ok(OrderEvent::LinesAllocated(allocated))
             }
-            OrderCommand::Close => {
-                if self.live_lines().next().is_none() {
-                    return Err(CommandError::NothingToClose);
-                }
-                let open = self
-                    .checks()
-                    .iter()
-                    .find(|check| check.is_open() && self.holds_live_line(check.id()));
-                if let Some(check) = open {
-                    return Err(CommandError::CheckOpen(check.id()));
-                }
-                Ok(OrderEvent::Closed)
-            }
+            OrderCommand::Close => self.decide_close(),
         }
+    }
+
+    /// Closing the order: it has live lines, and every check holding one is closed.
+    fn decide_close(&self) -> Result<OrderEvent, CommandError> {
+        if self.live_lines().next().is_none() {
+            return Err(CommandError::NothingToClose);
+        }
+        let open =
+            self.checks().iter().find(|check| check.is_open() && self.holds_live_line(check.id()));
+        if let Some(check) = open {
+            return Err(CommandError::CheckOpen(check.id()));
+        }
+        Ok(OrderEvent::Closed)
     }
 
     /// Checks that every line an allocation lists is live, not frozen, and gets a new

@@ -14,7 +14,7 @@ use keel_types::{Currency, Money, Quantity, Unit};
 
 use super::*;
 
-fn usd(minor: i64) -> Money {
+pub(super) fn usd(minor: i64) -> Money {
     Money::from_minor(minor, Currency::from_code("USD").unwrap())
 }
 
@@ -288,7 +288,7 @@ fn projections_are_rebuilt_when_their_version_changes() {
         .db()
         .query_row("SELECT version FROM projections WHERE name = 'orders'", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
 }
 
 #[test]
@@ -408,7 +408,8 @@ const GOLDEN_ORDERS: &str = "Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0,
     Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 2, 0]) | Integer(2) | Null | \
     Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 3, 0]) | Text(\"2026-09-28\") | \
     Integer(1) | Integer(1) | Integer(0) | Integer(1) | Integer(0) | Integer(4) | \
-    Blob([1, 160, 229, 79, 176, 0, 0, 0]) | Blob([1, 160, 229, 79, 176, 0, 0, 3])";
+    Blob([1, 160, 229, 79, 176, 0, 0, 0]) | Blob([1, 160, 229, 79, 176, 0, 0, 3]) | \
+    Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 0, 1]) | Integer(0) | Integer(0)";
 const GOLDEN_PAYMENTS: &str = "Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 128, 0]) | \
     Text(\"initiated\") | Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 1, 0]) | \
     Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 112, 0]) | \

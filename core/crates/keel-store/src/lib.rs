@@ -26,6 +26,9 @@
 //!   confirms the stretch of a device's log it covers when the store holds the run's last event
 //!   with the hash the record gives it. [`Store::sequenced`] is the store's feed, the confirmed
 //!   events of an epoch in number order.
+//! - **Ownership** (ADR-0021): each order's owning device and the requests for it waiting, in
+//!   the orders projection. The Store Hub answers those requests ([`Store::answer_requests`]),
+//!   granting or refusing each by the order's own rules.
 //! - **The outbox** (ADR-0017): effects waiting to happen, such as printing or charging a card,
 //!   enqueued in the write that records their cause, and started, finished, retried or failed in
 //!   writes too ([`Effect`], [`EffectState`]). An effect found running after a restart is in
@@ -53,6 +56,7 @@ mod error;
 mod faults;
 mod key;
 mod outbox;
+mod ownership;
 mod projection;
 mod rows;
 mod schema;

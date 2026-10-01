@@ -23,7 +23,7 @@ mod support;
 
 use keel_domain::aggregate::fold;
 use keel_domain::codec::IdSet;
-use keel_domain::order::{Order, OrderEvent, OrderStatus};
+use keel_domain::order::{Epoch, Lease, Order, OrderEvent, OrderStatus, OwnershipGranted, Refusal};
 use keel_domain::payment::{
     Payment, PaymentAuthorized, PaymentCaptured, PaymentEnded, PaymentEvent, PaymentInitiated,
     PaymentStatus, Tender,
@@ -87,6 +87,12 @@ enum OrderSpec {
     Voided,
     Abandoned,
     Reopened,
+    /// Ownership (ADR-0021): a request or an override from a lease, a grant of a lease, or a
+    /// refusal, answering a request that may not exist.
+    Requested(u8),
+    Overridden(u8),
+    Granted(u8),
+    Refused,
     /// An event of a schema this kernel doesn't know: a newer kernel wrote it.
     Unknown,
 }
@@ -122,6 +128,10 @@ fn any_order_spec() -> impl Strategy<Value = OrderSpec> {
         1 => Just(OrderSpec::Voided),
         1 => Just(OrderSpec::Abandoned),
         1 => Just(OrderSpec::Reopened),
+        1 => (0_u8..3).prop_map(OrderSpec::Requested),
+        1 => (0_u8..3).prop_map(OrderSpec::Overridden),
+        1 => (1_u8..4).prop_map(OrderSpec::Granted),
+        1 => Just(OrderSpec::Refused),
         1 => Just(OrderSpec::Unknown),
     ]
 }
@@ -170,6 +180,22 @@ fn draft(spec: &Spec, day: u8) -> EventDraft {
                 OrderSpec::Voided => OrderEvent::Voided { reason: reason("mistake") },
                 OrderSpec::Abandoned => OrderEvent::Abandoned,
                 OrderSpec::Reopened => OrderEvent::Reopened { reason: reason("mistake") },
+                OrderSpec::Requested(n) => {
+                    OrderEvent::OwnershipRequested { lease: Lease::new(u64::from(*n)).unwrap() }
+                }
+                OrderSpec::Overridden(n) => OrderEvent::OwnershipOverridden {
+                    lease: Lease::new(u64::from(*n)).unwrap(),
+                    reason: reason("island"),
+                },
+                OrderSpec::Granted(n) => OrderEvent::OwnershipGranted(OwnershipGranted {
+                    request: id(0xE1),
+                    device: device(PEERS[0]),
+                    lease: Lease::new(u64::from(*n)).unwrap(),
+                    epoch: Epoch::new(1).unwrap(),
+                }),
+                OrderSpec::Refused => {
+                    OrderEvent::OwnershipRefused { request: id(0xE1), refusal: Refusal::LeaseMoved }
+                }
                 OrderSpec::Unknown => {
                     let mut draft = domain_draft(order(n).cast(), &OrderEvent::Closed, day);
                     draft.schema = SchemaRef {
@@ -323,6 +349,8 @@ fn expected_order(events: &[SignedEvent], id: Id<Order>) -> Option<OrderSummary>
         events: u64::try_from(events.len()).unwrap(),
         first,
         last,
+        ownership: order.ownership(),
+        requests: u64::try_from(order.requests().len()).unwrap(),
     })
 }
 

@@ -28,7 +28,7 @@ use keel_types::{Currency, Id, Money, Unit};
 use proptest::prelude::*;
 use support::{
     any_captured, any_check_closed, any_event, any_line_added, any_line_changed,
-    any_lines_allocated, any_payment_event, modifiers,
+    any_lines_allocated, any_ownership_event, any_payment_event, modifiers,
 };
 
 /// An event of any aggregate.
@@ -113,8 +113,11 @@ enum Kind {
     LineCharges,
     /// What a closed check charged for each tax.
     TaxCharges,
-    /// A sequencing record's epoch or number, or a position in a log: from 1 to [`LARGEST`].
+    /// A sequencing record's epoch or number, or a position in a log: from 1 to [`LARGEST`]. A
+    /// grant's lease and epoch too.
     Number,
+    /// A lease an order's change of owner replaces: from 0 to [`LARGEST`].
+    Lease,
     /// A sequencing record's runs.
     Runs,
 }
@@ -196,6 +199,14 @@ fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
         }
         "sequence.assigned" => {
             vec![(1, Number, Required), (2, Number, Required), (3, Runs, Required)]
+        }
+        "order.ownership_requested" => vec![(1, Lease, Required)],
+        "order.ownership_granted" => {
+            vec![(1, Id, Required), (2, Id, Required), (3, Number, Required), (4, Number, Required)]
+        }
+        "order.ownership_refused" => vec![(1, Id, Required), (2, Code(2), Required)],
+        "order.ownership_overridden" => {
+            vec![(1, Lease, Required), (2, Reason, Required), (3, Note, Optional)]
         }
         other => panic!("no rules for {other}"),
     }
@@ -435,6 +446,7 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
         LineCharges => records(value, &[Id, Money, Money, Money]).is_some(),
         TaxCharges => records(value, &[Id, Money, Money]).is_some(),
         Number => value.as_u64().is_some_and(|n| (1..=LARGEST).contains(&n)),
+        Lease => value.as_u64().is_some_and(|n| n <= LARGEST),
         Runs => runs_valid(value),
     }
 }
@@ -620,7 +632,7 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
                 }),
         ]
         .boxed(),
-        Number => number_near_miss(),
+        Number | Lease => number_near_miss(),
         Runs => runs_near_miss(),
         Allocations => prop_oneof![
             3 => any_lines_allocated().prop_map(|allocated| allocations_value(&allocated)),
@@ -1332,6 +1344,32 @@ proptest! {
         (event, change) in any_case(any_payment_event().prop_map(Event::Payment)),
     ) {
         accepted_exactly_when_valid(&event, &change)?;
+    }
+
+    /// The same for the events that move an order's ownership (ADR-0021), on their own, so that
+    /// each of their fields is changed often.
+    #[test]
+    fn changed_ownership_payloads_are_accepted_exactly_when_valid(
+        (event, change) in any_case(any_ownership_event().prop_map(Event::Order)),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
+    /// Every number in an ownership payload, a lease or an epoch, set to each end of its range,
+    /// next to them, and past them, decodes exactly when the model says it is valid: a grant's
+    /// lease and epoch start at 1, a request's or an override's lease at 0.
+    #[test]
+    fn ownership_numbers_decode_exactly_within_their_ranges(event in any_ownership_event()) {
+        let event = Event::Order(event);
+        let numbers = rules(event.schema().name)
+            .into_iter()
+            .filter(|(_, kind, _)| matches!(kind, Number | Lease));
+        for (key, _, _) in numbers {
+            for n in [0, 1, 2, LARGEST - 1, LARGEST, LARGEST + 1, u64::MAX] {
+                let change = FieldChange::Set { key, value: Value::Unsigned(n) };
+                accepted_exactly_when_valid(&event, &change)?;
+            }
+        }
     }
 
     /// The same for sequencing records.

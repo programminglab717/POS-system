@@ -1413,4 +1413,100 @@ fn projection_row_holds(
         # Only rows changed behind the store's back tell, which only a unit test changes.
         "unit",
     ),
+    # Ownership (ADR-0021): the orders projection.
+    (
+        "ownership: the orders projection stays at version 1",
+        "src/projection.rs",
+        """    name: "orders",
+    version: 2,""",
+        """    name: "orders",
+    version: 1,""",
+    ),
+    (
+        "ownership: the projection's lease is one behind",
+        "src/projection.rs",
+        "            order.ownership().map(|ownership| seq_value(ownership.lease.get())).transpose()?,",
+        "            order.ownership().map(|ownership| seq_value(ownership.lease.get().saturating_sub(1))).transpose()?,",
+    ),
+    (
+        "ownership: the projection counts one request at most",
+        "src/projection.rs",
+        "            count(order.requests().len())?,",
+        "            count(order.requests().len().min(1))?,",
+    ),
+    (
+        "ownership: an order's lease is read one ahead",
+        "src/projection.rs",
+        "                    .and_then(Lease::new)",
+        "                    .and_then(|lease| lease.checked_add(1))\n                    .and_then(Lease::new)",
+    ),
+    (
+        "ownership: an order's requests are read from its events",
+        "src/projection.rs",
+        "        requests: at.unsigned(24)?,",
+        "        requests: at.unsigned(19)?,",
+    ),
+    # Ownership: the hub's answers.
+    (
+        "ownership: an order with one request waiting isn't answered",
+        "src/ownership.rs",
+        "        db.prepare(\"SELECT order_id FROM orders WHERE requests > 0 ORDER BY order_id\")?;",
+        "        db.prepare(\"SELECT order_id FROM orders WHERE requests > 1 ORDER BY order_id\")?;",
+    ),
+    (
+        "ownership: the hub answers one order at a time",
+        "src/ownership.rs",
+        "        db.prepare(\"SELECT order_id FROM orders WHERE requests > 0 ORDER BY order_id\")?;",
+        "        db.prepare(\"SELECT order_id FROM orders WHERE requests > 0 ORDER BY order_id LIMIT 1\")?;",
+    ),
+    (
+        "ownership: an authorized payment holds the order",
+        "src/ownership.rs",
+        "            \"SELECT 1 FROM payments WHERE order_id = ?1 AND state = 'initiated' LIMIT 1\",",
+        "            \"SELECT 1 FROM payments WHERE order_id = ?1 AND state IN ('initiated', 'authorized') LIMIT 1\",",
+    ),
+    (
+        "ownership: another order's payment holds the order",
+        "src/ownership.rs",
+        "            \"SELECT 1 FROM payments WHERE order_id = ?1 AND state = 'initiated' LIMIT 1\",",
+        "            \"SELECT 1 FROM payments WHERE (order_id = ?1 OR 1) AND state = 'initiated' LIMIT 1\",",
+    ),
+    (
+        "ownership: no payment is ever in progress",
+        "src/ownership.rs",
+        "            \"SELECT 1 FROM payments WHERE order_id = ?1 AND state = 'initiated' LIMIT 1\",",
+        "            \"SELECT 1 FROM payments WHERE order_id = ?1 AND state = 'started' LIMIT 1\",",
+    ),
+    (
+        "ownership: the hub's answers aren't returned",
+        "src/ownership.rs",
+        "                written.push(self.append(draft, now)?);",
+        "                self.append(draft, now)?;",
+    ),
+    (
+        "ownership: an answer has no cause",
+        "src/ownership.rs",
+        """                    approval: None,
+                    causation,""",
+        """                    approval: None,
+                    causation: causation.filter(|_| false),""",
+    ),
+    (
+        "ownership: an answer is recorded as a team member's",
+        "src/ownership.rs",
+        "                    actor: Actor::System(Component::new(\"hub\").map_err(unrecordable)?),",
+        "                    actor: Actor::TeamMember(order_id.cast()),",
+    ),
+    (
+        "ownership: answers are dated by the first order's date",
+        "src/ownership.rs",
+        "        .query_row(\"SELECT business_date FROM orders WHERE order_id = ?1\", [&key[..]], |row| {",
+        "        .query_row(\"SELECT business_date FROM orders WHERE order_id <= ?1 ORDER BY order_id LIMIT 1\", [&key[..]], |row| {",
+    ),
+    (
+        "ownership: the hub answers in epoch 1",
+        "src/ownership.rs",
+        "        let epoch = Epoch::new(epoch).ok_or(StoreError::OutOfRange(\"an epoch\"))?;",
+        "        let epoch = Epoch::new(epoch).and(Epoch::new(1)).ok_or(StoreError::OutOfRange(\"an epoch\"))?;",
+    ),
 ]
