@@ -22,8 +22,8 @@ jobs:
     name: Rust kernel
     runs-on: ubuntu-latest
     # Two full test passes, each with 4,096 cases a property and the simulator's seeds, take
-    # about half an hour when the kernel changes; the limit only stops a run that hangs.
-    timeout-minutes: 45
+    # about fifty minutes when the kernel changes; the limit only stops a run that hangs.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
 

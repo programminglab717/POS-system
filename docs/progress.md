@@ -180,6 +180,10 @@ is still under way is marked so below, and recorded as it lands.
   - Tooling: the planted-bug runner's `--release`, for the lists the simulator takes most of the
     time of, and `--stale`, which checks every bug's text is still in the code, and which CI now
     runs for every crate.
+  - CI: the job's time limit rises from 45 minutes to 75. This slice's tests, the store's terms
+    property, the protocol property and the simulator's failover runs above all, take each of
+    its two test passes from 14 minutes to 25, and its first commit's run would have been cut
+    off.
 - **Verified:**
   - Known answers:
     - `keel-domain`, 18 tests: the payload pinned byte for byte, in payloads Python's `cbor2`
