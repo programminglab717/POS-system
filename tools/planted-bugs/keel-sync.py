@@ -1,9 +1,10 @@
 """Planted bugs for keel-sync: see run.py.
 
 The property tests here are the protocol property, which runs replicas of a model store over a
-faulty network and checks the protocol's rules frame by frame, and keel-sim's seeds, which run
-real stores through crashes, rollbacks and clock jumps and check the rules for batches as they
-go. The simulator runs 32 seeds by default; `KEEL_SIM_SEEDS` sets more.
+faulty network, several of them candidates for the Store Hub, and checks the protocol's rules
+frame by frame, with its named regression tests; and keel-sim's seeds, which run real stores
+through crashes, rollbacks, splits and clock jumps and check the rules as they go. The simulator
+runs 32 seeds by default; `KEEL_SIM_SEEDS` sets more.
 """
 
 # keel-sim's simulations exercise the replicator with real stores: their tests run with ours.
@@ -11,7 +12,7 @@ ALSO = ["keel-sim"]
 
 # Known answers, frame by frame, live in tests/ beside the property test, since they share its
 # model replica; --props leaves them out.
-KNOWN_ANSWERS = ["replicator", "store_replica"]
+KNOWN_ANSWERS = ["election", "replicator", "store_replica"]
 
 BUGS = [
     # Frames. Replicas encode frames from their own state, which is always well formed, so the
@@ -19,7 +20,7 @@ BUGS = [
     (
         "a have lists devices with nothing held",
         "src/frame.rs",
-        "                        .filter(|(_, position)| **position > 0)\n",
+        "            .filter(|(_, position)| **position > 0)\n",
         "",
         "unit",  # A replica's version vector never lists a device it holds nothing of.
     ),
@@ -110,8 +111,10 @@ BUGS = [
     (
         "a have that asks goes unanswered",
         "src/replicator.rs",
-        "        let mut outgoing = if have.asks { vec![self.have(from)] } else { Vec::new() };",
-        "        let mut outgoing = Vec::new();",
+        """        if have.asks {
+            outgoing.push(self.have(from));""",
+        """        if have.asks {
+            let _ = self.have(from);""",
     ),
     (
         "a have always asks",
@@ -199,8 +202,8 @@ BUGS = [
         """        if !in_step {
             self.ours = replica.version_vector()?;
         }
-        if let Some(peer) = self.peers.get_mut(&from) {""",
-        """        if let Some(peer) = self.peers.get_mut(&from) {""",
+        if claims {""",
+        """        if claims {""",
         "unit",
     ),
     (
@@ -209,8 +212,8 @@ BUGS = [
         """        if !in_step {
             self.ours = replica.version_vector()?;
         }
-        self.push_all(replica, now)""",
-        "        self.push_all(replica, now)",
+        if events.iter().any(is_claim) {""",
+        "        if events.iter().any(is_claim) {",
         "unit",
     ),
     (
@@ -232,14 +235,26 @@ BUGS = [
     (
         "a log settles only once a peer holds less of it",
         "src/replicator.rs",
-        ".is_some_and(|known| known.get(&self.device).copied().unwrap_or(0) <= own)",
-        ".is_some_and(|known| known.get(&self.device).copied().unwrap_or(0) < own)",
+        "Some(known) if known.get(&self.device).copied().unwrap_or(0) > own => return,",
+        "Some(known) if known.get(&self.device).copied().unwrap_or(0) >= own => return,",
     ),
     (
         "a log settles when a peer holds more of it",
         "src/replicator.rs",
-        ".is_some_and(|known| known.get(&self.device).copied().unwrap_or(0) <= own)",
-        ".is_some_and(|known| known.get(&self.device).copied().unwrap_or(0) >= own)",
+        "Some(known) if known.get(&self.device).copied().unwrap_or(0) > own => return,",
+        "Some(known) if known.get(&self.device).copied().unwrap_or(0) < own => return,",
+    ),
+    (
+        "a log settles against the first peer to answer",
+        "src/replicator.rs",
+        "        self.settled = all || waited;",
+        "        self.settled = all || waited || !all;",
+    ),
+    (
+        "a log waits for every peer to answer",
+        "src/replicator.rs",
+        "        self.settled = all || waited;",
+        "        self.settled = all;",
     ),
     # Sending.
     (
@@ -375,14 +390,20 @@ BUGS = [
     (
         "the next tick forgets acknowledgement timeouts",
         "src/replicator.rs",
-        "                [round, timeout]",
-        "                [round, timeout.filter(|_| false)]",
+        "                [round, timeout, heartbeat]",
+        "                [round, timeout.filter(|_| false), heartbeat]",
     ),
     (
         "the next tick forgets rounds",
         "src/replicator.rs",
-        "                [round, timeout]",
-        "                [round.filter(|_| false), timeout]",
+        "                [round, timeout, heartbeat]",
+        "                [round.filter(|_| false), timeout, heartbeat]",
+    ),
+    (
+        "the next tick forgets heartbeats",
+        "src/replicator.rs",
+        "                [round, timeout, heartbeat]",
+        "                [round, timeout, heartbeat.filter(|_| false)]",
     ),
     # The store adapter.
     (
@@ -402,31 +423,41 @@ BUGS = [
     ),
     # Sequencing, store durability and the durable-ack watermark (ADR-0020).
     (
-        "sequencing: the hub numbers before its log is settled",
+        "sequencing: the hub numbers before its log is settled, or once it forked",
         "src/replicator.rs",
-        """        if !self.settled {
+        """        if !self.serving() {
             return Ok(Vec::new());
         }
-        let records = replica.sequence(epoch, now)?;""",
-        """        let records = replica.sequence(epoch, now)?;""",
-        # Replicas here never lose events, so numbers can't fork: only a unit test sees the
-        # hub number too soon.
-        "unit",
+        let mut written""",
+        """        if !self.is_hub() {
+            return Ok(Vec::new());
+        }
+        let mut written""",
     ),
     (
         "sequencing: the hub doesn't number what it receives",
         "src/replicator.rs",
-        "        if stored_any || (self.settled && !was_settled) {",
-        "        if self.settled && !was_settled {",
+        "        if stored_any || (self.serving() && !was_serving) {",
+        "        if self.serving() && !was_serving {",
     ),
     (
-        "sequencing: the hub doesn't number when its log settles",
+        "sequencing: the hub doesn't number as it begins to serve on a have",
         "src/replicator.rs",
-        """        if self.settled && !was_settled {
+        """        if self.serving() && !was_serving {
             outgoing.extend(self.sequence(replica, now)?);
         }
         Ok(outgoing)""",
         """        Ok(outgoing)""",
+    ),
+    (
+        "sequencing: the hub doesn't number as it begins to serve at a tick",
+        "src/replicator.rs",
+        """            if self.serving() && !was_serving {
+                outgoing.extend(self.sequence(replica, now)?);
+            }
+            outgoing.extend(self.elect(replica, now)?);""",
+        """            let _ = was_serving;
+            outgoing.extend(self.elect(replica, now)?);""",
     ),
     (
         "sequencing: the hub doesn't number its own events",
@@ -439,8 +470,8 @@ BUGS = [
     (
         "sequencing: records aren't passed on",
         "src/replicator.rs",
-        "        self.take_in(replica, &records, now)",
-        "        let _ = records;\n        Ok(Vec::new())",
+        "        self.take_in(replica, &written, now)",
+        "        let _ = written;\n        Ok(Vec::new())",
     ),
     (
         "store durability: the least any peer holds",
@@ -513,30 +544,317 @@ BUGS = [
     (
         "ownership: the hub doesn't answer requests",
         "src/replicator.rs",
-        "        let mut written = replica.answer_requests(epoch, now)?;",
+        "        let mut written = replica.answer_requests(now)?;",
         "        let mut written = Vec::new();",
     ),
     (
         "ownership: the hub numbers before it answers",
         "src/replicator.rs",
-        """        let mut written = replica.answer_requests(epoch, now)?;
-        written.extend(replica.sequence(epoch, now)?);""",
-        """        let mut written = replica.sequence(epoch, now)?;
-        written.extend(replica.answer_requests(epoch, now)?);""",
-    ),
-    (
-        "ownership: the store answers in epoch 1",
-        "src/replica.rs",
-        "        self.store.answer_requests(epoch, now)",
-        "        self.store.answer_requests(epoch.min(1), now)",
-        # Every hub in the simulator is in epoch 1, and the protocol property's model replica
-        # holds no orders: only the known answers, in epoch 2, see it.
-        "unit",
+        """        let mut written = replica.answer_requests(now)?;
+        written.extend(replica.sequence(now)?);""",
+        """        let mut written = replica.sequence(now)?;
+        written.extend(replica.answer_requests(now)?);""",
     ),
     (
         "ownership: the store never answers",
         "src/replica.rs",
-        "        self.store.answer_requests(epoch, now)",
-        "        let _ = (epoch, now);\n        Ok(Vec::new())",
+        "        self.store.answer_requests(now)",
+        "        let _ = now;\n        Ok(Vec::new())",
+    ),
+    # Heartbeats (ADR-0022): the frame, and what a replica says in it.
+    (
+        "heartbeats: a heartbeat is a durable frame",
+        "src/frame.rs",
+        "const HEARTBEAT: u64 = 3;",
+        "const HEARTBEAT: u64 = 2;",
+        # Both ends read the kind they write, and no other frame has a heartbeat's five fields to
+        # take it for: only the pinned bytes see the kind.
+        "unit",
+    ),
+    (
+        "heartbeats: acting decodes as false",
+        "src/frame.rs",
+        "let acting = acting.as_bool().ok_or(FrameError::Malformed)?;",
+        "let acting = acting.as_bool().map(|_| false).ok_or(FrameError::Malformed)?;",
+    ),
+    (
+        "heartbeats: a beat decodes as 0",
+        "src/frame.rs",
+        "beat if epoch > 0 => Some(beat.as_u64().ok_or(FrameError::Malformed)?),",
+        "beat if epoch > 0 => Some(beat.as_u64().map(|_| 0).ok_or(FrameError::Malformed)?),",
+    ),
+    (
+        "heartbeats: the hub is sent as the location",
+        "src/frame.rs",
+        "heartbeat.hub.map_or(Value::Null, |hub| Value::Bytes(hub.to_bytes().to_vec())),",
+        "heartbeat.hub.map_or(Value::Null, |_| Value::Bytes(heartbeat.location.to_bytes().to_vec())),",
+    ),
+    (
+        "heartbeats: a term without its hub is accepted",
+        "src/frame.rs",
+        "hub if epoch > 0 => Some(id(hub)?),",
+        "hub if epoch > 0 => id(hub).ok(),",
+        # Replicas send a term's hub with it: only the refused frames show it.
+        "unit",
+    ),
+    (
+        "heartbeats: a hub without a term is accepted",
+        "src/frame.rs",
+        "hub if epoch > 0 => Some(id(hub)?),",
+        "hub => Some(id(hub)?),",
+        # Replicas send no hub without a term: only the refused frames show it.
+        "unit",
+    ),
+    (
+        "heartbeats: a beat without a term is accepted",
+        "src/frame.rs",
+        "beat if epoch > 0 => Some(beat.as_u64().ok_or(FrameError::Malformed)?),",
+        "beat => Some(beat.as_u64().ok_or(FrameError::Malformed)?),",
+        # Replicas send no beat without a term: only the refused frames show it.
+        "unit",
+    ),
+    (
+        "heartbeats: a priority decodes as 0",
+        "src/frame.rs",
+        ".and_then(|priority| u8::try_from(priority).ok())",
+        ".and_then(|priority| u8::try_from(priority).ok().map(|_| 0))",
+    ),
+    (
+        "heartbeats: acting without a beat is accepted",
+        "src/frame.rs",
+        "Value::Null if !acting => None,",
+        "Value::Null => None,",
+        "unit",  # A replica acting always gives its beat.
+    ),
+    (
+        "heartbeats: an epoch past the largest is accepted",
+        "src/frame.rs",
+        ".filter(|&epoch| epoch <= MAX_EPOCH)",
+        ".filter(|&epoch| epoch <= u64::MAX)",
+        "unit",  # No claim's epoch passes the largest.
+    ),
+    (
+        "heartbeats: none go out as a period begins",
+        "src/replicator.rs",
+        "            outgoing.extend(self.peers.keys().map(|&to| self.heartbeat(to)));\n",
+        "",
+    ),
+    (
+        "heartbeats: none go out at a start",
+        "src/replicator.rs",
+        ".flat_map(|&to| [replicator.have(to), replicator.heartbeat(to)])",
+        ".flat_map(|&to| [replicator.have(to)])",
+        # A start's heartbeat gives no priority, its log unsettled, and the next comes a period
+        # later: only the known answer, which looks for it, sees it missing.
+        "unit",
+    ),
+    (
+        "heartbeats: the hub's beat doesn't rise",
+        "src/replicator.rs",
+        "                self.beat = reading.max(self.beat.saturating_add(1));",
+        "                self.beat = self.beat.max(reading.min(1));",
+    ),
+    (
+        "heartbeats: a replica that can't be the hub now gives its priority",
+        "src/replicator.rs",
+        "        let eligible = self.settled && !self.forked();",
+        "        let eligible = true;",
+    ),
+    (
+        "heartbeats: a hub says it acts before it serves",
+        "src/replicator.rs",
+        "        let acting = self.serving();",
+        "        let acting = self.is_hub();",
+    ),
+    (
+        "heartbeats: a beat had through a peer is passed on",
+        "src/election.rs",
+        """        let (epoch, hub) = term?;
+        let (of, heard) = self.peers.get(&hub)?.acting?;
+        (of == epoch && self.is_recent(heard.period, silence)).then_some(heard.beat)""",
+        """        let heard = self.latest.get(&term?)?;
+        self.is_recent(heard.period, silence).then_some(heard.beat)""",
+    ),
+    (
+        "heartbeats: a later term's beat is passed on as the replica's own term's",
+        "src/election.rs",
+        "(of == epoch && self.is_recent(heard.period, silence)).then_some(heard.beat)",
+        "(of >= epoch && self.is_recent(heard.period, silence)).then_some(heard.beat)",
+    ),
+    # The election (ADR-0022).
+    (
+        "election: something heard stays recent a period too long",
+        "src/election.rs",
+        "        self.period.saturating_sub(period) <= silence",
+        "        self.period.saturating_sub(period) <= silence.saturating_add(1)",
+    ),
+    (
+        "election: something heard stays recent a period too short",
+        "src/election.rs",
+        "        self.period.saturating_sub(period) <= silence",
+        "        self.period.saturating_sub(period) < silence",
+    ),
+    (
+        "election: a beat heard again counts as new",
+        "src/election.rs",
+        "        Some(heard) if heard.beat >= beat => heard,",
+        "        Some(heard) if heard.beat > beat => heard,",
+    ),
+    (
+        "election: another hub of its epoch counts",
+        "src/election.rs",
+        "term.is_none_or(|(own, of)| epoch > own || (epoch == own && hub == of))",
+        "term.is_none_or(|(own, _)| epoch >= own)",
+    ),
+    (
+        "election: the beats of two hubs of one epoch are compared",
+        "src/election.rs",
+        "        let heard = later(self.latest.get(&term).copied(), beat, period);",
+        """        let rivals = self.latest.iter().filter(|(&(of, _), _)| of == heartbeat.epoch);
+        let heard = later(rivals.map(|(_, heard)| *heard).max_by_key(|heard| heard.beat), beat, period);""",
+    ),
+    (
+        "election: a heartbeat acting as another device's hub gives a beat",
+        "src/election.rs",
+        """        if heartbeat.acting {
+            if hub != from {
+                return;
+            }""",
+        """        if heartbeat.acting {""",
+        # No replica says it acts as another's hub: only a frame made up for a known answer can.
+        "unit",
+    ),
+    (
+        "election: learning of a claim isn't hearing its hub",
+        "src/election.rs",
+        "        self.learned = Some(self.period);",
+        "        self.learned = None;",
+    ),
+    (
+        "election: a lower priority is preferred",
+        "src/election.rs",
+        "                && (peer.priority > priority || (peer.priority == priority && from < own))",
+        "                && (peer.priority < priority || (peer.priority == priority && from < own))",
+    ),
+    (
+        "election: of one priority, the higher device is preferred",
+        "src/election.rs",
+        "                && (peer.priority > priority || (peer.priority == priority && from < own))",
+        "                && (peer.priority > priority || (peer.priority == priority && from > own))",
+    ),
+    (
+        "election: a replica claims before it has listened for the periods of silence",
+        "src/replicator.rs",
+        "            && self.election.period() >= silence\n",
+        "",
+    ),
+    (
+        "election: a replica claims while it hears a hub",
+        "src/replicator.rs",
+        "            && !self.election.hears_hub(self.heard_term(), silence)\n",
+        "",
+    ),
+    (
+        "election: a replica claims while it hears a preferred candidate",
+        "src/replicator.rs",
+        "\n            && !self.election.hears_preferred(self.device, priority.get(), silence);",
+        ";",
+    ),
+    (
+        "election: a replica claims unsettled",
+        "src/replicator.rs",
+        """        let ready = !self.is_hub()
+            && self.settled""",
+        """        let ready = !self.is_hub()""",
+    ),
+    (
+        "election: a replica whose log forked claims",
+        "src/replicator.rs",
+        """            && self.settled
+            && !self.forked()""",
+        """            && self.settled""",
+    ),
+    (
+        "election: a candidate doesn't wait to catch up",
+        "src/replicator.rs",
+        "        if self.caught_up() {",
+        "        if self.caught_up() || self.settled {",
+        # Claiming before catching up only cuts what peers already hold, whose records stop
+        # counting and whose events are numbered again: only the known answer sees it.
+        "unit",
+    ),
+    (
+        "election: a candidate waits for ever to catch up",
+        "src/election.rs",
+        "        self.period.saturating_sub(since) >= silence",
+        "        self.period.saturating_sub(since) >= u64::MAX",
+        # Once the network heals, every candidate catches up: only the known answer, which
+        # keeps one behind, sees it wait.
+        "unit",
+    ),
+    (
+        "election: a candidate waits on the silent hub's word of its own log",
+        "src/replicator.rs",
+        "                .filter(|(peer, _)| **peer != term.device)\n",
+        "",
+    ),
+    (
+        "election: a claim isn't sent",
+        "src/replicator.rs",
+        "                let mut outgoing = self.take_in(replica, &[*claim], now)?;",
+        "                let mut outgoing = Vec::new();\n                let _ = claim;",
+    ),
+    (
+        "election: a hub doesn't hear of the claim that deposes it",
+        "src/replicator.rs",
+        """        if claims {
+            self.read_terms(replica)?;
+        }""",
+        """        let _ = claims;""",
+    ),
+    (
+        "election: periods are counted off the clock",
+        "src/replicator.rs",
+        """            self.heartbeat_at = now;
+            self.election.tick(self.epoch());""",
+        """            let missed = now.duration_since(self.heartbeat_at).map_or(1, |passed| passed.as_secs());
+            self.heartbeat_at = now;
+            for _ in 0..missed.max(1) {
+                self.election.tick(self.epoch());
+            }""",
+    ),
+    # Forks (ADR-0019, ADR-0022): a replica whose own log a peer refuses can't be the hub.
+    (
+        "forks: a gap counts as a refusal",
+        "src/replicator.rs",
+        "&& have.vv.get(&self.device).copied().unwrap_or(0).checked_add(1) == Some(first)",
+        "&& have.vv.get(&self.device).copied().unwrap_or(0) < first",
+        # Replicas here never lose events, so a batch never comes after a gap in what a peer
+        # holds: only the known answer sees a gap taken for a refusal.
+        "unit",
+    ),
+    (
+        "forks: a refusal ends at once",
+        "src/replicator.rs",
+        "        if peer.refused_ours.is_some_and(|refused| held >= refused) {",
+        "        if peer.refused_ours.is_some() {",
+    ),
+    (
+        "forks: a refusal never ends",
+        "src/replicator.rs",
+        "        if peer.refused_ours.is_some_and(|refused| held >= refused) {",
+        "        if peer.refused_ours.is_some_and(|refused| held >= refused && refused == 0) {",
+    ),
+    (
+        "forks: a peer refusing its own log counts as refusing the replica's",
+        "src/replicator.rs",
+        "            if let Some(&first) = waiting.first.get(&self.device)",
+        "            if let Some(&first) = waiting.first.get(&from)",
+    ),
+    (
+        "forks: a hub whose log forked goes on serving",
+        "src/replicator.rs",
+        "        self.settled && !self.forked() && self.is_hub()",
+        "        self.settled && self.is_hub()",
     ),
 ]

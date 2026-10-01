@@ -22,6 +22,9 @@ pub struct Config {
     pub duplication: u64,
     /// Links cut for a while.
     pub partitions: u8,
+    /// The store's network cut in two for a while: the hub on one side, the standby on the other,
+    /// each device on one side, and the cloud reaching one side, both or neither.
+    pub splits: u8,
     /// Nodes crashing, between writes or in the middle of one, and restarting.
     pub crashes: u8,
     /// Devices whose store is restored from an older copy of itself.
@@ -30,6 +33,9 @@ pub struct Config {
     pub clock_jumps: u8,
     /// The shortest and longest wait between a device's commands, in milliseconds.
     pub pace: (i64, i64),
+    /// When, in virtual milliseconds, the node serving as the hub crashes, for 10 s, in a run
+    /// without other faults; `None` for none.
+    pub hub_crash: Option<i64>,
 }
 
 impl Config {
@@ -46,24 +52,36 @@ impl Config {
             loss: if rng.chance(250) { 0 } else { rng.below(250) },
             duplication: if rng.chance(250) { 0 } else { rng.below(150) },
             partitions: faults(&mut rng, 4),
+            splits: faults(&mut rng, 3),
             crashes: faults(&mut rng, 4),
             rollbacks: faults(&mut rng, 3),
             clock_jumps: faults(&mut rng, 4),
             pace: (100, rng.between(300, 1500)),
+            hub_crash: None,
         }
     }
 
-    /// A run without faults: no frame lost or duplicated, no partition, crash, rollback or clock
-    /// jump. Every event should reach every replica quickly.
+    /// A run without faults: no frame lost or duplicated, no partition, split, crash, rollback or
+    /// clock jump. Every event should reach every replica quickly.
     pub fn calm(seed: u64) -> Config {
         Config {
             loss: 0,
             duplication: 0,
             partitions: 0,
+            splits: 0,
             crashes: 0,
             rollbacks: 0,
             clock_jumps: 0,
             ..Config::from_seed(seed)
         }
+    }
+
+    /// A run without faults but one: about halfway through, at a moment the seed sets within a
+    /// heartbeat period, the node serving as the hub crashes, and stays down for 10 s. Its
+    /// standby should claim the role within 5 s.
+    pub fn calm_failover(seed: u64) -> Config {
+        let calm = Config::calm(seed);
+        let moment = i64::try_from(seed % 1_000).unwrap_or(0);
+        Config { hub_crash: Some(calm.working.saturating_div(2).saturating_add(moment)), ..calm }
     }
 }

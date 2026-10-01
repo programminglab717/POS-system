@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 864b112317975fe3f4665283fb0fcd656b908572e29caf44b774d1c356463229 # shrinks to (priorities, steps) = ([Some(1), Some(1), Some(1)], [Claim(1), Append(2), Append(2), Append(0), Claim(2), Sequence { most: 1 }, Append(2), Sequence { most: 1 }])
+cc acd63db2a083ff0134d699a363d79b52703a80b79e0e7d6b866959970c169bc1 # shrinks to (priorities, steps) = ([Some(1), Some(1), Some(1)], [Append(0), Claim(1), Catch { to: 1, from: 0 }, Catch { to: 0, from: 1 }, Sequence { most: 1 }, Replicate { to: 0, from: 1, of: 1, most: 1 }, Claim(0), Replicate { to: 1, from: 0, of: 0, most: 1 }, Claim(1)])

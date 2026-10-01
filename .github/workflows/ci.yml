@@ -35,6 +35,12 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      - name: Planted bugs' texts are still in the code
+        run: |
+          for list in tools/planted-bugs/keel-*.py; do
+            python3 tools/planted-bugs/run.py "$(basename "$list" .py)" --stale
+          done
+
       - name: Lint (all features)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 

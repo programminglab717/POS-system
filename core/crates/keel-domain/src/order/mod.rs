@@ -34,8 +34,9 @@ pub use checks::{Allocation, Check, CheckShare, LinesAllocated};
 pub use closing::{CheckClosed, LineCharge, TaxCharge};
 pub use commands::{CommandError, OrderCommand};
 pub use events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
-pub use ownership::{Epoch, Lease, Ownership, OwnershipGranted, Refusal, Request};
+pub use ownership::{Lease, Ownership, OwnershipGranted, Refusal, Request};
 pub use state::{Conflict, ConflictKind, Line, LineStatus, Order, OrderInfo, OrderStatus, Stage};
 
 pub use crate::aggregate::Skipped;
+pub use crate::hub::Epoch;
 pub use types::{Channel, ChosenModifier, ItemSnapshot, Mode, Placement, Prefix, Reason};

@@ -8,13 +8,18 @@
 //!
 //! Each write recomputes the rows of the streams it touched, before it commits. A projection
 //! whose version the store didn't build is dropped and rebuilt from every stored stream of its
-//! kind. Bump a projection's version whenever its columns change, or the fold it uses changes what
+//! kind.
+//!
+//! The claims projection (ADR-0022) keeps a row for each of the hub's claims, and with it the
+//! chain of terms they make, which depends on every claim: each write that touches a claim works
+//! it out again ([`crate::terms`]). Bump a projection's version whenever its columns change, or the fold it uses changes what
 //! it computes: the golden tests pin each projection's rows for a fixed set of events, to catch
 //! such a change.
 
 use core::str::FromStr;
 
 use keel_domain::aggregate::{Aggregate, fold};
+use keel_domain::hub;
 use keel_domain::order::{Channel, Lease, Mode, Order, OrderInfo, OrderStatus, Ownership, Stage};
 use keel_domain::payment::{Payment, PaymentInfo, PaymentStatus, Tender};
 use keel_domain::schema::DomainEvent;
@@ -28,6 +33,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use crate::error::StoreError;
 use crate::rows::{self, seq_value};
 use crate::schema::{hlc, hlc_bytes, id};
+use crate::terms;
 
 /// Replaces the rows of stream `id` in a projection, given the stream's events in canonical
 /// order.
@@ -54,7 +60,7 @@ pub(crate) struct Projection {
 }
 
 /// Every projection.
-pub(crate) const ALL: [Projection; 3] = [ORDERS, PAYMENTS, SEQUENCE];
+pub(crate) const ALL: [Projection; 4] = [ORDERS, PAYMENTS, SEQUENCE, CLAIMS];
 
 impl Projection {
     /// Replaces the rows of stream `id`, given its events in canonical order.
@@ -763,6 +769,20 @@ const SEQUENCE: Projection = Projection {
     ",
     drop: "DROP TABLE IF EXISTS sequence",
     project: project_sequence,
+};
+
+// ---------------------------------------------------------------------------------------------
+// The hub's claims (ADR-0022).
+
+const CLAIMS: Projection = Projection {
+    name: "claims",
+    version: 1,
+    kind: hub::STREAM,
+    key: "stream",
+    order: "stream",
+    create: terms::CREATE,
+    drop: terms::DROP,
+    project: terms::project_claims,
 };
 
 /// The runs of the record `stream`, whose first event in canonical order is the record: a record

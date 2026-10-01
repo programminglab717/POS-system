@@ -79,11 +79,11 @@ fn the_hub_grants_a_request_and_every_store_sees_the_new_owner() {
     let request = command(&mut three, 3, OrderCommand::RequestOwnership, 2_000);
     assert_eq!(owned(&three), (Some((device(2).0, 0)), 1));
 
-    let mut hub = open(&dir.db());
+    let mut hub = open_hub(&dir.db());
     take(&mut hub, &two.log(device(2).0, 0, 10).unwrap());
     take(&mut hub, core::slice::from_ref(&request));
     assert_eq!(owned(&hub), (Some((device(2).0, 0)), 1));
-    let answers = hub.answer_requests(EPOCH, at(3_000)).unwrap();
+    let answers = hub.answer_requests(at(3_000)).unwrap();
     assert_eq!(answers.len(), 1);
     let grant = &answers[0];
     assert_eq!(
@@ -104,10 +104,12 @@ fn the_hub_grants_a_request_and_every_store_sees_the_new_owner() {
     assert_eq!(body.business_date, request.body().business_date);
     assert_eq!(owned(&hub), (Some((device(3).0, 1)), 0));
     // Nothing waits now: answering again answers nothing.
-    assert_eq!(hub.answer_requests(EPOCH, at(3_500)).unwrap(), []);
-    // Every store that takes the grant sees the new owner.
-    take(&mut three, &answers);
-    take(&mut two, &[request, answers[0].clone()]);
+    assert_eq!(hub.answer_requests(at(3_500)).unwrap(), []);
+    // Every store that takes the grant, after the hub's claim, sees the new owner.
+    let hub_log = hub.log(own().0, 0, 10).unwrap();
+    take(&mut three, &hub_log);
+    take(&mut two, &[request]);
+    take(&mut two, &hub_log);
     for store in [&three, &two] {
         assert_eq!(owned(store), (Some((device(3).0, 1)), 0));
         let ownership = store.load(Order::new(order_id())).unwrap().ownership();
@@ -132,10 +134,10 @@ fn a_payment_in_flight_holds_the_order_and_an_authorized_one_doesnt() {
     take(&mut three, &two.log(device(2).0, 0, 10).unwrap());
     let request = command(&mut three, 3, OrderCommand::RequestOwnership, 2_000);
 
-    let mut hub = open(&dir.db());
+    let mut hub = open_hub(&dir.db());
     take(&mut hub, &two.log(device(2).0, 0, 10).unwrap());
     take(&mut hub, core::slice::from_ref(&request));
-    let answers = hub.answer_requests(EPOCH, at(3_000)).unwrap();
+    let answers = hub.answer_requests(at(3_000)).unwrap();
     assert_eq!(
         decoded(&answers[0]),
         OrderEvent::OwnershipRefused {
@@ -150,10 +152,10 @@ fn a_payment_in_flight_holds_the_order_and_an_authorized_one_doesnt() {
         PaymentEvent::Authorized(PaymentAuthorized { amount: usd(450), reference: None });
     let event = append(&mut two, vec![payment_draft(payment, &authorized)], at(3_500)).remove(0);
     take(&mut hub, &[event]);
-    take(&mut three, &answers);
+    take(&mut three, &hub.log(own().0, 0, 10).unwrap());
     let again = command(&mut three, 3, OrderCommand::RequestOwnership, 4_000);
     take(&mut hub, &[again]);
-    let answers = hub.answer_requests(EPOCH, at(4_500)).unwrap();
+    let answers = hub.answer_requests(at(4_500)).unwrap();
     assert!(matches!(decoded(&answers[0]), OrderEvent::OwnershipGranted(_)));
     assert_eq!(owned(&hub), (Some((device(3).0, 1)), 0));
 }
@@ -169,12 +171,12 @@ fn of_two_requests_from_one_lease_the_first_is_granted() {
         take(&mut store, &log);
         requests.push(command(&mut store, n, OrderCommand::RequestOwnership, 2_000 + i64::from(n)));
     }
-    let mut hub = open(&dir.db());
+    let mut hub = open_hub(&dir.db());
     take(&mut hub, &log);
     // The second request arrives first: canonical order, not arrival, decides.
     take(&mut hub, &[requests[1].clone(), requests[0].clone()]);
     let answers: Vec<OrderEvent> =
-        hub.answer_requests(EPOCH, at(3_000)).unwrap().iter().map(decoded).collect();
+        hub.answer_requests(at(3_000)).unwrap().iter().map(decoded).collect();
     assert_eq!(
         answers,
         [
@@ -201,11 +203,11 @@ fn a_request_waits_for_the_orders_creation() {
     take(&mut three, &two.log(device(2).0, 0, 10).unwrap());
     let request = command(&mut three, 3, OrderCommand::RequestOwnership, 2_000);
     // The hub has the request before the order: nothing to answer yet.
-    let mut hub = open(&dir.db());
+    let mut hub = open_hub(&dir.db());
     take(&mut hub, core::slice::from_ref(&request));
-    assert_eq!(hub.answer_requests(EPOCH, at(3_000)).unwrap(), []);
+    assert_eq!(hub.answer_requests(at(3_000)).unwrap(), []);
     take(&mut hub, &two.log(device(2).0, 0, 10).unwrap());
-    let answers = hub.answer_requests(EPOCH, at(3_500)).unwrap();
+    let answers = hub.answer_requests(at(3_500)).unwrap();
     assert_eq!(answers.len(), 1);
     assert_eq!(owned(&hub), (Some((device(3).0, 1)), 0));
 }
@@ -218,20 +220,27 @@ fn answering_is_a_write_of_its_own_and_an_interrupted_one_leaves_nothing() {
     let log = two.log(device(2).0, 0, 10).unwrap();
     take(&mut three, &log);
     let request = command(&mut three, 3, OrderCommand::RequestOwnership, 2_000);
-    // The hub stores the two events of the order and the request, then refuses the answer.
-    let faults = Box::new(RefuseAt { point: Point::Stored, nth: 4, seen: 0 });
+    // The hub stores its claim, the two events of the order and the request, then refuses the
+    // answer.
+    let faults = Box::new(RefuseAt { point: Point::Stored, nth: 5, seen: 0 });
     let mut hub =
         Store::open_with_faults(dir.db(), key(), config(), own().1, SeededEntropy::new(7), faults)
             .unwrap();
+    let claimed = claim(&mut hub, at(100));
     take(&mut hub, &log);
-    take(&mut hub, &[request]);
-    let interrupted = hub.answer_requests(EPOCH, at(3_000));
+    take(&mut hub, core::slice::from_ref(&request));
+    let interrupted = hub.answer_requests(at(3_000));
     assert!(matches!(interrupted, Err(StoreError::Interrupted(Point::Stored))), "{interrupted:?}");
-    assert_eq!(hub.head(own().0).unwrap(), LogHead::EMPTY);
+    assert_eq!(hub.head(own().0).unwrap(), LogHead::of(&claimed));
     assert_eq!(owned(&hub), (Some((device(2).0, 0)), 1));
-    assert_eq!(hub.answer_requests(EPOCH, at(3_500)).unwrap().len(), 1);
+    assert_eq!(hub.answer_requests(at(3_500)).unwrap().len(), 1);
     assert_eq!(owned(&hub), (Some((device(3).0, 1)), 0));
-    // An epoch out of range answers nothing.
-    assert!(matches!(hub.answer_requests(0, at(4_000)), Err(StoreError::OutOfRange(_))));
-    assert!(matches!(hub.answer_requests(1 << 63, at(4_000)), Err(StoreError::OutOfRange(_))));
+    // A store that isn't the hub answers nothing.
+    let mut four = open_as(&dir.file("four.db"), 4);
+    take(&mut four, &log);
+    take(&mut four, &[request]);
+    assert!(matches!(four.answer_requests(at(4_000)), Err(StoreError::NotHub)));
+    take(&mut four, &[claimed]);
+    assert!(matches!(four.answer_requests(at(4_000)), Err(StoreError::NotHub)));
+    assert_eq!(owned(&four), (Some((device(2).0, 0)), 1));
 }

@@ -56,6 +56,14 @@ pub enum StoreError {
     /// A number too large for the database, such as a sequence number beyond 2^63 − 1.
     #[error("{0} is out of range")]
     OutOfRange(&'static str),
+    /// The store doesn't hold the winning claim: it isn't the Store Hub, and mustn't sequence or
+    /// answer requests for orders (ADR-0022).
+    #[error("the store isn't the hub: it doesn't hold the winning claim")]
+    NotHub,
+    /// The store doesn't hold the whole chain of claims, back to the first, and every record
+    /// that counts on it: it must catch up before it claims the hub's role (ADR-0022).
+    #[error("the store doesn't hold the whole chain of claims and every record that counts")]
+    Behind,
     /// The device's log writer couldn't make the next event.
     #[error(transparent)]
     Append(#[from] AppendError),

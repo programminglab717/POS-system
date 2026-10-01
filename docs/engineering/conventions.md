@@ -111,8 +111,11 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
   unit tests often catch a bug that the property test's generators never reach.
   - Each crate's planted bugs are listed in `tools/planted-bugs/<crate>.py`, and
     `tools/planted-bugs/run.py` plants them one at a time: `run.py keel-domain` against every
-    test, `--props` against the property tests alone, `--ignored` with the exhaustive sweeps. Add
-    the bugs a new test targets to the list.
+    test, `--props` against the property tests alone, `--ignored` with the exhaustive sweeps,
+    `--release` optimized, as strict with overflow checks on in both profiles and many times
+    faster for the simulator. Add the bugs a new test targets to the list.
+  - A change can leave a bug's text behind without touching its list: `--stale` checks that every
+    bug's text is still in the code, without planting anything, and CI runs it for every crate.
   - A bug only a unit test can catch, such as a database setting that nothing outside the crate
     can read, is marked `"unit"` in the list, with a comment saying why, and `--props` skips it.
     Before marking one, try to make it observable: `keel-store`'s property test opens stores as

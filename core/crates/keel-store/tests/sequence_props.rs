@@ -2,12 +2,14 @@
 //! another replica confirming from the hub's records, and that replica numbering in turn, as the
 //! next epoch's hub would.
 //!
-//! A case is a run of steps at the hub: receiving the next events of two devices' logs,
-//! appending events of its own, and sequencing, now and then interrupted as it commits. Another
-//! replica then takes in the hub's log and the two devices' logs in any interleaving, so that
-//! records arrive before or after the events they cover; the first device may have forked its
-//! log, and the replica hold the other version. The replica then sequences in the next epoch, and
-//! the hub takes in the replica's records and the rest of the two devices' logs.
+//! A case is a run of steps at the hub, which claimed the role first (ADR-0022): receiving the
+//! next events of two devices' logs, appending events of its own, and sequencing, now and then
+//! interrupted as it commits. Another replica then takes in the hub's log and the two devices'
+//! logs in any interleaving, so that records arrive before or after the events they cover; the
+//! first device may have forked its log, and the replica hold the other version. The replica then
+//! claims the next epoch, holding the hub's whole log, and sequences in it; and the hub takes in
+//! the replica's claim and records and the rest of the two devices' logs. Claims are numbered like
+//! any other event.
 //!
 //! After every step, each store's numbers, confirmed logs and feeds must be the model's:
 //! - the hub numbers what it holds that no record covers, in the order it received it, from 1 in
@@ -29,6 +31,7 @@
 
 mod support;
 
+use core::num::NonZeroU8;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -466,6 +469,11 @@ proptest! {
         let mut hub = open(&hub_scratch, OWN, &plan);
         let peers = [log(PEERS[0], case.lengths[0], None), log(PEERS[1], case.lengths[1], None)];
         let mut model = Hub::default();
+        // The hub claims the role, in epoch 1: its claim is its own first event.
+        let claimed = hub.claim(NonZeroU8::MIN, at(500)).unwrap().unwrap();
+        model.arrivals.push((Hub::hub(), 1));
+        model.hashes.insert((Hub::hub(), 1), claimed.hash());
+        model.own.push(None);
         let mut received = [0_usize; 2];
         for (i, step) in case.steps.iter().enumerate() {
             let now = 10_000 + i64::try_from(i).unwrap() * 100;
@@ -495,11 +503,11 @@ proptest! {
                 }
                 Step::Sequence { interrupted: true } => {
                     *plan.0.lock().unwrap() = true;
-                    let sequenced = hub.sequence(EPOCH, at(now));
+                    let sequenced = hub.sequence(at(now));
                     prop_assert!(matches!(sequenced, Err(StoreError::Interrupted(Point::Committing))), "{:?}", sequenced);
                 }
                 Step::Sequence { interrupted: false } => {
-                    let written = hub.sequence(EPOCH, at(now)).unwrap();
+                    let written = hub.sequence(at(now)).unwrap();
                     let runs = model.sequence();
                     same_records(&written, runs.as_slice(), EPOCH)?;
                     if let Some(event) = written.first() {
@@ -540,28 +548,35 @@ proptest! {
             prop_assert_eq!(replica.confirmed().unwrap(), hub.confirmed().unwrap());
         }
 
-        // The replica then sequences in the next epoch, as the hub after this one would.
-        let (_, hashes) = at_replica(&model, &versions, &hub_log, held);
+        // The replica then claims the next epoch, holding the hub's whole log, and sequences in
+        // it, its claim with the rest, as the hub after this one would.
+        let (_, mut hashes) = at_replica(&model, &versions, &hub_log, held);
+        let succession = replica.claim(NonZeroU8::MIN, at(29_000)).unwrap().unwrap();
+        prop_assert_eq!(replica.term().unwrap().map(|term| term.epoch.get()), Some(NEXT));
+        arrivals.push((device(REPLICA), 1));
+        hashes.insert((device(REPLICA), 1), succession.hash());
         let mut runs: Vec<ModelRun> = model.records_in(hub_log.len()).copied().collect();
         let anew = sequence_anew(NEXT, &arrivals, &hashes, &runs);
-        let written = replica.sequence(NEXT, at(30_000)).unwrap();
+        let written = replica.sequence(at(30_000)).unwrap();
         same_records(&written, &anew, NEXT)?;
         runs.extend(anew.iter().flatten());
         let replica_records: Vec<(Id<Device>, u64)> =
-            (1..).zip(&anew).map(|(k, _)| (device(REPLICA), k)).collect();
+            (2..).zip(&anew).map(|(k, _)| (device(REPLICA), k)).collect();
         let records = [hub_records(&model, hub_log.len()), replica_records.clone()].concat();
         check(&replica, &confirming(&hashes, records, &runs), "replica, after sequencing")?;
         // Nothing is left to number.
-        prop_assert!(replica.sequence(NEXT, at(30_100)).unwrap().is_empty());
+        prop_assert!(replica.sequence(at(30_100)).unwrap().is_empty());
         prop_assert!(replica.check().unwrap().is_empty());
 
         // The hub takes in the replica's records, then the rest of the two devices' logs, as it
         // has them: it confirms the replica's runs that end in events it holds as the replica
         // held them.
         let replica_log = replica.log(device(REPLICA), 0, 1_000).unwrap();
-        prop_assert_eq!(replica_log.len(), anew.len());
+        prop_assert_eq!(replica_log.len(), anew.len() + 1);
         let mut hashes = model.hashes.clone();
         let mut records = hub_records(&model, model.own.len());
+        // The runs of the records the hub holds: its own, and the replica's as they arrive.
+        let mut held_runs: Vec<ModelRun> = model.records_in(model.own.len()).copied().collect();
         let rest: Vec<&SignedEvent> = replica_log
             .iter()
             .chain(&peers[0][received[0]..])
@@ -570,14 +585,17 @@ proptest! {
         for (turn, event) in rest.into_iter().enumerate() {
             receive(&mut hub, core::slice::from_ref(event), 40_000 + i64::try_from(turn).unwrap());
             let key = (event.body().origin_device, event.body().origin_seq.get());
-            if key.0 == device(REPLICA) {
+            if key.0 == device(REPLICA) && key.1 > 1 {
                 records.push(key);
+                held_runs.extend(&anew[usize::try_from(key.1 - 2).unwrap()]);
             } else {
                 hashes.insert(key, event.hash());
             }
-            let expected = confirming(&hashes, records.clone(), &runs);
+            let expected = confirming(&hashes, records.clone(), &held_runs);
             check(&hub, &expected, &format!("hub, holding {key:?} of the rest"))?;
         }
         prop_assert!(hub.check().unwrap().is_empty());
+        // The hub holds the hub's role no more.
+        prop_assert!(matches!(hub.sequence(at(50_000)), Err(StoreError::NotHub)));
     }
 }

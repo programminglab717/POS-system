@@ -10,11 +10,11 @@ repository.workspace = true
 [dependencies]
 keel-types.workspace = true
 keel-events = { workspace = true, features = ["stored"] }
+keel-domain.workspace = true
 keel-store.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-keel-domain.workspace = true
 proptest.workspace = true
 
 [lints]

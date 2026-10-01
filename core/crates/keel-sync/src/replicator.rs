@@ -9,22 +9,46 @@
 //! lost, duplicated, reordered or delayed frame costs time, never an event, since every `have`
 //! says exactly what its sender holds, and receiving an event twice changes nothing.
 //!
-//! Replicas may have roles (ADR-0020). The Store Hub sequences: once its log is settled, after
-//! every write that stores events, it answers the requests for orders that wait (ADR-0021), and
-//! numbers the events in records it appends, pushing both like any new events. A replica may
+//! Replicas may have roles (ADR-0020, ADR-0022). A replica that can be the Store Hub has a
+//! priority, and the one holding the winning claim is the hub. While it serves, its log settled
+//! and not forked, it answers the requests for orders that wait (ADR-0021) and numbers the events
+//! in records it appends, as it begins to serve and after every write that stores events, pushing
+//! both like any new events. A replica may
 //! name a durable peer, the cloud, whose `have` is the durable-ack watermark; replicas relay the
 //! watermark to each other in `durable` frames, and keep the most each peer has told them.
+//!
+//! Every replica sends each peer a heartbeat every heartbeat period: its priority as hub; its
+//! term, the epoch and the hub of the winning claim it holds; whether it is acting as that hub;
+//! and the hub's beat, its own or the latest it had from the hub directly ([`crate::frame`]). A
+//! replica that can be hub claims the next epoch when all of these hold (ADR-0022):
+//! - its log is settled, and no peer has refused its own log, which would mean it forked;
+//! - it hears no hub ([`Replicator::hub_reachable`]), and has listened for the periods of
+//!   silence since it started, and since it learned of the winning claim it holds;
+//! - in those periods it has heard no peer that would be preferred as hub;
+//! - it holds as much of the log of each device holding a term on its chain as each peer but
+//!   that device has said it holds, or has waited the periods of silence more;
+//! - its store holds the whole chain of claims, and every record that counts on it.
+//!
+//! A replica that can't be the hub now, its log unsettled or forked, gives its priority as 0, so
+//! that no candidate defers to it; and a hub whose log forked stops serving.
+//!
+//! A device's own log is settled once every peer that has said what it holds since the start
+//! holds no more of that log than the replica, and either all have said so, or a heartbeat period
+//! has passed since the first did.
 
+use core::num::NonZeroU8;
 use core::time::Duration;
 use std::collections::BTreeMap;
 
+use keel_domain::hub::{self, Term};
 use keel_events::envelope::{Device, Location};
 use keel_events::event::SignedEvent;
 use keel_store::Received;
 use keel_types::{Id, Timestamp};
 
-use crate::frame::{Durable, Events, Frame, Have, VersionVector};
-use crate::replica::Replica;
+use crate::election::{self, Election};
+use crate::frame::{Durable, Events, Frame, Have, Heartbeat, VersionVector};
+use crate::replica::{Claiming, Replica};
 
 /// How the replicator paces itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,23 +61,31 @@ pub struct SyncConfig {
     pub batch_events: u32,
     /// The most bytes of events in one batch, unless its first event alone is more.
     pub batch_bytes: usize,
+    /// How often a replica sends each peer a heartbeat: one heartbeat period.
+    pub heartbeat: Duration,
+    /// How many heartbeat periods without a word from the hub, or from a candidate preferred to
+    /// the replica, before it counts as lost, from the start of the next.
+    pub silence: u32,
 }
 
 impl SyncConfig {
-    /// A round every 5 s, batches of up to 256 events and 256 KiB, taken as lost after 2 s.
+    /// A round every 5 s, batches of up to 256 events and 256 KiB, taken as lost after 2 s, and a
+    /// heartbeat every second, the hub lost after 3 silent.
     pub const DEFAULT: SyncConfig = SyncConfig {
         round: Duration::from_secs(5),
         ack_timeout: Duration::from_secs(2),
         batch_events: 256,
         batch_bytes: 256 * 1024,
+        heartbeat: Duration::from_secs(1),
+        silence: 3,
     };
 }
 
-/// What a replica does besides replicating (ADR-0020).
+/// What a replica does besides replicating (ADR-0020, ADR-0022).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Roles {
-    /// The epoch it sequences in, as the Store Hub; `None` for any other replica.
-    pub sequencer: Option<u64>,
+    /// Its priority as the Store Hub, higher preferred; `None` if it can never be the hub.
+    pub hub: Option<NonZeroU8>,
     /// Its durable peer, whose `have` is the durable-ack watermark: the cloud, for the hub or a
     /// merchant's only device. `None` for a replica that learns the watermark from its peers.
     pub durable: Option<Id<Device>>,
@@ -89,6 +121,8 @@ pub struct Stats {
     pub timeouts: u64,
     /// Batches a peer took none of, after which the replica waited for the next round.
     pub stalls: u64,
+    /// Claims of the hub's role the replica made.
+    pub claims: u64,
 }
 
 /// What a replica knows of one peer.
@@ -113,6 +147,10 @@ struct Peer {
     /// version of that log, its device having forked it, so its own log no longer goes first,
     /// lest it hold up every other device's.
     own_refused: bool,
+    /// The first position of the replica's own log the peer refused: it took none of a batch of
+    /// that log that began just after what it held of it. It holds another version of the log,
+    /// the replica's device having forked it, unless it later says it holds the log that far.
+    refused_ours: Option<u64>,
 }
 
 impl Peer {
@@ -152,8 +190,19 @@ pub struct Replicator {
     /// What the replica holds, kept in step with the store as events are stored.
     ours: VersionVector,
     peers: BTreeMap<Id<Device>, Peer>,
-    /// Whether a peer has shown it holds no more of the device's own log than the replica.
+    /// Whether the device's own log is settled: the peers that said what they hold since the
+    /// start hold no more of it than the replica.
     settled: bool,
+    /// The heartbeat period in which the first peer said what it holds.
+    first_have: Option<u64>,
+    /// What the replica has heard of the hub and the candidates.
+    election: Election,
+    /// When the replica last began a heartbeat period.
+    heartbeat_at: Timestamp,
+    /// The chain of terms the replica's store holds, as last read: the winning term first.
+    terms: Vec<Term>,
+    /// The beat the replica last gave acting as the hub: 0 if none.
+    beat: u64,
     /// The durable-ack watermark: the most of each device's log the durable replica is known to
     /// hold.
     durable: VersionVector,
@@ -162,7 +211,7 @@ pub struct Replicator {
 
 impl Replicator {
     /// Starts replicating `replica` with `peers`, in `roles`, at time `now`: returns the
-    /// replicator and the `have` frames to send them.
+    /// replicator and the `have` and heartbeat frames to send them.
     ///
     /// # Errors
     /// If the replica's store can't be read.
@@ -174,6 +223,7 @@ impl Replicator {
         now: Timestamp,
     ) -> Result<(Replicator, Vec<Outgoing>), R::Error> {
         let ours = replica.version_vector()?;
+        let terms = replica.terms()?;
         let device = replica.device();
         // Batches are numbered from the time the replicator starts, so a peer's acknowledgement
         // of a batch sent before a restart acknowledges none sent after it.
@@ -190,6 +240,7 @@ impl Replicator {
                     round_at: now,
                     stalled: false,
                     own_refused: false,
+                    refused_ours: None,
                 };
                 (peer, state)
             })
@@ -202,10 +253,19 @@ impl Replicator {
             ours,
             peers,
             settled: false,
+            first_have: None,
+            election: Election::default(),
+            heartbeat_at: now,
+            terms,
+            beat: 0,
             durable: VersionVector::new(),
             stats: Stats::default(),
         };
-        let outgoing = replicator.peers.keys().map(|&to| replicator.have(to)).collect();
+        let outgoing = replicator
+            .peers
+            .keys()
+            .flat_map(|&to| [replicator.have(to), replicator.heartbeat(to)])
+            .collect();
         Ok((replicator, outgoing))
     }
 
@@ -233,24 +293,48 @@ impl Replicator {
             Ok(Frame::Durable(durable)) if durable.location == self.location => {
                 Ok(self.learn_durable(&durable.vv, from))
             }
-            Ok(Frame::Have(_) | Frame::Durable(_)) | Err(_) => Ok(self.drop_frame()),
+            Ok(Frame::Heartbeat(heartbeat)) if heartbeat.location == self.location => {
+                self.election.hear(from, &heartbeat);
+                Ok(Vec::new())
+            }
+            Ok(Frame::Have(_) | Frame::Durable(_) | Frame::Heartbeat(_)) | Err(_) => {
+                Ok(self.drop_frame())
+            }
         }
     }
 
-    /// Handles the passing of time: takes a batch unacknowledged for too long as lost, begins a
-    /// round with each peer one is due for, telling it what the replica holds and ending a stall,
-    /// and sends what peers lack. A round is due a round after the last, or an acknowledgement
-    /// timeout after it until the replica has heard from the peer. Call it every so often;
-    /// [`Replicator::next_tick`] says when it is next needed.
+    /// Handles the passing of time: begins a heartbeat period if one is due, sending each peer a
+    /// heartbeat and claiming the hub's role if the replica should; takes a batch unacknowledged
+    /// for too long as lost; begins a round with each peer one is due for, telling it what the
+    /// replica holds and ending a stall; and sends what peers lack. A round is due a round after
+    /// the last, or an acknowledgement timeout after it until the replica has heard from the
+    /// peer. Call it every so often; [`Replicator::next_tick`] says when it is next needed.
     ///
     /// # Errors
-    /// If the replica's store can't be read.
+    /// If the replica's store can't be read, or written as it claims or serves as the hub.
     pub fn on_tick<R: Replica>(
         &mut self,
         replica: &mut R,
         now: Timestamp,
     ) -> Result<Vec<Outgoing>, R::Error> {
         let mut outgoing = Vec::new();
+        if elapsed(self.heartbeat_at, now, self.config.heartbeat) {
+            self.heartbeat_at = now;
+            self.election.tick(self.epoch());
+            let was_serving = self.serving();
+            self.settle();
+            if self.serving() && !was_serving {
+                outgoing.extend(self.sequence(replica, now)?);
+            }
+            outgoing.extend(self.elect(replica, now)?);
+            if self.serving() {
+                // The clock's reading, in microseconds, or one past the last beat if that is
+                // later: a beat always rises, whatever the clock does.
+                let reading = u64::try_from(now.as_micros()).unwrap_or(0);
+                self.beat = reading.max(self.beat.saturating_add(1));
+            }
+            outgoing.extend(self.peers.keys().map(|&to| self.heartbeat(to)));
+        }
         let ids: Vec<Id<Device>> = self.peers.keys().copied().collect();
         for to in ids {
             let Some(peer) = self.peers.get_mut(&to) else { continue };
@@ -305,34 +389,177 @@ impl Replicator {
         if !in_step {
             self.ours = replica.version_vector()?;
         }
+        if events.iter().any(is_claim) {
+            self.read_terms(replica)?;
+        }
         self.push_all(replica, now)
     }
 
-    /// As the Store Hub, once the replica's log is settled: answers the requests for orders that
-    /// wait (ADR-0021), numbers what no record covers, answers included, and returns the batches
-    /// that send the answers and records to peers lacking them.
+    /// Reads the chain of terms the store holds again, after it stored a claim, noting it if the
+    /// winning claim is now another replica's that the replica hadn't held.
+    fn read_terms<R: Replica>(&mut self, replica: &mut R) -> Result<(), R::Error> {
+        let winning = self.terms.first().map(|term| term.claim);
+        self.terms = replica.terms()?;
+        if let Some(term) = self.terms.first()
+            && Some(term.claim) != winning
+            && term.device != self.device
+        {
+            self.election.learn_claim();
+        }
+        Ok(())
+    }
+
+    /// As the Store Hub, while it serves: answers the requests for orders that wait (ADR-0021),
+    /// numbers what no record that counts covers, answers included, and returns the batches that
+    /// send the answers and records to peers lacking them.
     fn sequence<R: Replica>(
         &mut self,
         replica: &mut R,
         now: Timestamp,
     ) -> Result<Vec<Outgoing>, R::Error> {
-        let Some(epoch) = self.roles.sequencer else { return Ok(Vec::new()) };
-        if !self.settled {
+        if !self.serving() {
             return Ok(Vec::new());
         }
-        let mut written = replica.answer_requests(epoch, now)?;
-        written.extend(replica.sequence(epoch, now)?);
+        let mut written = replica.answer_requests(now)?;
+        written.extend(replica.sequence(now)?);
         if written.is_empty() {
             return Ok(Vec::new());
         }
         self.take_in(replica, &written, now)
     }
 
-    /// Whether the device's own log is settled: a peer has shown it holds no more of that log
-    /// than the replica, after sending whatever more it held. After a start, the device mustn't
-    /// write before its log is settled, or, if it can reach no peer, before it must (ADR-0019).
+    /// Claims the hub's role, at the start of a heartbeat period, if the replica should: see
+    /// the module's documentation. Returns the batches that send the claim, and the hub's first
+    /// answers and records, to peers lacking them.
+    fn elect<R: Replica>(
+        &mut self,
+        replica: &mut R,
+        now: Timestamp,
+    ) -> Result<Vec<Outgoing>, R::Error> {
+        let silence = u64::from(self.config.silence);
+        let Some(priority) = self.roles.hub else { return Ok(Vec::new()) };
+        let ready = !self.is_hub()
+            && self.settled
+            && !self.forked()
+            && self.election.period() >= silence
+            && !self.election.hears_hub(self.heard_term(), silence)
+            && !self.election.hears_preferred(self.device, priority.get(), silence);
+        if !ready {
+            self.election.stop_waiting();
+            return Ok(Vec::new());
+        }
+        if self.caught_up() {
+            self.election.stop_waiting();
+        } else if !self.election.waited_behind(silence) {
+            return Ok(Vec::new());
+        }
+        match replica.claim(priority, now)? {
+            Claiming::Claimed(claim) => {
+                self.stats.claims = self.stats.claims.saturating_add(1);
+                self.election.stop_waiting();
+                let mut outgoing = self.take_in(replica, &[*claim], now)?;
+                outgoing.extend(self.sequence(replica, now)?);
+                Ok(outgoing)
+            }
+            Claiming::Hub => {
+                self.read_terms(replica)?;
+                Ok(Vec::new())
+            }
+            Claiming::Behind => Ok(Vec::new()),
+        }
+    }
+
+    /// Whether the replica holds as much of the log of each device holding a term on its chain
+    /// as each peer but that device has said it holds. A hub's word of its own log can't help:
+    /// what only the hub holds, the replica could have only from the hub, which has fallen silent
+    /// or been succeeded, and its successor's cut fences it.
+    fn caught_up(&self) -> bool {
+        self.terms.iter().all(|term| {
+            let held = self.ours.get(&term.device).copied().unwrap_or(0);
+            self.peers
+                .iter()
+                .filter(|(peer, _)| **peer != term.device)
+                .filter_map(|(_, peer)| peer.known.as_ref())
+                .all(|known| known.get(&term.device).copied().unwrap_or(0) <= held)
+        })
+    }
+
+    /// Whether a peer refused the device's own log: it holds another version of it, the device
+    /// having forked it, perhaps writing after its store was restored from an older copy and
+    /// before it could reach a peer holding the rest. Its later events never replicate, so it
+    /// mustn't be the hub (ADR-0019, ADR-0022).
+    pub fn forked(&self) -> bool {
+        self.peers.values().any(|peer| peer.refused_ours.is_some())
+    }
+
+    /// The epoch of the winning claim the replica holds: 0 if it holds none.
+    fn epoch(&self) -> u64 {
+        self.terms.first().map_or(0, |term| term.epoch.get())
+    }
+
+    /// The term of the winning claim the replica holds, as heartbeats name it: its epoch and its
+    /// hub's device.
+    fn heard_term(&self) -> Option<election::Term> {
+        self.terms.first().map(|term| (term.epoch.get(), term.device))
+    }
+
+    /// The heartbeat for `to`: the replica's priority, 0 if it can't be the hub now, its log
+    /// being unsettled or forked; its term; whether it acts as the term's hub; and the hub's
+    /// beat, its own as the hub, else the latest it had from the hub directly.
+    fn heartbeat(&self, to: Id<Device>) -> Outgoing {
+        let silence = u64::from(self.config.silence);
+        let eligible = self.settled && !self.forked();
+        let priority = if eligible { self.roles.hub.map_or(0, NonZeroU8::get) } else { 0 };
+        let term = self.heard_term();
+        let acting = self.serving();
+        let beat =
+            if acting { Some(self.beat) } else { self.election.beat_heard_directly(term, silence) };
+        let heartbeat = Heartbeat {
+            location: self.location,
+            priority,
+            epoch: self.epoch(),
+            hub: term.map(|(_, hub)| hub),
+            acting,
+            beat,
+        };
+        Outgoing { to, frame: Frame::Heartbeat(heartbeat).encode() }
+    }
+
+    /// Whether the device's own log is settled: the peers that said what they hold since the
+    /// start hold no more of that log than the replica, after sending whatever more they held,
+    /// and either all have said so, or a heartbeat period has passed since the first did. After a
+    /// start, the device mustn't write before its log is settled, or, if it can reach no peer,
+    /// before it must (ADR-0019, ADR-0022).
     pub const fn settled(&self) -> bool {
         self.settled
+    }
+
+    /// Whether the replica holds the winning claim, as it last read its store: it is the Store
+    /// Hub, and serves as one while its log is settled and not forked (ADR-0022).
+    pub fn is_hub(&self) -> bool {
+        self.terms.first().is_some_and(|term| term.device == self.device)
+    }
+
+    /// Whether the replica serves as the Store Hub: it holds the winning claim, and its log is
+    /// settled and not forked.
+    pub fn serving(&self) -> bool {
+        self.settled && !self.forked() && self.is_hub()
+    }
+
+    /// The winning claim's term, as the replica last read its store: the hub's epoch, device and
+    /// claim. `None` while it holds no claim.
+    pub fn term(&self) -> Option<&Term> {
+        self.terms.first()
+    }
+
+    /// Whether the replica hears its hub: it serves as the hub; or the latest beat it knows of,
+    /// of the hub of the winning claim it holds or of the hub of a later epoch, reached it in the
+    /// current heartbeat period or the periods of silence before it, from the hub or from a peer
+    /// that had it directly; or it learned of the winning claim as recently. A device that
+    /// doesn't is an island, and works independently (ADR-0022).
+    pub fn hub_reachable(&self) -> bool {
+        let silence = u64::from(self.config.silence);
+        self.serving() || self.election.hears_hub(self.heard_term(), silence)
     }
 
     /// What the replica holds, as the replicator knows it.
@@ -366,9 +593,10 @@ impl Replicator {
         self.stats
     }
 
-    /// When [`Replicator::on_tick`] is next needed: the earliest round or acknowledgement
-    /// timeout due, or `None` without peers.
+    /// When [`Replicator::on_tick`] is next needed: the earliest round, acknowledgement timeout
+    /// or heartbeat period due, or `None` without peers.
     pub fn next_tick(&self) -> Option<Timestamp> {
+        let heartbeat = self.heartbeat_at.checked_add(self.config.heartbeat);
         self.peers
             .values()
             .flat_map(|peer| {
@@ -377,7 +605,7 @@ impl Replicator {
                     .waiting
                     .as_ref()
                     .and_then(|waiting| waiting.sent.checked_add(self.config.ack_timeout));
-                [round, timeout]
+                [round, timeout, heartbeat]
             })
             .flatten()
             .min()
@@ -431,6 +659,7 @@ impl Replicator {
         have: Have,
         now: Timestamp,
     ) -> Result<Vec<Outgoing>, R::Error> {
+        let was_serving = self.serving();
         let Some(peer) = self.peers.get_mut(&from) else { return Ok(Vec::new()) };
         if let Some(waiting) = &peer.waiting
             && waiting.batch == have.acked
@@ -448,9 +677,18 @@ impl Replicator {
             if let Some(first) = waiting.first.get(&from) {
                 peer.own_refused = have.vv.get(&from).is_none_or(|held| held < first);
             }
+            if let Some(&first) = waiting.first.get(&self.device)
+                && have.vv.get(&self.device).copied().unwrap_or(0).checked_add(1) == Some(first)
+            {
+                peer.refused_ours = Some(first);
+            }
             peer.waiting = None;
         }
-        let was_settled = self.settled;
+        let held = have.vv.get(&self.device).copied().unwrap_or(0);
+        if peer.refused_ours.is_some_and(|refused| held >= refused) {
+            peer.refused_ours = None;
+        }
+        self.first_have.get_or_insert(self.election.period());
         let mut outgoing = Vec::new();
         // The durable peer's `have` is the watermark.
         if self.roles.durable == Some(from) && self.merge_durable(&have.vv) {
@@ -467,7 +705,7 @@ impl Replicator {
             outgoing.extend(self.durable_for(from));
         }
         outgoing.extend(self.push(replica, from, now)?);
-        if self.settled && !was_settled {
+        if self.serving() && !was_serving {
             outgoing.extend(self.sequence(replica, now)?);
         }
         Ok(outgoing)
@@ -480,12 +718,15 @@ impl Replicator {
         batch: &Events,
         now: Timestamp,
     ) -> Result<Vec<Outgoing>, R::Error> {
+        let was_serving = self.serving();
         let outcomes = replica.receive(&batch.events, now)?;
         let mut stored_any = false;
+        let mut claims = false;
         let mut in_step = true;
         for outcome in outcomes {
             match outcome {
                 Received::Stored(event) => {
+                    claims |= is_claim(&event);
                     let body = event.body();
                     let (device, position) = (body.origin_device, body.origin_seq.get());
                     in_step &= self.note(device, position);
@@ -510,16 +751,18 @@ impl Replicator {
         if !in_step {
             self.ours = replica.version_vector()?;
         }
+        if claims {
+            self.read_terms(replica)?;
+        }
         if let Some(peer) = self.peers.get_mut(&from) {
             peer.received = batch.batch;
         }
-        let was_settled = self.settled;
         self.settle();
         let mut outgoing = vec![self.have(from)];
         if stored_any {
             outgoing.extend(self.push_all(replica, now)?);
         }
-        if stored_any || (self.settled && !was_settled) {
+        if stored_any || (self.serving() && !was_serving) {
             outgoing.extend(self.sequence(replica, now)?);
         }
         Ok(outgoing)
@@ -537,17 +780,28 @@ impl Replicator {
         }
     }
 
-    /// Settles the device's own log once a peer holds no more of it than the replica.
+    /// Settles the device's own log once every peer that has said what it holds holds no more
+    /// of it than the replica, and either every peer has said, or a heartbeat period has passed
+    /// since the first did.
     fn settle(&mut self) {
         if self.settled {
             return;
         }
         let own = self.ours.get(&self.device).copied().unwrap_or(0);
-        self.settled = self.peers.values().any(|peer| {
-            peer.known
-                .as_ref()
-                .is_some_and(|known| known.get(&self.device).copied().unwrap_or(0) <= own)
-        });
+        let mut heard = self.peers.values().filter_map(|peer| peer.known.as_ref()).peekable();
+        if heard.peek().is_none() {
+            return;
+        }
+        let mut all = true;
+        for peer in self.peers.values() {
+            match &peer.known {
+                Some(known) if known.get(&self.device).copied().unwrap_or(0) > own => return,
+                Some(_) => {}
+                None => all = false,
+            }
+        }
+        let waited = self.first_have.is_some_and(|first| self.election.period() > first);
+        self.settled = all || waited;
     }
 
     /// The `have` frame for `to`, acknowledging the last batch received from it, and asking for
@@ -679,6 +933,11 @@ struct Lag {
     device: Id<Device>,
     theirs: u64,
     held: u64,
+}
+
+/// Whether `event` is a claim of the hub's role: its term may change the chain.
+fn is_claim(event: &SignedEvent) -> bool {
+    event.body().stream.kind.as_str() == hub::STREAM
 }
 
 /// Whether `span` has passed since `since`, at `now`. A clock set back since counts as having

@@ -459,16 +459,12 @@ fn the_hub_grants_and_refuses_as_the_rules_say() {
 }
 
 #[test]
-fn leases_and_epochs_stay_in_range() {
+fn leases_stay_in_range() {
     assert_eq!(Lease::FIRST.get(), 0);
     assert_eq!(Lease::FIRST.next(), Some(lease(1)));
     assert_eq!(Lease::MAX.get(), (1 << 63) - 1);
     assert_eq!(Lease::MAX.next(), None);
     assert_eq!(Lease::new(1 << 63), None);
-    assert_eq!(Epoch::new(0), None);
-    assert_eq!(Epoch::new(1).map(Epoch::get), Some(1));
-    assert_eq!(Epoch::new((1 << 63) - 1).map(Epoch::get), Some((1 << 63) - 1));
-    assert_eq!(Epoch::new(1 << 63), None);
 }
 
 #[test]

@@ -1,22 +1,28 @@
 //! Sequencing (ADR-0020): the Store Hub numbers the events it holds in the order it received
 //! them, in records in its own log, and every replica works out from the records it holds which
-//! of its events are confirmed.
+//! of its events are confirmed. Only the records that count do anything: those of a term on the
+//! chain of claims, within its cut (ADR-0022, [`crate::terms`]).
 //!
-//! - **Sequencing.** For each device, the hub numbers the events after the last position any
-//!   record it holds covers, except records themselves, in the order it received them. Each
-//!   device's log arrives in order, so each is numbered in order, whole. Within a record, a
-//!   device's runs follow on from each other: a record ends where a device's next event doesn't
-//!   follow on from the device's run in it, or when it holds as many runs as it may. Numbers
-//!   follow on from the hub's last record of the epoch. It is all one write.
-//! - **Confirmation.** A run confirms the stretch of a device's log it covers when the store holds
-//!   the run's last event with the hash the record gives it: the hash chain pins every event
-//!   before it. Where records disagree about an event, its first number, by epoch and number,
-//!   counts. Records aren't numbered themselves, and count as confirmed.
+//! - **Sequencing.** The hub is the store that holds the winning claim, and numbers in its
+//!   epoch. For each device, it numbers the events after the last position a record that counts
+//!   covers, except records themselves, in the order it received them; its own log, after its own
+//!   last record of the epoch too, which numbered all of its log before it with the records
+//!   written with it. Each device's log arrives in order, so each is numbered in order, whole,
+//!   and a claimant holds every record that counts: what counts covers each device's log from
+//!   its start without a gap. Within a record, a device's runs follow on from each other: a
+//!   record ends where a device's next event doesn't follow on from the device's run in it, or
+//!   when it holds as many runs as it may. Numbers follow on from the hub's last record of the
+//!   epoch. It is all one write.
+//! - **Confirmation.** A run that counts confirms the stretch of a device's log it covers when
+//!   the store holds the run's last event with the hash the record gives it: the hash chain pins
+//!   every event before it. Where records that count disagree about an event, which no hub does,
+//!   its first number, by epoch and number, counts. Records aren't numbered themselves, and count
+//!   as confirmed.
 
 use std::collections::BTreeMap;
 
 use keel_domain::schema::DomainEvent;
-use keel_domain::sequence::{self, Assigned, MAX_NUMBER, MAX_RUNS, Run, SequenceEvent};
+use keel_domain::sequence::{self, Assigned, MAX_RUNS, Run, SequenceEvent};
 use keel_events::envelope::{Actor, Component, Device, StreamKind, StreamRef};
 use keel_events::event::SignedEvent;
 use keel_events::hash::EventHash;
@@ -29,6 +35,7 @@ use crate::error::StoreError;
 use crate::rows::{self, seq_value};
 use crate::schema::id;
 use crate::store::noted;
+use crate::terms::{self, COUNTING};
 use crate::write::Writing;
 
 /// An event's place in the store's sequence: the epoch of the hub that numbered it, and its
@@ -65,19 +72,13 @@ fn unrecordable<T>(_: T) -> StoreError {
 }
 
 impl<S: Signer, E: Entropy> Writing<'_, S, E> {
-    /// Numbers, as the hub in `epoch`, every event the store holds that no record covers, and
+    /// Numbers, as the hub, every event the store holds that no record that counts covers, and
     /// appends the records at physical time `now`. Returns them: none when nothing is new.
-    pub(crate) fn sequence(
-        &mut self,
-        epoch: u64,
-        now: Timestamp,
-    ) -> Result<Vec<SignedEvent>, StoreError> {
-        if !(1..=MAX_NUMBER).contains(&epoch) {
-            return Err(StoreError::OutOfRange("an epoch"));
-        }
+    pub(crate) fn sequence(&mut self, now: Timestamp) -> Result<Vec<SignedEvent>, StoreError> {
         let health = self.health;
         let own = self.writer.device();
-        let (pending, mut next) = pending(self.tx, own)
+        let epoch = terms::own_epoch(self.tx, own).map_err(|error| noted(health, error))?.get();
+        let (pending, mut next) = pending(self.tx, own, epoch)
             .and_then(|pending| Ok((pending, next_number(self.tx, own, epoch)?)))
             .map_err(|error| noted(health, error))?;
         let mut written = Vec::new();
@@ -106,11 +107,13 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
     }
 }
 
-/// The events no record covers, except records, in the order the store received them: for each
-/// device, those after the last position any record covers. The store's own log is pending only
-/// after its latest record, which numbered everything of its log before it: so its records, which
-/// no record covers, aren't read again each time.
-fn pending(db: &Connection, own: Id<Device>) -> Result<Vec<Pending>, StoreError> {
+/// The events no record that counts covers, except records, in the order the store received
+/// them: for each device, those after the last position a record that counts covers. The store's
+/// own log is pending only after its latest record of `epoch`, too, which numbered everything of
+/// its log before it with the records written with it: so its records, which no record covers,
+/// aren't read again each time. (Not after its latest record that counts: a later claim may have
+/// cut off a record written with it, and its numbers with it.)
+fn pending(db: &Connection, own: Id<Device>, epoch: u64) -> Result<Vec<Pending>, StoreError> {
     // Every device the store holds events of, skipping from one to the next through the index
     // on each device's log.
     let devices: Vec<Vec<u8>> = {
@@ -123,19 +126,26 @@ fn pending(db: &Connection, own: Id<Device>) -> Result<Vec<Pending>, StoreError>
         let rows = statement.query_map([], |row| row.get(0))?;
         rows.collect::<Result<_, _>>()?
     };
-    let mut covered = db.prepare("SELECT max(to_seq) FROM sequence WHERE device = ?1")?;
-    let mut numbered_own = db.prepare("SELECT max(author_seq) FROM sequence WHERE author = ?1")?;
+    let mut covered = db.prepare(&format!(
+        "SELECT s.to_seq FROM {COUNTING} WHERE s.device = ?1 ORDER BY s.to_seq DESC LIMIT 1"
+    ))?;
+    let mut numbered_own = db.prepare(
+        "SELECT author_seq FROM sequence WHERE author = ?1 AND epoch = ?2 \
+         ORDER BY number DESC LIMIT 1",
+    )?;
     let mut statement = db.prepare(
         "SELECT message, hash, arrival FROM events WHERE origin_device = ?1 AND origin_seq > ?2 \
          AND stream_kind <> ?3 ORDER BY origin_seq",
     )?;
     let own = own.to_bytes();
     let mut pending = Vec::new();
+    let epoch = seq_value(epoch)?;
     for device in devices {
         let mut after: i64 =
-            covered.query_row([&device], |row| row.get::<_, Option<i64>>(0))?.unwrap_or(0);
+            covered.query_row([&device], |row| row.get(0)).optional()?.unwrap_or(0);
         if device[..] == own[..] {
-            let records: Option<i64> = numbered_own.query_row([&device], |row| row.get(0))?;
+            let records: Option<i64> =
+                numbered_own.query_row(params![&device, epoch], |row| row.get(0)).optional()?;
             after = after.max(records.unwrap_or(0));
         }
         let mut rows = statement.query(params![device, after, sequence::STREAM])?;
@@ -206,17 +216,21 @@ fn records(pending: Vec<Pending>) -> Vec<(Vec<Run>, BusinessDate)> {
     records
 }
 
-/// Runs that confirm what they cover: the store holds each one's last event, with the hash the
-/// record gives it.
-const CONFIRMING: &str = "sequence AS s JOIN events AS e ON e.origin_device = s.device AND \
-    e.origin_seq = s.to_seq AND e.hash = s.last_hash";
+/// Runs that confirm what they cover: runs that count, whose last event the store holds with the
+/// hash the record gives it.
+fn confirming() -> String {
+    format!(
+        "{COUNTING} JOIN events AS e ON e.origin_device = s.device AND e.origin_seq = s.to_seq \
+         AND e.hash = s.last_hash"
+    )
+}
 
 /// For each device, how far into its log the store holds confirmed events: the longest start of
 /// its log in which every event is confirmed, or a record.
 pub(crate) fn confirmed(db: &Connection) -> Result<BTreeMap<Id<Device>, u64>, StoreError> {
     let mut stretches: BTreeMap<Vec<u8>, Vec<(i64, i64)>> = BTreeMap::new();
     let mut statement =
-        db.prepare(&format!("SELECT s.device, s.from_seq, s.to_seq FROM {CONFIRMING}"))?;
+        db.prepare(&format!("SELECT s.device, s.from_seq, s.to_seq FROM {}", confirming()))?;
     let runs = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
     for run in runs {
         let (device, from, to) = run?;
@@ -257,9 +271,10 @@ pub(crate) fn store_seq(
     let position_value = seq_value(position)?;
     let found: Option<(i64, i64)> = db
         .prepare(&format!(
-            "SELECT s.epoch, s.number + (?2 - s.from_seq) FROM {CONFIRMING} WHERE \
+            "SELECT s.epoch, s.number + (?2 - s.from_seq) FROM {} WHERE \
                  s.device = ?1 AND s.to_seq BETWEEN ?2 AND ?3 AND s.from_seq <= ?2 \
-                 ORDER BY s.epoch, s.number LIMIT 1"
+                 ORDER BY s.epoch, s.number LIMIT 1",
+            confirming()
         ))?
         .query_row(
             params![&device.to_bytes()[..], position_value, position_value.saturating_add(longest)],
@@ -317,14 +332,16 @@ pub(crate) fn sequenced(
         .optional()?;
     let Some(longest) = longest else { return Ok(Vec::new()) };
     let mut runs = db.prepare(&format!(
-        "SELECT s.number, s.device, s.from_seq, s.to_seq FROM {CONFIRMING} WHERE s.epoch = ?1 \
+        "SELECT s.number, s.device, s.from_seq, s.to_seq FROM {} WHERE s.epoch = ?1 \
          AND s.number > ?3 AND s.number + (s.to_seq - s.from_seq) > ?2 \
-         ORDER BY s.number, s.record, s.run"
+         ORDER BY s.number, s.record, s.run",
+        confirming()
     ))?;
     let mut earlier = db.prepare(&format!(
-        "SELECT s.from_seq, s.to_seq FROM {CONFIRMING} WHERE s.device = ?1 \
+        "SELECT s.from_seq, s.to_seq FROM {} WHERE s.device = ?1 \
          AND s.to_seq BETWEEN ?2 AND ?6 AND s.from_seq <= ?3 \
-         AND (s.epoch < ?4 OR (s.epoch = ?4 AND s.number < ?5))"
+         AND (s.epoch < ?4 OR (s.epoch = ?4 AND s.number < ?5))",
+        confirming()
     ))?;
     let mut events = db.prepare(
         "SELECT message, hash FROM events WHERE origin_device = ?1 AND origin_seq BETWEEN ?2 \

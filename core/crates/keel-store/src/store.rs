@@ -1,11 +1,13 @@
 //! The store: opening it, writing to it, and reading it back.
 
 use core::cell::Cell;
+use core::num::NonZeroU8;
 use core::time::Duration;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use keel_domain::aggregate::Aggregate;
+use keel_domain::hub::Term;
 use keel_domain::order::Order;
 use keel_domain::payment::Payment;
 use keel_events::envelope::{Device, Event, Location, StreamRef};
@@ -26,6 +28,7 @@ use crate::projection::{
 use crate::rows;
 use crate::schema;
 use crate::sequencing::{self, Sequenced, StoreSeq};
+use crate::terms;
 use crate::write::{Quarantined, Reason, Writing};
 
 /// Whose store it is.
@@ -444,36 +447,71 @@ impl<S: Signer, E: Entropy> Store<S, E> {
         })
     }
 
-    /// Numbers, as the Store Hub in `epoch`, the events of each device's log after the last
-    /// position any sequencing record covers, except records, in the order the store received
-    /// them, and appends the records at physical time `now`, in a write of their own (ADR-0020).
-    /// Returns the records: none when nothing is new. Numbers follow on from the store's last
-    /// record of the epoch, so a hub must sequence only once its log is settled.
+    /// The term of the winning claim among the claims the store holds: the Store Hub's epoch,
+    /// device and claim (ADR-0022). `None` while the store holds no claim.
     ///
     /// # Errors
-    /// As [`Store::write`], and [`StoreError::OutOfRange`] if the epoch isn't from 1 to 2^63 − 1
-    /// or its numbers run out.
-    pub fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, StoreError> {
-        self.write(|writing| writing.sequence(epoch, now))
+    /// As [`Store::head`].
+    pub fn term(&self) -> Result<Option<Term>, StoreError> {
+        self.read(terms::winning)
     }
 
-    /// Answers, as the Store Hub in `epoch`, every request for an order the store holds that no
-    /// answer names yet, at physical time `now`, in a write of its own (ADR-0021): each is
+    /// The chain of terms the store works out from the claims it holds, from the winning
+    /// claim's term back, each with its cut (ADR-0022).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn terms(&self) -> Result<Vec<Term>, StoreError> {
+        self.read(terms::chain)
+    }
+
+    /// Claims the Store Hub's role for the store's device, at `priority`, at physical time `now`,
+    /// in a write of its own (ADR-0022): the epoch after the winning claim's, succeeding it, and
+    /// cutting each device that holds a term on its chain where the store holds the device's log
+    /// to. Returns the claim; `None`, writing nothing, if the store already holds the winning
+    /// claim. A store must claim only once its log is settled.
+    ///
+    /// # Errors
+    /// As [`Store::write`]; [`StoreError::Behind`] unless the store holds the whole chain of
+    /// claims, back to the first, and every record that counts on it; and
+    /// [`StoreError::OutOfRange`] if the epochs have run out, or more devices hold terms on the
+    /// chain than a claim can cut.
+    pub fn claim(
+        &mut self,
+        priority: NonZeroU8,
+        now: Timestamp,
+    ) -> Result<Option<SignedEvent>, StoreError> {
+        self.write(|writing| writing.claim(priority, now))
+    }
+
+    /// Numbers, as the Store Hub, the events of each device's log after the last position a
+    /// sequencing record that counts covers, except records, in the order the store received
+    /// them, and appends the records at physical time `now`, in a write of their own (ADR-0020,
+    /// ADR-0022). Returns the records: none when nothing is new. The epoch is the store's winning
+    /// claim's, and numbers follow on from the store's last record of the epoch, so a hub must
+    /// sequence only once its log is settled.
+    ///
+    /// # Errors
+    /// As [`Store::write`]; [`StoreError::NotHub`] unless the store holds the winning claim; and
+    /// [`StoreError::OutOfRange`] if the epoch's numbers run out.
+    pub fn sequence(&mut self, now: Timestamp) -> Result<Vec<SignedEvent>, StoreError> {
+        self.write(|writing| writing.sequence(now))
+    }
+
+    /// Answers, as the Store Hub, in its epoch, every request for an order the store holds that
+    /// no answer names yet, at physical time `now`, in a write of its own (ADR-0021): each is
     /// granted, or refused if its lease has moved on, its device already owns the order, or a
     /// payment of the order is in progress. Returns the answers: none when no request waits.
     ///
     /// # Errors
-    /// As [`Store::write`], and [`StoreError::OutOfRange`] if the epoch isn't from 1 to 2^63 − 1.
-    pub fn answer_requests(
-        &mut self,
-        epoch: u64,
-        now: Timestamp,
-    ) -> Result<Vec<SignedEvent>, StoreError> {
-        self.write(|writing| writing.answer_requests(epoch, now))
+    /// As [`Store::write`], and [`StoreError::NotHub`] unless the store holds the winning claim.
+    pub fn answer_requests(&mut self, now: Timestamp) -> Result<Vec<SignedEvent>, StoreError> {
+        self.write(|writing| writing.answer_requests(now))
     }
 
     /// For each device, how far into its log the store holds confirmed events: the longest start
-    /// of its log in which each event is confirmed, or a sequencing record (ADR-0020).
+    /// of its log in which each event is confirmed, by a record that counts, or is a sequencing
+    /// record (ADR-0020, ADR-0022).
     ///
     /// # Errors
     /// As [`Store::head`].
@@ -481,8 +519,9 @@ impl<S: Signer, E: Entropy> Store<S, E> {
         self.read(sequencing::confirmed)
     }
 
-    /// The epoch and number of the event at `position` of `device`'s log, once confirmed: `None`
-    /// while it is provisional. Where records disagree, its first number counts.
+    /// The epoch and number of the event at `position` of `device`'s log, once a record that
+    /// counts confirms it: `None` while it is provisional. Where records that count disagree,
+    /// which the claims that make them count prevent (ADR-0022), its first number counts.
     ///
     /// # Errors
     /// As [`Store::head`].
@@ -495,7 +534,7 @@ impl<S: Signer, E: Entropy> Store<S, E> {
     }
 
     /// Up to `limit` of the confirmed events of `epoch` numbered after `after`, in number order:
-    /// the store's feed. An event appears under its first number only.
+    /// the store's feed, by the records that count. An event appears under its first number only.
     ///
     /// # Errors
     /// As [`Store::head`].

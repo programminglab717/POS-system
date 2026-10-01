@@ -1,5 +1,8 @@
 //! What the replicator needs of a replica's store, and `keel-store`'s store adapted to it.
 
+use core::num::NonZeroU8;
+
+use keel_domain::hub::Term;
 use keel_events::envelope::{Device, Location};
 use keel_events::event::SignedEvent;
 use keel_events::keys::Signer;
@@ -45,26 +48,50 @@ pub trait Replica {
     fn receive(&mut self, events: &[Vec<u8>], now: Timestamp)
     -> Result<Vec<Received>, Self::Error>;
 
-    /// Numbers, as the Store Hub in `epoch`, the events of each device's log after the last
-    /// position any sequencing record covers, except records, in a write of its own at physical
-    /// time `now`, and returns the records it appended to its device's log: none when nothing is
-    /// new (ADR-0020).
+    /// The chain of terms the replica works out from the claims it holds, from the winning
+    /// claim's term back (ADR-0022).
     ///
     /// # Errors
-    /// If the store can't be written, in which case it appended nothing.
-    fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, Self::Error>;
+    /// If the store can't be read.
+    fn terms(&mut self) -> Result<Vec<Term>, Self::Error>;
 
-    /// Answers, as the Store Hub in `epoch`, every request for an order the replica holds that
-    /// no answer names yet, in a write of its own at physical time `now`, and returns the answers
-    /// it appended to its device's log: none when no request waits (ADR-0021).
+    /// Claims the Store Hub's role for the replica's device, at `priority`, in a write of its own
+    /// at physical time `now`, succeeding the winning claim (ADR-0022).
+    ///
+    /// # Errors
+    /// If the store can't be read or written, in which case it appended nothing.
+    fn claim(&mut self, priority: NonZeroU8, now: Timestamp) -> Result<Claiming, Self::Error>;
+
+    /// Numbers, as the Store Hub, in its epoch, the events of each device's log after the last
+    /// position a sequencing record that counts covers, except records, in a write of its own at
+    /// physical time `now`, and returns the records it appended to its device's log: none when
+    /// nothing is new (ADR-0020, ADR-0022). The replicator asks only while the replica holds the
+    /// winning claim.
     ///
     /// # Errors
     /// If the store can't be written, in which case it appended nothing.
-    fn answer_requests(
-        &mut self,
-        epoch: u64,
-        now: Timestamp,
-    ) -> Result<Vec<SignedEvent>, Self::Error>;
+    fn sequence(&mut self, now: Timestamp) -> Result<Vec<SignedEvent>, Self::Error>;
+
+    /// Answers, as the Store Hub, in its epoch, every request for an order the replica holds
+    /// that no answer names yet, in a write of its own at physical time `now`, and returns the
+    /// answers it appended to its device's log: none when no request waits (ADR-0021). The
+    /// replicator asks only while the replica holds the winning claim.
+    ///
+    /// # Errors
+    /// If the store can't be written, in which case it appended nothing.
+    fn answer_requests(&mut self, now: Timestamp) -> Result<Vec<SignedEvent>, Self::Error>;
+}
+
+/// What became of a replica's claim of the Store Hub's role (ADR-0022).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Claiming {
+    /// The replica claimed it: the claim, appended to its device's log.
+    Claimed(Box<SignedEvent>),
+    /// The replica already holds the winning claim, and wrote nothing.
+    Hub,
+    /// The replica doesn't hold the whole chain of claims and every record that counts on it,
+    /// and wrote nothing: it must catch up first.
+    Behind,
 }
 
 /// A [`Replica`] that is `keel-store`'s store, verifying the events it receives with a device
@@ -116,15 +143,24 @@ impl<S: Signer, E: Entropy> Replica for StoreReplica<'_, S, E> {
         self.store.write(|w| events.iter().map(|bytes| w.receive(bytes, registry, now)).collect())
     }
 
-    fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, StoreError> {
-        self.store.sequence(epoch, now)
+    fn terms(&mut self) -> Result<Vec<Term>, StoreError> {
+        self.store.terms()
     }
 
-    fn answer_requests(
-        &mut self,
-        epoch: u64,
-        now: Timestamp,
-    ) -> Result<Vec<SignedEvent>, StoreError> {
-        self.store.answer_requests(epoch, now)
+    fn claim(&mut self, priority: NonZeroU8, now: Timestamp) -> Result<Claiming, StoreError> {
+        match self.store.claim(priority, now) {
+            Ok(Some(claim)) => Ok(Claiming::Claimed(Box::new(claim))),
+            Ok(None) => Ok(Claiming::Hub),
+            Err(StoreError::Behind) => Ok(Claiming::Behind),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn sequence(&mut self, now: Timestamp) -> Result<Vec<SignedEvent>, StoreError> {
+        self.store.sequence(now)
+    }
+
+    fn answer_requests(&mut self, now: Timestamp) -> Result<Vec<SignedEvent>, StoreError> {
+        self.store.answer_requests(now)
     }
 }

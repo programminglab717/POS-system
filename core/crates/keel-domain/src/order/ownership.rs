@@ -18,6 +18,7 @@ use keel_types::Id;
 use super::events::OrderEvent;
 use super::state::Order;
 use crate::codec::{Field, code_enum};
+use crate::hub::Epoch;
 
 #[cfg(test)]
 mod tests;
@@ -61,32 +62,6 @@ impl Field for Lease {
 
     fn from_value(value: &Value) -> Option<Lease> {
         Lease::new(value.as_u64()?)
-    }
-}
-
-/// A hub's epoch, as a grant records it: from 1 to 2^63 − 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Epoch(u64);
-
-impl Epoch {
-    /// The epoch numbered `n`, if it is from 1 to 2^63 − 1.
-    pub const fn new(n: u64) -> Option<Epoch> {
-        if n >= 1 && n <= Lease::MAX.0 { Some(Epoch(n)) } else { None }
-    }
-
-    /// Its number.
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-impl Field for Epoch {
-    fn to_value(&self) -> Value {
-        Value::Unsigned(self.0)
-    }
-
-    fn from_value(value: &Value) -> Option<Epoch> {
-        Epoch::new(value.as_u64()?)
     }
 }
 

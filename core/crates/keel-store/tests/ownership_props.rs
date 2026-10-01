@@ -2,8 +2,10 @@
 //!
 //! Two devices write logs about two orders, each creating one, on a business date of its own:
 //! requests for either order from a lease, overrides, payments started on either and their
-//! outcomes, and lines added. The hub, in an epoch of its own, takes them in a few at a time,
-//! makes requests of its own, and answers whatever waits, now and then interrupted as it commits. At every answer, what the hub writes must be the model's:
+//! outcomes, and lines added. The hub, which claimed the role in an epoch of its own, succeeding
+//! a former hub's claims (ADR-0022), takes them in a few at a time, makes requests of its own,
+//! and answers whatever waits, now and then interrupted as it commits. At every answer, what the
+//! hub writes must be the model's:
 //! for each order with requests waiting, by identifier, the order's own rules
 //! ([`Order::answers`]) applied to the order as the hub holds it, with a payment in progress
 //! when the hub holds one of the order's payments started and with no outcome. Each answer is
@@ -22,10 +24,12 @@
 
 mod support;
 
+use core::num::NonZeroU8;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use keel_domain::aggregate::fold;
+use keel_domain::hub::{Claimed, Cut, HubEvent, Succession};
 use keel_domain::order::{Epoch, Lease, Order, OrderEvent};
 use keel_domain::payment::{
     Payment, PaymentAuthorized, PaymentCaptured, PaymentEvent, PaymentInitiated, PaymentStatus,
@@ -40,8 +44,8 @@ use keel_store::{Faults, Point, Received, Store, StoreError};
 use keel_types::{Hlc, Id, SeededEntropy};
 use proptest::prelude::*;
 use support::{
-    DRIFT, OWN, PEERS, REPLICA, Scratch, at, config_of, created, device, domain_draft, here, id,
-    line_added, reason, registry, signer, store_key, usd,
+    DRIFT, FORMER, OWN, PEERS, REPLICA, Scratch, at, config_of, created, device, domain_draft,
+    here, id, line_added, reason, registry, signer, store_key, usd,
 };
 
 type TestStore = Store<SoftwareSigner, SeededEntropy>;
@@ -280,6 +284,36 @@ fn receive(store: &mut TestStore, events: &[SignedEvent], now: i64) {
         .unwrap();
 }
 
+/// The claims of a former hub that the hub succeeds to claim `epoch`: none for epoch 1; a first
+/// claim for epoch 2; and for a later one, a first claim and a claim of the epoch before it.
+fn former_claims(epoch: u64) -> Vec<SignedEvent> {
+    let config = LogConfig {
+        device: device(FORMER),
+        location: here(),
+        head: LogHead::EMPTY,
+        latest_hlc: Hlc::ZERO,
+        max_forward_drift: DRIFT,
+    };
+    let mut writer = LogWriter::new(config, signer(FORMER), SeededEntropy::new(7));
+    let mut claims: Vec<SignedEvent> = Vec::new();
+    let epochs: Vec<u64> = match epoch {
+        1 => Vec::new(),
+        2 => vec![1],
+        _ => vec![1, epoch - 1],
+    };
+    for (k, of) in epochs.into_iter().enumerate() {
+        let succeeds = claims.last().map(|previous| Succession {
+            previous: previous.body().event_id,
+            cuts: vec![Cut { device: device(FORMER), position: 1 }],
+        });
+        let claimed = Claimed::new(Epoch::new(of).unwrap(), NonZeroU8::MIN, succeeds).unwrap();
+        let draft =
+            domain_draft(id(0x9500 + u64::try_from(k).unwrap()), &HubEvent::Claimed(claimed), 0);
+        claims.push(writer.prepare(draft, at(100)).unwrap().commit());
+    }
+    claims
+}
+
 /// Checks the answers `written` in `epoch` against what the model expected, holding `held`
 /// before them.
 fn check_answers(
@@ -315,14 +349,19 @@ proptest! {
     fn the_hub_answers_as_the_model_does(
         specs in [prop::collection::vec(any_spec(), 0..10), prop::collection::vec(any_spec(), 0..10)],
         steps in prop::collection::vec(any_step(), 1..20),
-        schedule in prop::collection::vec(0_usize..3, 0..40),
+        schedule in prop::collection::vec(0_usize..4, 0..40),
         epoch in prop_oneof![1_u64..4, Just((1 << 63) - 1)],
     ) {
         let logs = [peer_log(0, &specs[0]), peer_log(1, &specs[1])];
         let (hub_scratch, replica_scratch) = (Scratch::new("ownership-hub"), Scratch::new("ownership-replica"));
         let plan = Plan::default();
         let mut hub = open(&hub_scratch, OWN, &plan);
-        let mut held: Vec<SignedEvent> = Vec::new();
+        // The hub claims its epoch, succeeding a former hub's claims.
+        let former = former_claims(epoch);
+        receive(&mut hub, &former, 500);
+        let claimed = hub.claim(NonZeroU8::MIN, at(600)).unwrap().unwrap();
+        prop_assert_eq!(hub.term().unwrap().map(|term| term.epoch.get()), Some(epoch));
+        let mut held: Vec<SignedEvent> = [former.clone(), vec![claimed]].concat();
         let mut taken = [0_usize; 2];
         for (i, step) in steps.iter().enumerate() {
             let now = 10_000 + i64::try_from(i).unwrap() * 100;
@@ -342,11 +381,11 @@ proptest! {
                 }
                 Step::Answer { interrupted: true } => {
                     *plan.0.lock().unwrap() = true;
-                    let answered = hub.answer_requests(epoch, at(now));
+                    let answered = hub.answer_requests(at(now));
                     prop_assert!(matches!(answered, Err(StoreError::Interrupted(Point::Committing))), "{:?}", answered);
                 }
                 Step::Answer { interrupted: false } => {
-                    let written = hub.answer_requests(epoch, at(now)).unwrap();
+                    let written = hub.answer_requests(at(now)).unwrap();
                     check_answers(&written, &held, epoch)?;
                     held.extend(written);
                     prop_assert!(expected_answers(&held, epoch).is_empty());
@@ -366,7 +405,7 @@ proptest! {
             receive(&mut hub, rest, 20_000);
             held.extend_from_slice(rest);
         }
-        let written = hub.answer_requests(epoch, at(20_500)).unwrap();
+        let written = hub.answer_requests(at(20_500)).unwrap();
         check_answers(&written, &held, epoch)?;
         held.extend(written);
         let mut answers: BTreeMap<Id<Event>, usize> = BTreeMap::new();
@@ -392,9 +431,9 @@ proptest! {
         // Another replica takes in every log in any order, and agrees.
         let hub_log = hub.log(device(OWN), 0, 1_000).unwrap();
         let mut replica = open(&replica_scratch, REPLICA, &plan);
-        let all = [logs[0].clone(), logs[1].clone(), hub_log];
-        let mut next = [0_usize; 3];
-        let rest = (0..3).flat_map(|log| core::iter::repeat_n(log, all[log].len()));
+        let all = [logs[0].clone(), logs[1].clone(), hub_log, former];
+        let mut next = [0_usize; 4];
+        let rest = (0..4).flat_map(|log| core::iter::repeat_n(log, all[log].len()));
         for (turn, log) in schedule.iter().copied().chain(rest).enumerate() {
             if next[log] == all[log].len() {
                 continue;
@@ -406,6 +445,8 @@ proptest! {
             prop_assert_eq!(replica.order(order(n)).unwrap(), hub.order(order(n)).unwrap());
         }
         prop_assert!(replica.check().unwrap().is_empty());
+        // The replica isn't the hub: it answers nothing.
+        prop_assert!(matches!(replica.answer_requests(at(40_000)), Err(StoreError::NotHub)));
     }
 }
 

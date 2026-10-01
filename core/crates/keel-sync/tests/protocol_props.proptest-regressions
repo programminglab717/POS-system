@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 22e4f68cab7e54338af00fdddfa4650c2dcfc81dbc0ef9213b89eb0f20978ce4 # shrinks to case = Case { replicas: 4, topology: Star, loss: 80, duplication: 0, decline: 172, delay: 77, appends: [(28, 3, 3), (152, 1, 3), (187, 3, 1), (116, 3, 1), (24, 3, 2)], cuts: [], crashes: [(52, 3, 28), (128, 2, 12)], priorities: [Some(1), Some(3), Some(2), None], batch_events: 2, batch_bytes: 371, seed: 12174520576721775304 }
+cc 44ca99b8e0e0a6c2df754a41fd1d32a310d9ccd00e5e15d0944caa9848cc3c95 # shrinks to case = Case { replicas: 3, topology: Star, loss: 0, duplication: 51, decline: 0, delay: 110, appends: [(0, 1, 1)], cuts: [(2, 101, 31)], crashes: [(151, 1, 0)], priorities: [Some(1), Some(1), None], batch_events: 1, batch_bytes: 262144, seed: 3407747264193243812 }
+cc 902ac58db997ed19fc9a50112c52e5a70f4b38b5270c7d99e9fc1b1e11d2dec0 # shrinks to case = Case { replicas: 2, topology: Star, loss: 0, duplication: 155, decline: 218, delay: 214, appends: [(31, 1, 1)], cuts: [], crashes: [], priorities: [Some(1), None], batch_events: 1, batch_bytes: 262144, seed: 9369107273393270102 }
+cc 796828215c67d228fd926cc3bd968be8fa6d9e4602c57f6361ed0d70fb35a217 # shrinks to case = Case { replicas: 4, topology: Line, loss: 24, duplication: 10, decline: 74, delay: 208, appends: [(59, 4, 2), (2, 4, 1), (75, 1, 2), (49, 3, 1), (95, 1, 3)], cuts: [], crashes: [(152, 3, 11), (98, 2, 94)], priorities: [Some(2), None, None, None], batch_events: 1, batch_bytes: 262144, seed: 7219955182836761607 }
+cc 2e8ebdac7ed4ecda84e98a9bd00ce67f9f5e87a4ae08dbc450c3580685cc7605 # shrinks to case = Case { replicas: 4, topology: Star, loss: 97, duplication: 0, decline: 141, delay: 216, appends: [(0, 2, 1), (139, 3, 1), (153, 4, 1)], cuts: [], crashes: [(89, 3, 31), (18, 1, 103), (190, 2, 0), (12, 3, 17)], jumps: [(152, 3, 38)], priorities: [Some(3), Some(1), Some(1), None], batch_events: 2, batch_bytes: 262144, heartbeat: 1000, seed: 6863262935672717334 }

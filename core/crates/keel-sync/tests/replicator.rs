@@ -1,4 +1,6 @@
-//! Known answers for the replicator (ADR-0019), frame by frame, against the model replica.
+//! Known answers for the replicator (ADR-0019, ADR-0020), frame by frame, against the model
+//! replica. Heartbeats, and the election they drive, are `election.rs`'s: here they come once an
+//! hour, and are left out of what replicas send.
 
 #![allow(
     clippy::unwrap_used,
@@ -10,11 +12,13 @@
 
 mod support;
 
+use core::num::NonZeroU8;
 use core::time::Duration;
 
 use keel_events::event::SignedEvent;
 use keel_sync::{
-    Durable, Events, Frame, Have, Outgoing, Replicator, Roles, SyncConfig, VersionVector,
+    Claiming, Durable, Events, Frame, Have, Outgoing, Replica, Replicator, Roles, SyncConfig,
+    VersionVector,
 };
 use keel_types::Timestamp;
 use support::{Model, at, device, elsewhere, here, registry};
@@ -24,14 +28,17 @@ fn model(n: u8) -> Model {
     Model::new(n, registry(1..=4))
 }
 
-/// Small batches, so that a few events take several.
+/// Small batches, so that a few events take several, and a heartbeat an hour.
 const CONFIG: SyncConfig = SyncConfig {
     round: Duration::from_secs(5),
     ack_timeout: Duration::from_secs(2),
     batch_events: 2,
     batch_bytes: 256 * 1024,
+    heartbeat: Duration::from_secs(3_600),
+    silence: 3,
 };
 
+/// The frames in `outgoing`, with their recipients, heartbeats aside.
 fn decoded(outgoing: &[Outgoing]) -> Vec<(u8, Frame)> {
     outgoing
         .iter()
@@ -39,6 +46,7 @@ fn decoded(outgoing: &[Outgoing]) -> Vec<(u8, Frame)> {
             let to = (1..=4).find(|n| device(*n) == out.to).unwrap();
             (to, Frame::decode(&out.frame).unwrap())
         })
+        .filter(|(_, frame)| !matches!(frame, Frame::Heartbeat(_)))
         .collect()
 }
 
@@ -381,6 +389,39 @@ fn frames_from_strangers_for_other_locations_or_undecodable_are_dropped() {
     assert_eq!(replicator.known(device(2)), None);
 }
 
+/// A peer that holds the replica's own log up to just before a batch of it, and takes none of the
+/// batch, holds another version of the log: the device forked it, and can't be the hub
+/// (ADR-0022). Once the peer says it holds the log that far after all, the refusal is over.
+#[test]
+fn a_peer_that_takes_none_of_the_replicas_log_after_what_it_holds_shows_it_forked() {
+    let now = at(10_000);
+    let mut a = with_events(1, 3);
+    let (mut replicator, _) = start(&mut a, &[2], now);
+    let out = decoded(&replicator.on_frame(&mut a, device(2), &have(&[(1, 1)], 0), now).unwrap());
+    let (sent, events) = batch(&out[0].1);
+    assert_eq!(positions(&events), [(1, 2), (1, 3)]);
+    assert!(!replicator.forked());
+    replicator.on_frame(&mut a, device(2), &have(&[(1, 1)], sent), now).unwrap();
+    assert!(replicator.forked());
+    replicator.on_frame(&mut a, device(2), &have(&[(1, 2)], 0), now).unwrap();
+    assert!(!replicator.forked());
+}
+
+/// A peer that takes none of a batch of the replica's own log because it lacks earlier events,
+/// its store restored from an older copy, isn't refusing the log: the batch didn't follow what it
+/// held.
+#[test]
+fn a_peer_lacking_earlier_events_of_the_replicas_log_isnt_refusing_it() {
+    let now = at(10_000);
+    let mut a = with_events(1, 3);
+    let (mut replicator, _) = start(&mut a, &[2], now);
+    let out = decoded(&replicator.on_frame(&mut a, device(2), &have(&[(1, 2)], 0), now).unwrap());
+    let (sent, events) = batch(&out[0].1);
+    assert_eq!(positions(&events), [(1, 3)]);
+    replicator.on_frame(&mut a, device(2), &have(&[(1, 1)], sent), now).unwrap();
+    assert!(!replicator.forked());
+}
+
 #[test]
 fn a_devices_own_log_settles_once_a_peer_holds_no_more_of_it() {
     let now = at(10_000);
@@ -453,8 +494,8 @@ fn appending_pushes_the_new_events_to_peers_lacking_them() {
     assert_eq!(replicator.version_vector(), &vv(&[(1, 2)]));
 }
 
-/// The hub's roles: it sequences in epoch 1.
-const HUB: Roles = Roles { sequencer: Some(1), durable: None };
+/// The roles of a replica that can be the hub.
+const HUB: Roles = Roles { hub: Some(NonZeroU8::MIN), durable: None };
 
 /// A batch of `model`'s events, all of them, numbered `number`.
 fn all_of(model: &Model, number: u64) -> Vec<u8> {
@@ -473,22 +514,26 @@ fn pushed(out: &[(u8, Frame)], to: u8) -> Vec<(u8, u64)> {
 #[test]
 fn the_hub_numbers_what_it_stores_once_its_log_is_settled() {
     let mut hub = model(1);
+    let claim = hub.claim(NonZeroU8::MIN, at(0)).unwrap();
+    assert!(matches!(claim, Claiming::Claimed(_)));
     let (mut replicator, _) = start_as(&mut hub, &[2], HUB, at(0));
-    // Device 2's events arrive before the hub has heard from it: stored, and left unnumbered.
+    assert!(replicator.is_hub() && !replicator.serving());
+    // Device 2's events arrive before the hub has heard from it: stored, and left unnumbered
+    // with the hub's claim.
     let two = with_events(2, 2);
     replicator.on_frame(&mut hub, device(2), &all_of(&two, 1), at(1_000)).unwrap();
     assert!(!replicator.settled());
-    assert_eq!((hub.sequenced, hub.unsequenced().len()), (0, 2));
+    assert_eq!((hub.sequenced, hub.unsequenced().len()), (0, 3));
     // Device 2 holds none of the hub's log: the hub's log is settled, it numbers what it holds,
-    // and pushes the record.
+    // claim first, and pushes its log.
     let out =
         decoded(&replicator.on_frame(&mut hub, device(2), &have(&[(2, 2)], 0), at(2_000)).unwrap());
-    assert!(replicator.settled());
+    assert!(replicator.settled() && replicator.serving());
     assert_eq!((hub.sequenced, hub.unsequenced()), (1, Vec::new()));
     assert_eq!(pushed(&out, 2), [(1, 1)]);
     let records = hub.records();
     assert_eq!(records.len(), 1);
-    assert_eq!((records[0].1.first, records[0].1.count()), (1, 2));
+    assert_eq!((records[0].1.first, records[0].1.count()), (1, 3));
     // What it stores after is numbered at once, as are its own events.
     let more = with_events(2, 3);
     let third = Frame::Events(Events { batch: 2, events: vec![more.events()[2].to_bytes()] });
@@ -499,7 +544,7 @@ fn the_hub_numbers_what_it_stores_once_its_log_is_settled() {
     assert_eq!((hub.sequenced, hub.unsequenced()), (3, Vec::new()));
     let numbers: Vec<(u64, u64)> =
         hub.records().iter().map(|(_, record)| (record.first, record.last())).collect();
-    assert_eq!(numbers, [(1, 2), (3, 3), (4, 4)]);
+    assert_eq!(numbers, [(1, 3), (4, 4), (5, 5)]);
     // A tick numbers nothing.
     replicator.on_tick(&mut hub, at(60_000)).unwrap();
     assert_eq!(hub.sequenced, 3);
@@ -551,7 +596,7 @@ fn watermarks(out: &[(u8, Frame)]) -> Vec<(u8, VersionVector)> {
 #[test]
 fn the_durable_peers_have_is_the_watermark_passed_on_to_the_others() {
     let mut a = model(1);
-    let roles = Roles { sequencer: None, durable: Some(device(3)) };
+    let roles = Roles { hub: None, durable: Some(device(3)) };
     let (mut replicator, _) = start_as(&mut a, &[2, 3], roles, at(0));
     assert_eq!(replicator.durable(), &VersionVector::new());
     let out = replicator.on_frame(&mut a, device(3), &have(&[(2, 4), (3, 5)], 0), at(1_000));

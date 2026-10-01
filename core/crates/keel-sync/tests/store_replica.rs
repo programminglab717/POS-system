@@ -12,6 +12,7 @@
 
 mod support;
 
+use core::num::NonZeroU8;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -113,6 +114,19 @@ fn deliver(
     Ok(back)
 }
 
+/// Hands `replicator` one `frame`, from device `from`, at `ms` milliseconds.
+fn hand(
+    replicator: &mut Replicator,
+    store: &mut TestStore,
+    registry: &DeviceRegistry,
+    from: u8,
+    frame: &Frame,
+    ms: i64,
+) -> Vec<Outgoing> {
+    let mut replica = StoreReplica::new(store, registry);
+    replicator.on_frame(&mut replica, device(from), &frame.encode(), at(ms)).unwrap()
+}
+
 #[test]
 fn two_stores_replicate_through_their_replicators() {
     let registry = registry([1, 3]);
@@ -206,6 +220,32 @@ fn order_draft(order: Id<Order>, event: &OrderEvent) -> EventDraft {
     EventDraft { stream, schema, payload, ..draft(0) }
 }
 
+/// A dine-in order, created.
+fn created() -> OrderEvent {
+    OrderEvent::Created(OrderCreated {
+        channel: Channel::Pos,
+        mode: Mode::DineIn,
+        currency: Currency::from_code("USD").unwrap(),
+        revenue_center: None,
+        table: None,
+        guest_count: None,
+        customer: None,
+        owner: None,
+    })
+}
+
+/// The record `event` of epoch 2: the number of its first event, and its runs.
+fn spans(event: &SignedEvent) -> (u64, Vec<(Id<keel_events::envelope::Device>, u64, u64)>) {
+    let body = event.body();
+    let Ok(SequenceEvent::Assigned(record)) = SequenceEvent::decode(&body.schema, &body.payload)
+    else {
+        panic!("not a record")
+    };
+    assert_eq!(record.epoch, 2);
+    let spans: Vec<_> = record.runs.iter().map(|run| (run.device, run.from, run.to)).collect();
+    (record.first, spans)
+}
+
 #[test]
 fn a_hub_answers_a_request_for_an_order_then_numbers_its_answer() {
     let registry = registry([1, 2, 3]);
@@ -215,25 +255,23 @@ fn a_hub_answers_a_request_for_an_order_then_numbers_its_answer() {
         (open(&a_dir, 1, &plan), open(&b_dir, 2, &plan), open(&hub_dir, 3, &plan));
     // Device 1 opens an order; device 2 holds it, and asks for it.
     let order: Id<Order> = Id::parse("0192f0c1-0000-7000-8000-000000007000").unwrap();
-    let created = OrderEvent::Created(OrderCreated {
-        channel: Channel::Pos,
-        mode: Mode::DineIn,
-        currency: Currency::from_code("USD").unwrap(),
-        revenue_center: None,
-        table: None,
-        guest_count: None,
-        customer: None,
-        owner: None,
-    });
-    let creation = a.write(|w| w.append(order_draft(order, &created), at(10))).unwrap();
-    let received = b.write(|w| w.receive(&creation.to_bytes(), &registry, at(20))).unwrap();
-    assert!(matches!(received, Received::Stored(_)));
+    // Device 1 was the hub, in epoch 1.
+    let first_claim = a.claim(NonZeroU8::MIN, at(5)).unwrap().unwrap();
+    let creation = a.write(|w| w.append(order_draft(order, &created()), at(10))).unwrap();
+    for event in [&first_claim, &creation] {
+        let received = b.write(|w| w.receive(&event.to_bytes(), &registry, at(20))).unwrap();
+        assert!(matches!(received, Received::Stored(_)));
+    }
     let view = b.load(Order::new(order)).unwrap();
     let asked = view.decide(here(), device(2), OrderCommand::RequestOwnership).unwrap();
     let request = b.write(|w| w.append(order_draft(order, &asked), at(30))).unwrap();
 
-    // The hub, settled, in epoch 2, takes both in from device 2.
-    let roles = Roles { sequencer: Some(2), durable: None };
+    // The hub took the role in epoch 2, holding device 1's claim, which device 2 holds too, with
+    // the hub's own. Settled, it takes the order and the request in from device 2.
+    let received = hub.write(|w| w.receive(&first_claim.to_bytes(), &registry, at(32))).unwrap();
+    assert!(matches!(received, Received::Stored(_)));
+    let second_claim = hub.claim(NonZeroU8::MIN, at(35)).unwrap().unwrap();
+    let roles = Roles { hub: Some(NonZeroU8::MIN), durable: None };
     let (mut hub_sync, _) = Replicator::start(
         &mut StoreReplica::new(&mut hub, &registry),
         [device(1), device(2)],
@@ -244,48 +282,32 @@ fn a_hub_answers_a_request_for_an_order_then_numbers_its_answer() {
     .unwrap();
     let settle =
         Frame::Have(Have { location: here(), vv: VersionVector::new(), acked: 0, asks: false });
-    deliver(
-        &mut hub_sync,
-        &mut hub,
-        &registry,
-        1,
-        &[Outgoing { to: device(3), frame: settle.encode() }],
-        40,
-    )
-    .unwrap();
-    assert!(hub_sync.settled());
-    // Device 2 says what it holds, then sends it.
+    hand(&mut hub_sync, &mut hub, &registry, 1, &settle, 40);
+    // Device 1 holds none of the hub's log, but device 2 hasn't said yet.
+    assert!(!hub_sync.settled());
+    // Device 2 says what it holds: the hub is settled, and serves; then device 2 sends it.
     let holds = Frame::Have(Have {
         location: here(),
-        vv: [(device(1), 1), (device(2), 1)].into_iter().collect(),
+        vv: [(device(1), 2), (device(2), 1), (device(3), 1)].into_iter().collect(),
         acked: 0,
         asks: false,
     });
-    deliver(
-        &mut hub_sync,
-        &mut hub,
-        &registry,
-        2,
-        &[Outgoing { to: device(3), frame: holds.encode() }],
-        45,
-    )
-    .unwrap();
+    let settling = hand(&mut hub_sync, &mut hub, &registry, 2, &holds, 45);
+    assert!(hub_sync.settled() && hub_sync.serving());
+    // Settling, the hub numbered both claims, and sent device 2 its record.
+    let first_record = sent_to(&settling, device(2));
+    assert_eq!(first_record.len(), 1);
     let batch =
         Frame::Events(Events { batch: 1, events: vec![creation.to_bytes(), request.to_bytes()] });
-    let out = deliver(
-        &mut hub_sync,
-        &mut hub,
-        &registry,
-        2,
-        &[Outgoing { to: device(3), frame: batch.encode() }],
-        50,
-    )
-    .unwrap();
+    hand(&mut hub_sync, &mut hub, &registry, 2, &batch, 50);
 
-    // It granted the request, and numbered everything, its grant too.
+    // Settling, it numbered both claims; then it granted the request, and numbered the rest, its
+    // grant too.
     let own = hub.log(device(3), 0, 10).unwrap();
-    assert_eq!(own.len(), 2, "the grant, then the record");
-    let body = own[0].body();
+    assert_eq!(own.len(), 4, "its claim, a record, the grant, then a record");
+    assert_eq!(own[0], second_claim);
+    assert_eq!(spans(&own[1]), (1, vec![(device(1), 1, 1), (device(3), 1, 1)]));
+    let body = own[2].body();
     let grant = OrderEvent::decode(&body.schema, &body.payload).unwrap();
     let OrderEvent::OwnershipGranted(OwnershipGranted {
         request: answered, device: to, epoch, ..
@@ -294,19 +316,29 @@ fn a_hub_answers_a_request_for_an_order_then_numbers_its_answer() {
         panic!("not a grant: {grant:?}")
     };
     assert_eq!((answered, to, epoch.get()), (request.body().event_id, device(2), 2));
-    let record = own[1].body();
-    let Ok(SequenceEvent::Assigned(record)) =
-        SequenceEvent::decode(&record.schema, &record.payload)
-    else {
-        panic!("not a record")
-    };
-    assert_eq!(record.epoch, 2);
-    assert!(record.runs.iter().any(|run| run.device == device(3) && run.from == 1));
+    assert_eq!(spans(&own[3]), (3, vec![(device(1), 2, 2), (device(2), 1, 1), (device(3), 3, 3)]));
     let summary = hub.order(order).unwrap().unwrap();
     assert_eq!(summary.ownership.map(|ownership| ownership.device), Some(device(2)));
     assert_eq!(summary.requests, 0);
     // Both go out to the device that asked, which holds the rest.
-    assert_eq!(sent_to(&out, device(2)), own);
+    assert_eq!(first_record, own[1..2]);
+    // Once device 2 has the record, the grant and the next go out to it, the device that asked.
+    let acked = settling
+        .iter()
+        .filter(|outgoing| outgoing.to == device(2))
+        .find_map(|outgoing| match Frame::decode(&outgoing.frame) {
+            Ok(Frame::Events(events)) => Some(events.batch),
+            _ => None,
+        })
+        .unwrap();
+    let took = Frame::Have(Have {
+        location: here(),
+        vv: [(device(1), 2), (device(2), 1), (device(3), 2)].into_iter().collect(),
+        acked,
+        asks: false,
+    });
+    let out = hand(&mut hub_sync, &mut hub, &registry, 2, &took, 55);
+    assert_eq!(sent_to(&out, device(2)), own[2..]);
 }
 
 /// The events batches in `out` send to `to`.

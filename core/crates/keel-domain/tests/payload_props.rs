@@ -1,11 +1,12 @@
-//! Property tests for order and payment event payloads, and sequencing records, against an
-//! independent model of the schemas: payloads round-trip; a payload with a field changed, removed
-//! or added is accepted exactly when the model says it is valid, and then has exactly one
-//! encoding; and the rules that span fields or sit at a boundary (one currency per payload, text
-//! lengths, identifier sets in ascending order, allocations in order and in lowest terms,
-//! snapshots that add up, cash that covers what is paid, runs that follow on, numbers up to the
-//! largest) are aimed at directly. A sequencing record's numbers are checked against a model that
-//! counts run by run.
+//! Property tests for order and payment event payloads, sequencing records and the hub's claims,
+//! against an independent model of the schemas: payloads round-trip; a payload with a field
+//! changed, removed or added is accepted exactly when the model says it is valid, and then has
+//! exactly one encoding; and the rules that span fields or sit at a boundary (one currency per
+//! payload, text lengths, identifier sets in ascending order, allocations in order and in lowest
+//! terms, snapshots that add up, cash that covers what is paid, runs that follow on, numbers up to
+//! the largest, a claim that succeeds one exactly when its epoch is after the first, cuts in order
+//! of device) are aimed at directly. A sequencing record's numbers are checked against a model
+//! that counts run by run.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,6 +18,9 @@
 
 mod support;
 
+use core::num::NonZeroU8;
+
+use keel_domain::hub::{Claimed, Cut, Epoch, HubEvent, Succession};
 use keel_domain::order::{CheckClosed, LineCharge, OrderEvent, TaxCharge};
 use keel_domain::payment::PaymentEvent;
 use keel_domain::schema::{DecodeError, DomainEvent, SchemaId};
@@ -37,6 +41,7 @@ enum Event {
     Order(OrderEvent),
     Payment(PaymentEvent),
     Sequence(SequenceEvent),
+    Hub(HubEvent),
 }
 
 impl Event {
@@ -45,6 +50,7 @@ impl Event {
             Event::Order(event) => event.schema(),
             Event::Payment(event) => event.schema(),
             Event::Sequence(event) => event.schema(),
+            Event::Hub(event) => event.schema(),
         }
     }
 
@@ -53,6 +59,7 @@ impl Event {
             Event::Order(event) => event.to_value(),
             Event::Payment(event) => event.to_value(),
             Event::Sequence(event) => event.to_value(),
+            Event::Hub(event) => event.to_value(),
         }
     }
 }
@@ -64,6 +71,8 @@ fn decode(schema: &SchemaRef, payload: &Value) -> Result<Value, DecodeError> {
         PaymentEvent::from_value(schema, payload).map(|event| event.to_value())
     } else if name.starts_with("sequence.") {
         SequenceEvent::from_value(schema, payload).map(|event| event.to_value())
+    } else if name.starts_with("hub.") {
+        HubEvent::from_value(schema, payload).map(|event| event.to_value())
     } else {
         OrderEvent::from_value(schema, payload).map(|event| event.to_value())
     }
@@ -75,6 +84,7 @@ fn any_any_event() -> impl Strategy<Value = Event> {
         3 => any_event().prop_map(Event::Order),
         1 => any_payment_event().prop_map(Event::Payment),
         1 => any_assigned().prop_map(|record| Event::Sequence(SequenceEvent::Assigned(record))),
+        1 => any_claimed().prop_map(|claimed| Event::Hub(HubEvent::Claimed(claimed))),
     ]
 }
 
@@ -114,12 +124,14 @@ enum Kind {
     /// What a closed check charged for each tax.
     TaxCharges,
     /// A sequencing record's epoch or number, or a position in a log: from 1 to [`LARGEST`]. A
-    /// grant's lease and epoch too.
+    /// grant's lease and epoch, and a claim's epoch, too.
     Number,
     /// A lease an order's change of owner replaces: from 0 to [`LARGEST`].
     Lease,
     /// A sequencing record's runs.
     Runs,
+    /// A claim's cuts.
+    Cuts,
 }
 
 use Kind::*;
@@ -207,6 +219,14 @@ fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
         "order.ownership_refused" => vec![(1, Id, Required), (2, Code(2), Required)],
         "order.ownership_overridden" => {
             vec![(1, Lease, Required), (2, Reason, Required), (3, Note, Optional)]
+        }
+        "hub.claimed" => {
+            vec![
+                (1, Number, Required),
+                (2, Count8, Required),
+                (3, Id, Optional),
+                (4, Cuts, Optional),
+            ]
         }
         other => panic!("no rules for {other}"),
     }
@@ -448,6 +468,7 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
         Number => value.as_u64().is_some_and(|n| (1..=LARGEST).contains(&n)),
         Lease => value.as_u64().is_some_and(|n| n <= LARGEST),
         Runs => runs_valid(value),
+        Cuts => cuts_valid(value),
     }
 }
 
@@ -456,6 +477,9 @@ const LARGEST: u64 = (1 << 63) - 1;
 
 /// The most runs a sequencing record may hold (ADR-0020).
 const MOST_RUNS: usize = 1024;
+
+/// The most cuts a claim may hold (ADR-0022).
+const MOST_CUTS: usize = 1024;
 
 /// A sequencing record's runs, if each is `[device, from, to, hash]`: a UUIDv7, two unsigned
 /// integers and 32 bytes. Gives each run's device, first and last positions.
@@ -488,6 +512,27 @@ fn runs_valid(value: &Value) -> bool {
         && runs.iter().all(|&(_, from, to)| in_range(from) && in_range(to) && from <= to)
         && runs.windows(2).all(|pair| pair[0].0 != pair[1].0)
         && follow_on
+}
+
+/// Whether cuts keep a claim's rules: from 1 to [`MOST_CUTS`] of them, each `[device, position]`,
+/// a UUIDv7 and a position from 1 to [`LARGEST`], in strictly ascending byte order of device.
+fn cuts_valid(value: &Value) -> bool {
+    let Some(cuts) = value.as_array() else { return false };
+    let devices: Option<Vec<&Value>> = cuts
+        .iter()
+        .map(|cut| match cut.as_array()? {
+            [device, position]
+                if is_uuid_v7(device)
+                    && position.as_u64().is_some_and(|n| (1..=LARGEST).contains(&n)) =>
+            {
+                Some(device)
+            }
+            _ => None,
+        })
+        .collect();
+    devices.is_some_and(|devices| {
+        (1..=MOST_CUTS).contains(&devices.len()) && strictly_ascending(&devices)
+    })
 }
 
 /// How many events valid runs number.
@@ -543,6 +588,15 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
         "sequence.assigned" => {
             u128::from(get(2).unwrap().as_u64().unwrap()) + events_in(get(3).unwrap()) - 1
                 <= u128::from(LARGEST)
+        }
+        // A claim of epoch 1 succeeds none and cuts nothing; a later one succeeds one, and cuts.
+        "hub.claimed" => {
+            let epoch = get(1).unwrap().as_u64().unwrap();
+            match (get(3), get(4)) {
+                (None, None) => epoch == 1,
+                (Some(_), Some(_)) => epoch > 1,
+                _ => false,
+            }
         }
         _ => true,
     }
@@ -634,6 +688,7 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
         .boxed(),
         Number | Lease => number_near_miss(),
         Runs => runs_near_miss(),
+        Cuts => cuts_near_miss(),
         Allocations => prop_oneof![
             3 => any_lines_allocated().prop_map(|allocated| allocations_value(&allocated)),
             // Valid allocations spoiled: out of order, repeated, not in lowest terms, a share of
@@ -677,6 +732,22 @@ fn runs_near_miss() -> BoxedStrategy<Value> {
             }),
         1 => prop::sample::select(vec![MOST_RUNS - 1, MOST_RUNS, MOST_RUNS + 1])
             .prop_map(taking_turns),
+        1 => Just(Value::Array(Vec::new())),
+    ]
+    .boxed()
+}
+
+/// Cuts close to a claim's: valid, spoiled in one way, as many as a claim may hold and one more,
+/// or none.
+fn cuts_near_miss() -> BoxedStrategy<Value> {
+    prop_oneof![
+        2 => any_later_claim().prop_map(|claimed| cuts_value(&claimed)),
+        6 => (any_later_claim(), any_cut_spoil())
+            .prop_map(|(claimed, (how, at, other, choice))| {
+                spoil_cuts(&cuts_value(&claimed), how, at, other, choice)
+            }),
+        1 => prop::sample::select(vec![MOST_CUTS - 1, MOST_CUTS, MOST_CUTS + 1])
+            .prop_map(cuts_of_many),
         1 => Just(Value::Array(Vec::new())),
     ]
     .boxed()
@@ -1023,6 +1094,119 @@ fn spoil_runs(
     Value::Array(runs.into_iter().map(Value::Array).collect())
 }
 
+/// A valid claim: of epoch 1, or one that succeeds a claim.
+fn any_claimed() -> impl Strategy<Value = Claimed> {
+    let first = prop_oneof![1_u8..=3, 254_u8..=255].prop_map(|priority| Claimed {
+        epoch: Epoch::FIRST,
+        priority: NonZeroU8::new(priority).unwrap(),
+        succeeds: None,
+    });
+    prop_oneof![1 => first, 3 => any_later_claim()]
+}
+
+/// A valid claim of an epoch after the first, near either end of the range, cutting one to four
+/// devices at positions near either end of theirs.
+fn any_later_claim() -> impl Strategy<Value = Claimed> {
+    let priority = prop_oneof![1_u8..=3, 254_u8..=255].prop_map(|n| NonZeroU8::new(n).unwrap());
+    let epoch = prop_oneof![2 => 2_u64..=4, 1 => (LARGEST - 2)..=LARGEST];
+    let position = prop_oneof![3 => 1_u64..=5, 1 => (LARGEST - 2)..=LARGEST];
+    let cuts = prop::collection::btree_map(1_u64..=9, position, 1..=4);
+    (epoch, priority, 0x100_u64..0x108, cuts).prop_map(|(epoch, priority, previous, cuts)| {
+        Claimed {
+            epoch: Epoch::new(epoch).unwrap(),
+            priority,
+            succeeds: Some(Succession {
+                previous: support::id(previous),
+                cuts: cuts
+                    .into_iter()
+                    .map(|(n, position)| Cut { device: device(n), position })
+                    .collect(),
+            }),
+        }
+    })
+}
+
+/// The payload encoding of a claim's cuts: none for a claim of epoch 1.
+fn cuts_value(claimed: &Claimed) -> Value {
+    let payload = HubEvent::Claimed(claimed.clone()).to_value();
+    payload.as_map().unwrap().get(&Value::Unsigned(4)).cloned().unwrap_or(Value::Null)
+}
+
+/// `count` cuts, each of a device of its own at position 1: valid up to [`MOST_CUTS`].
+fn cuts_of_many(count: usize) -> Value {
+    let cuts = (1..=u64::try_from(count).unwrap())
+        .map(|n| Value::Array(vec![support_id_value(n), Value::Unsigned(1)]))
+        .collect();
+    Value::Array(cuts)
+}
+
+/// What [`spoil_cuts`] takes: which change, which cuts, and which value.
+fn any_cut_spoil() -> impl Strategy<Value = (u8, prop::sample::Index, prop::sample::Index, u8)> {
+    (0_u8..10, any::<prop::sample::Index>(), any::<prop::sample::Index>(), any::<u8>())
+}
+
+/// Cuts with one thing wrong, or right after all. `how` picks the change, `at` the cut it
+/// touches, `other` another cut, and `choice` a value within the change:
+/// - 0: two cuts swapped;
+/// - 1: a cut repeated;
+/// - 2: a cut dropped;
+/// - 3: a cut's position set to 0, 1, one less, one more, the largest, one past it, or the
+///   largest integer;
+/// - 4: a cut given its neighbour's device;
+/// - 5: a device that isn't a UUIDv7;
+/// - 6: a cut with an entry dropped or added;
+/// - 7: a cut given a device of its own, below or above every other;
+/// - 8: a position below zero;
+/// - otherwise, nothing.
+fn spoil_cuts(
+    value: &Value,
+    how: u8,
+    at: prop::sample::Index,
+    other: prop::sample::Index,
+    choice: u8,
+) -> Value {
+    let mut cuts: Vec<Vec<Value>> =
+        value.as_array().unwrap().iter().map(|cut| cut.as_array().unwrap().to_vec()).collect();
+    let count = cuts.len();
+    let (i, j) = (at.index(count), other.index(count));
+    match how {
+        0 => cuts.swap(i, j),
+        1 => cuts.insert(i, cuts[i].clone()),
+        2 if count > 1 => {
+            cuts.remove(i);
+        }
+        3 => {
+            let position = cuts[i][1].as_u64().unwrap();
+            let choices = [
+                0,
+                1,
+                position.wrapping_sub(1),
+                position.wrapping_add(1),
+                LARGEST,
+                LARGEST + 1,
+                u64::MAX,
+            ];
+            cuts[i][1] = Value::Unsigned(choices[usize::from(choice) % choices.len()]);
+        }
+        4 if count > 1 => {
+            let neighbour = if i + 1 < count { i + 1 } else { i - 1 };
+            cuts[i][0] = cuts[neighbour][0].clone();
+        }
+        5 => cuts[i][0] = Value::Bytes(vec![0; 16]),
+        6 => {
+            if choice.is_multiple_of(2) {
+                cuts[i].pop();
+            } else {
+                cuts[i].push(Value::Null);
+            }
+        }
+        7 => cuts[i][0] = support_id_value(if choice.is_multiple_of(2) { 0 } else { 0xFF }),
+        8 => cuts[i][1] = Value::integer(-1),
+        _ => {}
+    }
+    Value::Array(cuts.into_iter().map(Value::Array).collect())
+}
+
 /// The payload encoding of allocations.
 fn allocations_value(allocated: &keel_domain::order::LinesAllocated) -> Value {
     let payload = OrderEvent::LinesAllocated(allocated.clone()).to_value();
@@ -1315,6 +1499,7 @@ proptest! {
         event in any_event(),
         payment in any_payment_event(),
         record in any_assigned(),
+        claimed in any_claimed(),
     ) {
         let (schema, payload) = event.encode().unwrap();
         prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
@@ -1327,6 +1512,14 @@ proptest! {
         prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
         prop_assert_eq!(SequenceEvent::decode(&schema, &payload), Ok(sequenced));
         prop_assert_eq!(Assigned::new(record.epoch, record.first, record.runs.clone()), Ok(record));
+        let claim = HubEvent::Claimed(claimed.clone());
+        let (schema, payload) = claim.encode().unwrap();
+        prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
+        prop_assert_eq!(HubEvent::decode(&schema, &payload), Ok(claim));
+        prop_assert_eq!(
+            Claimed::new(claimed.epoch, claimed.priority, claimed.succeeds.clone()),
+            Ok(claimed)
+        );
     }
 
     /// A payload with one field changed, removed or added is accepted exactly when the model
@@ -1395,6 +1588,58 @@ proptest! {
         let spoiled = changed("sequence.assigned", &payload, &change);
         let decoded = SequenceEvent::from_value(&schema_named("sequence.assigned"), &spoiled);
         prop_assert_eq!(decoded.is_ok(), valid_payload("sequence.assigned", &spoiled));
+    }
+
+    /// The same for claims of the hub's role (ADR-0022).
+    #[test]
+    fn changed_claims_are_accepted_exactly_when_valid(
+        (event, change) in any_case(
+            any_claimed().prop_map(|claimed| Event::Hub(HubEvent::Claimed(claimed))),
+        ),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
+    /// A claim's epoch, set to each end of its range, next to them, and past them, decodes
+    /// exactly when the model says it is valid: a claim of epoch 1 succeeds none, and a later
+    /// one succeeds one.
+    #[test]
+    fn claim_epochs_decode_exactly_within_their_range(claimed in any_claimed()) {
+        let event = Event::Hub(HubEvent::Claimed(claimed));
+        for n in [0, 1, 2, LARGEST - 1, LARGEST, LARGEST + 1, u64::MAX] {
+            accepted_exactly_when_valid(&event, &FieldChange::Set { key: 1, value: Value::Unsigned(n) })?;
+        }
+    }
+
+    /// Cuts decode only when they keep every rule: a claim's cuts, spoiled in one way aimed at
+    /// one rule, decode exactly when the model says they are valid.
+    #[test]
+    fn cuts_decode_only_when_they_keep_every_rule(
+        claimed in any_later_claim(),
+        (how, at, other, choice) in any_cut_spoil(),
+    ) {
+        let payload = HubEvent::Claimed(claimed.clone()).to_value();
+        let cuts = spoil_cuts(&cuts_value(&claimed), how, at, other, choice);
+        let spoiled = changed("hub.claimed", &payload, &FieldChange::Set { key: 4, value: cuts });
+        let decoded = HubEvent::from_value(&schema_named("hub.claimed"), &spoiled);
+        prop_assert_eq!(decoded.is_ok(), valid_payload("hub.claimed", &spoiled));
+    }
+
+    /// A claim holds at most [`MOST_CUTS`] cuts: around the limit, devices of their own each cut
+    /// once decode exactly while they are within it.
+    #[test]
+    fn claims_hold_at_most_the_most_cuts(
+        claimed in any_later_claim(),
+        count in (MOST_CUTS - 2)..=(MOST_CUTS + 2),
+    ) {
+        let payload = changed(
+            "hub.claimed",
+            &HubEvent::Claimed(claimed).to_value(),
+            &FieldChange::Set { key: 4, value: cuts_of_many(count) },
+        );
+        let decoded = HubEvent::from_value(&schema_named("hub.claimed"), &payload);
+        prop_assert_eq!(decoded.is_ok(), count <= MOST_CUTS);
+        prop_assert_eq!(valid_payload("hub.claimed", &payload), count <= MOST_CUTS);
     }
 
     /// A record holds at most [`MOST_RUNS`] runs: around the limit, two devices taking turns
@@ -1717,7 +1962,7 @@ proptest! {
         let schema = schema_ref(&event);
         let newer = SchemaRef { name: schema.name.clone(), version: version.try_into().unwrap() };
         prop_assert_eq!(decode(&newer, &event.to_value()), Err(DecodeError::UnknownSchema));
-        for name in ["order.unknown", "payment.unknown", "sequence.unknown"] {
+        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown"] {
             let renamed = SchemaRef { name: SchemaName::new(name).unwrap(), version: schema.version };
             prop_assert_eq!(decode(&renamed, &event.to_value()), Err(DecodeError::UnknownSchema));
         }
@@ -1726,10 +1971,12 @@ proptest! {
         let as_order = OrderEvent::from_value(&schema, &payload).map(|_| ());
         let as_payment = PaymentEvent::from_value(&schema, &payload).map(|_| ());
         let as_sequence = SequenceEvent::from_value(&schema, &payload).map(|_| ());
+        let as_hub = HubEvent::from_value(&schema, &payload).map(|_| ());
         let crossed = match &event {
-            Event::Order(_) => [as_payment, as_sequence],
-            Event::Payment(_) => [as_order, as_sequence],
-            Event::Sequence(_) => [as_order, as_payment],
+            Event::Order(_) => [as_payment, as_sequence, as_hub],
+            Event::Payment(_) => [as_order, as_sequence, as_hub],
+            Event::Sequence(_) => [as_order, as_payment, as_hub],
+            Event::Hub(_) => [as_order, as_payment, as_sequence],
         };
         for decoded in crossed {
             prop_assert_eq!(decoded, Err(DecodeError::UnknownSchema));

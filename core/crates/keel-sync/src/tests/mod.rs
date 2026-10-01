@@ -1,9 +1,9 @@
-//! Known answers for frames (ADR-0019, ADR-0020): pinned byte for byte, and every way a frame is
-//! refused.
+//! Known answers for frames (ADR-0019, ADR-0020, ADR-0022): pinned byte for byte, as Python's
+//! `cbor2` encodes them, and every way a frame is refused.
 
 use keel_types::Id;
 
-use crate::frame::{Durable, Events, Frame, FrameError, Have, MAX_FRAME, VersionVector};
+use crate::frame::{Durable, Events, Frame, FrameError, Have, Heartbeat, MAX_FRAME, VersionVector};
 
 fn id<T>(n: u64) -> Id<T> {
     Id::parse(&format!("0192f0c1-0000-7000-8000-{n:012x}")).unwrap()
@@ -62,11 +62,65 @@ fn a_durable_frame_is_pinned_byte_for_byte() {
 }
 
 #[test]
+fn a_heartbeat_frame_is_pinned_byte_for_byte() {
+    let heartbeat = |priority, epoch, hub: Option<u64>, acting, beat| {
+        let hub = hub.map(id);
+        Frame::Heartbeat(Heartbeat { location: id(0x10), priority, epoch, hub, acting, beat })
+    };
+    let pinned = |parts: &[&[u8]]| {
+        let mut expected = vec![0x88, 0x01, 0x03];
+        expected.extend(id_cbor(0x10));
+        for part in parts {
+            expected.extend(*part);
+        }
+        expected
+    };
+    for (frame, expected) in [
+        // [1, 3, location, 2, 300, device 1, true, 5000]: of priority 2, device 1 acts as the hub
+        // of epoch 300, at its beat 5000.
+        (
+            heartbeat(2, 300, Some(1), true, Some(5000)),
+            pinned(&[&[0x02, 0x19, 0x01, 0x2c], &id_cbor(1), &[0xf5, 0x19, 0x13, 0x88]]),
+        ),
+        // [1, 3, location, 0, 0, null, false, null]: it can't be the hub, holds no claim, and
+        // gives no beat.
+        (heartbeat(0, 0, None, false, None), pinned(&[&[0x00, 0x00, 0xf6, 0xf4, 0xf6]])),
+        // [1, 3, location, 255, 2^63 − 1, device 2, false, 2^64 − 1]: the largest of each, the
+        // beat of device 2, the hub, passed on.
+        (
+            heartbeat(255, (1 << 63) - 1, Some(2), false, Some(u64::MAX)),
+            pinned(&[
+                &[0x18, 0xff, 0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+                &id_cbor(2),
+                &[0xf4, 0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            ]),
+        ),
+        // [1, 3, location, 1, 7, device 2, false, null]: device 2 is the hub of epoch 7, and the
+        // sender has had no beat of it.
+        (
+            heartbeat(1, 7, Some(2), false, None),
+            pinned(&[&[0x01, 0x07], &id_cbor(2), &[0xf4, 0xf6]]),
+        ),
+    ] {
+        assert_eq!(frame.encode(), expected);
+        assert_eq!(Frame::decode(&expected), Ok(frame));
+    }
+}
+
+#[test]
 fn an_empty_have_and_an_empty_batch_round_trip() {
     for frame in [
         Frame::Have(Have { location: id(0x10), vv: VersionVector::new(), acked: 0, asks: false }),
         Frame::Events(Events { batch: 0, events: Vec::new() }),
         Frame::Durable(Durable { location: id(0x10), vv: VersionVector::new() }),
+        Frame::Heartbeat(Heartbeat {
+            location: id(0x10),
+            priority: 0,
+            epoch: 0,
+            hub: None,
+            acting: false,
+            beat: None,
+        }),
     ] {
         assert_eq!(Frame::decode(&frame.encode()), Ok(frame));
     }
@@ -137,7 +191,73 @@ fn refused_frames() -> Vec<(&'static str, Vec<u8>, FrameError)> {
     ];
     refused.extend(refused_haves());
     refused.extend(refused_durables());
+    refused.extend(refused_heartbeats());
     refused
+}
+
+/// A `heartbeat` frame, `[1, 3, location, priority, epoch, hub, acting, beat]`, with `location`
+/// and each of `parts` as given.
+fn heartbeat_with(location: &[u8], parts: &[&[u8]]) -> Vec<u8> {
+    let items = parts.len().checked_add(3).and_then(|items| u8::try_from(items).ok());
+    let mut frame = vec![0x80 | items.unwrap(), 0x01, 0x03];
+    frame.extend(location);
+    for part in parts {
+        frame.extend(*part);
+    }
+    frame
+}
+
+/// The first 15 bytes of the identifier `id`, as a byte string.
+fn short(id: &[u8]) -> Vec<u8> {
+    let mut short = vec![0x4f];
+    short.extend(&id[1..16]);
+    short
+}
+
+/// `heartbeat` frames that are refused for their shape or a field out of range, and why.
+fn refused_heartbeats() -> Vec<(&'static str, Vec<u8>, FrameError)> {
+    let (location, hub) = (id_cbor(0x10), id_cbor(1));
+    let (priority, epoch, acting, beat): (&[u8], &[u8], &[u8], &[u8]) =
+        (&[0x02], &[0x01], &[0xf5], &[0x07]);
+    let at = |parts: &[&[u8]]| heartbeat_with(&location, parts);
+    let mut refused = vec![
+        ("a heartbeat without its beat", at(&[priority, epoch, &hub, acting])),
+        ("a heartbeat with an extra item", at(&[priority, epoch, &hub, acting, beat, &[0x00]])),
+        (
+            "a heartbeat's location of 15 bytes",
+            heartbeat_with(&short(&location), &[priority, epoch, &hub, acting, beat]),
+        ),
+        ("a priority of 256", at(&[&[0x19, 0x01, 0x00], epoch, &hub, acting, beat])),
+        ("a priority of −1", at(&[&[0x20], epoch, &hub, acting, beat])),
+        (
+            "an epoch of 2^63",
+            at(&[priority, &[0x1b, 0x80, 0, 0, 0, 0, 0, 0, 0], &hub, acting, beat]),
+        ),
+        ("an epoch that isn't a number", at(&[priority, &[0x41, 0x01], &hub, acting, beat])),
+        ("a hub of 15 bytes", at(&[priority, epoch, &short(&hub), acting, beat])),
+        ("acting that isn't a boolean", at(&[priority, epoch, &hub, &[0x01], beat])),
+        ("a beat of −1", at(&[priority, epoch, &hub, acting, &[0x20]])),
+        ("a beat that is a boolean", at(&[priority, epoch, &hub, &[0xf4], &[0xf4]])),
+    ];
+    refused.extend(refused_heartbeat_terms());
+    refused.into_iter().map(|(name, frame)| (name, frame, FrameError::Malformed)).collect()
+}
+
+/// `heartbeat` frames refused for what they say of the sender's term: a term has a hub and no
+/// term has one; acting needs a beat; and a beat, a term.
+fn refused_heartbeat_terms() -> Vec<(&'static str, Vec<u8>)> {
+    let (location, hub) = (id_cbor(0x10), id_cbor(1));
+    let (priority, epoch, acting, beat): (&[u8], &[u8], &[u8], &[u8]) =
+        (&[0x02], &[0x01], &[0xf5], &[0x07]);
+    let (null, no, zero): (&[u8], &[u8], &[u8]) = (&[0xf6], &[0xf4], &[0x00]);
+    let at = |parts: &[&[u8]]| heartbeat_with(&location, parts);
+    vec![
+        ("a term without its hub", at(&[priority, epoch, null, no, null])),
+        ("a hub without a term", at(&[priority, zero, &hub, no, null])),
+        ("acting without a term", at(&[priority, zero, null, acting, beat])),
+        ("a beat without a term", at(&[priority, zero, null, no, beat])),
+        ("acting without a beat", at(&[priority, epoch, &hub, acting, null])),
+    ]
 }
 
 /// `durable` frames that are refused, and why: as a `have`'s parts are.

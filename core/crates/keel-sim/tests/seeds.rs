@@ -44,6 +44,19 @@ fn without_faults_every_event_reaches_every_replica_within_a_second() {
     }
 }
 
+/// The hub crashes halfway through a run without other faults, and stays down 10 s: its standby
+/// claims the role within 5 s (ADR-0022).
+#[test]
+fn without_faults_a_crashed_hub_is_succeeded_within_five_seconds() {
+    for seed in seeds().take(8) {
+        let report =
+            simulate(&Config::calm_failover(seed)).unwrap_or_else(|failure| panic!("{failure}"));
+        let failover = report.failover.unwrap_or_else(|| panic!("seed {seed}: no failover"));
+        assert!(failover <= 5_000, "seed {seed}: the standby claimed {failover} ms after");
+        assert_eq!(report.claims, [2, 2], "seed {seed}: the hub's claim, then the standby's");
+    }
+}
+
 #[test]
 fn a_seed_replays_exactly() {
     for seed in seeds().take(2) {

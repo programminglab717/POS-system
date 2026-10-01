@@ -123,6 +123,8 @@ pub const UNKNOWN: u8 = 5;
 pub const FOREIGN: u8 = 9;
 /// Another device enrolled here, with a store of its own: a second replica.
 pub const REPLICA: u8 = 6;
+/// A device enrolled here that held the Store Hub's role before the store's own device.
+pub const FORMER: u8 = 7;
 
 pub const DRIFT: Duration = Duration::from_secs(60);
 
@@ -198,7 +200,7 @@ pub fn trusted_first() -> SignedEvent {
 /// Every device, enrolled where it belongs; [`REVOKED`] revoked after [`trusted_first`].
 pub fn registry() -> DeviceRegistry {
     let mut registry = DeviceRegistry::new();
-    for n in [OWN, PEERS[0], PEERS[1], REVOKED, REPLICA] {
+    for n in [OWN, PEERS[0], PEERS[1], REVOKED, REPLICA, FORMER] {
         registry.enroll(device(n), here(), signer(n).public_key().clone()).unwrap();
     }
     registry.enroll(device(FOREIGN), elsewhere(), signer(FOREIGN).public_key().clone()).unwrap();

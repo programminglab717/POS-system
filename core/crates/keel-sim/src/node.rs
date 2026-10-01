@@ -1,7 +1,8 @@
-//! A node: a device, the hub or the cloud, with its store on a RAM disk, its replicator and its
-//! clock. A node goes down and comes back up; while it is down, its store is closed and its
-//! replicator forgotten, as in a process that crashed.
+//! A node: a device, the hub, its standby or the cloud, with its store on a RAM disk, its
+//! replicator and its clock. A node goes down and comes back up; while it is down, its store is
+//! closed and its replicator forgotten, as in a process that crashed.
 
+use core::num::NonZeroU8;
 use core::time::Duration;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -13,23 +14,29 @@ use keel_store::{Faults, Point, Store, StoreConfig, StoreError, StoreKey};
 use keel_sync::{Outgoing, Replicator, Roles, StoreReplica, SyncConfig, VersionVector};
 use keel_types::{Id, IdGenerator, SeededEntropy, Timestamp};
 
-/// The hub.
+/// The hub appliance: the most preferred candidate for the Store Hub's role (ADR-0022).
 pub(crate) const HUB: u8 = 10;
+/// Its standby: the next.
+pub(crate) const STANDBY: u8 = 11;
 /// The cloud replica.
 pub(crate) const CLOUD: u8 = 20;
 /// The fresh store the replicas' projections are compared with at the end.
 pub(crate) const ORACLE: u8 = 30;
 
-/// The hub's epoch: 1, until hubs are elected (ADR-0020).
-pub(crate) const EPOCH: u64 = 1;
-
-/// Node `n`'s roles: the hub sequences, with the cloud as its durable peer.
-pub(crate) fn roles(n: u8) -> Roles {
-    if n == HUB {
-        Roles { sequencer: Some(EPOCH), durable: Some(device(CLOUD)) }
-    } else {
-        Roles::default()
+/// Node `n`'s priority as the Store Hub: the hub's 2, the standby's 1; no other node can be.
+pub(crate) fn priority(n: u8) -> Option<NonZeroU8> {
+    match n {
+        HUB => NonZeroU8::new(2),
+        STANDBY => NonZeroU8::new(1),
+        _ => None,
     }
+}
+
+/// Node `n`'s roles: the hub and its standby may be the Store Hub, and name the cloud their
+/// durable peer.
+pub(crate) fn roles(n: u8) -> Roles {
+    let hub = priority(n);
+    Roles { hub, durable: hub.map(|_| device(CLOUD)) }
 }
 
 /// Milliseconds since the Unix epoch at the simulation's time 0: 2026-09-30T10:00:00Z.
@@ -157,8 +164,6 @@ pub(crate) struct Node {
     pub(crate) incarnation: u64,
     /// When it last started, in virtual milliseconds.
     pub(crate) started: i64,
-    /// Whether its store was restored from an older copy when it last started.
-    pub(crate) rolled_back: bool,
     /// How long to stay down after an armed crash in the middle of a write.
     pub(crate) down_for: i64,
     /// What it held when it last went down.
@@ -185,7 +190,6 @@ impl Node {
             offset: 0,
             incarnation: 0,
             started: 0,
-            rolled_back: false,
             down_for: 0,
             held: VersionVector::new(),
             tick_at: None,

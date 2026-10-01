@@ -1,10 +1,11 @@
 //! Answering requests for orders (ADR-0021): the Store Hub's grants and refusals.
 //!
 //! The orders projection keeps, for each order, the requests for it that no answer names yet,
-//! and indexes the orders that have any. The hub answers them all in a write of its own, order
-//! by order: it folds the order, sees whether a payment of the order is in progress, and lets
-//! the order's rules ([`Order::answers`]) answer each request in canonical order. Each answer is
-//! an event on the order's stream, recorded by the hub, caused by the request it answers.
+//! and indexes the orders that have any. The hub, the store that holds the winning claim
+//! (ADR-0022), answers them all in a write of its own, in its epoch, order by order: it folds the
+//! order, sees whether a payment of the order is in progress, and lets the order's rules
+//! ([`Order::answers`]) answer each request in canonical order. Each answer is an event on the
+//! order's stream, recorded by the hub, caused by the request it answers.
 
 use keel_domain::order::{Epoch, Order, OrderEvent};
 use keel_domain::schema::DomainEvent;
@@ -19,6 +20,7 @@ use crate::error::StoreError;
 use crate::projection;
 use crate::schema::id;
 use crate::store::noted;
+use crate::terms;
 use crate::write::Writing;
 
 /// Why an answer can't be recorded: only an epoch out of range can make it so.
@@ -27,16 +29,17 @@ fn unrecordable<T>(_: T) -> StoreError {
 }
 
 impl<S: Signer, E: Entropy> Writing<'_, S, E> {
-    /// Answers, as the hub in `epoch`, every request for an order the store holds that no answer
-    /// names yet, at physical time `now`, and returns the answers: none when no request waits.
+    /// Answers, as the hub, every request for an order the store holds that no answer names yet,
+    /// at physical time `now`, and returns the answers: none when no request waits.
     pub(crate) fn answer_requests(
         &mut self,
-        epoch: u64,
         now: Timestamp,
     ) -> Result<Vec<SignedEvent>, StoreError> {
-        let epoch = Epoch::new(epoch).ok_or(StoreError::OutOfRange("an epoch"))?;
         let health = self.health;
-        let waiting = waiting(self.tx).map_err(|error| noted(health, error))?;
+        let own = self.writer.device();
+        let (epoch, waiting) = terms::own_epoch(self.tx, own)
+            .and_then(|epoch| Ok((epoch, waiting(self.tx)?)))
+            .map_err(|error| noted(health, error))?;
         let mut written = Vec::new();
         for order_id in waiting {
             let answered =

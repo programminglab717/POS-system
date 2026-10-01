@@ -1,7 +1,7 @@
 //! Known-answer tests: each rule of the store, worked through with a few devices.
 
 use core::fmt::Write as _;
-use core::num::{NonZeroU32, NonZeroU64};
+use core::num::{NonZeroU8, NonZeroU32, NonZeroU64};
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::path::{Path, PathBuf};
@@ -25,6 +25,7 @@ mod outbox;
 mod ownership;
 mod projections;
 mod sequencing;
+mod terms;
 
 fn id<T>(n: u64) -> Id<T> {
     Id::parse(&format!("0192f0c1-0000-7000-8000-{n:012x}")).unwrap()
@@ -186,6 +187,32 @@ fn log_of(n: u8, location: Id<Location>, count: usize) -> Vec<SignedEvent> {
             writer.prepare(draft(1, u64::from(n)), at).unwrap().commit()
         })
         .collect()
+}
+
+/// Device `n`'s log writer, starting its log.
+fn writer_of(n: u8) -> LogWriter<SoftwareSigner, SeededEntropy> {
+    let (device, signer) = device(n);
+    let config = LogConfig {
+        device,
+        location: here(),
+        head: LogHead::EMPTY,
+        latest_hlc: Hlc::ZERO,
+        max_forward_drift: Duration::from_secs(60),
+    };
+    LogWriter::new(config, signer, SeededEntropy::new(u64::from(n)))
+}
+
+/// Claims the hub's role for `store`, at priority 1, at `now`; it mustn't hold the winning
+/// claim yet.
+fn claim(store: &mut TestStore, now: Timestamp) -> SignedEvent {
+    store.claim(NonZeroU8::MIN, now).unwrap().unwrap()
+}
+
+/// The store at `path`, as the Store Hub: the first thing it did was claim the role.
+fn open_hub(path: &Path) -> TestStore {
+    let mut store = open(path);
+    claim(&mut store, at(100));
+    store
 }
 
 fn append(store: &mut TestStore, drafts: Vec<EventDraft>, now: Timestamp) -> Vec<SignedEvent> {

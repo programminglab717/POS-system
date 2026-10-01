@@ -17,6 +17,11 @@ tests often catch a bug that a property test's generators never reach, so each i
 A bug that only a unit test can catch, such as a database setting nothing outside the crate can
 observe, ends with a fifth element, "unit", and a comment saying why; `--props` skips it.
 With `--ignored`, tests marked `#[ignore]`, such as exhaustive sweeps, run too, as they do in CI.
+With `--release`, the tests build and run optimized: as strict, since overflow checks are on in
+both profiles and the kernel has no debug assertions, and many times faster for keel-sim's
+simulations, which take most of keel-sync's run. With `--stale`, nothing is planted or run: the
+runner only checks that every bug's text is still in the code, as CI does for every crate, since
+a change can leave a bug behind without touching its list.
 
 A bug list may also set `ALSO`, other crates whose tests exercise the crate and run with its own
 (keel-sim's simulations, for keel-sync), and `KNOWN_ANSWERS`, the crate's integration tests that
@@ -29,6 +34,8 @@ If a run is killed outright, `git diff` shows the planted bug; `git checkout` th
     python3 tools/planted-bugs/run.py keel-domain            # every bug, the whole test suite
     python3 tools/planted-bugs/run.py keel-domain --props    # every bug, property tests only
     python3 tools/planted-bugs/run.py keel-domain comp       # bugs whose name mentions "comp"
+    python3 tools/planted-bugs/run.py keel-sync --props --release  # the simulations optimized
+    python3 tools/planted-bugs/run.py keel-store --stale     # only check the bugs' texts
 """
 
 import argparse
@@ -50,14 +57,20 @@ def parse_args():
     parser.add_argument("--props", action="store_true", help="run only the property tests")
     parser.add_argument("--ignored", action="store_true",
                         help="also run tests marked #[ignore], such as exhaustive sweeps")
+    parser.add_argument("--release", action="store_true",
+                        help="build and run the tests optimized, with overflow checks still on")
+    parser.add_argument("--stale", action="store_true",
+                        help="plant nothing: only check that every bug's text is in the code")
     parser.add_argument("--cases", type=int, default=500, help="proptest cases (default 500)")
     parser.add_argument("--root", type=pathlib.Path, default=HERE.parent.parent,
                         help="the repository to plant bugs in (default: this one)")
     return parser.parse_intermixed_args()
 
 
-def test_command(crate_dir, crate, props, ignored, also=(), known_answers=()):
+def test_command(crate_dir, crate, props, ignored, release, also=(), known_answers=()):
     command = ["cargo", "test", "-p", crate, "--no-fail-fast"]
+    if release:
+        command.append("--release")
     for other in also:
         command += ["-p", other]
     if props:
@@ -84,13 +97,23 @@ def unit_only(bug):
     return len(bug) == 5 and bug[4] == "unit"
 
 
+def staleness(crate_dir, bug):
+    """Why `bug` can't be planted, its text not being in its file exactly once; else None."""
+    file, old = bug[1], bug[2]
+    path = crate_dir / file
+    if not path.is_file():
+        return f"there is no {file}"
+    count = path.read_text().count(old)
+    return None if count == 1 else f"the text to replace occurs {count} times in {file}"
+
+
 def run_bug(root, crate_dir, command, env, bug):
     name, file, old, new = bug[:4]
     path = crate_dir / file
+    stale = staleness(crate_dir, bug)
+    if stale:
+        return "STALE", stale
     source = path.read_text()
-    count = source.count(old)
-    if count != 1:
-        return "STALE", f"the text to replace occurs {count} times in {file}"
     try:
         path.write_text(source.replace(old, new))
         result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
@@ -128,12 +151,19 @@ def main():
         sys.exit(f"bug names must be unique: {sorted(repeated)}")
     if args.filters:
         bugs = [bug for bug in bugs if any(text in bug[0] for text in args.filters)]
+    if args.stale:
+        stale = [(bug[0], staleness(crate_dir, bug)) for bug in bugs]
+        stale = [(name, why) for name, why in stale if why]
+        for name, why in stale:
+            print(f"STALE    {name}: {why}", flush=True)
+        print(f"{len(bugs)} planted bugs in {args.crate}, {len(stale)} stale", flush=True)
+        return 1 if stale else 0
 
     # Restore the file being mutated even on Ctrl-C or `kill`: both raise KeyboardInterrupt,
     # which the `finally` in run_bug handles.
     signal.signal(signal.SIGTERM, signal.default_int_handler)
 
-    command = test_command(crate_dir, args.crate, args.props, args.ignored,
+    command = test_command(crate_dir, args.crate, args.props, args.ignored, args.release,
                            listed.get("ALSO", ()), listed.get("KNOWN_ANSWERS", ()))
     env = {
         **os.environ,

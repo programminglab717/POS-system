@@ -13,6 +13,10 @@ use core::fmt::Write as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use keel_domain::hub::HubEvent;
+use keel_domain::order::OrderEvent;
+use keel_domain::schema::DomainEvent;
+use keel_domain::sequence::SequenceEvent;
 use keel_events::envelope::{Device, Event};
 use keel_events::event::SignedEvent;
 use keel_events::hash::EventHash;
@@ -24,7 +28,7 @@ use keel_types::{Hlc, Id};
 use crate::check;
 use crate::config::Config;
 use crate::monitor::Monitor;
-use crate::node::{CLOUD, HUB, Node, SimError, device, registry, text};
+use crate::node::{CLOUD, HUB, Node, STANDBY, SimError, device, priority, registry, text};
 use crate::rng::Rng;
 use crate::workload::{self, Made, Move, Station, WorkError};
 
@@ -118,11 +122,13 @@ pub struct Report {
     pub moves: BTreeMap<Move, [u64; 3]>,
     /// Frames sent, lost, duplicated, dropped by a cut link, and sent to a node that was down.
     pub frames: [u64; 5],
-    /// Crashes between writes, crashes in the middle of one, rollbacks, clock jumps, and cuts.
-    pub faults: [u64; 5],
+    /// Crashes between writes, crashes in the middle of one, rollbacks, clock jumps, cuts, and
+    /// splits.
+    pub faults: [u64; 6],
     /// Events lost to rollbacks, held by no replica but their device's.
     pub lost: u64,
-    /// Devices that wrote before their log settled after a rollback, as islands.
+    /// Devices that forked their log: restored from an older copy, they wrote before they held
+    /// it back as far as another replica did.
     pub forked: u64,
     /// Writes a device held back until its log settled.
     pub held_back: u64,
@@ -132,15 +138,23 @@ pub struct Report {
     /// last arrival came while no node was down and no link was cut. In a run without faults,
     /// that is every event.
     pub max_lag: i64,
-    /// The hub's sequencing records, and the events they number.
+    /// The sequencing records that count, on the winning chain of terms, and the events they
+    /// number.
     pub sequenced: [u64; 2],
+    /// Claims of the Store Hub's role, and the winning claim's epoch (ADR-0022).
+    pub claims: [u64; 2],
+    /// How long after the node serving as the hub crashed the next claim by another node came,
+    /// in milliseconds, the longest such wait in the run; `None` if the hub never crashed so.
+    pub failover: Option<i64>,
+    /// The moves devices made as islands, hearing no hub.
+    pub islands: u64,
     /// `durable` frames sent.
     pub durable_frames: u64,
-    /// The requests for orders the hub held (ADR-0021), its grants, and its refusals because the
-    /// lease had moved on, the device already owned the order, and a payment was in progress.
+    /// The requests for orders (ADR-0021), the hubs' grants, and their refusals because the lease
+    /// had moved on, the device already owned the order, and a payment was in progress.
     pub answers: [u64; 5],
-    /// In the orders' folds on the hub: overrides that applied, stale overrides, stale grants,
-    /// and events recorded by a device that didn't own the order.
+    /// In the orders' folds: overrides that applied, stale overrides, stale grants, and events
+    /// recorded by a device that didn't own the order.
     pub ownership: [u64; 4],
 }
 
@@ -216,7 +230,8 @@ pub(crate) struct Run {
     pub(crate) report: Report,
     pub(crate) appended: Vec<Appended>,
     pub(crate) rollbacks: Vec<Rollback>,
-    /// Devices that wrote before their log settled after a rollback.
+    /// Devices that forked their log: restored from an older copy, they wrote before they held
+    /// it back as far as another replica did.
     pub(crate) forked: BTreeSet<u8>,
     /// Where each device's own log stood when its snapshot was taken.
     snapshot_heads: BTreeMap<u8, u64>,
@@ -233,6 +248,16 @@ pub(crate) struct Run {
     pub(crate) store_durable: BTreeSet<Id<Event>>,
     /// The event each device last appended at each position of its log.
     latest: BTreeMap<(u8, u64), Id<Event>>,
+    /// How far into its own log the simulator has audited what each candidate for the hub
+    /// wrote.
+    audited: BTreeMap<u8, u64>,
+    /// The nodes whose replicator's own log has settled since it last started.
+    settled: BTreeSet<u8>,
+    /// Each answer a candidate wrote to a request for an order, and the term it wrote it in: its
+    /// node and epoch.
+    pub(crate) answer_terms: BTreeMap<Id<Event>, (u8, u64)>,
+    /// The node serving as the hub that crashed, and when, until another node claims.
+    hub_lost: Option<(u8, i64)>,
     pub(crate) base: PathBuf,
     /// Whether to print every action, when `KEEL_SIM_LOG` is set.
     log: bool,
@@ -241,13 +266,16 @@ pub(crate) struct Run {
 impl Run {
     fn new(config: Config, base: PathBuf) -> Result<Run, SimError> {
         let devices: Vec<u8> = (1..=config.devices).collect();
-        let all: Vec<u8> = devices.iter().copied().chain([HUB, CLOUD]).collect();
+        let all: Vec<u8> = devices.iter().copied().chain([HUB, STANDBY, CLOUD]).collect();
         let mut rng = Rng::new(config.seed);
         let mut nodes = BTreeMap::new();
         for &n in &all {
-            // A star: devices to the hub, the hub to the cloud.
-            let peers =
-                if n == HUB { devices.iter().copied().chain([CLOUD]).collect() } else { vec![HUB] };
+            // Each device to the hub and the standby, and those two to each other and the cloud.
+            let peers = match n {
+                HUB => devices.iter().copied().chain([STANDBY, CLOUD]).collect(),
+                STANDBY => devices.iter().copied().chain([HUB, CLOUD]).collect(),
+                _ => vec![HUB, STANDBY],
+            };
             let mut node = Node::new(n, peers, &base, rng.next())?;
             node.offset = rng.between(-20_000, 20_001);
             nodes.insert(n, node);
@@ -279,6 +307,10 @@ impl Run {
             durable_marked: BTreeMap::new(),
             store_durable: BTreeSet::new(),
             latest: BTreeMap::new(),
+            audited: BTreeMap::new(),
+            settled: BTreeSet::new(),
+            answer_terms: BTreeMap::new(),
+            hub_lost: None,
             base,
             log: std::env::var_os("KEEL_SIM_LOG").is_some(),
         })
@@ -339,9 +371,9 @@ impl Run {
         Err(SimError::Broken("the run ran out of actions before the replicas agreed".to_owned()))
     }
 
-    /// Whether every node is up and settled, and holds what every other node holds. A device
-    /// whose log forked is left out: replicas hold different versions of its log for good, and
-    /// it can't settle.
+    /// Whether every node is up and settled, and holds what every other node holds, the same
+    /// winning claim among it, whose device alone serves as the hub. A device whose log forked is
+    /// left out: replicas hold different versions of its log for good, and it can't settle.
     fn agreed(&self) -> bool {
         let forked: BTreeSet<Id<Device>> = self.forked.iter().map(|&n| device(n)).collect();
         let mut vectors = Vec::new();
@@ -357,6 +389,22 @@ impl Run {
                 .map(|(origin, position)| (*origin, *position))
                 .collect();
             vectors.push(vector);
+        }
+        // Every node holds the same winning claim, and its device alone serves as the hub.
+        let terms: Vec<_> = self
+            .nodes
+            .values()
+            .filter_map(|node| node.replicator.as_ref()?.term().copied())
+            .collect();
+        let Some(term) = terms.first() else { return false };
+        if terms.len() != self.nodes.len() || terms.iter().any(|other| other != term) {
+            return false;
+        }
+        let serving = self.nodes.iter().filter(|(_, node)| {
+            node.replicator.as_ref().is_some_and(keel_sync::Replicator::serving)
+        });
+        if !serving.map(|(n, _)| device(*n)).eq([term.device]) {
+            return false;
         }
         // Every watermark but the cloud's own reaches everything the cloud holds.
         let cloud = self.cloud_holds();
@@ -405,6 +453,14 @@ impl Run {
                         durable.vv.iter().map(|(d, p)| (short(d), *p)).collect();
                     format!("{from}->{to} durable {vv:?}")
                 }
+                Ok(keel_sync::Frame::Heartbeat(heartbeat)) => {
+                    let acting = if heartbeat.acting { ", acting" } else { "" };
+                    let hub = heartbeat.hub.map(|hub| short(&hub));
+                    format!(
+                        "{from}->{to} heartbeat priority {} epoch {} hub {hub:?}{acting} beat {:?}",
+                        heartbeat.priority, heartbeat.epoch, heartbeat.beat
+                    )
+                }
                 Err(error) => format!("{from}->{to} undecodable: {error}"),
             },
             other => format!("{other:?}"),
@@ -447,8 +503,11 @@ impl Run {
         let working = self.config.working;
         let devices: Vec<u8> = (1..=self.config.devices).collect();
         let nodes: Vec<u8> = self.nodes.keys().copied().collect();
-        let links: Vec<(u8, u8)> =
-            devices.iter().map(|&d| (d, HUB)).chain([(HUB, CLOUD)]).collect();
+        let links: Vec<(u8, u8)> = devices
+            .iter()
+            .flat_map(|&d| [(d, HUB), (d, STANDBY)])
+            .chain([(HUB, STANDBY), (HUB, CLOUD), (STANDBY, CLOUD)])
+            .collect();
         for _ in 0..self.config.partitions {
             let Some(&(a, b)) = self.rng.pick(&links) else { continue };
             let from = self.rng.between(0, working);
@@ -461,6 +520,12 @@ impl Run {
             }
             self.cuts.push(Cut { a, b, from, to });
             self.report.faults[4] = self.report.faults[4].saturating_add(1);
+        }
+        for _ in 0..self.config.splits {
+            self.plan_split(&devices);
+        }
+        if let Some(time) = self.config.hub_crash {
+            self.at(time, Action::Crash { node: HUB, mid_write: false, down: 10_000 });
         }
         for _ in 0..self.config.crashes {
             let Some(&node) = self.rng.pick(&nodes) else { continue };
@@ -487,6 +552,37 @@ impl Run {
         }
     }
 
+    /// Plans a split: for a while, the store's network is cut in two, the hub on one side and the
+    /// standby on the other, each device on one side, and the cloud reaching one side, both or
+    /// neither.
+    fn plan_split(&mut self, devices: &[u8]) {
+        let from = self.rng.between(0, self.config.working);
+        let to = from.saturating_add(self.rng.between(1_000, 15_000));
+        let (mut one, mut other) = (vec![HUB], vec![STANDBY]);
+        for &n in devices {
+            if self.rng.chance(500) { one.push(n) } else { other.push(n) }
+        }
+        let cloud = self.rng.below(4);
+        match cloud {
+            0 => one.push(CLOUD),
+            1 => other.push(CLOUD),
+            _ => {}
+        }
+        let mut cut: Vec<(u8, u8)> =
+            one.iter().flat_map(|&a| other.iter().map(move |&b| (a, b))).collect();
+        if cloud == 3 {
+            cut.extend([(CLOUD, HUB), (CLOUD, STANDBY)]);
+        }
+        if self.log {
+            #[allow(clippy::print_stderr, reason = "KEEL_SIM_LOG asks for every fault")]
+            {
+                eprintln!("{from:>7} split {one:?} from {other:?} until {to}, the cloud {cloud}");
+            }
+        }
+        self.cuts.extend(cut.into_iter().map(|(a, b)| Cut { a, b, from, to }));
+        self.report.faults[5] = self.report.faults[5].saturating_add(1);
+    }
+
     /// Starts node `n`: opens its store, tells its peers what it holds, and sets it ticking and,
     /// if it is a device, working.
     fn start(&mut self, n: u8) -> Result<(), SimError> {
@@ -494,6 +590,7 @@ impl Run {
         self.monitor.forget(n);
         self.watermarks.remove(&n);
         self.durable_marked.remove(&n);
+        self.settled.remove(&n);
         let (out, incarnation) = {
             let Some(node) = self.nodes.get_mut(&n) else { return Ok(()) };
             let out = node.start(now, &self.registry, self.sync)?;
@@ -501,7 +598,7 @@ impl Run {
         };
         self.send(n, out);
         self.set_timer(n);
-        if n != HUB && n != CLOUD {
+        if priority(n).is_none() && n != CLOUD {
             let pace = self.rng.between(self.config.pace.0, self.config.pace.1);
             self.at(now.saturating_add(pace), Action::Work { node: n, incarnation });
         }
@@ -615,7 +712,7 @@ impl Run {
             Ok(out) => self.send(to, out),
             Err(error) => self.failed(to, &error)?,
         }
-        self.watch(to);
+        self.watch(to)?;
         self.set_timer(to);
         self.observe(to);
         Ok(())
@@ -663,7 +760,7 @@ impl Run {
             }
             Err(error) => self.failed(n, &error)?,
         }
-        self.watch(n);
+        self.watch(n)?;
         self.set_timer(n);
         Ok(())
     }
@@ -695,26 +792,40 @@ impl Run {
             return Ok(());
         }
         let next = now.saturating_add(self.rng.between(self.config.pace.0, self.config.pace.1));
-        let (settled, waited, rolled_back) = {
+        let (settled, waited) = {
             let Some(node) = self.nodes.get(&n) else { return Ok(()) };
             if node.incarnation != incarnation || !node.is_up() {
                 return Ok(());
             }
             let settled = node.replicator.as_ref().is_some_and(keel_sync::Replicator::settled);
             let waited = now >= node.started.saturating_add(SETTLE_WAIT);
-            (settled, waited, node.rolled_back)
+            (settled, waited)
         };
-        if settled && let Some(node) = self.nodes.get_mut(&n) {
-            node.rolled_back = false;
-        }
         if !settled && !waited {
             self.report.held_back = self.report.held_back.saturating_add(1);
             self.at(now.saturating_add(200), Action::Work { node: n, incarnation });
             return Ok(());
         }
-        // Whether the device is cut off from the hub, which only the simulator knows.
-        let island = self.cut(n, HUB) || !self.nodes.get(&HUB).is_some_and(Node::is_up);
+        // Whether the device hears no hub, and works as an island (ADR-0022).
+        let island = self
+            .nodes
+            .get(&n)
+            .and_then(|node| node.replicator.as_ref())
+            .is_none_or(|replicator| !replicator.hub_reachable());
+        if island {
+            self.report.islands = self.report.islands.saturating_add(1);
+        }
         let station = Station { device: device(n), island };
+        // How far into the device's log it holds, and the furthest any other replica does: a
+        // device restored from an older copy that writes before it holds its log back as far
+        // forks it, whether or not its log had settled, for a peer holding the rest may not have
+        // been heard (ADR-0022).
+        let holds = |node: &Node| {
+            let held = node.replicator.as_ref().map_or(&node.held, |r| r.version_vector());
+            held.get(&device(n)).copied().unwrap_or(0)
+        };
+        let own = self.nodes.get(&n).map_or(0, holds);
+        let others = self.nodes.iter().filter(|(m, _)| **m != n).map(|(_, node)| holds(node)).max();
         let result = {
             let Some(node) = self.nodes.get_mut(&n) else { return Ok(()) };
             let time = node.time(now);
@@ -742,7 +853,7 @@ impl Run {
                 match made {
                     Made::Appended(events) => {
                         counts[0] = counts[0].saturating_add(1);
-                        if !settled && rolled_back {
+                        if others.is_some_and(|others| others > own) {
                             self.forked.insert(n);
                         }
                         self.appended_by(n, &events, after)?;
@@ -786,7 +897,7 @@ impl Run {
             Ok(out) => self.send(n, out),
             Err(error) => self.failed(n, &error)?,
         }
-        self.watch(n);
+        self.watch(n)?;
         self.set_timer(n);
         self.observe(n);
         Ok(())
@@ -822,7 +933,14 @@ impl Run {
     /// Takes node `n` down now, between writes or in the middle of one, and brings it back up
     /// after its downtime.
     fn crash_now(&mut self, n: u8, mid_write: bool) {
+        // What it wrote before the crash, it wrote in the term it held then.
+        if let Err(error) = self.audit(n) {
+            self.broken.get_or_insert(error.to_string());
+        }
         let Some(node) = self.nodes.get_mut(&n) else { return };
+        if node.replicator.as_ref().is_some_and(keel_sync::Replicator::serving) {
+            self.hub_lost = Some((n, self.now));
+        }
         node.plan.disarm();
         node.go_down();
         self.monitor.forget(n);
@@ -857,7 +975,6 @@ impl Run {
         node.go_down();
         self.monitor.forget(n);
         node.restore_snapshot()?;
-        node.rolled_back = true;
         let kept = self.snapshot_heads.get(&n).copied().unwrap_or(0);
         self.rollbacks.push(Rollback { node: n, kept, at: self.now });
         self.report.faults[2] = self.report.faults[2].saturating_add(1);
@@ -884,11 +1001,29 @@ impl Run {
     }
 
     /// Checks node `n`'s replicator after it handled something: its watermark only rose since it
-    /// started. Notes how far into a device's own log its events are store-durable.
-    fn watch(&mut self, n: u8) {
-        let Some(replicator) = self.nodes.get(&n).and_then(|node| node.replicator.as_ref()) else {
-            return;
-        };
+    /// started; its log settled only while no peer it had heard from held more of it; and, for
+    /// a candidate for the hub, what it wrote. Notes how far into a device's own log its events
+    /// are store-durable.
+    fn watch(&mut self, n: u8) -> Result<(), SimError> {
+        self.audit(n)?;
+        let Some(node) = self.nodes.get(&n) else { return Ok(()) };
+        let Some(replicator) = node.replicator.as_ref() else { return Ok(()) };
+        if replicator.settled() && self.settled.insert(n) {
+            // It settled in what it just handled: it must hold as much of its log as each peer
+            // said it holds (ADR-0022, decision 7), or it may fork it.
+            let own = replicator.version_vector().get(&device(n)).copied().unwrap_or(0);
+            let holds_more = node.peers.iter().find(|&&peer| {
+                replicator
+                    .known(device(peer))
+                    .and_then(|known| known.get(&device(n)))
+                    .is_some_and(|&held| held > own)
+            });
+            if let Some(peer) = holds_more {
+                self.broken.get_or_insert(format!(
+                    "node {n}'s log settled at {own} while node {peer} said it holds more of it"
+                ));
+            }
+        }
         let watermark = replicator.durable().clone();
         let store_durable = replicator.store_durable();
         if let Some(before) = self.watermarks.get(&n)
@@ -907,6 +1042,78 @@ impl Run {
             }
         }
         self.durable_marked.insert(n, marked.max(store_durable));
+        Ok(())
+    }
+
+    /// Audits what candidate `n` wrote of its own since the simulator last looked: records and
+    /// answers only while it served, in the epoch of the term it held (ADR-0022). Notes the term
+    /// of each answer, its claims, and how long after the hub crashed another node claimed.
+    fn audit(&mut self, n: u8) -> Result<(), SimError> {
+        if priority(n).is_none() {
+            return Ok(());
+        }
+        let now = self.now;
+        let Some(node) = self.nodes.get(&n) else { return Ok(()) };
+        let (Some(store), Some(replicator)) = (node.store.as_ref(), node.replicator.as_ref())
+        else {
+            return Ok(());
+        };
+        let own = replicator.version_vector().get(&device(n)).copied().unwrap_or(0);
+        let audited = self.audited.get(&n).copied().unwrap_or(0);
+        if own <= audited {
+            return Ok(());
+        }
+        let written = store
+            .log(device(n), audited, u32::MAX)
+            .map_err(|error| SimError::Store(n, text(&error)))?;
+        let serving = replicator.serving();
+        let epoch = replicator.term().map_or(0, |term| term.epoch.get());
+        for event in &written {
+            let body = event.body();
+            let kind = body.stream.kind.as_str();
+            let wrote =
+                if let Ok(HubEvent::Claimed(_)) = HubEvent::decode(&body.schema, &body.payload) {
+                    self.report.claims[0] = self.report.claims[0].saturating_add(1);
+                    if let Some((lost, at)) = self.hub_lost
+                        && lost != n
+                    {
+                        let waited = now.saturating_sub(at);
+                        self.report.failover =
+                            Some(self.report.failover.map_or(waited, |w| w.max(waited)));
+                        self.hub_lost = None;
+                    }
+                    None
+                } else if let Ok(SequenceEvent::Assigned(record)) =
+                    SequenceEvent::decode(&body.schema, &body.payload)
+                {
+                    Some(record.epoch)
+                } else if kind == OrderEvent::STREAM {
+                    match OrderEvent::decode(&body.schema, &body.payload) {
+                        Ok(OrderEvent::OwnershipGranted(grant)) => {
+                            self.answer_terms.insert(body.event_id, (n, epoch));
+                            Some(grant.epoch.get())
+                        }
+                        Ok(OrderEvent::OwnershipRefused { .. }) => {
+                            self.answer_terms.insert(body.event_id, (n, epoch));
+                            Some(epoch)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+            if let Some(of) = wrote
+                && (!serving || of != epoch)
+            {
+                self.broken.get_or_insert(format!(
+                    "node {n} wrote its event {}, of epoch {of}, serving: {serving}, holding a \
+                     term of epoch {epoch}",
+                    body.origin_seq
+                ));
+            }
+        }
+        self.audited.insert(n, own);
+        Ok(())
     }
 
     /// Notes what node `n` now holds, for the lag of events reaching every replica.

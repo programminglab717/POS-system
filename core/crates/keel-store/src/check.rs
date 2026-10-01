@@ -3,8 +3,10 @@
 //!
 //! The check stops at damage it can't see past: pages that don't authenticate, then a malformed
 //! file. Past those, it checks the store's own data: events and their logs, the store's identity
-//! and clock, projections against a rebuild, the outbox and the quarantine.
+//! and clock, projections against a rebuild, the chain of terms against the claims, the outbox
+//! and the quarantine.
 
+use keel_domain::hub;
 use keel_events::envelope::{Device, Location};
 use keel_events::event::SignedEvent;
 use keel_events::hash::EventHash;
@@ -18,6 +20,7 @@ use crate::outbox;
 use crate::projection::{self, Projection};
 use crate::rows;
 use crate::schema::{self, hlc_bytes};
+use crate::terms;
 use crate::write::Reason;
 
 /// Something the full check found wrong with a store.
@@ -66,6 +69,9 @@ pub enum Problem {
         /// The effect's key.
         key: Vec<u8>,
     },
+    /// The chain of terms the store keeps isn't what the claims it holds make (ADR-0022).
+    /// Rebuilding the projections mends it.
+    Terms,
     /// The quarantine's row `row` (its arrival) isn't filed under its message's digest, or has a
     /// reason the store doesn't know.
     Quarantined {
@@ -92,6 +98,7 @@ pub(crate) fn run(
     events(db, location, &mut problems)?;
     identity(db, device, location, &mut problems)?;
     projections(db, &mut problems)?;
+    terms(db, &mut problems)?;
     outbox::check(db, &mut problems)?;
     quarantine(db, &mut problems)?;
     Ok(problems)
@@ -274,6 +281,22 @@ fn projections(db: &mut Connection, problems: &mut Vec<Problem>) -> Result<(), S
         }
     }
     tx.rollback()?;
+    Ok(())
+}
+
+/// Checks the chain of terms the store keeps against what the claims it holds make. Claims that
+/// don't read back make no chain to check against.
+fn terms(db: &Connection, problems: &mut Vec<Problem>) -> Result<(), StoreError> {
+    let made = match terms::claims(db) {
+        Ok(claims) => hub::chain(&claims),
+        Err(StoreError::Corrupt(_)) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    match terms::chain(db) {
+        Ok(kept) if kept == made => {}
+        Ok(_) | Err(StoreError::Corrupt(_)) => problems.push(Problem::Terms),
+        Err(error) => return Err(error),
+    }
     Ok(())
 }
 

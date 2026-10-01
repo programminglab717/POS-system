@@ -182,6 +182,110 @@ What slices 1 to 3 built shapes the rest:
     - the simulator, with the new invariants, and a calm run with a hub crash;
     - planted bugs in `keel-domain`, `keel-store` and `keel-sync`, and coverage probes.
 
+## As built
+
+Details settled in building it, for review with it:
+
+- **A claimant holds the whole chain** (amends decision 3). A successor's cuts fence a deposed
+  hub's records only if the successor held, when it claimed, everything that still counted: with
+  a gap in its chain, a claim of an earlier term it didn't hold could make records count again
+  that a later claim had cut off. A replica therefore claims only when it holds the chain back to
+  a claim of epoch 1, every claim on it, and each term's device's log as far as the term's cut;
+  otherwise its store refuses, `StoreError::Behind` (`ClaimError::Behind` in `keel-domain`), and
+  the replicator tries again each period. The cost is liveness: a replica missing part of the
+  chain waits to catch up before it can claim. Cutting only the devices it held claims of, and a
+  field saying how far back its chain went, were tried first: both left holes no store could find
+  cheaply.
+- **The chain:** a claim's predecessor is followed only while it is held and of a lower epoch. A
+  term's cut is the least any later claim on the chain gives for its device; a later claim that
+  doesn't cut the device, which no claimant that holds the chain writes, cuts it at 0, so none of
+  its records count.
+- **The claim** is numbered like any event. It isn't a business event, so it is filed under the
+  business date of the latest event the store holds, or the UTC date when it holds none.
+- **`keel-store`:**
+  - The claims projection, version 1, on streams of kind `hub`, keeps a row for each claim and the
+    chain they make, worked out again from every claim at each write that touches one; the
+    integrity check compares the chain kept with the one the claims make, `Problem::Terms`.
+  - A record counts when its device holds the term of its epoch on the chain, and it follows the
+    term's claim and lies within its cut. Confirmation, the feed and sequencing count no others.
+  - For each device, sequencing numbers what follows the last position a record that counts
+    covers. For the hub's own log, it also starts after the hub's latest record of its current
+    epoch, not its latest that counts: a later claim may cut off records written together, and
+    their numbers with them, so a hub elected again numbers anew what only a record past its old
+    cut numbered. The property found this.
+  - `Store::term()`, `terms()` and `claim(priority, now)`, and `StoreError::NotHub` and `Behind`,
+    as decision 9 says.
+- **The heartbeat** is `[1, 3, location, priority, epoch, hub, acting, beat]` (amends decision
+  5).
+  - `epoch` and `hub` are the sender's term: the epoch of the winning claim it holds and the
+    claimant's device, or 0 and `null` if it holds none. `acting` says the sender is that hub.
+    `beat` is the hub's beat, a number the hub raises with every period it acts, its clock's
+    reading in microseconds or one past its last beat if that is later: the sender's own, if it
+    acts, else the latest it had from its term's hub directly, while recent; `null` if none.
+  - A replica hears its hub while the latest beat of its own term's hub, or of the hub of any
+    later epoch, first reached it in the current period or the three before, from the hub or
+    from a peer that had it directly; or it learned of the winning claim, another replica's, as
+    recently.
+  - Beats are compared only within one hub's term. A split leaves two hubs of one epoch, and
+    their beats, read off two clocks, say nothing of each other: compared by epoch and number
+    alone, the losing hub's, its clock ahead, made the winner's look no newer, and a replica that
+    had both took its hub for silent and claimed again. The protocol property found it once its
+    clocks jumped; the heartbeat first gave only the epoch.
+  - Beats replace the design's state 1, "hears that hub directly", which a peer would repeat for
+    three periods after the hub fell silent: a standby hearing a dead hub through a device would
+    have taken over up to three periods late, missing 5 s. A peer that passes on a beat a replica
+    already had directly makes it no newer, so hearing through a peer never outlasts hearing
+    directly. A replica hearing the hub only through peers hears each beat up to a period late,
+    and counts the hub lost up to a period later. Counting how many periods ago a peer heard the
+    hub was tried first: periods that begin at different moments made that a period out either
+    way, and the protocol property found both errors.
+  - Learning of a claim counts as hearing its hub because a claim travels faster than the beats of
+    its hub, which a peer passes on only as its next period begins. Without it, a deposed hub
+    whose epoch the claim had just raised heard no hub of it, and claimed the next epoch at once:
+    the property found two candidates taking the role from each other every second.
+  - Something heard is recent in the period it came in and the three after: the hub counts as lost
+    as the period after its third missed heartbeat begins. In the simulator, without other
+    faults, the standby claims within 3 to 4 s of the hub's crash.
+  - A replica keeps each peer's latest heartbeat acting as the hub, not only its last heartbeat:
+    a hub that restarts says it isn't acting until its log settles again, and mustn't be taken
+    for lost meanwhile.
+- **Catching up** (amends decision 5): a candidate waits only for as much of each earlier hub's
+  log as its peers other than that hub say they hold. What a hub it no longer hears said of its
+  own log, the candidate could only have from that hub, and a hub that spoke again would be heard
+  and not succeeded, so waiting for it only ever ended once the three more periods had passed.
+  The simulator found this when crashes stopped falling at the same moment of a heartbeat period:
+  a standby waited on the last have of the hub that had crashed, and claimed 7 s after the crash.
+- **Forks** (amends decision 5). A replica's log has forked when a peer takes none of a batch of
+  the replica's own log that began just after what the peer held of it, until the peer says it
+  holds the log that far: a peer that lacks earlier events isn't refusing the log.
+  `Replicator::forked()` says so. The design's test, a peer refusing its own log, was the wrong
+  way round: it made a replica whose log had forked go on giving its priority, so that every
+  other candidate deferred to it for good.
+- **Priority 0** while a replica's log is unsettled or forked, as well as when it can never be the
+  hub: no candidate defers to a replica that can't be the hub now.
+- **Serving** is holding the winning claim with a settled log that hasn't forked. A hub whose log
+  forked stops serving: its records would never replicate. A replica answers and numbers as it
+  begins to serve, whatever made it begin, and after every write that stores events.
+- **`keel-sync`** depends on `keel-domain`, for the chain of terms. `Replica` gains `terms()`,
+  `claim(priority, now)`, which says the claim was made, the replica already holds the winning
+  claim, or its store is behind, and `answer_requests(now)` and `sequence(now)` without an epoch.
+  `Replicator` gains `is_hub()`, `serving()`, `term()`, `hub_reachable()` and `forked()`, and
+  `Stats` counts claims.
+- **Candidates must hear each other.** Hearing goes one hop through a peer, no further, so two
+  candidates that are neither linked nor share a peer never hear each other's beats, and take the
+  role from each other in turn. A location's links must keep every pair of candidates within two
+  hops: the hub and its standby link to each other, and in the protocol property every pair of
+  candidates is within two hops.
+- **The simulator** detects a device's fork by what the other replicas hold: a device restored
+  from an older copy that writes before it holds its log back as far as another replica does
+  forks it, whether or not its log had settled, since settling against the peers that answer
+  can't see a peer that can't be reached (decision 7). A forked device's log, and the orders it
+  wrote to, are left out of the checks of numbering and answers, as of agreement before. It
+  checks as the run goes that a candidate writes records and answers only while it serves, in
+  the epoch of the term it holds, and that a replica's log settles only when no peer it has heard
+  from holds more of it; and at the end that the answers to each request come from no term
+  twice.
+
 ## Consequences
 
 **Positive**

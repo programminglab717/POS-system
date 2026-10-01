@@ -244,12 +244,14 @@ sequenceDiagram
     - The hub numbers after each write that stores events, once its own log is settled, never
       before. For each device, it numbers the events after the last position any record covers,
       records aside, in the order it received them.
-    - A replica confirms an event when it holds a record whose run covers it, and the run's last
-      hash matches its own copy. So a forked version never confirms. Where records disagree, an
-      event's first number, by epoch and number, counts.
+    - A replica confirms an event when it holds a record that counts whose run covers it, and the
+      run's last hash matches its own copy. So a forked version never confirms. A record counts
+      when its hub held a term on the chain of claims for the record's epoch, and the record lies
+      between the term's claim and its cut (§7). Where records that count disagree, which their
+      claims prevent, an event's first number, by epoch and number, counts.
     - The store answers how far each device's log is confirmed (`confirmed()`), an event's number
       (`store_seq`), and the gapless feed of an epoch (`sequenced`).
-    - The epoch is 1 until slice 4 elects hubs.
+    - The epoch is the hub's term's, from its claim ([ADR-0022](../adr/0022-hub-election-and-failover.md)).
 - **Canonical order** is `(hlc, origin_device, origin_seq)` for every event, confirmed or provisional
   ([ADR-0019](../adr/0019-replication-and-deterministic-simulation.md)).
   - Every replica folds a stream in that order, so the same events make the same state everywhere:
@@ -478,6 +480,31 @@ waitlist failures during the October 2025 cloud outage ([R01](../research/01-res
   epochs. Data is safe, because events are facts and replication is merge-based. The only risk is
   double-granted class C leases, which escrow tolerances and the §5.2 rules cover. When the partition
   heals, the lower epoch steps down and its sequence range is re-sequenced.
+- **As built** (`keel-domain`, `keel-store`, `keel-sync`,
+  [ADR-0022](../adr/0022-hub-election-and-failover.md)):
+  - A hub's term is a `hub.claimed` event in its own log: its epoch, its priority, the claim it
+    succeeds, and how far into the log of each device on the chain it succeeds the claimant held,
+    its **cuts**. The winning claim has the highest epoch, then priority, then the lowest device;
+    the chain follows each claim back to the one it succeeds. A claimant must hold the whole chain
+    back to epoch 1, and every record that counts on it.
+  - **Fencing** is the successor's cut, not a rejection: a record counts only up to the cut its
+    successors give, so a deposed hub's records past it never count, anywhere, and their events
+    are numbered again. Grants aren't fenced: an order applies a grant only from its current
+    lease, so two grants of one lease never both apply, and the second is flagged stale.
+  - **Heartbeats** every second carry the sender's priority, its term (the epoch and hub of the
+    winning claim it holds), whether it acts as that hub, and the hub's beat, which rises every
+    period it acts. A replica hears the hub while the latest beat it knows of its own term's hub,
+    or of a later epoch's, reached it in the last three periods, from the hub or a peer that had
+    it directly; beats of two hubs of one epoch, which a split leaves, are never compared. A
+    candidate claims the next epoch when its log is settled and not forked, it hears no hub and
+    no preferred candidate, and it holds as much of each earlier hub's log as its peers other
+    than that hub say they hold, or has waited three more periods. Periods are the replicator's
+    ticks, never the clock.
+  - A replica that hears no hub is an island (`hub_reachable()`). The simulator's devices take
+    orders on a manager's word only then.
+  - Without a quorum, a split store runs a hub on each side; when it heals, the losing side's
+    records past the winner's cut stop counting, and their events are numbered again.
+  - In the simulator, without other faults, the standby claims within 3 to 4 s of the hub's crash.
 - **Recoverability over high availability** (a lesson from large edge fleets in
   [R04 §4](../research/04-technical-architecture.md)): a replacement hub appliance or device is
   zero-touch re-provisioned from the cloud roster and LAN peers in minutes.

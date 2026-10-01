@@ -7,10 +7,11 @@
     reason = "each test crate uses its own part of the support module"
 )]
 
-use core::num::NonZeroU32;
+use core::num::{NonZeroU8, NonZeroU32};
 use core::time::Duration;
 use std::collections::{BTreeMap, BTreeSet};
 
+use keel_domain::hub::{self, Claim, ClaimError, Claimed, HubEvent, Term};
 use keel_domain::schema::DomainEvent;
 use keel_domain::sequence::{Assigned, Run, SequenceEvent};
 use keel_events::cbor::Value;
@@ -23,7 +24,7 @@ use keel_events::keys::{SignatureAlgorithm, Signer, SoftwareSigner};
 use keel_events::log::{ChainError, EventDraft, Link, LogConfig, LogHead, LogWriter};
 use keel_events::verify::DeviceRegistry;
 use keel_store::{Reason, Received};
-use keel_sync::{Replica, VersionVector};
+use keel_sync::{Claiming, Replica, VersionVector};
 use keel_types::{Hlc, Id, SeededEntropy, Timestamp};
 
 pub fn id<T>(n: u64) -> Id<T> {
@@ -93,8 +94,9 @@ pub struct Failed;
 
 /// A replica in memory that appends to its device's log and receives events as `keel-store`
 /// does: verified with the registry, for its location, each device's log in order, the first of
-/// two events at one position kept, and what it refuses quarantined. As the Store Hub, it numbers
-/// what it holds in `sequence.assigned` records, as `keel-store` does, all runs in one record.
+/// two events at one position kept, and what it refuses quarantined. It works out the chain of
+/// terms from the claims it holds, claims the hub's role, and as the Store Hub numbers what it
+/// holds in `sequence.assigned` records, as `keel-store` does (ADR-0020, ADR-0022).
 #[derive(Debug)]
 pub struct Model {
     location: Id<Location>,
@@ -174,14 +176,21 @@ impl Model {
         self.logs.entry(body.origin_device).or_default().push(event);
     }
 
-    /// The events it holds that no record covers, except records, in the order it came to hold
-    /// them: for each device, those after the last position a record covers.
+    /// The events it holds that no record that counts covers, except records, in the order it
+    /// came to hold them: for each device, those after the last position a record that counts
+    /// covers; and for its own log, as the hub, after its own last record of its epoch too.
     pub fn unsequenced(&self) -> Vec<(Id<Device>, u64)> {
+        let terms = self.chain();
+        let epoch = terms.first().filter(|term| term.device == self.device).map(|term| term.epoch);
         let mut covered: BTreeMap<Id<Device>, u64> = BTreeMap::new();
-        for record in self.records() {
-            for run in &record.1.runs {
+        for (author, position, record) in self.counting(&terms) {
+            for run in &record.runs {
                 let to = covered.entry(run.device).or_insert(0);
                 *to = (*to).max(run.to);
+            }
+            if author == self.device && Some(record.epoch) == epoch.map(hub::Epoch::get) {
+                let to = covered.entry(author).or_insert(0);
+                *to = (*to).max(position);
             }
         }
         self.arrivals
@@ -210,6 +219,78 @@ impl Model {
                 (body.origin_device, record)
             })
             .collect()
+    }
+
+    /// The claims it holds.
+    pub fn claims(&self) -> Vec<Claim> {
+        self.logs
+            .values()
+            .flatten()
+            .filter(|event| is_claim(event))
+            .filter_map(|event| {
+                let body = event.body();
+                let Ok(HubEvent::Claimed(claimed)) = HubEvent::decode(&body.schema, &body.payload)
+                else {
+                    return None;
+                };
+                Some(Claim {
+                    event: body.event_id,
+                    device: body.origin_device,
+                    position: body.origin_seq.get(),
+                    claimed,
+                })
+            })
+            .collect()
+    }
+
+    /// The chain of terms its claims make.
+    pub fn chain(&self) -> Vec<Term> {
+        hub::chain(&self.claims())
+    }
+
+    /// The records that count on its chain: each with its author and position.
+    pub fn counting_records(&self) -> Vec<(Id<Device>, u64, Assigned)> {
+        self.counting(&self.chain())
+    }
+
+    /// The records that count, given the chain `terms`: each with its author and position.
+    fn counting(&self, terms: &[Term]) -> Vec<(Id<Device>, u64, Assigned)> {
+        self.records_at()
+            .into_iter()
+            .filter(|(author, position, record)| {
+                terms.iter().any(|term| {
+                    term.device == *author
+                        && term.epoch.get() == record.epoch
+                        && term.counts(*position)
+                })
+            })
+            .collect()
+    }
+
+    /// The records it holds, with their authors and positions.
+    fn records_at(&self) -> Vec<(Id<Device>, u64, Assigned)> {
+        self.logs
+            .values()
+            .flatten()
+            .filter(|event| is_record(event))
+            .map(|event| {
+                let body = event.body();
+                let Ok(SequenceEvent::Assigned(record)) =
+                    SequenceEvent::decode(&body.schema, &body.payload)
+                else {
+                    panic!("an unreadable record");
+                };
+                (body.origin_device, body.origin_seq.get(), record)
+            })
+            .collect()
+    }
+
+    /// Appends the device's next event of `draft` at physical time `now`, as the replica does
+    /// for what it writes of its own.
+    fn write(&mut self, draft: EventDraft, now: Timestamp) -> SignedEvent {
+        let event = self.writer.prepare(draft, now).unwrap().commit();
+        self.hold(event.clone());
+        event
     }
 
     fn refuse(&mut self, bytes: &[u8], reason: Reason) -> Received {
@@ -293,54 +374,101 @@ impl Replica for Model {
             .collect())
     }
 
-    fn answer_requests(&mut self, _: u64, _: Timestamp) -> Result<Vec<SignedEvent>, Failed> {
-        // The hub answers before it numbers.
+    fn terms(&mut self) -> Result<Vec<Term>, Failed> {
+        Ok(self.chain())
+    }
+
+    fn claim(&mut self, priority: NonZeroU8, now: Timestamp) -> Result<Claiming, Failed> {
+        let terms = self.chain();
+        if terms.first().is_some_and(|term| term.device == self.device) {
+            return Ok(Claiming::Hub);
+        }
+        let held = |device: Id<Device>| {
+            self.logs.get(&device).map_or(0, |log| u64::try_from(log.len()).unwrap())
+        };
+        let claimed = match Claimed::succeeding(&terms, priority, held) {
+            Ok(claimed) => claimed,
+            Err(ClaimError::Behind) => return Ok(Claiming::Behind),
+            Err(error) => panic!("a claim that can't be made: {error}"),
+        };
+        let (schema, payload) = HubEvent::Claimed(claimed).encode().unwrap();
+        let stream = StreamRef {
+            kind: StreamKind::new(hub::STREAM).unwrap(),
+            id: self.writer.generate_id(now).unwrap(),
+        };
+        let claim = EventDraft {
+            stream,
+            schema,
+            payload,
+            actor: Actor::System(Component::new("hub").unwrap()),
+            ..draft(0)
+        };
+        Ok(Claiming::Claimed(Box::new(self.write(claim, now))))
+    }
+
+    fn answer_requests(&mut self, _: Timestamp) -> Result<Vec<SignedEvent>, Failed> {
+        // Only the hub answers, and it answers before it numbers.
+        assert!(self.is_hub(), "a replica that isn't the hub answered");
         assert_eq!(self.answered, self.sequenced, "the hub numbered before it answered");
         self.answered += 1;
         Ok(Vec::new())
     }
 
-    fn sequence(&mut self, epoch: u64, now: Timestamp) -> Result<Vec<SignedEvent>, Failed> {
+    fn sequence(&mut self, now: Timestamp) -> Result<Vec<SignedEvent>, Failed> {
+        assert!(self.is_hub(), "a replica that isn't the hub numbered");
         assert_eq!(self.answered, self.sequenced + 1, "the hub numbered before it answered");
         self.sequenced += 1;
-        let pending = self.unsequenced();
-        if pending.is_empty() {
-            return Ok(Vec::new());
-        }
-        let first = self
-            .records()
+        let terms = self.chain();
+        let epoch = terms[0].epoch.get();
+        let mut next = self
+            .counting(&terms)
             .iter()
-            .filter(|(author, record)| *author == self.device && record.epoch == epoch)
-            .map(|(_, record)| record.last() + 1)
+            .filter(|(author, _, record)| *author == self.device && record.epoch == epoch)
+            .map(|(_, _, record)| record.last() + 1)
             .max()
             .unwrap_or(1);
+        // Runs in the order the events came, a record ending where a device's next event
+        // doesn't follow on from its run in it, as the store's do.
+        let mut records: Vec<Vec<Run>> = Vec::new();
         let mut runs: Vec<Run> = Vec::new();
-        for (device, position) in pending {
+        for (device, position) in self.unsequenced() {
             let last = self.logs[&device][usize::try_from(position - 1).unwrap()].hash();
             match runs.last_mut() {
                 Some(run) if run.device == device && run.to + 1 == position => {
                     run.to = position;
                     run.last = last;
                 }
-                _ => runs.push(Run { device, from: position, to: position, last }),
+                _ => {
+                    let before = runs.iter().rev().find(|run| run.device == device);
+                    if before.is_some_and(|run| run.to + 1 != position) {
+                        records.push(core::mem::take(&mut runs));
+                    }
+                    runs.push(Run { device, from: position, to: position, last });
+                }
             }
         }
-        let record = Assigned::new(epoch, first, runs).unwrap();
-        let (schema, payload) = SequenceEvent::Assigned(record).encode().unwrap();
-        let stream = StreamRef {
-            kind: StreamKind::new("sequence").unwrap(),
-            id: self.writer.generate_id(now).unwrap(),
-        };
-        let draft = EventDraft {
-            stream,
-            schema,
-            payload,
-            actor: Actor::System(Component::new("sequencer").unwrap()),
-            ..draft(0)
-        };
-        let event = self.writer.prepare(draft, now).unwrap().commit();
-        self.hold(event.clone());
-        Ok(vec![event])
+        if !runs.is_empty() {
+            records.push(runs);
+        }
+        let mut written = Vec::new();
+        for runs in records {
+            let record = Assigned::new(epoch, next, runs).unwrap();
+            next = record.last() + 1;
+            let (schema, payload) = SequenceEvent::Assigned(record).encode().unwrap();
+            let stream = StreamRef {
+                kind: StreamKind::new("sequence").unwrap(),
+                id: self.writer.generate_id(now).unwrap(),
+            };
+            let draft = EventDraft {
+                stream,
+                schema,
+                payload,
+                actor: Actor::System(Component::new("sequencer").unwrap()),
+                ..draft(0)
+            };
+            written.push(self.write(draft, now));
+        }
+        Ok(written)
     }
 
     fn receive(&mut self, events: &[Vec<u8>], now: Timestamp) -> Result<Vec<Received>, Failed> {
@@ -363,4 +491,16 @@ impl Replica for Model {
 /// Whether `event` is a sequencing record.
 pub fn is_record(event: &SignedEvent) -> bool {
     event.body().stream.kind.as_str() == "sequence"
+}
+
+/// Whether `event` is a claim of the hub's role.
+pub fn is_claim(event: &SignedEvent) -> bool {
+    event.body().stream.kind.as_str() == hub::STREAM
+}
+
+impl Model {
+    /// Whether it holds the winning claim: it is the hub.
+    pub fn is_hub(&self) -> bool {
+        self.chain().first().is_some_and(|term| term.device == self.device)
+    }
 }

@@ -11,8 +11,9 @@ simulator and the sync engine, in four slices
 ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)). Slice 1, replication and
 the simulator, slice 2, hub sequencing ([ADR-0020](./adr/0020-hub-sequencing.md)), and slice 3,
 ownership leases ([ADR-0021](./adr/0021-ownership-leases.md)), are built and reviewed. Slice 4,
-hub election and failover, is designed ([ADR-0022](./adr/0022-hub-election-and-failover.md),
-proposed) and being built. Step 5, `keel-store`, is done: built in three slices, each reviewed.
+hub election and failover, is built and pushed; its last verification runs are under way, and
+then it awaits review ([ADR-0022](./adr/0022-hub-election-and-failover.md), proposed). Step 5,
+`keel-store`, is done: built in three slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -25,7 +26,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 to 3 of 4 built and reviewed; slice 4 designed, being built | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 to 3 of 4 built and reviewed; slice 4 built, its verification finishing | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -73,14 +74,15 @@ Step 6 is built in four slices, each ending with a review
 3. **Ownership leases** (built and reviewed 2026-10-01,
    [ADR-0021](./adr/0021-ownership-leases.md)): the hub grants and transfers orders' ownership;
    island mode and the manager's override.
-4. **Hub election and failover** (designed 2026-10-01,
+4. **Hub election and failover** (designed and built 2026-10-01,
    [ADR-0022](./adr/0022-hub-election-and-failover.md)): priorities, heartbeats, the hot standby,
    epochs and fencing, and a split brain healing.
 
 ## Current slice
 
-Step 6, slice 4, hub election and failover, is designed in
-[ADR-0022](./adr/0022-hub-election-and-failover.md), proposed:
+Step 6, slice 4, hub election and failover, is built, and its last verification runs are under
+way (see "Completed"), as [ADR-0022](./adr/0022-hub-election-and-failover.md), proposed,
+describes:
 
 - A hub's term begins with a signed claim in its log: its epoch, its priority, the claim it
   succeeds, and how far into each earlier hub's log it holds. Every replica works out the same
@@ -97,15 +99,238 @@ Step 6, slice 4, hub election and failover, is designed in
 | Piece | Status |
 |---|---|
 | Design, in ADR-0022 | Done |
-| `keel-domain`: the `hub.claimed` payload | Next |
-| `keel-store`: the `terms` projection, the winning claim, the chain and its cuts; fencing in confirmation and sequencing; claiming, and refusing to serve when not the hub | |
-| `keel-sync`: heartbeats, the election, serving only while the term wins, settling against every peer, and islands | |
-| `keel-sim`: the standby, splits, failover, and the new invariants | |
-| Known answers, property tests, the simulator's seeds, planted bugs and probes | |
-| Soak, CI-equivalent run, docs | |
-| Review, and accepting ADR-0022 | |
+| `keel-domain`: the `hub.claimed` payload, the winning claim, the chain and its cuts, and the rules for succeeding it | Done |
+| `keel-store`: the claims projection; fencing in confirmation and sequencing; claiming, and refusing to serve when not the hub | Done |
+| `keel-sync`: heartbeats and beats, the election, serving only while the term wins, forks, settling against every peer, and islands | Done |
+| `keel-sim`: the standby, splits, failover, and the new invariants | Done |
+| Known answers, property tests and probes | Done |
+| Planted bugs, soaks and the simulator's seeds on the final code | Under way |
+| CI-equivalent run and docs | Done; CI runs on the pushed commit |
+| Review, and accepting ADR-0022 | Next |
+
+Building it settled what ADR-0022's "As built" records. The largest changes to the design: a
+claimant must hold the whole chain of claims back to epoch 1; heartbeats carry the hub's beat,
+which a peer passes on, in place of saying it hears the hub, and name the hub's term, since a
+split leaves two hubs of one epoch whose beats can't be compared; learning of a new claim counts
+as hearing its hub; a replica's log has forked when a peer refuses the replica's own log, the
+design's test having been the wrong way round; and a candidate waits to catch up only on what
+peers other than the old hub hold. Each was found by a property test, a known answer or the
+simulator, and each failure is a named regression test.
 
 ## Completed
+
+### Hub election and failover: step 6, slice 4 (2026-10-01)
+
+Built and pushed while its last verification runs: the restart of the build machine stopped
+them, and a heartbeat fix late in the build calls for some to run again on the final code. What
+is still under way is marked so below, and recorded as it lands.
+[ADR-0022](./adr/0022-hub-election-and-failover.md) is proposed, waiting on review.
+
+- **Built** ([ADR-0022](./adr/0022-hub-election-and-failover.md)):
+  - `keel-domain`:
+    - `hub.claimed`, version 1: a claim of the Store Hub's role, in a stream of its own of kind
+      `hub`: its epoch, the claimant's priority, the claim it succeeds, and its **cuts**, how far
+      into the log of each device on the chain it succeeds the claimant held.
+    - `hub::chain`: the winning claim, by epoch, then priority, then the lower device, then the
+      earlier claim; the chain of terms back from it, as far as the replica holds it; and each
+      term's cut, the least any later claim on the chain gives. A record counts when its device
+      holds the term of its epoch, and it follows the term's claim and lies within its cut.
+    - `Claimed::succeeding`: the next claim, cutting each device on the chain where the claimant
+      holds its log to, refused, `ClaimError::Behind`, unless the claimant holds the whole chain
+      back to epoch 1 and every record that counts on it.
+  - `keel-store`:
+    - The claims projection, version 1, which works out the chain of terms again at each write
+      that touches a claim; the integrity check reports a chain kept that isn't the one the
+      claims make, `Problem::Terms`.
+    - Confirmation, the feed and sequencing count only the records that count. Sequencing
+      numbers each device's log after the last position such a record covers, and the hub's own
+      log after its latest record of its epoch as well.
+    - `Store::term()`, `terms()` and `claim(priority, now)`. `sequence(now)` and
+      `answer_requests(now)` take their epoch from the store's own winning claim, and refuse,
+      `StoreError::NotHub`, when it isn't the store's; a store behind the chain refuses to claim,
+      `StoreError::Behind`.
+  - `keel-sync`:
+    - The heartbeat, `[1, 3, location, priority, epoch, hub, acting, beat]`, to every peer every
+      second: the sender's priority, 0 while its log is unsettled or forked; its term, the epoch
+      and hub of the winning claim it holds; whether it acts as that hub; and the hub's beat,
+      which rises every period the hub acts, and which a peer that had it directly passes on.
+      Beats are compared only within one hub's term.
+    - The election. A replica that can be hub claims the next epoch as a heartbeat period begins
+      when its log is settled and not forked, it has heard no hub and no preferred candidate for
+      three periods, and it holds as much of each earlier hub's log as its other peers say they
+      hold, or has waited three more periods. It serves only while it holds the winning claim with
+      its log settled and not forked, and stops the moment a better claim reaches it.
+    - Settling against every peer that answers; a fork, told by a peer refusing the replica's own
+      log; and islands, `hub_reachable()`.
+    - `Roles` gives a replica's priority as hub, and `SyncConfig` the heartbeat period and the
+      periods of silence. `Replica` gains `terms()` and `claim(priority, now)`; `Replicator`
+      gains `is_hub()`, `serving()`, `term()`, `hub_reachable()` and `forked()`. `keel-sync` now
+      depends on `keel-domain`, for the chain.
+  - `keel-sim`:
+    - A standby: the hub at priority 2 and the standby at 1, linked to each other, to every
+      device and to the cloud. No one holds a term at the start; the hub claims epoch 1.
+    - Splits, which cut the location in two and leave a hub on each side until it heals; devices
+      that are islands by their own heartbeats, not by the simulator's partitions; and runs in
+      which the hub crashes without other faults.
+    - New invariants: at the end, every replica holds the same winning claim, whose device alone
+      serves, and a whole chain; the records that count number every event exactly once, each
+      epoch's numbers gapless and each device's log in order; as the run goes, a candidate writes
+      records and answers only while it serves, in its term's epoch, and a device's log settles
+      only when no peer it heard from holds more of it; no request is answered in two terms.
+  - Tooling: the planted-bug runner's `--release`, for the lists the simulator takes most of the
+    time of, and `--stale`, which checks every bug's text is still in the code, and which CI now
+    runs for every crate.
+- **Verified:**
+  - Known answers:
+    - `keel-domain`, 18 tests: the payload pinned byte for byte, in payloads Python's `cbor2`
+      encoded from the key tables, and each way it is refused; which claim wins; the chain and its
+      cuts, with two claims of one epoch, a hub elected twice, a later claim that cuts no part of
+      a device and a chain the replica holds only part of; and succeeding, refused when behind.
+    - `keel-store`, 8 tests: claiming the first epoch; a claim's business date; a successor
+      fencing what the hub it succeeds wrote after it claimed; a store behind the chain refusing to
+      claim until it catches up; two claims of one epoch, the losing side's events numbered again;
+      a hub elected again numbering what only a record its successor cut off numbered; a record
+      before its term's claim counting for nothing; and the integrity check finding a chain that
+      isn't what the claims make.
+    - `keel-sync`: the heartbeat pinned byte for byte, four ways, at both ends of each field's
+      range, in frames Python's `cbor2` encoded, and sixteen ways it is refused; 15 tests of the
+      election: the most preferred candidate claiming at 3 s, the standby at 8 s and not before,
+      deferring to a preferred candidate, hearing the hub through a peer and no further, waiting to
+      catch up, claiming after waiting, not waiting for what only the silent hub held, stepping
+      down, going on hearing its hub beside a losing hub of its epoch, a heartbeat acting as
+      another device's hub, resuming after a restart, settling against every peer, a peer holding
+      more of the log, clock jumps, and a forked replica; and two tests of telling a fork.
+    - `keel-sim`: without other faults, a crashed hub is succeeded within 5 s, in 8 seeds.
+  - Property tests:
+    - `keel-domain`: the chain and its cuts against a model of the rules, whatever order the
+      claims arrive in; claiming against a model of succeeding; epochs up to the largest; and, at
+      a location of three or four replicas that append, replicate a little at a time, claim and
+      number, every event counting under at most one number, and in the end exactly one. The
+      payload properties take the claim too.
+    - `keel-store`: stores that claim, take each other's logs a few events at a time, number and
+      confirm, against a model of the chain and of what each should number; the sequencing and
+      ownership properties now run under claims.
+    - `keel-sync`: the protocol property, rewritten for the election: replicas whose priorities
+      may tie or be none, on a star, a line or a mesh, crashing, some down for seconds, under
+      loss, delay, duplication and cuts. Frame by frame its model checks each heartbeat, each
+      claim's preconditions, that a log settles exactly by the rule and a replica serves exactly
+      while the rule says, and that records are written only while serving, in the term's epoch;
+      and at the end that the replicas agree, with one hub serving, heard within two hops, and
+      every event numbered once by the records that count. Five failures it found are named
+      regression tests.
+    - 100,000 cases each passed, in release builds, alongside other runs: the hub properties in
+      24 s (a million earlier, in 209 s), the payload properties in 3 minutes, and the store's
+      sequencing property in 82 minutes and its terms property in 58. The protocol property passed
+      100,000 cases in 16 minutes before its last changes, and 8,000 since; 100,000 on the final
+      property, and the store's ownership property's, are under way.
+  - The simulator: 5,000 seeds passed in a release build, in 92 minutes on two threads alongside
+    other runs, on the code before the heartbeat fix below; a run on the final code is under way.
+    - The candidates made 8,481 claims, more than one in 2,877 runs; the winning epoch was 1 in
+      2,387 runs, 2 in 2,245, 3 in 353 and 4 in 15. 4,993 splits, in 3,325 runs, ran a hub on
+      each side. Where the node serving as the hub crashed, in 765 runs, another claimed 3.5 s
+      after at the median, 6.5 s at the 90th percentile and 24 s at most, the other faults
+      delaying it.
+    - Devices made 114,072 moves as islands, hearing no hub, in every run: no hub is heard until
+      the first claim, three seconds in.
+    - Devices made 47,181 requests for orders; hubs granted 39,794 and refused 1,352 for a moved
+      lease, 7,780 for a payment in progress and 1 for the device owning the order already. 4,999
+      overrides applied and 175 were stale; 1,410 grants were stale; 2,598 events were recorded
+      by a device that didn't own the order.
+    - The runs met 683,310 events appended; 17 million frames, of which 973,000 were lost,
+      942,000 duplicated, 950,000 cut off and 287,000 sent to a node that was down; 3,472 crashes
+      between writes, 3,517 in the middle of one, 3,711 rollbacks, 7,284 clock jumps and 7,575
+      cuts; 2,722 events lost to rollbacks, held by no other replica, and 213 devices forked;
+      20,718 writes held back until a log settled. 391,027 records that count numbered 734,885
+      events, and replicas sent 4.4 million `durable` frames.
+    - The replicas agreed after healing within 0.8 s at the median, 1.6 s at the 90th
+      percentile, 2.4 s at the 99th, and 6.5 s at most.
+  - Failover: in 1,000 seeds without other faults, the hub crashing at moments spread over a
+    heartbeat period, the standby claimed 3.0 to 4.0 s after the crash, spread evenly, a quarter
+    in each 250 ms (before the heartbeat fix, which changes nothing where one hub holds each
+    epoch).
+  - Coverage probes, all passing:
+    - the hub property, over 2,002 cases: chains of two terms or more in 46%, three in 11% and
+      four in 1.6%; records that a later claim cut off in 40%, and records of a claim that lost
+      in 74%; two claims of one epoch in 80%; a claim refused as behind in 2.3%;
+    - the protocol property, over 1,005 cases: more than one claim in 33%, an epoch of 3 or more
+      in 6% and of 5 at most, two claims of one epoch in 13%, records cut off in 25% (726 in all),
+      a candidate down for seconds in 41%, a peer refusing a replica's log, a fork until it takes
+      it, in 54%; clocks jumping in 67%, and two claims of one epoch with them in 9%; another
+      heartbeat period than a second in 31%;
+    - the simulator, over 300 seeds, before the heartbeat fix: more than one claim in 177, the winning epoch past 1 in
+      155 and past 2 in 26; 296 splits; 49 failovers; 6,676 moves made as islands; 2,925
+      requests for orders, 348 overrides and 87 stale grants; 24,208 records counted; 18 devices
+      forked.
+  - Planted bugs:
+    - `keel-domain`: the 34 new ones, all caught by the property tests; slice 3's 50 of
+      ownership, run again against this slice's changes, 49 caught and the one left to a unit
+      test; and the six that had gone stale, re-texted, all caught.
+    - `keel-store`: the 43 new or changed ones, 31 caught by the property tests and 12 by unit
+      tests alone; of the 151 others, the 93 in files this slice changed, run again against its
+      property tests: 79 so far, 65 caught and 14 left to unit tests, the rest under way.
+    - `keel-sync`: 113, 32 of them left to unit tests, each with the test that catches it. The
+      final runs, against the property tests and, for those 32, all the tests, are under way;
+      the first runs' misses are under "Found and fixed".
+  - A CI-equivalent run passed every step before the last property and heartbeat changes:
+    formatting, the planted bugs' texts, both lint runs, the tests with the exhaustive sweeps and
+    4,096 cases a property (41 minutes alongside other runs), the tests without default features
+    (37), the docs, the `wasm32` build, the currency table and the golden baskets. On the final
+    code, formatting, the bugs' texts, both lint runs and the tests pass; CI runs the rest.
+- **Decisions:** [ADR-0022](./adr/0022-hub-election-and-failover.md), proposed, with what
+  building it settled under "As built": a claimant holds the whole chain; the hub's beat in place
+  of "hears the hub directly", and a heartbeat naming its hub's term, beats compared only within
+  one term; learning of a claim counts as hearing its hub; a peer's latest
+  heartbeat acting as the hub kept; catching up on what peers other than the old hub hold; forks
+  told by a peer refusing the replica's own log; priority 0 while unsettled or forked; and every
+  pair of candidates within two hops.
+- **Found and fixed during the build:**
+  - The design let a successor cut only the devices it held claims of. With a gap in its chain,
+    a claim of an earlier term it didn't hold could make records count again that a later claim
+    had cut off; so could a field saying how far back its chain went. A claimant now holds the
+    whole chain (the hub property found both).
+  - A hub elected again numbered from after its latest record that counted: a later claim may
+    cut off records written together, and their numbers with them, so it now numbers from after
+    its latest record of its epoch (the hub property).
+  - The design's heartbeat state "hears the hub directly", which a peer repeats for three periods
+    after the hub falls silent, would have let a standby take over three periods late. Counting
+    how many periods ago a peer heard the hub was a period out either way; the hub's beat replaced
+    both (the protocol property).
+  - A deposed hub whose epoch a new claim had just raised heard no hub of it, and claimed again
+    at once: two candidates took the role from each other every second. Learning of a claim now
+    counts as hearing its hub (the protocol property).
+  - A hub restarting says it isn't acting until its log settles, which overwrote its last acting
+    heartbeat, and it was taken for lost. Each peer's latest acting heartbeat is kept.
+  - The design's fork test, a peer refusing its own log, was the wrong way round, and a refusal,
+    once noted, never ended; a hub that began to serve again didn't number what came meanwhile;
+    and replicas were taken to agree before the hub's beats had reached them all (the protocol
+    property; each a named regression test).
+  - The simulator missed a fork when the device's log had settled against the peers that
+    answered (seed 104), and checked numbering over a forked log and orders only another version
+    of it held (seeds 455 and 465): it now tells forks by what the other replicas hold, and leaves
+    forked logs and their orders out of those checks.
+  - Once its clocks jumped, the protocol property found two hubs of one epoch, which a split had
+    left, masking each other: beats compared by epoch and number made the losing hub's, its clock
+    3.8 s ahead, look newer than the winner's, and a replica that had both took its hub for silent
+    and claimed again, four periods after the replicas had agreed. A heartbeat now names its hub's
+    term, beats are compared only within one term, and the property checks every replica's
+    hearing against the rule at every step, not only the claims it leads to.
+  - Once crashes stopped falling at the same moment of a heartbeat period, a standby waited on the
+    crashed hub's last word of its own log, and claimed 7 s after the crash, past the 5 s the
+    design allows (the simulator). A candidate now waits only on what its other peers hold.
+  - The first runs of `keel-sync`'s planted bugs missed four of 106:
+    - a log settling while a peer held more of it: the protocol property took a replica's word
+      that its log was settled. It now models settling, and the simulator checks that no log
+      settles while a peer it heard from holds more of it;
+    - the next tick forgetting rounds: heartbeats tick every replica each period, and the
+      property's fell due with its rounds, so no round was ever late. A third of its cases now
+      have another heartbeat period;
+    - periods counted off the clock: the property's clocks never jumped. They now jump forwards
+      now and then, by up to half a minute;
+    - a heartbeat sent as another kind of frame: both ends read the kind they write, so only the
+      pinned bytes can tell, and it is left to them.
+  - Six of `keel-domain`'s planted bugs had gone stale in slice 3, when the commands they plant
+    in changed, unnoticed because only that slice's own bugs ran. They plant again, all caught,
+    and CI now checks every list (`--stale`).
 
 ### Ownership leases: step 6, slice 3 (2026-10-01)
 
@@ -1222,14 +1447,13 @@ Work deliberately left for later, so it isn't forgotten:
     help them all.
   - `confirmed()` reads every run of every record. The UI, which shows what is provisional, will
     need each device's confirmed start kept as records arrive.
-  - Records of two devices in one epoch, which slice 4's fencing rules out, can give two events
-    one number: the feed gives both, and a page that ends between them skips the second.
 - **`keel-sync`:**
-  - Slice 4 of step 6: hub election and failover.
-  - Until slice 4, a record from any device enrolled at the location counts. A record from a
-    device that isn't the hub could leave a stretch of a log below its highest covered position
-    that nothing ever numbers. Slice 4 also brings a hub restored from an older copy of its
-    store, which could fork its log (ADR-0020, decision 8).
+  - Every pair of candidates for the hub must be within two hops of each other, or two of them
+    take the role from each other in turn (ADR-0022): the location's links, which discovery will
+    make, must keep them so. Nothing checks it as the replicas run.
+  - Without a quorum, a split store runs a hub on each side. When it heals, the losing side's
+    records stop counting and its events are numbered again: the shells must show that numbers
+    shown as confirmed there have changed (step 7).
   - Batching several writes' events into one record, if the records prove too many: when events
     arrive one at a time, the store holds about as many records as events.
   - Devices send the watermark back to the hub with each round: redundant, and harmless.
@@ -1239,32 +1463,33 @@ Work deliberately left for later, so it isn't forgotten:
     certificates, protocol negotiation, priority lanes, compression and reconnection backoff.
   - A device restored from an older copy that must sell before any peer answers forks its log.
     The replicas report the fork, and keep disagreeing about that log until a person resolves
-    it, with tools that don't exist yet.
+    it, with tools that don't exist yet. A forked candidate never claims, and a forked hub stops
+    serving.
   - A batch waiting for acknowledgement from a peer that has since restarted holds up the next
     for up to the acknowledgement timeout (2 s).
   - A clock set back less than a round delays the rounds by as much. Timers on a monotonic clock
     would need a second kind of time passed in, beside the clock the store stamps events with.
 - **Ownership** (ADR-0021, decision 8):
-  - Heartbeats, with slice 4: the hub taking an order back from a device it hasn't heard from in
-    a while, and telling a device that it is an island. Until then an order whose owner died in
-    the middle of a payment can be taken only by override, and the simulator, which knows its
-    partitions, decides when a device overrides.
+  - The hub taking an order back from a device it hasn't heard from in a while: until then an
+    order whose owner died in the middle of a payment can be taken only by override. Heartbeats
+    now tell a device that it is an island, and the simulator's devices override only then.
   - A hub whose clock is more than a minute behind the devices can't give their new orders
-    away: its grants sort before the orders' creation, where they don't apply. Heartbeats can
-    tell such a hub.
-  - Grants only from the hub elected for their epoch, with slice 4.
+    away: its grants sort before the orders' creation, where they don't apply. The hub's beat,
+    its clock's reading, could tell the devices.
   - Who may override: a manager, checked with `keel-policy`.
   - The owner handing an order to another device without that device asking.
   - A payment started by a device that didn't own its order is flagged by the device's check
     and checkout's issues, not in the payment's own fold, which can't see the order.
   - Other leases: tables, store-wide order numbers, limited quantities (offline-and-sync §6.3).
-  - In the simulator's star the hub never refuses a request from the device that owns the
-    order: only the known answers and the property tests reach that refusal.
+  - The simulator's hub seldom refuses a request from the device that owns the order, once in
+    5,000 seeds: the known answers and the property tests reach that refusal.
 - **`keel-sim`:**
   - Disk faults, torn writes and lost fsyncs, wait for a simulated disk: a SQLite VFS, which
     needs `unsafe` code.
-  - The invariants of later slices and features: one hub per epoch; payments, the ledger and
-    fiscal chains (offline-and-sync §12).
+  - The invariants of later features: payments, the ledger and fiscal chains
+    (offline-and-sync §12).
+  - Its locations have two candidates for the hub, which every device links to: more candidates,
+    and devices linked to only one, only the protocol property reaches.
 - **Orders:**
   - Permissions and approvals aren't checked yet (`keel-policy`).
   - An order with payments on its open checks can be voided, and checkout reports the payments:

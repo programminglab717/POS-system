@@ -1042,25 +1042,25 @@ BUGS = [
     (
         "orders close with unpaid checks",
         "src/order/commands.rs",
-        """                if let Some(check) = open {
-                    return Err(CommandError::CheckOpen(check.id()));
-                }""",
-        "                let _ = open;",
+        """        if let Some(check) = open {
+            return Err(CommandError::CheckOpen(check.id()));
+        }""",
+        "        let _ = open;",
     ),
     (
         "orders with nothing live close",
         "src/order/commands.rs",
-        """            OrderCommand::Close => {
-                if self.live_lines().next().is_none() {
-                    return Err(CommandError::NothingToClose);
-                }""",
-        "            OrderCommand::Close => {",
+        """    fn decide_close(&self) -> Result<OrderEvent, CommandError> {
+        if self.live_lines().next().is_none() {
+            return Err(CommandError::NothingToClose);
+        }""",
+        "    fn decide_close(&self) -> Result<OrderEvent, CommandError> {",
     ),
     (
         "orders close only once every check is closed",
         "src/order/commands.rs",
-        "                    .find(|check| check.is_open() && self.holds_live_line(check.id()));",
-        "                    .find(|check| check.is_open());",
+        "            self.checks().iter().find(|check| check.is_open() && self.holds_live_line(check.id()));",
+        "            self.checks().iter().find(|check| check.is_open());",
     ),
     (
         "orders reopen with nothing closed",
@@ -1071,15 +1071,17 @@ BUGS = [
     (
         "voided orders reopen by command",
         "src/order/commands.rs",
-        "            OrderCommand::Reopen(reason) if *self.status() == OrderStatus::Closed => {",
+        "            OrderCommand::Reopen(reason) if closed => {",
         "            OrderCommand::Reopen(reason) if *self.status() != OrderStatus::Active => {",
     ),
     (
         "closed orders reopen from anywhere",
         "src/order/commands.rs",
         """                self.check_location(location)?;
+                self.check_owner(device)?;
                 OrderEvent::Reopened { reason }""",
-        "                OrderEvent::Reopened { reason }",
+        """                self.check_owner(device)?;
+                OrderEvent::Reopened { reason }""",
     ),
     (
         "closed checks close again",
@@ -1476,10 +1478,10 @@ BUGS = [
         "payments start on any order",
         "src/checkout/mod.rs",
         """        let info = self.order.check_active(location)?;
-        let found = self.order.check(check).ok_or(CommandError::UnknownCheck(check))?;""",
+        self.order.check_owner(device)?;""",
         """        let _ = location;
         let info = self.order.info().ok_or(CommandError::NotCreated)?;
-        let found = self.order.check(check).ok_or(CommandError::UnknownCheck(check))?;""",
+        self.order.check_owner(device)?;""",
     ),
     (
         "checks close beside unresolved payments",
@@ -1744,12 +1746,6 @@ BUGS = [
         "src/order/ownership.rs",
         "        if n <= Lease::MAX.0 { Some(Lease(n)) } else { None }",
         "        if n <= Lease::MAX.0.saturating_add(1) { Some(Lease(n)) } else { None }",
-    ),
-    (
-        "ownership: an epoch may be 0",
-        "src/order/ownership.rs",
-        "        if n >= 1 && n <= Lease::MAX.0 { Some(Epoch(n)) } else { None }",
-        "        if n <= Lease::MAX.0 { Some(Epoch(n)) } else { None }",
     ),
     (
         "ownership: the largest lease is followed by itself",
@@ -2155,5 +2151,232 @@ BUGS = [
         self.order.check_owner(device)?;""",
         """        let currency = self.order.check_closable(location, check)?.currency;
         let _ = device;""",
+    ),
+    # Hub terms (ADR-0022): epochs, claims and their payload, the chain, and claiming.
+    (
+        "hub: an epoch may be 0",
+        "src/hub.rs",
+        "        if n >= 1 && n <= MAX_NUMBER { Some(Epoch(n)) } else { None }",
+        "        if n <= MAX_NUMBER { Some(Epoch(n)) } else { None }",
+    ),
+    (
+        "hub: an epoch may be 2^63",
+        "src/hub.rs",
+        "        if n >= 1 && n <= MAX_NUMBER { Some(Epoch(n)) } else { None }",
+        "        if n >= 1 && n <= MAX_NUMBER.saturating_add(1) { Some(Epoch(n)) } else { None }",
+    ),
+    (
+        "hub: the largest epoch is followed by itself",
+        "src/hub.rs",
+        """        match self.0.checked_add(1) {
+            Some(n) => Epoch::new(n),
+            None => None,
+        }""",
+        """        match Epoch::new(self.0.saturating_add(1)) {
+            None => Some(Epoch::MAX),
+            epoch => epoch,
+        }""",
+    ),
+    (
+        "hub: a later claim may succeed none",
+        "src/hub.rs",
+        """            return if self.epoch == Epoch::FIRST {
+                Ok(())
+            } else {
+                Err(PayloadError::Invalid("previous"))
+            };""",
+        """            return Ok(());""",
+    ),
+    (
+        "hub: a first claim may succeed one",
+        "src/hub.rs",
+        """        if self.epoch == Epoch::FIRST {
+            return Err(PayloadError::Invalid("previous"));
+        }""",
+        "",
+    ),
+    (
+        "hub: a claim may cut nothing",
+        "src/hub.rs",
+        "        if cuts.is_empty() || cuts.len() > MAX_CUTS {",
+        "        if cuts.len() > MAX_CUTS {",
+    ),
+    (
+        "hub: a claim may cut one device too many",
+        "src/hub.rs",
+        "        if cuts.is_empty() || cuts.len() > MAX_CUTS {",
+        "        if cuts.is_empty() || cuts.len() > MAX_CUTS.saturating_add(1) {",
+    ),
+    (
+        "hub: a cut may be at position 0",
+        "src/hub.rs",
+        "        if cuts.iter().any(|cut| !(1..=MAX_NUMBER).contains(&cut.position)) {",
+        "        if cuts.iter().any(|cut| !(0..=MAX_NUMBER).contains(&cut.position)) {",
+    ),
+    (
+        "hub: a cut may be past the largest position",
+        "src/hub.rs",
+        "        if cuts.iter().any(|cut| !(1..=MAX_NUMBER).contains(&cut.position)) {",
+        "        if cuts.iter().any(|cut| cut.position == 0) {",
+    ),
+    (
+        "hub: cuts may repeat a device",
+        "src/hub.rs",
+        "            [left, right] => left.device < right.device,",
+        "            [left, right] => left.device <= right.device,",
+    ),
+    (
+        "hub: cuts may come in any order",
+        "src/hub.rs",
+        "            [left, right] => left.device < right.device,",
+        "            [left, right] => left.device != right.device,",
+    ),
+    (
+        "hub: a claim that succeeds none may cut",
+        "src/hub.rs",
+        """            (None, Some(_)) => return Err(PayloadError::Invalid("cuts").into()),""",
+        """            (None, Some(_)) => None,""",
+    ),
+    (
+        "hub: cuts are written position first",
+        "src/hub.rs",
+        """        Value::Array(vec![self.device.to_value(), Value::Unsigned(self.position)])""",
+        """        Value::Array(vec![Value::Unsigned(self.position), self.device.to_value()])""",
+    ),
+    (
+        "hub: of one epoch, the lower priority wins",
+        "src/hub.rs",
+        """    fn rank(&self) -> (Epoch, NonZeroU8, Reverse<Id<Device>>, Reverse<u64>) {
+        (self.claimed.epoch, self.claimed.priority, Reverse(self.device), Reverse(self.position))""",
+        """    fn rank(&self) -> (Epoch, Reverse<NonZeroU8>, Reverse<Id<Device>>, Reverse<u64>) {
+        (self.claimed.epoch, Reverse(self.claimed.priority), Reverse(self.device), Reverse(self.position))""",
+    ),
+    (
+        "hub: of one priority, the higher device wins",
+        "src/hub.rs",
+        """    fn rank(&self) -> (Epoch, NonZeroU8, Reverse<Id<Device>>, Reverse<u64>) {
+        (self.claimed.epoch, self.claimed.priority, Reverse(self.device), Reverse(self.position))""",
+        """    fn rank(&self) -> (Epoch, NonZeroU8, Id<Device>, Reverse<u64>) {
+        (self.claimed.epoch, self.claimed.priority, self.device, Reverse(self.position))""",
+    ),
+    (
+        "hub: of one device, the later claim wins",
+        "src/hub.rs",
+        """    fn rank(&self) -> (Epoch, NonZeroU8, Reverse<Id<Device>>, Reverse<u64>) {
+        (self.claimed.epoch, self.claimed.priority, Reverse(self.device), Reverse(self.position))""",
+        """    fn rank(&self) -> (Epoch, NonZeroU8, Reverse<Id<Device>>, u64) {
+        (self.claimed.epoch, self.claimed.priority, Reverse(self.device), self.position)""",
+    ),
+    (
+        "hub: priority outranks the epoch",
+        "src/hub.rs",
+        """    fn rank(&self) -> (Epoch, NonZeroU8, Reverse<Id<Device>>, Reverse<u64>) {
+        (self.claimed.epoch, self.claimed.priority, Reverse(self.device), Reverse(self.position))""",
+        """    fn rank(&self) -> (NonZeroU8, Epoch, Reverse<Id<Device>>, Reverse<u64>) {
+        (self.claimed.priority, self.claimed.epoch, Reverse(self.device), Reverse(self.position))""",
+    ),
+    (
+        "hub: a claim beats itself",
+        "src/hub.rs",
+        "        self.rank() > other.rank()",
+        "        self.rank() >= other.rank()",
+    ),
+    (
+        "hub: the chain skips a predecessor of the epoch just before",
+        "src/hub.rs",
+        "            .filter(|previous| previous.claimed.epoch < claim.claimed.epoch);",
+        "            .filter(|previous| previous.claimed.epoch.next() < Some(claim.claimed.epoch));",
+    ),
+    (
+        "hub: a device a later claim doesn't cut is uncut",
+        "src/hub.rs",
+        "            through: held.as_ref().map(|held| held.get(&claim.device).copied().unwrap_or(0)),",
+        "            through: held.as_ref().and_then(|held| held.get(&claim.device).copied()),",
+    ),
+    (
+        "hub: a term's cut is the nearest later claim's",
+        "src/hub.rs",
+        """        held = Some(match held {
+            None => cuts.collect(),""",
+        """        held = Some(match None::<BTreeMap<Id<Device>, u64>> {
+            None => cuts.collect(),""",
+    ),
+    (
+        "hub: a term's cut is the furthest of the later claims'",
+        "src/hub.rs",
+        "                    later.get(&device).map(|&reach| (device, position.min(reach)))",
+        "                    later.get(&device).map(|&reach| (device, position.max(reach)))",
+    ),
+    (
+        "hub: a device an earlier claim cut and a later one doesn't stays cut",
+        "src/hub.rs",
+        "                    later.get(&device).map(|&reach| (device, position.min(reach)))",
+        "                    Some((device, later.get(&device).map_or(position, |&reach| position.min(reach))))",
+    ),
+    (
+        "hub: the winning claim's term is cut",
+        "src/hub.rs",
+        "    let mut held: Option<BTreeMap<Id<Device>, u64>> = None;",
+        "    let mut held: Option<BTreeMap<Id<Device>, u64>> = Some(BTreeMap::new());",
+    ),
+    (
+        "hub: a record at the claim counts",
+        "src/hub.rs",
+        "        position > self.after && self.through.is_none_or(|through| position <= through)",
+        "        position >= self.after && self.through.is_none_or(|through| position <= through)",
+    ),
+    (
+        "hub: a record just past the cut counts",
+        "src/hub.rs",
+        "        position > self.after && self.through.is_none_or(|through| position <= through)",
+        "        position > self.after && self.through.is_none_or(|through| position <= through.saturating_add(1))",
+    ),
+    (
+        "hub: a successor needn't hold the whole chain",
+        "src/hub.rs",
+        "        if first.epoch != Epoch::FIRST || !holds_what_counts {",
+        "        if !holds_what_counts {",
+    ),
+    (
+        "hub: a successor needn't hold what counts",
+        "src/hub.rs",
+        "            held >= term.after && term.through.is_none_or(|through| held >= through)",
+        "            held >= term.after",
+    ),
+    (
+        "hub: a successor needn't hold the claims on its chain",
+        "src/hub.rs",
+        "            held >= term.after && term.through.is_none_or(|through| held >= through)",
+        "            term.through.is_none_or(|through| held >= through)",
+    ),
+    (
+        "hub: a successor cuts one short of what it holds",
+        "src/hub.rs",
+        "        let cuts = devices.into_iter().map(|device| Cut { device, position: held(device) });",
+        "        let cuts = devices.into_iter().map(|device| Cut { device, position: held(device).saturating_sub(1).max(1) });",
+    ),
+    (
+        "hub: a successor cuts one past what it holds",
+        "src/hub.rs",
+        "        let cuts = devices.into_iter().map(|device| Cut { device, position: held(device) });",
+        "        let cuts = devices.into_iter().map(|device| Cut { device, position: held(device).saturating_add(1) });",
+    ),
+    (
+        "hub: a successor cuts only the winning claim's device",
+        "src/hub.rs",
+        "        let devices: BTreeSet<Id<Device>> = chain.iter().map(|term| term.device).collect();",
+        "        let devices: BTreeSet<Id<Device>> = chain.iter().take(1).map(|term| term.device).collect();",
+    ),
+    (
+        "hub: a successor claims the winning claim's epoch",
+        "src/hub.rs",
+        """        let epoch = winning.epoch.next().ok_or(PayloadError::Invalid("epoch"))?;""",
+        """        let epoch = winning.epoch.next().map(|_| winning.epoch).ok_or(PayloadError::Invalid("epoch"))?;""",
+    ),
+    (
+        "hub: a successor succeeds the earliest claim on its chain",
+        "src/hub.rs",
+        "        let succession = Succession { previous: winning.claim, cuts: cuts.collect() };",
+        "        let succession = Succession { previous: first.claim, cuts: cuts.collect() };",
     ),
 ]

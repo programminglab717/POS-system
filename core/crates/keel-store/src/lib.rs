@@ -62,6 +62,7 @@ mod rows;
 mod schema;
 mod sequencing;
 mod store;
+mod terms;
 mod write;
 
 #[cfg(test)]

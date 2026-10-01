@@ -1125,9 +1125,9 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
     ),
     (
         "projection rows aren't compared",
-        "src/check.rs",
-        "            if let Some(false) = projection_row_holds(&tx, projection, &stream)? {",
-        "            if let Some(false) = projection_row_holds(&tx, projection, &stream)?.and(None::<bool>) {",
+        'src/check.rs',
+        '            if let Some(false) = projection_rows_hold(&tx, projection, &stream)? {',
+        '            if let Some(false) = projection_rows_hold(&tx, projection, &stream)?.and(None::<bool>) {',
     ),
     (
         "a stream with an unreadable event is judged",
@@ -1146,62 +1146,10 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
     # The check undoes each stream's rebuild before the next, and rolls its whole transaction
     # back: a check that kept its rebuilds would have to fail at both.
     (
-        "the check keeps its rebuilds",
-        "src/check.rs",
-        """    tx.rollback()?;
-    Ok(())
-}
-
-/// Every stream `projection` has a row for, or stored events of, in order.
-fn streams(db: &Connection, projection: &Projection) -> Result<Vec<Vec<u8>>, StoreError> {
-    let mut statement = db.prepare(&format!(
-        "SELECT stream_id FROM events WHERE stream_kind = ?1 UNION SELECT {key} FROM {table} \\
-         ORDER BY 1",
-        key = projection.key,
-        table = projection.name,
-    ))?;
-    let streams = statement.query_map([projection.kind], |row| row.get(0))?;
-    Ok(streams.collect::<Result<_, _>>()?)
-}
-
-/// Whether the row of `stream` in `projection` is what rebuilding it makes: `None` if that can't
-/// be told, since the stream has an event that doesn't read back.
-fn projection_row_holds(
-    db: &Connection,
-    projection: &Projection,
-    stream: &[u8],
-) -> Result<Option<bool>, StoreError> {
-    let stored = projection_row(db, projection, stream)?;
-    db.execute_batch("SAVEPOINT rebuild")?;
-    let rebuilt = rebuild_row(db, projection, stream);
-    db.execute_batch("ROLLBACK TO rebuild; RELEASE rebuild")?;""",
-        """    tx.commit()?;
-    Ok(())
-}
-
-/// Every stream `projection` has a row for, or stored events of, in order.
-fn streams(db: &Connection, projection: &Projection) -> Result<Vec<Vec<u8>>, StoreError> {
-    let mut statement = db.prepare(&format!(
-        "SELECT stream_id FROM events WHERE stream_kind = ?1 UNION SELECT {key} FROM {table} \\
-         ORDER BY 1",
-        key = projection.key,
-        table = projection.name,
-    ))?;
-    let streams = statement.query_map([projection.kind], |row| row.get(0))?;
-    Ok(streams.collect::<Result<_, _>>()?)
-}
-
-/// Whether the row of `stream` in `projection` is what rebuilding it makes: `None` if that can't
-/// be told, since the stream has an event that doesn't read back.
-fn projection_row_holds(
-    db: &Connection,
-    projection: &Projection,
-    stream: &[u8],
-) -> Result<Option<bool>, StoreError> {
-    let stored = projection_row(db, projection, stream)?;
-    db.execute_batch("SAVEPOINT rebuild")?;
-    let rebuilt = rebuild_row(db, projection, stream);
-    db.execute_batch("RELEASE rebuild")?;""",
+        'the check keeps its rebuilds',
+        'src/check.rs',
+        '    tx.rollback()?;\n    Ok(())\n}\n\n/// Checks the chain of terms the store keeps against what the claims it holds make. Claims that\n/// don\'t read back make no chain to check against.\nfn terms(db: &Connection, problems: &mut Vec<Problem>) -> Result<(), StoreError> {\n    let made = match terms::claims(db) {\n        Ok(claims) => hub::chain(&claims),\n        Err(StoreError::Corrupt(_)) => return Ok(()),\n        Err(error) => return Err(error),\n    };\n    match terms::chain(db) {\n        Ok(kept) if kept == made => {}\n        Ok(_) | Err(StoreError::Corrupt(_)) => problems.push(Problem::Terms),\n        Err(error) => return Err(error),\n    }\n    Ok(())\n}\n\n/// Every stream `projection` has a row for, or stored events of, in order.\nfn streams(db: &Connection, projection: &Projection) -> Result<Vec<Vec<u8>>, StoreError> {\n    let mut statement = db.prepare(&format!(\n        "SELECT stream_id FROM events WHERE stream_kind = ?1 UNION SELECT {key} FROM {table} \\\n         ORDER BY 1",\n        key = projection.key,\n        table = projection.name,\n    ))?;\n    let streams = statement.query_map([projection.kind], |row| row.get(0))?;\n    Ok(streams.collect::<Result<_, _>>()?)\n}\n\n/// Whether the rows of `stream` in `projection` are what rebuilding them makes: `None` if that\n/// can\'t be told, since the stream has an event that doesn\'t read back.\nfn projection_rows_hold(\n    db: &Connection,\n    projection: &Projection,\n    stream: &[u8],\n) -> Result<Option<bool>, StoreError> {\n    let stored = projection_rows(db, projection, stream)?;\n    db.execute_batch("SAVEPOINT rebuild")?;\n    let rebuilt = rebuild_rows(db, projection, stream);\n    db.execute_batch("ROLLBACK TO rebuild; RELEASE rebuild")?;',
+        '    tx.commit()?;\n    Ok(())\n}\n\n/// Checks the chain of terms the store keeps against what the claims it holds make. Claims that\n/// don\'t read back make no chain to check against.\nfn terms(db: &Connection, problems: &mut Vec<Problem>) -> Result<(), StoreError> {\n    let made = match terms::claims(db) {\n        Ok(claims) => hub::chain(&claims),\n        Err(StoreError::Corrupt(_)) => return Ok(()),\n        Err(error) => return Err(error),\n    };\n    match terms::chain(db) {\n        Ok(kept) if kept == made => {}\n        Ok(_) | Err(StoreError::Corrupt(_)) => problems.push(Problem::Terms),\n        Err(error) => return Err(error),\n    }\n    Ok(())\n}\n\n/// Every stream `projection` has a row for, or stored events of, in order.\nfn streams(db: &Connection, projection: &Projection) -> Result<Vec<Vec<u8>>, StoreError> {\n    let mut statement = db.prepare(&format!(\n        "SELECT stream_id FROM events WHERE stream_kind = ?1 UNION SELECT {key} FROM {table} \\\n         ORDER BY 1",\n        key = projection.key,\n        table = projection.name,\n    ))?;\n    let streams = statement.query_map([projection.kind], |row| row.get(0))?;\n    Ok(streams.collect::<Result<_, _>>()?)\n}\n\n/// Whether the rows of `stream` in `projection` are what rebuilding them makes: `None` if that\n/// can\'t be told, since the stream has an event that doesn\'t read back.\nfn projection_rows_hold(\n    db: &Connection,\n    projection: &Projection,\n    stream: &[u8],\n) -> Result<Option<bool>, StoreError> {\n    let stored = projection_rows(db, projection, stream)?;\n    db.execute_batch("SAVEPOINT rebuild")?;\n    let rebuilt = rebuild_rows(db, projection, stream);\n    db.execute_batch("RELEASE rebuild")?;',
     ),
     (
         "an effect's missing cause passes",
@@ -1224,13 +1172,10 @@ fn projection_row_holds(
     ),
     # Sequencing (ADR-0020).
     (
-        "sequencing: an epoch out of range goes unchecked",
-        "src/sequencing.rs",
-        "        if !(1..=MAX_NUMBER).contains(&epoch) {",
-        "        if epoch > MAX_NUMBER {",
-        # Epoch 0 is refused when a record is made; only with nothing to number does the
-        # unchecked epoch pass, which only a unit test tries.
-        "unit",
+        "sequencing: a store that isn't the hub numbers",
+        'src/terms.rs',
+        '        Some(term) if term.device == own => Ok(term.epoch),',
+        '        Some(term) => Ok(term.epoch),',
     ),
     (
         "sequencing: records are numbered",
@@ -1303,16 +1248,16 @@ fn projection_row_holds(
         "unit",
     ),
     (
-        "sequencing: runs confirmed by position alone",
-        "src/sequencing.rs",
-        "    e.origin_seq = s.to_seq AND e.hash = s.last_hash\";",
-        "    e.origin_seq = s.to_seq\";",
+        'sequencing: runs confirmed by position alone',
+        'src/sequencing.rs',
+        '         AND e.hash = s.last_hash"',
+        '         AND e.hash = e.hash"',
     ),
     (
-        "sequencing: runs confirmed by their first event",
-        "src/sequencing.rs",
-        "    e.origin_seq = s.to_seq AND e.hash = s.last_hash\";",
-        "    e.origin_seq = s.from_seq\";",
+        'sequencing: runs confirmed by their first event',
+        'src/sequencing.rs',
+        '        "{COUNTING} JOIN events AS e ON e.origin_device = s.device AND e.origin_seq = s.to_seq \\\n         AND e.hash = s.last_hash"',
+        '        "{COUNTING} JOIN events AS e ON e.origin_device = s.device AND e.origin_seq = s.from_seq \\\n         AND s.last_hash = s.last_hash"',
     ),
     (
         "sequencing: records don't count as confirmed",
@@ -1336,9 +1281,9 @@ fn projection_row_holds(
     ),
     (
         "sequencing: an event's number off by one",
-        "src/sequencing.rs",
-        "\"SELECT s.epoch, s.number + (?2 - s.from_seq) FROM {CONFIRMING} WHERE \\",
-        "\"SELECT s.epoch, s.number + (?2 - s.from_seq) + (s.to_seq > s.from_seq) FROM {CONFIRMING} WHERE \\",
+        'src/sequencing.rs',
+        '            "SELECT s.epoch, s.number + (?2 - s.from_seq) FROM {} WHERE \\',
+        '            "SELECT s.epoch, s.number + (?2 - s.from_seq) + (s.to_seq > s.from_seq) FROM {} WHERE \\',
     ),
     (
         "sequencing: the search for an event's runs stops short of the longest",
@@ -1504,9 +1449,95 @@ fn projection_row_holds(
         "        .query_row(\"SELECT business_date FROM orders WHERE order_id <= ?1 ORDER BY order_id LIMIT 1\", [&key[..]], |row| {",
     ),
     (
-        "ownership: the hub answers in epoch 1",
-        "src/ownership.rs",
-        "        let epoch = Epoch::new(epoch).ok_or(StoreError::OutOfRange(\"an epoch\"))?;",
-        "        let epoch = Epoch::new(epoch).and(Epoch::new(1)).ok_or(StoreError::OutOfRange(\"an epoch\"))?;",
+        'ownership: the hub answers in epoch 1',
+        'src/ownership.rs',
+        '        let (epoch, waiting) = terms::own_epoch(self.tx, own)',
+        '        let (epoch, waiting) = terms::own_epoch(self.tx, own).map(|_| Epoch::FIRST)',
+    ),
+    # Hub terms (ADR-0022): the claims projection, the chain, fencing, claiming, and the hub
+    # alone numbering and answering.
+    (
+        "terms: the chain isn't worked out again when a claim arrives",
+        'src/terms.rs',
+        '    settle(db)\n}',
+        '    let _ = settle;\n    Ok(())\n}',
+    ),
+    (
+        'terms: a record counts whoever wrote it',
+        'src/terms.rs',
+        '    AND t.device = s.author AND s.author_seq > t.after \\',
+        '    AND s.author_seq > t.after \\',
+    ),
+    (
+        "terms: a record before its term's claim counts",
+        'src/terms.rs',
+        '    AND t.device = s.author AND s.author_seq > t.after \\',
+        '    AND t.device = s.author AND s.author_seq > 0 \\',
+        # No hub writes a record of its epoch before it claims it: only a unit test makes one.
+        "unit",
+    ),
+    (
+        'terms: the cut fences nothing',
+        'src/terms.rs',
+        '    AND (t.through IS NULL OR s.author_seq <= t.through)";',
+        '    AND (t.through IS NULL OR s.author_seq <= t.through OR 1)";',
+    ),
+    (
+        'terms: a record just past the cut counts',
+        'src/terms.rs',
+        '    AND (t.through IS NULL OR s.author_seq <= t.through)";',
+        '    AND (t.through IS NULL OR s.author_seq <= t.through + 1)";',
+    ),
+    (
+        'terms: cuts read back little-endian',
+        'src/terms.rs',
+        'Ok(Cut { device: id(device)?, position: u64::from_be_bytes(position) })',
+        'Ok(Cut { device: id(device)?, position: u64::from_le_bytes(position) })',
+    ),
+    (
+        'sequencing: the hub numbers after every record, not those that count',
+        'src/sequencing.rs',
+        '        "SELECT s.to_seq FROM {COUNTING} WHERE s.device = ?1 ORDER BY s.to_seq DESC LIMIT 1"',
+        '        "SELECT s.to_seq FROM sequence AS s WHERE s.device = ?1 ORDER BY s.to_seq DESC LIMIT 1"',
+    ),
+    (
+        "sequencing: the hub's own log pending after its last record of any epoch",
+        'src/sequencing.rs',
+        '        "SELECT author_seq FROM sequence WHERE author = ?1 AND epoch = ?2 \\\n         ORDER BY number DESC LIMIT 1",',
+        '        "SELECT author_seq FROM sequence WHERE author = ?1 AND ?2 = ?2 \\\n         ORDER BY author_seq DESC LIMIT 1",',
+    ),
+    (
+        'claiming: a store holds one less of each log than it does',
+        'src/terms.rs',
+        '                held.insert(term.device, rows::head(self.tx, term.device)?.seq());',
+        '                held.insert(term.device, rows::head(self.tx, term.device)?.seq().saturating_sub(1));',
+    ),
+    (
+        'claiming: the hub claims again',
+        'src/terms.rs',
+        '        if chain.first().is_some_and(|term| term.device == own) {\n            return Ok(None);',
+        '        if chain.first().is_some_and(|term| term.device == own) && own != own {\n            return Ok(None);',
+    ),
+    (
+        'claiming: a claim is dated by the UTC calendar alone',
+        'src/terms.rs',
+        '    if let Some(event) = latest {',
+        '    if let Some(event) = latest.filter(|_| false) {',
+        # No property test looks at a claim's business date.
+        "unit",
+    ),
+    (
+        "answering: a store that isn't the hub answers",
+        'src/ownership.rs',
+        '        let (epoch, waiting) = terms::own_epoch(self.tx, own)',
+        '        let (epoch, waiting) = terms::own_epoch(self.tx, own).or(Ok(Epoch::FIRST))',
+    ),
+    (
+        'check: the chain of terms goes unchecked',
+        'src/check.rs',
+        '    terms(db, &mut problems)?;',
+        '    terms(db, &mut Vec::new())?;',
+        # Only a unit test changes the terms behind the store's back.
+        "unit",
     ),
 ]

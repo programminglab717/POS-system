@@ -21,7 +21,8 @@
 //!
 //! [`checkout`] holds the rules that span an order and its payments: what each check still owes,
 //! starting a payment, closing a check, and money that doesn't fit the order. [`sequence`] holds
-//! the Store Hub's sequencing records, which number the store's events.
+//! the Store Hub's sequencing records, which number the store's events, and [`hub`] the claims by
+//! which a replica takes the hub's role, and the rules that say which hub's records count.
 //!
 //! Like the rest of the kernel, this crate is deterministic, never panics, and builds for
 //! `wasm32`.
@@ -29,6 +30,7 @@
 pub mod aggregate;
 pub mod checkout;
 pub mod codec;
+pub mod hub;
 pub mod order;
 pub mod payment;
 pub mod refs;
