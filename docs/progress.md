@@ -108,7 +108,7 @@ Step 6, slice 3, ownership leases, is built and verified (see "Completed"), as
 
 ### Ownership leases: step 6, slice 3 (2026-10-01)
 
-Built and verified; awaiting review. Its commit and CI run are recorded once it is pushed.
+Commit `710ed27`, with CI green on it (33.6 minutes). Awaiting review.
 
 - **Built** ([ADR-0021](./adr/0021-ownership-leases.md)):
   - `keel-domain`:
@@ -136,7 +136,8 @@ Built and verified; awaiting review. Its commit and CI run are recorded once it 
     - Four new invariants, checked at the end of each run, and the hub's answers and the
       orders' ownership conflicts counted in its report.
   - CI: the job's time limit rises from 30 minutes to 45. Slice 2's commit took 28.6 of them,
-    in two test passes of 14 minutes each, and this slice's tests add to both.
+    in two test passes of 14 minutes each, and this slice's tests add to both: its own commit
+    took 33.6.
 - **Verified:**
   - Known answers:
     - `keel-domain`, 14 tests of ownership:
