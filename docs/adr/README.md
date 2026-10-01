@@ -25,6 +25,6 @@ supersedes the old one.
 | [0017](./0017-projections-and-outbox.md) | Projections and the outbox: per-stream projections recomputed in each write, and a transactional effect outbox | Accepted |
 | [0018](./0018-encryption-at-rest-and-integrity-checks.md) | Encryption at rest and integrity checks: SQLCipher with a vendored OpenSSL, a raw key the platform protects, and checks on open and on request | Accepted |
 | [0019](./0019-replication-and-deterministic-simulation.md) | Replication and deterministic simulation: anti-entropy over version vectors, folds in HLC order, and a seeded single-process simulator | Accepted |
-| [0020](./0020-hub-sequencing.md) | Hub sequencing: signed sequencing records in the hub's log, confirmation by hash, and durability watermarks | Proposed |
+| [0020](./0020-hub-sequencing.md) | Hub sequencing: signed sequencing records in the hub's log, confirmation by hash, and durability watermarks | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

@@ -2,16 +2,16 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-09-30.
+> Last updated: 2026-10-01.
 
 ## Where we are
 
 **Phase 0 (Foundations), step 6 of 8:** `keel-sim` and `keel-sync` v0, the deterministic
 simulator and the sync engine, in four slices
 ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)). Slice 1, replication and
-the simulator, is built and reviewed. Slice 2, hub sequencing, is built and verified, and
-awaits review ([ADR-0020](./adr/0020-hub-sequencing.md), proposed). Step 5, `keel-store`, is
-done: built in three slices, each reviewed.
+the simulator, and slice 2, hub sequencing ([ADR-0020](./adr/0020-hub-sequencing.md)), are built
+and reviewed. Slice 3, ownership leases, is being designed. Step 5, `keel-store`, is done: built
+in three slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -24,7 +24,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: slice 1 of 4 built and reviewed; slice 2 built, awaiting review | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 and 2 of 4 built and reviewed; slice 3 being designed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -65,45 +65,31 @@ Step 6 is built in four slices, each ending with a review
 1. **Replication and the simulator** (built and reviewed 2026-09-30): `keel-sync`'s protocol v0, anti-entropy
    by version vector over any transport, and `keel-sim`, devices, the hub and the cloud with
    real stores under seeded faults, checking the protocol's rules and the invariants.
-2. **Hub sequencing** (built 2026-09-30, [ADR-0020](./adr/0020-hub-sequencing.md)):
+2. **Hub sequencing** (built 2026-09-30, reviewed 2026-10-01,
+   [ADR-0020](./adr/0020-hub-sequencing.md)):
    `store_seq` per epoch, confirmed and provisional events, store durability, and the cloud's
    durable-ack watermark.
-3. **Ownership leases:** the hub grants and transfers orders' ownership; island mode and the
-   manager's override.
+3. **Ownership leases** (being designed): the hub grants and transfers orders' ownership; island
+   mode and the manager's override.
 4. **Hub election and failover:** priorities, heartbeats, the hot standby, epochs and fencing,
    and a split brain healing.
 
 ## Current slice
 
-Step 6, slice 2, hub sequencing, is built and verified (see "Completed"), as
-[ADR-0020](./adr/0020-hub-sequencing.md), proposed, describes:
+Step 6, slice 3, ownership leases, begins with its design
+([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), decision 8):
 
-- The hub numbers the store's events in the order it receives them, gapless in its epoch, in
-  signed `sequence.assigned` records in its own log. Each record names stretches of devices'
-  logs, each pinned by the hash of its last event.
-- Every replica works out from the records it holds which events are confirmed, and which
-  provisional: a replica holding a forked version of a log never takes the hub's numbers for
-  its own. The store keeps the numbers in a projection, and gives a gapless feed.
-- The hub sequences only once its own log is settled.
-- A device knows its events are store-durable once the hub says it holds them, and learns the
-  cloud's durable-ack watermark from a new `durable` frame the hub relays.
+- the hub grants and transfers orders' ownership;
+- structural and money commands need it, commutative ones don't;
+- island mode, and the manager's override.
 
-| Piece | Status |
-|---|---|
-| Design, in ADR-0020 | Done |
-| `keel-domain`: the `sequence.assigned` payload | Done |
-| `keel-store`: sequencing, the `sequence` projection, confirmation and the feed | Done |
-| `keel-sync`: the hub's sequencing, store durability, and the `durable` frame | Done |
-| `keel-sim`: the hub sequences, the cloud is durable, and the new invariants | Done |
-| Known answers, property tests, the simulator's seeds, planted bugs and probes | Done |
-| Soak, CI-equivalent run, docs | Done |
-| Review, and accepting ADR-0020 | Next |
+It will be recorded in a proposed ADR, and built, verified and reviewed like slices 1 and 2.
 
 ## Completed
 
 ### Hub sequencing: step 6, slice 2 (2026-09-30)
 
-Commit `7b6bd52`, with CI green on it (28.6 minutes). Awaiting review.
+Commit `7b6bd52`, with CI green on it (28.6 minutes). Reviewed 2026-10-01.
 
 - **Built** ([ADR-0020](./adr/0020-hub-sequencing.md)):
   - `keel-domain`: `sequence.assigned` v1, the hub's sequencing record. It holds an epoch, the
@@ -210,8 +196,8 @@ Commit `7b6bd52`, with CI green on it (28.6 minutes). Awaiting review.
   - A CI-equivalent run passed every step, in 28 minutes: formatting, both lint runs, the tests
     with the exhaustive sweeps and 4,096 cases a property, the tests without default features,
     the docs, the `wasm32` build, the currency table and the golden baskets.
-- **Decisions:** [ADR-0020](./adr/0020-hub-sequencing.md), proposed, with what the build
-  settled under "As built":
+- **Decisions:** [ADR-0020](./adr/0020-hub-sequencing.md), accepted 2026-10-01 after review,
+  with what the build settled under "As built":
   - what the hub numbers, for each device: the events after the last position any record
     covers, which holds even when the hub's own records come back from its peers;
   - a record ends where a device's runs wouldn't follow on;

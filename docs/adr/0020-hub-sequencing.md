@@ -1,6 +1,7 @@
 # ADR-0020: Hub sequencing: signed sequencing records in the hub's log, confirmation by hash, and durability watermarks
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-01), with the details settled in building it, under "As built",
+  accepted after review
 - **Date:** 2026-09-30
 
 ## Context

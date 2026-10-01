@@ -256,8 +256,9 @@ Keel, and **never lose a sale to Keel**.
    hub sequencing, ownership leases, failover. The invariant suite runs in CI. *Status: in
    progress, in four slices
    ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)): the first, replication
-   and the simulator, is built and reviewed; the second, hub sequencing, is being designed. See
-   [progress](./progress.md).*
+   and the simulator, and the second, hub sequencing
+   ([ADR-0020](./adr/0020-hub-sequencing.md)), are built and reviewed; the third, ownership
+   leases, is being designed. See [progress](./progress.md).*
 7. **Android register shell**: ring an order with modifiers, pay cash, print a receipt (ESC/POS over
    TCP), running on a reference all-in-one against a local hub.
 8. **Cloud cell v0**: sync ingest, catalog publishing, a minimal back office (catalog editor, reports).
