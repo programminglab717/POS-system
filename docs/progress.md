@@ -11,8 +11,8 @@ simulator and the sync engine, in four slices
 ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)). Slice 1, replication and
 the simulator, slice 2, hub sequencing ([ADR-0020](./adr/0020-hub-sequencing.md)), and slice 3,
 ownership leases ([ADR-0021](./adr/0021-ownership-leases.md)), are built and reviewed. Slice 4,
-hub election and failover, is being designed. Step 5, `keel-store`, is done: built in three
-slices, each reviewed.
+hub election and failover, is designed ([ADR-0022](./adr/0022-hub-election-and-failover.md),
+proposed) and being built. Step 5, `keel-store`, is done: built in three slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -25,7 +25,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 to 3 of 4 built and reviewed; slice 4 being designed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 to 3 of 4 built and reviewed; slice 4 designed, being built | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -73,20 +73,37 @@ Step 6 is built in four slices, each ending with a review
 3. **Ownership leases** (built and reviewed 2026-10-01,
    [ADR-0021](./adr/0021-ownership-leases.md)): the hub grants and transfers orders' ownership;
    island mode and the manager's override.
-4. **Hub election and failover** (being designed): priorities, heartbeats, the hot standby,
+4. **Hub election and failover** (designed 2026-10-01,
+   [ADR-0022](./adr/0022-hub-election-and-failover.md)): priorities, heartbeats, the hot standby,
    epochs and fencing, and a split brain healing.
 
 ## Current slice
 
-Step 6, slice 4, hub election and failover, begins with its design
-([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), decision 8):
+Step 6, slice 4, hub election and failover, is designed in
+[ADR-0022](./adr/0022-hub-election-and-failover.md), proposed:
 
-- hubs chosen by priority, and their heartbeats;
-- the hot standby, which takes over when the hub fails;
-- epochs, and fencing a deposed hub's records and grants;
-- a split brain healing.
+- A hub's term begins with a signed claim in its log: its epoch, its priority, the claim it
+  succeeds, and how far into each earlier hub's log it holds. Every replica works out the same
+  hub from the claims it holds: the highest epoch, then the higher priority.
+- A successor's claim fences what the hub it succeeds wrote after it: those records stop
+  counting everywhere, and the new hub numbers their events again, so numbers never repeat
+  and each epoch's feed stays gapless.
+- Replicas send heartbeats every second. The most preferred candidate that hears no hub for three
+  of them claims the next epoch, once settled and caught up; a hub stops serving the moment a
+  better claim reaches it. Devices know they are islands when they hear no hub.
+- A split brain heals by the same rules; a deposed hub's grants stand, kept consistent by the
+  lease's compare-and-swap.
 
-It will be recorded in a proposed ADR, and built, verified and reviewed like slices 1 to 3.
+| Piece | Status |
+|---|---|
+| Design, in ADR-0022 | Done |
+| `keel-domain`: the `hub.claimed` payload | Next |
+| `keel-store`: the `terms` projection, the winning claim, the chain and its cuts; fencing in confirmation and sequencing; claiming, and refusing to serve when not the hub | |
+| `keel-sync`: heartbeats, the election, serving only while the term wins, settling against every peer, and islands | |
+| `keel-sim`: the standby, splits, failover, and the new invariants | |
+| Known answers, property tests, the simulator's seeds, planted bugs and probes | |
+| Soak, CI-equivalent run, docs | |
+| Review, and accepting ADR-0022 | |
 
 ## Completed
 
