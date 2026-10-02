@@ -92,8 +92,10 @@ proposed ADR, with step 7 split into slices, each ending with a review.
 
 Commit `d14e128`, and `abf80e4`, which raised CI's time limit, with CI green on it (51.3
 minutes). The run on `d14e128` passed everything up to its second test pass, where the old
-45-minute limit cut it off. Reviewed 2026-10-02: the review's fixes, below, are in the commit
-that accepts [ADR-0022](./adr/0022-hub-election-and-failover.md).
+45-minute limit cut it off. Reviewed 2026-10-02: the review's fixes, below, are in `8977e85`,
+which accepts [ADR-0022](./adr/0022-hub-election-and-failover.md), and `f5da291`, with CI green
+on it (52.8 minutes); pushing `f5da291` cancelled the run on `8977e85`. Where the review changed
+the code, the verification below was run again on it.
 
 - **Built** ([ADR-0022](./adr/0022-hub-election-and-failover.md)):
   - `keel-domain`:
@@ -197,45 +199,48 @@ that accepts [ADR-0022](./adr/0022-hub-election-and-failover.md).
       hear it at once; and at the end that the replicas agree, each having held the hub's term a
       while, with one hub serving, heard within two hops, and every event numbered once by the
       records that count. Eleven failures it found are named regression tests, five of them in
-      the review.
+      the review, and a twelfth named case keeps one of the planted bugs in its reach.
     - 100,000 cases each passed, in release builds, alongside other runs: the protocol property
-      in 43 minutes, the hub properties in 24 s (a million earlier, in 209 s), the payload
-      properties in 3 minutes, and the store's sequencing property in 82 minutes, its terms
-      property in 58 and its ownership property in 57.
-  - The simulator: 5,000 seeds passed in a release build, in 74 minutes on two threads,
-    alongside other runs.
-    - The candidates made 8,453 claims, more than one in 2,878 runs; the winning epoch was 1 in
-      2,414 runs, 2 in 2,222, 3 in 350 and 4 in 14. 4,993 splits, in 3,325 runs, ran a hub on
+      in 24 minutes on the review's code (43 before it), the hub properties in 24 s (a million
+      earlier, in 209 s), the payload properties in 3 minutes, and the store's sequencing
+      property in 82 minutes, its terms property in 58 and its ownership property in 57.
+  - The simulator: 5,000 seeds passed in a release build on the review's code, in 40 minutes on
+    two threads, alongside other runs.
+    - The candidates made 8,452 claims, more than one in 2,878 runs; the winning epoch was 1 in
+      2,414 runs, 2 in 2,223, 3 in 349 and 4 in 14. 4,993 splits, in 3,325 runs, ran a hub on
       each side. Where the node serving as the hub crashed, in 762 runs, another claimed 3.5 s
       after at the median, 6.5 s at the 90th percentile and 24 s at most, the other faults
       delaying it.
-    - Devices made 109,443 moves as islands, hearing no hub, in every run: no hub is heard until
+    - Devices made 109,388 moves as islands, hearing no hub, in every run: no hub is heard until
       the first claim, three seconds in. A run of the same seeds before the heartbeat fix made
-      114,072, and 28 more claims.
-    - Devices made 47,502 requests for orders; hubs granted 40,081 and refused 1,338 for a moved
-      lease, 7,828 for a payment in progress and 1 for the device owning the order already. 4,702
+      114,072, and 29 more claims.
+    - Devices made 47,506 requests for orders; hubs granted 40,085 and refused 1,338 for a moved
+      lease, 7,828 for a payment in progress and 1 for the device owning the order already. 4,698
       overrides applied and 168 were stale; 1,412 grants were stale; 2,581 events were recorded
       by a device that didn't own the order.
     - The runs met 683,442 events appended; 17 million frames, of which 973,000 were lost,
       941,000 duplicated, 950,000 cut off and 287,000 sent to a node that was down; 3,472 crashes
       between writes, 3,517 in the middle of one, 3,711 rollbacks, 7,284 clock jumps and 7,575
       cuts; 2,758 events lost to rollbacks, held by no other replica, and 210 devices forked;
-      20,658 writes held back until a log settled. 391,156 records that count numbered 735,297
+      20,658 writes held back until a log settled. 391,155 records that count numbered 735,300
       events, and replicas sent 4.4 million `durable` frames.
     - The replicas agreed after healing within 0.8 s at the median, 1.6 s at the 90th
       percentile, 2.3 s at the 99th, and 6.5 s at most.
   - Failover: in 1,000 seeds without other faults, the hub crashing at moments spread over a
     heartbeat period, the standby claimed 3.0 to 4.0 s after the crash, spread evenly, a quarter
-    in each 250 ms.
+    in each 250 ms, before the review and on its code alike.
   - Coverage probes, all passing:
     - the hub property, over 2,002 cases: chains of two terms or more in 46%, three in 11% and
       four in 1.6%; records that a later claim cut off in 40%, and records of a claim that lost
       in 74%; two claims of one epoch in 80%; a claim refused as behind in 2.3%;
-    - the protocol property, over 1,005 cases: more than one claim in 33%, an epoch of 3 or more
-      in 6% and of 5 at most, two claims of one epoch in 13%, records cut off in 25% (726 in all),
-      a candidate down for seconds in 41%, a peer refusing a replica's log, a fork until it takes
-      it, in 54%; clocks jumping in 67%, and two claims of one epoch with them in 9%; another
-      heartbeat period than a second in 31%;
+    - the protocol property, over 1,000 cases of the review's code: more than one claim in 33%,
+      an epoch of 3 or more in 7% and of 5 at most, two claims of one epoch in 10%, records that
+      don't count in 24%, a candidate down for a second or more in 45%, a peer refusing a
+      replica's log, a fork until it takes it, in 54%; clocks jumping in 67%, and two claims of
+      one epoch with them in 7%; another heartbeat period than a second in 30%; a replica
+      starting again with its clock set back in 43%, the serving hub in 13%; a hub given a floor
+      at or above its clock's reading in 10%, nearly all while it served; and an
+      acknowledgement from before a restart arriving after it in 62%;
     - the simulator, over 300 seeds: more than one claim in 177, the winning epoch past 1 in
       154 and past 2 in 26; 296 splits; 50 failovers; 6,438 moves made as islands; 2,928
       requests for orders, 331 overrides and 89 stale grants; 24,211 records counted; 18 devices
@@ -247,13 +252,14 @@ that accepts [ADR-0022](./adr/0022-hub-election-and-failover.md).
       tests.
     - `keel-store`: 136, the 43 new or changed and every other one in a file this slice changed:
       110 by the property tests, and 26 that only unit tests can reach.
-    - `keel-sync`: all 113, 81 by the property tests and the simulator, and 32 that only unit
-      tests can reach, each confirmed against them.
+    - `keel-sync`: all 124, on the review's code: 90 by the property tests and the simulator,
+      and 34 that only unit tests can reach, each confirmed against them. The review added 12,
+      and left out one that no longer changed anything.
   - A CI-equivalent run passed every step before the last property and heartbeat changes:
     formatting, the planted bugs' texts, both lint runs, the tests with the exhaustive sweeps and
     4,096 cases a property (41 minutes alongside other runs), the tests without default features
     (37), the docs, the `wasm32` build, the currency table and the golden baskets. CI passed
-    them all on the final code.
+    them all on the final code, and on the review's.
 - **Decisions:** [ADR-0022](./adr/0022-hub-election-and-failover.md), accepted 2026-10-02 after
   review, with what building and reviewing it settled under "As built": a claimant holds the whole
   chain; the hub's beat in place of "hears the hub directly", and a heartbeat naming its hub's
@@ -349,12 +355,17 @@ that accepts [ADR-0022](./adr/0022-hub-election-and-failover.md).
     change to what they make of the events, without a new version, would have left stores'
     rows stale. They are pinned now.
   - Two doc comments ran past the line width, and one split a paragraph in two.
+  - Run again on the review's code, `keel-sync`'s planted bugs found one that the protocol
+    property had reached only by chance, and no longer did once the review changed how crashes
+    are drawn: a replica passing on, as its own term's beat, a beat its term's hub gave acting in
+    a later term. A named case now reaches it every time (`f5da291`). Another, a beat without a
+    term accepted, could no longer change anything, since a beat comes with a floor and a floor
+    only with a term; it is left out of the list.
   - Left for later (see "Known gaps"): a peer refusing a replica's log reads as a fork, whatever
     the peer's reason.
-  - The fixes pass the known answers, 10,000 cases of the protocol property, and the lint and
-    doc builds. Runs on the final code are under way: every `keel-sync` planted bug, 100,000
-    cases of the protocol property, 5,000 simulator seeds and the failover probe; their results
-    follow, with this commit's CI run.
+  - The final code passes the known answers and both lint runs; 100,000 cases of the protocol
+    property, 5,000 simulator seeds and the failover probe, above; every `keel-sync` planted
+    bug; and CI.
 
 ### Ownership leases: step 6, slice 3 (2026-10-01)
 

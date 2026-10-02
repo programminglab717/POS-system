@@ -611,14 +611,8 @@ BUGS = [
         # Replicas send no hub without a term: only the refused frames show it.
         "unit",
     ),
-    (
-        "heartbeats: a beat without a term is accepted",
-        "src/frame.rs",
-        "beat if epoch > 0 => Some(beat.as_u64().ok_or(FrameError::Malformed)?),",
-        "beat => Some(beat.as_u64().ok_or(FrameError::Malformed)?),",
-        # Replicas send no beat without a term: only the refused frames show it.
-        "unit",
-    ),
+    # Not listed: a beat without a term. A beat comes with a floor, and a floor only with a
+    # term, so the floor's rule refuses every such heartbeat too.
     (
         "heartbeats: a floor decodes as 0",
         "src/frame.rs",
