@@ -492,10 +492,14 @@ waitlist failures during the October 2025 cloud outage ([R01](../research/01-res
     are numbered again. Grants aren't fenced: an order applies a grant only from its current
     lease, so two grants of one lease never both apply, and the second is flagged stale.
   - **Heartbeats** every second carry the sender's priority, its term (the epoch and hub of the
-    winning claim it holds), whether it acts as that hub, and the hub's beat, which rises every
-    period it acts. A replica hears the hub while the latest beat it knows of its own term's hub,
-    or of a later epoch's, reached it in the last three periods, from the hub or a peer that had
-    it directly; beats of two hubs of one epoch, which a split leaves, are never compared. A
+    winning claim it holds), whether it acts as that hub, the hub's beat, which rises every
+    period it acts, and the term's floor, the latest beat of it the sender knows, however old.
+    A replica hears the hub while the latest beat it knows of its own term's hub, or of a later
+    epoch's, reached it in the last three periods, from the hub or a peer that had it directly;
+    beats of two hubs of one epoch, which a split leaves, are never compared. Replicas pass
+    floors on, and a hub's beats go on above every floor of its term it hears: a hub that
+    restarts with its clock set back is heard again within a period or two, not when its clock
+    catches up. A
     candidate claims the next epoch when its log is settled and not forked, it hears no hub and
     no preferred candidate, and it holds as much of each earlier hub's log as its peers other
     than that hub say they hold, or has waited three more periods. Periods are the replicator's

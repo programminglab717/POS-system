@@ -2,18 +2,15 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-10-01.
+> Last updated: 2026-10-02.
 
 ## Where we are
 
-**Phase 0 (Foundations), step 6 of 8:** `keel-sim` and `keel-sync` v0, the deterministic
-simulator and the sync engine, in four slices
-([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)). Slice 1, replication and
-the simulator, slice 2, hub sequencing ([ADR-0020](./adr/0020-hub-sequencing.md)), and slice 3,
-ownership leases ([ADR-0021](./adr/0021-ownership-leases.md)), are built and reviewed. Slice 4,
-hub election and failover, is built and verified, and awaits review
-([ADR-0022](./adr/0022-hub-election-and-failover.md), proposed). Step 5, `keel-store`, is done:
-built in three slices, each reviewed.
+**Phase 0 (Foundations), step 7 of 8:** the Android register shell. Its design comes first.
+Step 6, `keel-sim` and `keel-sync` v0, the deterministic simulator and the sync engine, is done:
+built in four slices, each reviewed, the last, hub election and failover
+([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted after a review that found and
+fixed two bugs.
 
 ## Phase 0 milestones
 
@@ -26,8 +23,8 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 to 3 of 4 built and reviewed; slice 4 built, awaiting review | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
-| 7 | Android register shell | Not started | |
+| 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
+| 7 | Android register shell | In progress: design | |
 | 8 | Cloud cell v0 | Not started | |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
@@ -61,7 +58,7 @@ Step 5 was built in three slices, each ending with a review
 
 Retention, snapshots and backups follow the sync engine (step 6).
 
-Step 6 is built in four slices, each ending with a review
+Step 6 was built in four slices, each ending with a review
 ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), decision 8):
 
 1. **Replication and the simulator** (built and reviewed 2026-09-30): `keel-sync`'s protocol v0, anti-entropy
@@ -74,46 +71,20 @@ Step 6 is built in four slices, each ending with a review
 3. **Ownership leases** (built and reviewed 2026-10-01,
    [ADR-0021](./adr/0021-ownership-leases.md)): the hub grants and transfers orders' ownership;
    island mode and the manager's override.
-4. **Hub election and failover** (designed and built 2026-10-01,
+4. **Hub election and failover** (built 2026-10-01, reviewed 2026-10-02,
    [ADR-0022](./adr/0022-hub-election-and-failover.md)): priorities, heartbeats, the hot standby,
    epochs and fencing, and a split brain healing.
 
 ## Current slice
 
-Step 6, slice 4, hub election and failover, is built and verified (see "Completed"), as
-[ADR-0022](./adr/0022-hub-election-and-failover.md), proposed, describes:
-
-- A hub's term begins with a signed claim in its log: its epoch, its priority, the claim it
-  succeeds, and how far into each earlier hub's log it holds. Every replica works out the same
-  hub from the claims it holds: the highest epoch, then the higher priority.
-- A successor's claim fences what the hub it succeeds wrote after it: those records stop
-  counting everywhere, and the new hub numbers their events again, so numbers never repeat
-  and each epoch's feed stays gapless.
-- Replicas send heartbeats every second. The most preferred candidate that hears no hub for three
-  of them claims the next epoch, once settled and caught up; a hub stops serving the moment a
-  better claim reaches it. Devices know they are islands when they hear no hub.
-- A split brain heals by the same rules; a deposed hub's grants stand, kept consistent by the
-  lease's compare-and-swap.
-
-| Piece | Status |
-|---|---|
-| Design, in ADR-0022 | Done |
-| `keel-domain`: the `hub.claimed` payload, the winning claim, the chain and its cuts, and the rules for succeeding it | Done |
-| `keel-store`: the claims projection; fencing in confirmation and sequencing; claiming, and refusing to serve when not the hub | Done |
-| `keel-sync`: heartbeats and beats, the election, serving only while the term wins, forks, settling against every peer, and islands | Done |
-| `keel-sim`: the standby, splits, failover, and the new invariants | Done |
-| Known answers, property tests, the simulator's seeds, planted bugs and probes | Done |
-| Soak, CI-equivalent run, docs | Done |
-| Review, and accepting ADR-0022 | Next |
-
-Building it settled what ADR-0022's "As built" records. The largest changes to the design: a
-claimant must hold the whole chain of claims back to epoch 1; heartbeats carry the hub's beat,
-which a peer passes on, in place of saying it hears the hub, and name the hub's term, since a
-split leaves two hubs of one epoch whose beats can't be compared; learning of a new claim counts
-as hearing its hub; a replica's log has forked when a peer refuses the replica's own log, the
-design's test having been the wrong way round; and a candidate waits to catch up only on what
-peers other than the old hub hold. Each was found by a property test, a known answer or the
-simulator, and each failure is a named regression test.
+Step 7 begins with its design: the Android register shell
+([roadmap §8](./roadmap.md#8-first-engineering-milestones-the-next-build-steps),
+[ADR-0004](./adr/0004-client-ui-stack.md)), ringing an order with modifiers, taking cash and
+printing a receipt (ESC/POS over TCP), on a reference all-in-one against a local hub. That means
+the shell's structure in Kotlin and Compose; what the kernel exposes to it, and how it calls the
+kernel; the store's key in the Android keystore; the transport between the register and the hub;
+printing; and how the shell is built and tested, in CI and on a device. It will be recorded in a
+proposed ADR, with step 7 split into slices, each ending with a review.
 
 ## Completed
 
@@ -121,8 +92,8 @@ simulator, and each failure is a named regression test.
 
 Commit `d14e128`, and `abf80e4`, which raised CI's time limit, with CI green on it (51.3
 minutes). The run on `d14e128` passed everything up to its second test pass, where the old
-45-minute limit cut it off. [ADR-0022](./adr/0022-hub-election-and-failover.md) is proposed,
-waiting on review.
+45-minute limit cut it off. Reviewed 2026-10-02: the review's fixes, below, are in the commit
+that accepts [ADR-0022](./adr/0022-hub-election-and-failover.md).
 
 - **Built** ([ADR-0022](./adr/0022-hub-election-and-failover.md)):
   - `keel-domain`:
@@ -187,20 +158,24 @@ waiting on review.
       encoded from the key tables, and each way it is refused; which claim wins; the chain and its
       cuts, with two claims of one epoch, a hub elected twice, a later claim that cuts no part of
       a device and a chain the replica holds only part of; and succeeding, refused when behind.
-    - `keel-store`, 8 tests: claiming the first epoch; a claim's business date; a successor
+    - `keel-store`, 9 tests: claiming the first epoch; a claim's business date; a successor
       fencing what the hub it succeeds wrote after it claimed; a store behind the chain refusing to
       claim until it catches up; two claims of one epoch, the losing side's events numbered again;
       a hub elected again numbering what only a record its successor cut off numbered; a record
-      before its term's claim counting for nothing; and the integrity check finding a chain that
-      isn't what the claims make.
-    - `keel-sync`: the heartbeat pinned byte for byte, four ways, at both ends of each field's
-      range, in frames Python's `cbor2` encoded, and sixteen ways it is refused; 15 tests of the
+      before its term's claim counting for nothing; the integrity check finding a chain that
+      isn't what the claims make; and the rows of the claims projection, its chain of terms and
+      the sequence projection, pinned for a fixed history.
+    - `keel-sync`: the heartbeat pinned byte for byte, six ways, at both ends of each field's
+      range, in frames Python's `cbor2` encoded, and 22 ways it is refused; 18 tests of the
       election: the most preferred candidate claiming at 3 s, the standby at 8 s and not before,
       deferring to a preferred candidate, hearing the hub through a peer and no further, waiting to
       catch up, claiming after waiting, not waiting for what only the silent hub held, stepping
       down, going on hearing its hub beside a losing hub of its epoch, a heartbeat acting as
-      another device's hub, resuming after a restart, settling against every peer, a peer holding
-      more of the log, clock jumps, and a forked replica; and two tests of telling a fork.
+      another device's hub, resuming after a restart, resuming with the clock set back, at once
+      and after a while, hearing of its last beat from two hops away, settling against every
+      peer, a peer holding more of the log, clock jumps, and a forked replica; two tests of
+      telling a fork; and a restart that sets the clock back taking no old acknowledgement for a
+      new one.
     - `keel-sim`: without other faults, a crashed hub is succeeded within 5 s, in 8 seeds.
   - Property tests:
     - `keel-domain`: the chain and its cuts against a model of the rules, whatever order the
@@ -212,13 +187,17 @@ waiting on review.
       confirm, against a model of the chain and of what each should number; the sequencing and
       ownership properties now run under claims.
     - `keel-sync`: the protocol property, rewritten for the election: replicas whose priorities
-      may tie or be none, on a star, a line or a mesh, crashing, some down for seconds, under
-      loss, delay, duplication and cuts. Frame by frame its model checks each heartbeat, each
-      claim's preconditions, that a log settles exactly by the rule and a replica serves exactly
-      while the rule says, and that records are written only while serving, in the term's epoch;
-      and at the end that the replicas agree, with one hub serving, heard within two hops, and
-      every event numbered once by the records that count. Five failures it found are named
-      regression tests.
+      may tie or be none, on a star, a line or a mesh, crashing, some down for seconds and a third
+      of them starting again with their clock set back, under loss, delay, duplication and cuts.
+      Frame by frame its model checks each heartbeat, each claim's preconditions, that a log
+      settles exactly by the rule and a replica serves exactly while the rule says, that records
+      are written only while serving, in the term's epoch, and that a replica takes a `have` for
+      the acknowledgement of its last batch only if it acknowledges that very batch; once the
+      replicas agree on all else after the faults stop, that those within two hops of the hub
+      hear it at once; and at the end that the replicas agree, each having held the hub's term a
+      while, with one hub serving, heard within two hops, and every event numbered once by the
+      records that count. Eleven failures it found are named regression tests, five of them in
+      the review.
     - 100,000 cases each passed, in release builds, alongside other runs: the protocol property
       in 43 minutes, the hub properties in 24 s (a million earlier, in 209 s), the payload
       properties in 3 minutes, and the store's sequencing property in 82 minutes, its terms
@@ -275,13 +254,14 @@ waiting on review.
     4,096 cases a property (41 minutes alongside other runs), the tests without default features
     (37), the docs, the `wasm32` build, the currency table and the golden baskets. CI passed
     them all on the final code.
-- **Decisions:** [ADR-0022](./adr/0022-hub-election-and-failover.md), proposed, with what
-  building it settled under "As built": a claimant holds the whole chain; the hub's beat in place
-  of "hears the hub directly", and a heartbeat naming its hub's term, beats compared only within
-  one term; learning of a claim counts as hearing its hub; a peer's latest
-  heartbeat acting as the hub kept; catching up on what peers other than the old hub hold; forks
-  told by a peer refusing the replica's own log; priority 0 while unsettled or forked; and every
-  pair of candidates within two hops.
+- **Decisions:** [ADR-0022](./adr/0022-hub-election-and-failover.md), accepted 2026-10-02 after
+  review, with what building and reviewing it settled under "As built": a claimant holds the whole
+  chain; the hub's beat in place of "hears the hub directly", and a heartbeat naming its hub's
+  term, beats compared only within one term; the term's floor in every heartbeat, which a hub's
+  beats go above; learning of a claim counts as hearing its hub; a peer's latest heartbeat acting
+  as the hub kept; catching up on what peers other than the old hub hold; forks told by a peer
+  refusing the replica's own log; priority 0 while unsettled or forked; every pair of candidates
+  within two hops; and batches numbered from random bits at each start, amending ADR-0019.
 - **Found and fixed during the build:**
   - The design let a successor cut only the devices it held claims of. With a gap in its chain,
     a claim of an earlier term it didn't hold could make records count again that a later claim
@@ -333,6 +313,48 @@ waiting on review.
   - Six of `keel-domain`'s planted bugs had gone stale in slice 3, when the commands they plant
     in changed, unnoticed because only that slice's own bugs ran. They plant again, all caught,
     and CI now checks every list (`--stale`).
+- **Found and fixed in review** (2026-10-02):
+  - A hub's beat began again from its clock's reading as it restarted. A hub whose clock was set
+    back while it was down, as a clock without its battery is, beat below its last beats, and its
+    peers took it for lost while it served, for as long as the clock had gone back: islands, or a
+    standby claiming needlessly. Heartbeats now carry their term's floor, the latest beat of it
+    their sender knows, however old; replicas keep the latest floor they hear; and a hub's beats
+    go on above every floor naming it. Found reading the code; known answers now pin a hub
+    restarting at once and after a while, and hearing of its last beat from two hops away.
+  - The protocol property had never set a clock back. A third of the replicas that crash now
+    start again with their clock set back, and once the replicas agree on all else after the
+    faults stop, those within two hops of the hub must hear it at once, not only in the end. It
+    then finds the bug above on its own, even with its model sharing it. Against a first fix,
+    which gave the hub of a replica's term the latest beat the replica knew, it found a replica
+    two hops away that knew the hub's last beat after the peer between had restarted: hence
+    floors that every replica passes on.
+  - With clocks set back, the property found slice 1's batch numbers repeating. Batches were
+    numbered from the clock's reading as the replicator started, so a restart that set the clock
+    back numbered its batches as the run before had, and a peer's late acknowledgement of one of
+    those passed for a new one; in this slice that can make a replica take its own log for
+    forked, and a hub stop serving. Each start now numbers its batches from random bits the
+    caller draws (`Replicator::start`'s `nonce`), and the property checks that a replica takes
+    an acknowledgement only for the very batch acknowledged. A first fix, numbering past a
+    peer's last acknowledgement from an earlier run, failed when two quick restarts numbered
+    past the same one.
+  - Its 100,000-case soak then found the new hearing check asking too much. A replica that took
+    on the hub's term late, after the hub had restarted with its clock set back, knowing a later
+    beat of the term from before, heard no hub for a moment: its floor took four periods to reach
+    the hub and the hub's next beat to come back, one more than learning of the claim counts as
+    hearing. That is the protocol working, a period late at most; agreement now counts only once
+    every replica has held the hub's term for the periods of silence and two more, and ADR-0022
+    records the delay.
+  - The rows of the sequence projection (slice 2), and of the claims projection and its chain
+    of terms, weren't pinned, though the projections' docs said every projection's were: a
+    change to what they make of the events, without a new version, would have left stores'
+    rows stale. They are pinned now.
+  - Two doc comments ran past the line width, and one split a paragraph in two.
+  - Left for later (see "Known gaps"): a peer refusing a replica's log reads as a fork, whatever
+    the peer's reason.
+  - The fixes pass the known answers, 10,000 cases of the protocol property, and the lint and
+    doc builds. Runs on the final code are under way: every `keel-sync` planted bug, 100,000
+    cases of the protocol property, 5,000 simulator seeds and the failover probe; their results
+    follow, with this commit's CI run.
 
 ### Ownership leases: step 6, slice 3 (2026-10-01)
 
@@ -1467,6 +1489,11 @@ Work deliberately left for later, so it isn't forgotten:
     The replicas report the fork, and keep disagreeing about that log until a person resolves
     it, with tools that don't exist yet. A forked candidate never claims, and a forked hub stops
     serving.
+  - A peer refusing a replica's own log reads as a fork, whatever the peer's reason: frames don't
+    say why a peer took none of a batch. Once enrollment records travel between replicas
+    (`keel-events`' gap above), a peer that doesn't know a hub's device yet would make it stop
+    serving until the peer takes its log. A `have` could say what its sender quarantined, and
+    why.
   - A batch waiting for acknowledgement from a peer that has since restarted holds up the next
     for up to the acknowledgement timeout (2 s).
   - A clock set back less than a round delays the rounds by as much. Timers on a monotonic clock

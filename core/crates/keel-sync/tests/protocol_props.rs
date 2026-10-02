@@ -3,19 +3,23 @@
 //! A case is a few replicas, linked as a star, a line or a mesh, appending events at random
 //! times, over a network that delays every frame, loses and duplicates some, and cuts links for
 //! a while. Replicas crash now and then, losing what their replicator knew but none of their
-//! events, some starting again at once and some after seconds down, and at times decline a
-//! batch, as a replica that can't take it for now would, so that its sender stalls. Their clocks
-//! jump forwards now and then, by up to half a minute. After twenty seconds the faults stop. Every replica but the last may be the Store Hub, with a priority of
-//! its own, and the first always may; the last is the durable one, which the replicas linked to it
-//! name as their durable peer (ADR-0020). Heartbeats come every second, as configured, or in a
-//! third of the cases at another period, from half a second to a second and a half, so that they
-//! fall due apart from the rounds. All along, the protocol's rules must hold, checked frame by
-//! frame:
+//! events, some starting again at once and some after seconds down, a third of them with their
+//! clock set back, by up to half a minute; and at times decline a batch, as a replica that can't
+//! take it for now would, so that its sender stalls. Their clocks jump forwards now and then, by
+//! up to half a minute. After twenty seconds the faults stop. Every replica but the last may be
+//! the Store Hub, with a priority of its own, and the first always may; the last is the durable
+//! one, which the replicas linked to it name as their durable peer (ADR-0020). Heartbeats come
+//! every second, as configured, or in a third of the cases at another period, from half a second
+//! to a second and a half, so that they fall due apart from the rounds. All along, the protocol's
+//! rules must hold, checked frame by frame:
 //!
 //! - no replica sends a peer an event the peer last told it it holds, or sent it since;
 //! - a batch holds at most the events and bytes configured, unless its one event is more bytes;
 //! - a replica sends a peer a batch only once the last is acknowledged or its acknowledgement
-//!   timeout has passed, and numbers its batches to each peer afresh, even across restarts;
+//!   timeout has passed, and numbers its batches to each peer in rising order;
+//! - a replica takes a `have` for the acknowledgement of its last batch only if it acknowledges
+//!   that very batch, and not one of the same number sent before the replica restarted, its
+//!   clock set back;
 //! - a replica whose last batch a peer took none of sends the peer nothing more until its next
 //!   round, and a tick a round or more after the stall began is that round;
 //! - a replica acknowledges each batch it receives at once;
@@ -29,8 +33,10 @@
 //!   and either all have said so or a heartbeat period has begun since the first did;
 //! - a heartbeat gives its sender's priority, 0 while its log is unsettled or forked, and its
 //!   term, the epoch and hub of the winning claim it holds; says it acts as the hub exactly while
-//!   it serves; and gives the hub's beat: its own, which rises every period it serves, or else
-//!   the latest it had directly from its term's hub, if that is recent;
+//!   it serves; gives the hub's beat: its own, which rises every period it serves, and past
+//!   every floor naming it as the hub that a peer gave it, or else the latest it had directly
+//!   from its term's hub, if that is recent; and gives the term's floor, the latest beat of it it
+//!   knows, however old, from beats and floors;
 //! - a replica hears its hub exactly as the rule says: while it serves, or the latest beat it
 //!   knows of its term's hub, or of a hub of a later epoch, came recently, from the hub or from a
 //!   peer that had it directly, or it learned of the winning claim it holds as recently. Beats of
@@ -101,9 +107,9 @@ struct Case {
     appends: Vec<(u16, u8, u8)>,
     /// Which link, from when, for how long (in tenths of a second).
     cuts: Vec<(u8, u16, u16)>,
-    /// When, which replica crashes, and for how long it stays down (in tenths of a second):
-    /// 0 to start again at once.
-    crashes: Vec<(u16, u8, u16)>,
+    /// When, which replica crashes, for how long it stays down (in tenths of a second): 0 to
+    /// start again at once; and how far its clock is set back when it starts again.
+    crashes: Vec<(u16, u8, u16, u16)>,
     /// When, whose clock jumps forwards, and how far (in tenths of a second).
     jumps: Vec<(u16, u8, u16)>,
     /// Each replica's priority as hub, `None` if it can never be.
@@ -144,9 +150,15 @@ fn any_case() -> impl Strategy<Value = Case> {
             prop::collection::vec((0_u16..200, 1..=replicas, 1_u8..4), 1..12),
             prop::collection::vec((any::<u8>(), 0_u16..200, 1_u16..80), 0..4),
             (
-                // Down long enough for a failover two times in three.
+                // Down long enough for a failover two times in three, and starting again with
+                // its clock set back, up to half a minute, one time in three.
                 prop::collection::vec(
-                    (0_u16..200, 1..=replicas, prop_oneof![1 => Just(0_u16), 2 => 1_u16..120]),
+                    (
+                        0_u16..200,
+                        1..=replicas,
+                        prop_oneof![1 => Just(0_u16), 2 => 1_u16..120],
+                        prop_oneof![2 => Just(0_u16), 1 => 1_u16..=300],
+                    ),
                     0..5,
                 ),
                 // Up to half a minute, past the periods of silence.
@@ -261,10 +273,13 @@ struct World {
     links: Vec<(u8, u8)>,
     models: BTreeMap<u8, Model>,
     replicators: BTreeMap<u8, Replicator>,
-    /// Frames in flight: when they arrive, in what order, from, to, and the frame.
-    queue: BTreeMap<(i64, u64), (u8, u8, Vec<u8>)>,
+    /// Frames in flight: when they arrive, in what order, and the frame.
+    queue: BTreeMap<(i64, u64), InFlightFrame>,
     sent: u64,
     rng: SeededEntropy,
+    /// The random bits each start of a replicator numbers its batches from: apart from `rng`,
+    /// so that drawing them changes nothing else of a case.
+    nonces: SeededEntropy,
     now: i64,
     /// What each replica may take each peer to hold, since it last started: what the peer last
     /// told it it holds, raised by the events the peer sent it that it stored since.
@@ -275,8 +290,13 @@ struct World {
     in_flight: BTreeMap<(u8, u8), InFlight>,
     /// Since when each replica has been stalled towards a peer, since it last started.
     stalled: BTreeMap<(u8, u8), i64>,
-    /// The number of the last batch each replica sent each peer, ever.
+    /// The number of the last batch each replica sent each peer, since it last started.
     numbered: BTreeMap<(u8, u8), u64>,
+    /// How many times each replica has started again.
+    starts: BTreeMap<u8, u64>,
+    /// The last batch each replica received from each peer, since it last started: its number,
+    /// and which start of the peer's sent it. (replica, peer) → (number, start).
+    received: BTreeMap<(u8, u8), (u64, u64)>,
     /// Each replica and a peer it has had a `have` from since it last started.
     heard: BTreeSet<(u8, u8)>,
     /// Each replicator's watermark, as last seen, since it last started.
@@ -292,10 +312,17 @@ struct World {
     own: BTreeMap<u8, usize>,
     /// The winning claim's term each replicator held when last checked.
     terms: BTreeMap<u8, Option<Term>>,
+    /// Since when each replica has held that term, or since it last started, if later.
+    holding_since: BTreeMap<u8, i64>,
     /// The latest beat of each hub's term each replica knows of, since it last started, from the
     /// hub or from a peer that had it directly. (replica, epoch, hub) → beat.
     latest: BTreeMap<(u8, u64, Id<Device>), Heard>,
-    /// The beat each replica last gave acting as the hub, since it last started.
+    /// Each term's floor each replica knows, since it last started: the latest beat of the term
+    /// it heard, or heard of in a floor. (replica, epoch, hub) → beat.
+    floors: BTreeMap<(u8, u64, Id<Device>), u64>,
+    /// The beat each replica last gave acting as the hub, or the latest floor of a term it is
+    /// the hub of that a peer gave it if that is later, since it last started: its next beat goes
+    /// on above it.
     own_beat: BTreeMap<u8, u64>,
     /// When each replica serving as the hub began to, since it last did not.
     serving_since: BTreeMap<u8, i64>,
@@ -310,7 +337,8 @@ struct World {
     first_have: BTreeMap<u8, u64>,
     /// The replicas whose own log has settled, by the rule, since they last started.
     settled: BTreeSet<u8>,
-    /// How far each replica's clock is ahead of the world's time, in milliseconds.
+    /// How far each replica's clock is ahead of the world's time, in milliseconds: behind it if
+    /// negative.
     ahead: BTreeMap<u8, i64>,
 }
 
@@ -321,6 +349,10 @@ struct Beats {
     last: Option<(u64, Heartbeat)>,
     acting: Option<(u64, Heard)>,
 }
+
+/// A frame in flight: from, to, the frame, and for a batch its sender's start, and for a `have`
+/// the start of the sender of the batch it acknowledges.
+type InFlightFrame = (u8, u8, Vec<u8>, u64);
 
 /// A beat of a hub's term, and the period it first came in.
 type Heard = (u64, u64);
@@ -356,6 +388,7 @@ impl World {
         let mut replicators = BTreeMap::new();
         let mut world = World {
             rng: SeededEntropy::new(case.seed),
+            nonces: SeededEntropy::new(!case.seed),
             config: config(&case),
             case,
             links,
@@ -368,6 +401,8 @@ impl World {
             in_flight: BTreeMap::new(),
             stalled: BTreeMap::new(),
             numbered: BTreeMap::new(),
+            starts: BTreeMap::new(),
+            received: BTreeMap::new(),
             heard: BTreeSet::new(),
             watermarks: BTreeMap::new(),
             appended: Vec::new(),
@@ -376,9 +411,11 @@ impl World {
             beats: BTreeMap::new(),
             own: BTreeMap::new(),
             terms: BTreeMap::new(),
+            holding_since: BTreeMap::new(),
             learned: BTreeMap::new(),
             refused: BTreeMap::new(),
             latest: BTreeMap::new(),
+            floors: BTreeMap::new(),
             own_beat: BTreeMap::new(),
             serving_since: BTreeMap::new(),
             first_have: BTreeMap::new(),
@@ -389,13 +426,16 @@ impl World {
         for n in 1..=world.case.replicas {
             world.periods.insert(n, 0);
             world.terms.insert(n, None);
+            world.holding_since.insert(n, 0);
             let mut model = Model::new(n, registry(1..=world.case.replicas));
             let roles = roles_of(&world.case, &world.links, n);
+            let nonce = world.nonces.next_u64().unwrap();
             let (replicator, out) = Replicator::start(
                 &mut model,
                 peers_of(&world.links, n),
                 world.config,
                 roles,
+                nonce,
                 at(0),
             )
             .unwrap();
@@ -429,11 +469,19 @@ impl World {
     fn send(&mut self, from: u8, out: Vec<Outgoing>) {
         for Outgoing { to, frame } in out {
             let to = replica_of(to);
+            let mut start = 0;
             match Frame::decode(&frame).unwrap() {
-                Frame::Events(events) => self.check_batch(from, to, events.batch, &events.events),
+                Frame::Events(events) => {
+                    self.check_batch(from, to, events.batch, &events.events);
+                    start = self.starts.get(&from).copied().unwrap_or(0);
+                }
                 Frame::Have(have) => {
                     let heard = self.heard.contains(&(from, to));
                     assert_eq!(have.asks, !heard, "{from}'s have to {to}, having heard: {heard}");
+                    // It acknowledges the last batch `from` received from `to`.
+                    let (batch, of) = self.received.get(&(from, to)).copied().unwrap_or((0, 0));
+                    assert_eq!(have.acked, batch, "{from}'s have to {to}");
+                    start = of;
                 }
                 Frame::Durable(durable) => self.check_durable(from, to, &durable),
                 Frame::Heartbeat(heartbeat) => self.check_heartbeat(from, &heartbeat),
@@ -446,7 +494,8 @@ impl World {
                 }
                 let delay = i64::try_from(1 + self.random(self.case.delay)).unwrap();
                 self.sent += 1;
-                self.queue.insert((self.now + delay, self.sent), (from, to, frame.clone()));
+                let sent = (from, to, frame.clone(), start);
+                self.queue.insert((self.now + delay, self.sent), sent);
             }
         }
     }
@@ -454,7 +503,7 @@ impl World {
     /// Checks a batch `from` sends `to`: it is no larger than configured, none of its events is
     /// one `to` holds as far as `from` may know, the last batch is acknowledged or its
     /// acknowledgement timeout has passed, `from` isn't stalled towards `to`, and the batch's
-    /// number is new.
+    /// number is higher than any it sent `to` since it started.
     fn check_batch(&mut self, from: u8, to: u8, batch: u64, events: &[Vec<u8>]) {
         let bytes: usize = events.iter().map(Vec::len).sum();
         assert!(
@@ -563,9 +612,9 @@ impl World {
 
     /// Checks a heartbeat `from` sends: it gives its priority while its log is settled and not
     /// forked, and 0 otherwise, and its term, the epoch and hub of the winning claim it holds; it
-    /// says `from` acts as the hub exactly while it serves; and it gives the hub's beat: its own,
-    /// as the hub, raised as each period began, else the latest it had directly from its term's
-    /// hub, if recent.
+    /// says `from` acts as the hub exactly while it serves; it gives the hub's beat, its own as
+    /// the hub, raised as each period began, else the latest it had directly from its term's hub,
+    /// if recent; and the term's floor, the latest beat of the term it knows, however old.
     fn check_heartbeat(&self, from: u8, heartbeat: &Heartbeat) {
         let replicator = &self.replicators[&from];
         assert_eq!(replicator.forked(), self.forked(from), "{from} forked");
@@ -573,10 +622,12 @@ impl World {
         let acting = self.serving(from);
         let beat =
             if acting { self.own_beat.get(&from).copied() } else { self.beat_heard_directly(from) };
+        let known = term.and_then(|(epoch, hub)| self.floors.get(&(from, epoch, hub)).copied());
+        let floor = known.max(beat);
         let eligible = self.settled.contains(&from) && !self.forked(from);
         let priority = if eligible { priority_of(&self.case, from) } else { 0 };
         let (epoch, hub) = term.map_or((0, None), |(epoch, hub)| (epoch, Some(hub)));
-        let expected = Heartbeat { location: here(), priority, epoch, hub, acting, beat };
+        let expected = Heartbeat { location: here(), priority, epoch, hub, acting, beat, floor };
         assert_eq!(heartbeat, &expected, "{from}'s heartbeat at {} ms", self.now);
     }
 
@@ -620,7 +671,8 @@ impl World {
         assert_eq!(claim.claimed.priority.get(), priority, "{n}'s claim");
     }
 
-    /// Replica `n`'s clock: the world's time, and as far ahead as its jumps have taken it.
+    /// Replica `n`'s clock: the world's time, and as far ahead or behind as its jumps, and its
+    /// clock set back as it crashed, have taken it.
     fn clock(&self, n: u8) -> i64 {
         self.now + self.ahead.get(&n).copied().unwrap_or(0)
     }
@@ -657,7 +709,11 @@ impl World {
             self.now
         );
         let term = replicator.term().copied();
-        if self.terms.insert(n, term) != Some(term)
+        let changed = self.terms.insert(n, term) != Some(term);
+        if changed {
+            self.holding_since.insert(n, self.now);
+        }
+        if changed
             && let Some(term) = term
             && term.device != device(n)
         {
@@ -699,7 +755,44 @@ impl World {
         }
     }
 
-    fn deliver(&mut self, from: u8, to: u8, frame: &[u8]) {
+    /// Notes what replica `to` makes of `heartbeat`, from `from`, as its replicator should: the
+    /// heartbeat, with the period it came in; a beat, compared only with others of its hub's term,
+    /// and none from a heartbeat acting for a hub other than its sender; and the term's floor,
+    /// raising `to`'s own beats if `to` is the term's hub.
+    fn hear(&mut self, from: u8, to: u8, heartbeat: &Heartbeat) {
+        let period = self.periods[&to];
+        let beats = self.beats.entry((to, from)).or_default();
+        beats.last = Some((period, *heartbeat));
+        let Some(hub) = heartbeat.hub.filter(|&hub| !heartbeat.acting || hub == device(from))
+        else {
+            return;
+        };
+        let epoch = heartbeat.epoch;
+        if let Some(known) = heartbeat.floor.max(heartbeat.beat) {
+            let floor = self.floors.entry((to, epoch, hub)).or_insert(known);
+            *floor = (*floor).max(known);
+            // A floor of a term `to` is the hub of, which a peer gives it: its beats go on above
+            // it.
+            if !heartbeat.acting && hub == device(to) {
+                let floor = self.own_beat.entry(to).or_insert(0);
+                *floor = (*floor).max(heartbeat.floor.unwrap_or(0));
+            }
+        }
+        let Some(beat) = heartbeat.beat else { return };
+        if heartbeat.acting {
+            beats.acting = Some(match beats.acting {
+                Some((of, heard)) if of > epoch => (of, heard),
+                Some((of, heard)) if of == epoch => (of, later(Some(heard), beat, period)),
+                _ => (epoch, (beat, period)),
+            });
+        }
+        let key = (to, epoch, hub);
+        let heard = later(self.latest.get(&key).copied(), beat, period);
+        self.latest.insert(key, heard);
+    }
+
+    /// Delivers `frame` from `from` to `to`, tagged with `start` as [`World::queue`] says.
+    fn deliver(&mut self, from: u8, to: u8, frame: &[u8], start: u64) {
         if self.cut(from, to, self.now) || self.down.contains_key(&to) {
             return;
         }
@@ -708,26 +801,7 @@ impl World {
         // A `have` and a batch are what a replica settles its log on, besides a period beginning.
         let settling = matches!(decoded, Frame::Have(_) | Frame::Events(_));
         if let Frame::Heartbeat(heartbeat) = &decoded {
-            let period = self.periods[&to];
-            let beats = self.beats.entry((to, from)).or_default();
-            beats.last = Some((period, *heartbeat));
-            // A beat is compared only with others of its hub's term; one acting for a hub other
-            // than its sender gives none.
-            if let (Some(hub), Some(beat)) = (heartbeat.hub, heartbeat.beat)
-                && (!heartbeat.acting || hub == device(from))
-            {
-                let epoch = heartbeat.epoch;
-                if heartbeat.acting {
-                    beats.acting = Some(match beats.acting {
-                        Some((of, heard)) if of > epoch => (of, heard),
-                        Some((of, heard)) if of == epoch => (of, later(Some(heard), beat, period)),
-                        _ => (epoch, (beat, period)),
-                    });
-                }
-                let key = (to, epoch, hub);
-                let heard = later(self.latest.get(&key).copied(), beat, period);
-                self.latest.insert(key, heard);
-            }
+            self.hear(from, to, heartbeat);
         }
         if let Frame::Have(have) = &decoded {
             self.heard.insert((to, from));
@@ -736,6 +810,14 @@ impl World {
             // A `have` acknowledging the batch waiting ends the wait, and stalls its recipient
             // towards its sender if the sender took none of it.
             let acked = self.in_flight.get(&(to, from)).is_some_and(|w| w.batch == have.acked);
+            // That is the batch it acknowledges, even if `to` restarted since it sent one of that
+            // number, its clock set back.
+            let starts = self.starts.get(&to).copied().unwrap_or(0);
+            assert!(
+                !acked || start == starts,
+                "{to} took {from}'s acknowledgement of batch {} from before it restarted",
+                have.acked,
+            );
             if acked && let Some(waiting) = self.in_flight.remove(&(to, from)) {
                 let took_some = waiting
                     .first
@@ -779,6 +861,7 @@ impl World {
             assert!(answered || !have.asks, "{to} didn't answer {from}'s have, which asked");
         }
         if let Frame::Events(events) = decoded {
+            self.received.insert((to, from), (events.batch, start));
             // Acknowledged at once.
             let acknowledged = out.iter().any(|out| {
                 out.to == device(from)
@@ -825,11 +908,12 @@ impl World {
     }
 
     /// Crashes `replica` for `down` tenths of a second, but no later than healing: it starts
-    /// again at once if 0. A replica down stays down.
-    fn crash(&mut self, replica: u8, down: u16) {
+    /// again at once if 0, its clock set back `back` milliseconds. A replica down stays down.
+    fn crash(&mut self, replica: u8, down: u16, back: i64) {
         if self.down.contains_key(&replica) {
             return;
         }
+        *self.ahead.entry(replica).or_insert(0) -= back;
         if down == 0 {
             self.restart(replica);
         } else {
@@ -841,24 +925,30 @@ impl World {
     /// Restarts `replica`: its replicator forgets everything, its events stay.
     fn restart(&mut self, replica: u8) {
         let clock = self.clock(replica);
+        let nonce = self.nonces.next_u64().unwrap();
         let model = self.models.get_mut(&replica).unwrap();
         let roles = roles_of(&self.case, &self.links, replica);
+        let peers = peers_of(&self.links, replica);
         let (replicator, out) =
-            Replicator::start(model, peers_of(&self.links, replica), self.config, roles, at(clock))
-                .unwrap();
+            Replicator::start(model, peers, self.config, roles, nonce, at(clock)).unwrap();
         self.replicators.insert(replica, replicator);
         self.down.remove(&replica);
         self.watermarks.remove(&replica);
         self.told.retain(|(r, _), _| *r != replica);
         self.in_flight.retain(|(r, _), _| *r != replica);
         self.stalled.retain(|(r, _), _| *r != replica);
+        self.numbered.retain(|(r, _), _| *r != replica);
+        self.received.retain(|(r, _), _| *r != replica);
+        *self.starts.entry(replica).or_insert(0) += 1;
         self.heard.retain(|(r, _)| *r != replica);
         self.periods.insert(replica, 0);
         self.beats.retain(|(r, _), _| *r != replica);
         self.latest.retain(|(r, _, _), _| *r != replica);
+        self.floors.retain(|(r, _, _), _| *r != replica);
         self.own_beat.remove(&replica);
         self.serving_since.remove(&replica);
         self.terms.insert(replica, self.replicators[&replica].term().copied());
+        self.holding_since.insert(replica, self.now);
         self.learned.remove(&replica);
         self.refused.retain(|(r, _), _| *r != replica);
         self.first_have.remove(&replica);
@@ -952,15 +1042,21 @@ impl World {
     }
 
     /// Whether the replicas agree: every replica holds what any holds, and is settled; all hold
-    /// the same winning claim, whose device alone serves as the hub, and has for a while, leaving
-    /// nothing unnumbered; the replicas within two hops of the hub hear it, and no others; and
-    /// every replica's watermark but the durable replica's reaches everything.
+    /// the same winning claim, and have for a while, whose device alone serves as the hub, and
+    /// has for a while, leaving nothing unnumbered; the replicas within two hops of the hub hear
+    /// it, and no others; and every replica's watermark but the durable replica's reaches
+    /// everything.
     fn agreed(&self) -> bool {
         self.disagreement().is_none()
     }
 
     /// Why the replicas don't agree, if they don't: see [`World::agreed`].
     fn disagreement(&self) -> Option<String> {
+        self.discord().or_else(|| self.hearing().map(|(hearing, _)| hearing))
+    }
+
+    /// Why the replicas don't agree, if they don't, but for whom hears the hub.
+    fn discord(&self) -> Option<String> {
         let held = self.held();
         let everything = &held[&1];
         if held.values().any(|vv| vv != everything) {
@@ -978,6 +1074,18 @@ impl World {
         if terms.iter().any(|other| *other != Some(&term)) {
             return Some(format!("their terms are {terms:?}"));
         }
+        // A replica that took on the term lately may still be telling the hub, through a peer,
+        // of a later beat of the term than the hub's, from before the hub restarted with its
+        // clock set back: until the hub's beats pass it, it can hear no hub for a period or so.
+        let lately: Vec<u8> = self
+            .holding_since
+            .iter()
+            .filter(|&(_, &since)| self.now - since < SETTLE)
+            .map(|(n, _)| *n)
+            .collect();
+        if !lately.is_empty() {
+            return Some(format!("{lately:?} took on the term lately"));
+        }
         let hub = replica_of(term.device);
         let serving: Vec<u8> =
             self.replicators.iter().filter(|(_, r)| r.serving()).map(|(n, _)| *n).collect();
@@ -992,15 +1100,6 @@ impl World {
         if !unsequenced.is_empty() {
             return Some(format!("{unsequenced:?} unnumbered"));
         }
-        let distances = self.distances(hub);
-        let hearing: Vec<(u8, bool, u64)> = self
-            .replicators
-            .iter()
-            .map(|(n, replicator)| (*n, replicator.hub_reachable(), distances[n]))
-            .collect();
-        if hearing.iter().any(|&(_, hears, distance)| hears != (distance <= 2)) {
-            return Some(format!("hearing the hub, and how far: {hearing:?}"));
-        }
         let behind: Vec<u8> = self
             .replicators
             .iter()
@@ -1008,6 +1107,21 @@ impl World {
             .map(|(n, _)| *n)
             .collect();
         (!behind.is_empty()).then(|| format!("{behind:?}'s watermarks behind"))
+    }
+
+    /// Unless the replicas within two hops of the winning claim's hub hear it, and no others:
+    /// who hears it, and how far each is from it; and whether one within two hops doesn't.
+    fn hearing(&self) -> Option<(String, bool)> {
+        let hub = replica_of(self.replicators[&1].term()?.device);
+        let distances = self.distances(hub);
+        let hearing: Vec<(u8, bool, u64)> = self
+            .replicators
+            .iter()
+            .map(|(n, replicator)| (*n, replicator.hub_reachable(), distances[n]))
+            .collect();
+        let deaf = hearing.iter().any(|&(_, hears, distance)| !hears && distance <= 2);
+        let wrong = deaf || hearing.iter().any(|&(_, hears, distance)| hears && distance > 2);
+        wrong.then(|| (format!("hearing the hub, and how far: {hearing:?}"), deaf))
     }
 
     /// Runs the case until the replicas have agreed for a while with nothing more written, or
@@ -1029,13 +1143,15 @@ impl World {
             .map(|&(t, replica, count)| (i64::from(t) * 100, replica, count))
             .collect();
         appends.sort_by_key(|&(t, _, _)| t);
-        let mut crashes: Vec<(i64, u8, u16)> = self
+        let mut crashes: Vec<(i64, u8, u16, i64)> = self
             .case
             .crashes
             .iter()
-            .map(|&(t, replica, down)| (i64::from(t) * 100, replica, down))
+            .map(|&(t, replica, down, back)| {
+                (i64::from(t) * 100, replica, down, i64::from(back) * 100)
+            })
             .collect();
-        crashes.sort_by_key(|&(t, _, _)| t);
+        crashes.sort_by_key(|&(t, _, _, _)| t);
         let mut jumps: Vec<(i64, u8, i64)> = self
             .case
             .jumps
@@ -1052,10 +1168,10 @@ impl World {
                 self.append(replica, count);
                 next_append += 1;
             }
-            while let Some(&(t, replica, down)) = crashes.get(next_crash)
+            while let Some(&(t, replica, down, back)) = crashes.get(next_crash)
                 && t <= self.now
             {
-                self.crash(replica, down);
+                self.crash(replica, down, back);
                 next_crash += 1;
             }
             while let Some(&(t, replica, by)) = jumps.get(next_jump)
@@ -1072,13 +1188,21 @@ impl World {
             let due: Vec<(i64, u64)> =
                 self.queue.range(..=(self.now, u64::MAX)).map(|(k, _)| *k).collect();
             for key in due {
-                let (from, to, frame) = self.queue.remove(&key).unwrap();
-                self.deliver(from, to, &frame);
+                let (from, to, frame, start) = self.queue.remove(&key).unwrap();
+                self.deliver(from, to, &frame, start);
             }
             if self.now % 100 == 0 {
                 self.tick();
             }
             if self.now >= HEAL + SETTLE && next_append == appends.len() {
+                // Once they agree on all else, those within two hops hear the hub at once: it has
+                // served since healing, or for the periods of silence and two more, and each has
+                // held its term as long.
+                if self.discord().is_none()
+                    && let Some((why, true)) = self.hearing()
+                {
+                    return Err(format!("at {} ms, agreeing but for {why}", self.now));
+                }
                 match (&agreed, self.agreed()) {
                     (None, true) => agreed = Some((self.now, self.held())),
                     (Some((since, _)), false) => {
@@ -1102,7 +1226,7 @@ impl World {
             let next_tick = (self.now / 100 + 1) * 100;
             let next_frame = self.queue.keys().next().map(|&(t, _)| t);
             let next_append_at = appends.get(next_append).map(|&(t, _, _)| t);
-            let next_crash_at = crashes.get(next_crash).map(|&(t, _, _)| t);
+            let next_crash_at = crashes.get(next_crash).map(|&(t, _, _, _)| t);
             let next_jump_at = jumps.get(next_jump).map(|&(t, _, _)| t);
             let next_up = self.down.values().copied().min();
             self.now = [next_frame, next_append_at, next_crash_at, next_jump_at, next_up]
@@ -1288,7 +1412,7 @@ fn a_deposed_hub_doesnt_claim_back_before_it_hears_of_its_successor() {
         delay: 77,
         appends: vec![(28, 3, 3), (152, 1, 3), (187, 3, 1), (116, 3, 1), (24, 3, 2)],
         cuts: vec![],
-        crashes: vec![(52, 3, 28), (128, 2, 12)],
+        crashes: vec![(52, 3, 28, 0), (128, 2, 12, 0)],
         jumps: vec![],
         priorities: vec![Some(1), Some(3), Some(2), None],
         batch_events: 2,
@@ -1316,7 +1440,7 @@ fn a_replica_hearing_the_hub_through_a_peer_goes_on_hearing_it_through_delays() 
         delay: 110,
         appends: vec![(0, 1, 1)],
         cuts: vec![(2, 101, 31)],
-        crashes: vec![(151, 1, 0)],
+        crashes: vec![(151, 1, 0, 0)],
         jumps: vec![],
         priorities: vec![Some(1), Some(1), None],
         batch_events: 1,
@@ -1342,7 +1466,7 @@ fn a_hub_that_serves_again_numbers_what_came_meanwhile() {
         delay: 73,
         appends: vec![(140, 1, 1), (29, 1, 1), (0, 1, 1)],
         cuts: vec![],
-        crashes: vec![(61, 1, 29)],
+        crashes: vec![(61, 1, 29, 0)],
         jumps: vec![],
         priorities: vec![Some(1), None],
         batch_events: 1,
@@ -1406,7 +1530,7 @@ fn replicas_agree_only_once_the_hub_has_served_a_while() {
             (166, 2, 3),
         ],
         cuts: vec![(24, 77, 58)],
-        crashes: vec![(25, 2, 101), (180, 3, 5), (0, 3, 115), (116, 4, 0)],
+        crashes: vec![(25, 2, 101, 0), (180, 3, 5, 0), (0, 3, 115, 0), (116, 4, 0, 0)],
         jumps: vec![],
         priorities: vec![Some(1), None, Some(2), None],
         batch_events: 1,
@@ -1434,13 +1558,154 @@ fn a_losing_hubs_beats_dont_drown_out_the_winners() {
         delay: 216,
         appends: vec![(0, 2, 1), (139, 3, 1), (153, 4, 1)],
         cuts: vec![],
-        crashes: vec![(89, 3, 31), (18, 1, 103), (190, 2, 0), (12, 3, 17)],
+        crashes: vec![(89, 3, 31, 0), (18, 1, 103, 0), (190, 2, 0, 0), (12, 3, 17, 0)],
         jumps: vec![(152, 3, 38)],
         priorities: vec![Some(3), Some(1), Some(1), None],
         batch_events: 2,
         batch_bytes: 262_144,
         heartbeat: HEARTBEAT,
         seed: 6_863_262_935_672_717_334,
+    };
+    converge(case).unwrap();
+}
+
+/// Found reviewing slice 4, once the property set clocks back as replicas restarted, and had the
+/// replicas that agree on all else hear the hub at once: a hub's beat began again from its
+/// clock's reading as it restarted. Replica 1, the hub and the only candidate, restarted at
+/// 13.1 s with its clock set back 11.1 s; its beats were older than the last replica 2 had, and
+/// replica 2 heard no hub until 25.1 s. A hub now beats on above every floor of its term a peer
+/// gives it.
+#[test]
+fn a_hub_that_restarts_with_its_clock_set_back_is_heard_at_once() {
+    let case = Case {
+        replicas: 2,
+        topology: Topology::Star,
+        loss: 0,
+        duplication: 0,
+        decline: 0,
+        delay: 1,
+        appends: vec![(0, 1, 1)],
+        cuts: vec![],
+        crashes: vec![(131, 1, 0, 111)],
+        jumps: vec![],
+        priorities: vec![Some(1), None],
+        batch_events: 1,
+        batch_bytes: 262_144,
+        heartbeat: HEARTBEAT,
+        seed: 0,
+    };
+    converge(case).unwrap();
+}
+
+/// Found by the property against a first fix, in which a replica gave the hub of its term the
+/// latest beat of it it knew: replica 1, the hub and the only candidate, came back at 15.6 s
+/// after 6.2 s down, its clock set back 15.1 s. Replica 2, between it and replica 3, had
+/// restarted meanwhile and forgotten the hub's beats, and replica 3, which knew the last, had no
+/// way to tell the hub: it heard no hub until the hub's clock passed that beat. Every replica now
+/// gives every peer its term's floor, and keeps the latest floor it hears, so that a hub hears of
+/// its last beats from two hops away.
+#[test]
+fn a_hub_hears_of_its_last_beat_through_a_restarted_peer() {
+    let case = Case {
+        replicas: 3,
+        topology: Topology::Line,
+        loss: 0,
+        duplication: 0,
+        decline: 0,
+        delay: 1,
+        appends: vec![(0, 1, 1)],
+        cuts: vec![],
+        crashes: vec![(160, 2, 26, 0), (94, 1, 62, 151)],
+        jumps: vec![],
+        priorities: vec![Some(1), None, None],
+        batch_events: 1,
+        batch_bytes: 262_144,
+        heartbeat: HEARTBEAT,
+        seed: 0,
+    };
+    converge(case).unwrap();
+}
+
+/// Found reviewing slice 4, once the property set clocks back as replicas restarted: batches were
+/// numbered from the clock's reading as the replicator started. Replica 2 restarted at 13.3 s,
+/// and again at 15.2 s with its clock set back 1.9 s, at the same reading; its batches took the
+/// numbers of the last run's, and replica 1's acknowledgement of one of those passed for one of
+/// these. Each start now numbers its batches from random bits.
+#[test]
+fn a_restart_that_sets_the_clock_back_takes_no_old_acknowledgement_for_new() {
+    let case = Case {
+        replicas: 2,
+        topology: Topology::Star,
+        loss: 152,
+        duplication: 150,
+        decline: 233,
+        delay: 191,
+        appends: vec![(30, 1, 3), (102, 1, 2), (134, 2, 1), (31, 1, 3)],
+        cuts: vec![],
+        crashes: vec![(133, 2, 0, 0), (149, 2, 3, 19)],
+        jumps: vec![],
+        priorities: vec![Some(1), None],
+        batch_events: 1,
+        batch_bytes: 262_144,
+        heartbeat: HEARTBEAT,
+        seed: 4_750_328_451_064_403_066,
+    };
+    converge(case).unwrap();
+}
+
+/// Found by the property against a first fix, which numbered a replica's batches to a peer past
+/// the peer's last acknowledgement that wasn't of one sent since the replica started: replica 4
+/// restarted at once at 5.4 s and again at 15.4 s, both times with batches to replica 2 in
+/// flight, and both runs numbered theirs past the same acknowledgement, so that replica 2's
+/// acknowledgement of the first run's batch passed for the second's.
+#[test]
+fn quick_restarts_with_batches_in_flight_take_no_old_acknowledgement_for_new() {
+    let case = Case {
+        replicas: 4,
+        topology: Topology::Mesh,
+        loss: 0,
+        duplication: 21,
+        decline: 41,
+        delay: 165,
+        appends: vec![(153, 1, 3), (18, 1, 1), (18, 4, 3)],
+        cuts: vec![],
+        crashes: vec![(54, 4, 0, 0), (154, 4, 0, 0)],
+        jumps: vec![],
+        priorities: vec![Some(1), Some(2), None, None],
+        batch_events: 2,
+        batch_bytes: 262_144,
+        heartbeat: HEARTBEAT,
+        seed: 9_190_104_921_008_549_149,
+    };
+    converge(case).unwrap();
+}
+
+/// Found by the property's check that, once the replicas agree on all else, those within two hops
+/// of the hub hear it at once, which asked too much: the hub, replica 2, restarted at 18.1 s with
+/// its clock set back 12.5 s, and replica 3, two hops away and behind on the log, took on its
+/// term only at 22.5 s, knowing a beat of it from before the restart that the hub's new ones
+/// hadn't passed. Its floor took four periods to reach the hub and the hub's next beat to come
+/// back, one more than learning of the claim counts as hearing its hub, and at 25.4 s replica 3
+/// heard no hub for a moment. Agreement now counts only once every replica has held the hub's
+/// term for the periods of silence and two more.
+#[test]
+fn a_replica_that_has_only_now_taken_on_the_hubs_term_may_hear_it_a_period_late() {
+    let case = Case {
+        replicas: 3,
+        topology: Topology::Star,
+        loss: 78,
+        duplication: 0,
+        decline: 43,
+        delay: 250,
+        appends: vec![(84, 1, 3), (140, 3, 2), (51, 2, 2), (21, 1, 2), (21, 1, 2)],
+        cuts: vec![],
+        crashes: vec![(6, 3, 112, 0), (132, 2, 49, 125), (136, 1, 63, 0)],
+        jumps: vec![],
+        priorities: vec![Some(2), Some(1), None],
+        batch_events: 1,
+        batch_bytes: 262_144,
+        heartbeat: 800,
+        seed: 15_468_588_063_414_672_920,
     };
     converge(case).unwrap();
 }

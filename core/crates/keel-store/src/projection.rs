@@ -8,13 +8,13 @@
 //!
 //! Each write recomputes the rows of the streams it touched, before it commits. A projection
 //! whose version the store didn't build is dropped and rebuilt from every stored stream of its
-//! kind.
+//! kind. Bump a projection's version whenever its columns change, or what it computes from the
+//! events changes: the golden tests pin each projection's rows for a fixed set of events, to
+//! catch such a change.
 //!
 //! The claims projection (ADR-0022) keeps a row for each of the hub's claims, and with it the
 //! chain of terms they make, which depends on every claim: each write that touches a claim works
-//! it out again ([`crate::terms`]). Bump a projection's version whenever its columns change, or the fold it uses changes what
-//! it computes: the golden tests pin each projection's rows for a fixed set of events, to catch
-//! such a change.
+//! it out again ([`crate::terms`]).
 
 use core::str::FromStr;
 

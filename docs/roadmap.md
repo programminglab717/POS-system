@@ -253,14 +253,12 @@ Keel, and **never lose a sale to Keel**.
    checks ([ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md)). See
    [progress](./progress.md).*
 6. **`keel-sim` + `keel-sync` (v0)**: two devices, one hub and one cloud in simulation. Replication,
-   hub sequencing, ownership leases, failover. The invariant suite runs in CI. *Status: in
-   progress, in four slices
-   ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)): the first, replication
-   and the simulator, and the second, hub sequencing
-   ([ADR-0020](./adr/0020-hub-sequencing.md)), and the third, ownership leases
-   ([ADR-0021](./adr/0021-ownership-leases.md)), are built and reviewed; the fourth, hub election
-   and failover, is designed ([ADR-0022](./adr/0022-hub-election-and-failover.md)) and being
-   built. See [progress](./progress.md).*
+   hub sequencing, ownership leases, failover. The invariant suite runs in CI. *Status: done, in
+   four slices, each reviewed: replication and the simulator
+   ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)); hub sequencing
+   ([ADR-0020](./adr/0020-hub-sequencing.md)); ownership leases
+   ([ADR-0021](./adr/0021-ownership-leases.md)); and hub election and failover
+   ([ADR-0022](./adr/0022-hub-election-and-failover.md)). See [progress](./progress.md).*
 7. **Android register shell**: ring an order with modifiers, pay cash, print a receipt (ESC/POS over
    TCP), running on a reference all-in-one against a local hub.
 8. **Cloud cell v0**: sync ingest, catalog publishing, a minimal back office (catalog editor, reports).

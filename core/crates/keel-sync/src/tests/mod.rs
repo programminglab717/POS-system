@@ -63,12 +63,13 @@ fn a_durable_frame_is_pinned_byte_for_byte() {
 
 #[test]
 fn a_heartbeat_frame_is_pinned_byte_for_byte() {
-    let heartbeat = |priority, epoch, hub: Option<u64>, acting, beat| {
+    let heartbeat = |priority, epoch, hub: Option<u64>, acting, beat, floor| {
         let hub = hub.map(id);
-        Frame::Heartbeat(Heartbeat { location: id(0x10), priority, epoch, hub, acting, beat })
+        let location = id(0x10);
+        Frame::Heartbeat(Heartbeat { location, priority, epoch, hub, acting, beat, floor })
     };
     let pinned = |parts: &[&[u8]]| {
-        let mut expected = vec![0x88, 0x01, 0x03];
+        let mut expected = vec![0x89, 0x01, 0x03];
         expected.extend(id_cbor(0x10));
         for part in parts {
             expected.extend(*part);
@@ -76,30 +77,50 @@ fn a_heartbeat_frame_is_pinned_byte_for_byte() {
         expected
     };
     for (frame, expected) in [
-        // [1, 3, location, 2, 300, device 1, true, 5000]: of priority 2, device 1 acts as the hub
-        // of epoch 300, at its beat 5000.
+        // [1, 3, location, 2, 300, device 1, true, 5000, 5000]: of priority 2, device 1 acts as
+        // the hub of epoch 300, at its beat 5000, which is the term's floor.
         (
-            heartbeat(2, 300, Some(1), true, Some(5000)),
-            pinned(&[&[0x02, 0x19, 0x01, 0x2c], &id_cbor(1), &[0xf5, 0x19, 0x13, 0x88]]),
+            heartbeat(2, 300, Some(1), true, Some(5000), Some(5000)),
+            pinned(&[
+                &[0x02, 0x19, 0x01, 0x2c],
+                &id_cbor(1),
+                &[0xf5, 0x19, 0x13, 0x88, 0x19, 0x13, 0x88],
+            ]),
         ),
-        // [1, 3, location, 0, 0, null, false, null]: it can't be the hub, holds no claim, and
-        // gives no beat.
-        (heartbeat(0, 0, None, false, None), pinned(&[&[0x00, 0x00, 0xf6, 0xf4, 0xf6]])),
-        // [1, 3, location, 255, 2^63 − 1, device 2, false, 2^64 − 1]: the largest of each, the
-        // beat of device 2, the hub, passed on.
+        // [1, 3, location, 0, 0, null, false, null, null]: it can't be the hub, holds no claim,
+        // and gives no beat or floor.
         (
-            heartbeat(255, (1 << 63) - 1, Some(2), false, Some(u64::MAX)),
+            heartbeat(0, 0, None, false, None, None),
+            pinned(&[&[0x00, 0x00, 0xf6, 0xf4, 0xf6, 0xf6]]),
+        ),
+        // [1, 3, location, 255, 2^63 − 1, device 2, false, 2^64 − 1, 2^64 − 1]: the largest of
+        // each, the beat of device 2, the hub, passed on.
+        (
+            heartbeat(255, (1 << 63) - 1, Some(2), false, Some(u64::MAX), Some(u64::MAX)),
             pinned(&[
                 &[0x18, 0xff, 0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
                 &id_cbor(2),
                 &[0xf4, 0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+                &[0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
             ]),
         ),
-        // [1, 3, location, 1, 7, device 2, false, null]: device 2 is the hub of epoch 7, and the
-        // sender has had no beat of it.
+        // [1, 3, location, 1, 7, device 2, false, null, null]: device 2 is the hub of epoch 7, and
+        // the sender knows no beat of it.
         (
-            heartbeat(1, 7, Some(2), false, None),
-            pinned(&[&[0x01, 0x07], &id_cbor(2), &[0xf4, 0xf6]]),
+            heartbeat(1, 7, Some(2), false, None, None),
+            pinned(&[&[0x01, 0x07], &id_cbor(2), &[0xf4, 0xf6, 0xf6]]),
+        ),
+        // [1, 3, location, 1, 7, device 2, false, 5000, 9000]: it had beat 5000 from the hub
+        // directly, and knows of a later one, 9000, from before the hub restarted.
+        (
+            heartbeat(1, 7, Some(2), false, Some(5000), Some(9000)),
+            pinned(&[&[0x01, 0x07], &id_cbor(2), &[0xf4, 0x19, 0x13, 0x88, 0x19, 0x23, 0x28]]),
+        ),
+        // [1, 3, location, 1, 7, device 2, false, null, 9000]: it has had no beat of the hub
+        // lately, and knows 9000 of old.
+        (
+            heartbeat(1, 7, Some(2), false, None, Some(9000)),
+            pinned(&[&[0x01, 0x07], &id_cbor(2), &[0xf4, 0xf6, 0x19, 0x23, 0x28]]),
         ),
     ] {
         assert_eq!(frame.encode(), expected);
@@ -120,6 +141,7 @@ fn an_empty_have_and_an_empty_batch_round_trip() {
             hub: None,
             acting: false,
             beat: None,
+            floor: None,
         }),
     ] {
         assert_eq!(Frame::decode(&frame.encode()), Ok(frame));
@@ -195,8 +217,8 @@ fn refused_frames() -> Vec<(&'static str, Vec<u8>, FrameError)> {
     refused
 }
 
-/// A `heartbeat` frame, `[1, 3, location, priority, epoch, hub, acting, beat]`, with `location`
-/// and each of `parts` as given.
+/// A `heartbeat` frame, `[1, 3, location, priority, epoch, hub, acting, beat, floor]`, with
+/// `location` and each of `parts` as given.
 fn heartbeat_with(location: &[u8], parts: &[&[u8]]) -> Vec<u8> {
     let items = parts.len().checked_add(3).and_then(|items| u8::try_from(items).ok());
     let mut frame = vec![0x80 | items.unwrap(), 0x01, 0x03];
@@ -217,34 +239,39 @@ fn short(id: &[u8]) -> Vec<u8> {
 /// `heartbeat` frames that are refused for their shape or a field out of range, and why.
 fn refused_heartbeats() -> Vec<(&'static str, Vec<u8>, FrameError)> {
     let (location, hub) = (id_cbor(0x10), id_cbor(1));
-    let (priority, epoch, acting, beat): (&[u8], &[u8], &[u8], &[u8]) =
-        (&[0x02], &[0x01], &[0xf5], &[0x07]);
+    let (priority, epoch, acting): (&[u8], &[u8], &[u8]) = (&[0x02], &[0x01], &[0xf5]);
+    let (beat, floor): (&[u8], &[u8]) = (&[0x07], &[0x07]);
     let at = |parts: &[&[u8]]| heartbeat_with(&location, parts);
     let mut refused = vec![
-        ("a heartbeat without its beat", at(&[priority, epoch, &hub, acting])),
-        ("a heartbeat with an extra item", at(&[priority, epoch, &hub, acting, beat, &[0x00]])),
+        ("a heartbeat without its floor", at(&[priority, epoch, &hub, acting, beat])),
+        (
+            "a heartbeat with an extra item",
+            at(&[priority, epoch, &hub, acting, beat, floor, &[0x00]]),
+        ),
         (
             "a heartbeat's location of 15 bytes",
-            heartbeat_with(&short(&location), &[priority, epoch, &hub, acting, beat]),
+            heartbeat_with(&short(&location), &[priority, epoch, &hub, acting, beat, floor]),
         ),
-        ("a priority of 256", at(&[&[0x19, 0x01, 0x00], epoch, &hub, acting, beat])),
-        ("a priority of −1", at(&[&[0x20], epoch, &hub, acting, beat])),
+        ("a priority of 256", at(&[&[0x19, 0x01, 0x00], epoch, &hub, acting, beat, floor])),
+        ("a priority of −1", at(&[&[0x20], epoch, &hub, acting, beat, floor])),
         (
             "an epoch of 2^63",
-            at(&[priority, &[0x1b, 0x80, 0, 0, 0, 0, 0, 0, 0], &hub, acting, beat]),
+            at(&[priority, &[0x1b, 0x80, 0, 0, 0, 0, 0, 0, 0], &hub, acting, beat, floor]),
         ),
-        ("an epoch that isn't a number", at(&[priority, &[0x41, 0x01], &hub, acting, beat])),
-        ("a hub of 15 bytes", at(&[priority, epoch, &short(&hub), acting, beat])),
-        ("acting that isn't a boolean", at(&[priority, epoch, &hub, &[0x01], beat])),
-        ("a beat of −1", at(&[priority, epoch, &hub, acting, &[0x20]])),
-        ("a beat that is a boolean", at(&[priority, epoch, &hub, &[0xf4], &[0xf4]])),
+        ("an epoch that isn't a number", at(&[priority, &[0x41, 0x01], &hub, acting, beat, floor])),
+        ("a hub of 15 bytes", at(&[priority, epoch, &short(&hub), acting, beat, floor])),
+        ("acting that isn't a boolean", at(&[priority, epoch, &hub, &[0x01], beat, floor])),
+        ("a beat of −1", at(&[priority, epoch, &hub, acting, &[0x20], floor])),
+        ("a beat that is a boolean", at(&[priority, epoch, &hub, &[0xf4], &[0xf4], floor])),
+        ("a floor of −1", at(&[priority, epoch, &hub, acting, beat, &[0x20]])),
+        ("a floor that is a boolean", at(&[priority, epoch, &hub, &[0xf4], beat, &[0xf5]])),
     ];
     refused.extend(refused_heartbeat_terms());
     refused.into_iter().map(|(name, frame)| (name, frame, FrameError::Malformed)).collect()
 }
 
 /// `heartbeat` frames refused for what they say of the sender's term: a term has a hub and no
-/// term has one; acting needs a beat; and a beat, a term.
+/// term has one; acting needs a beat; a beat or a floor, a term; and a beat, a floor no lower.
 fn refused_heartbeat_terms() -> Vec<(&'static str, Vec<u8>)> {
     let (location, hub) = (id_cbor(0x10), id_cbor(1));
     let (priority, epoch, acting, beat): (&[u8], &[u8], &[u8], &[u8]) =
@@ -252,11 +279,15 @@ fn refused_heartbeat_terms() -> Vec<(&'static str, Vec<u8>)> {
     let (null, no, zero): (&[u8], &[u8], &[u8]) = (&[0xf6], &[0xf4], &[0x00]);
     let at = |parts: &[&[u8]]| heartbeat_with(&location, parts);
     vec![
-        ("a term without its hub", at(&[priority, epoch, null, no, null])),
-        ("a hub without a term", at(&[priority, zero, &hub, no, null])),
-        ("acting without a term", at(&[priority, zero, null, acting, beat])),
-        ("a beat without a term", at(&[priority, zero, null, no, beat])),
-        ("acting without a beat", at(&[priority, epoch, &hub, acting, null])),
+        ("a term without its hub", at(&[priority, epoch, null, no, null, null])),
+        ("a hub without a term", at(&[priority, zero, &hub, no, null, null])),
+        ("acting without a term", at(&[priority, zero, null, acting, beat, beat])),
+        ("a beat without a term", at(&[priority, zero, null, no, beat, beat])),
+        ("a floor without a term", at(&[priority, zero, null, no, null, beat])),
+        ("acting without a beat", at(&[priority, epoch, &hub, acting, null, beat])),
+        ("a beat without a floor", at(&[priority, epoch, &hub, no, beat, null])),
+        ("acting without a floor", at(&[priority, epoch, &hub, acting, beat, null])),
+        ("a floor below the beat", at(&[priority, epoch, &hub, no, &[0x08], beat])),
     ]
 }
 

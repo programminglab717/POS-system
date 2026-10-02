@@ -282,6 +282,12 @@ BUGS = [
         "                    batches: 0,",
     ),
     (
+        "batches are numbered from the clock's reading at every start",
+        "src/replicator.rs",
+        "        let first = nonce >> 1;",
+        "        let first = u64::try_from(now.as_micros()).unwrap_or(nonce & 0);",
+    ),
+    (
         "a batch starts at the peer's last event",
         "src/replicator.rs",
         "        for event in replica.events_after(lag.device, lag.theirs, limit)? {",
@@ -567,7 +573,7 @@ BUGS = [
         "src/frame.rs",
         "const HEARTBEAT: u64 = 3;",
         "const HEARTBEAT: u64 = 2;",
-        # Both ends read the kind they write, and no other frame has a heartbeat's five fields to
+        # Both ends read the kind they write, and no other frame has a heartbeat's seven fields to
         # take it for: only the pinned bytes see the kind.
         "unit",
     ),
@@ -614,6 +620,40 @@ BUGS = [
         "unit",
     ),
     (
+        "heartbeats: a floor decodes as 0",
+        "src/frame.rs",
+        "let floor = floor.as_u64().ok_or(FrameError::Malformed)?;",
+        "let floor = floor.as_u64().map(|_| 0).ok_or(FrameError::Malformed)?;",
+    ),
+    (
+        "heartbeats: the beat is sent as the floor",
+        "src/frame.rs",
+        "                heartbeat.floor.map_or(Value::Null, Value::Unsigned),",
+        "                heartbeat.beat.map_or(Value::Null, Value::Unsigned),",
+    ),
+    (
+        "heartbeats: a floor without a term is accepted",
+        "src/frame.rs",
+        "                    floor if epoch > 0 => {",
+        "                    floor => {",
+        # Replicas send no floor without a term: only the refused frames show it.
+        "unit",
+    ),
+    (
+        "heartbeats: a beat without a floor is accepted",
+        "src/frame.rs",
+        "                    Value::Null if beat.is_none() => None,",
+        "                    Value::Null => None,",
+        "unit",  # A replica giving a beat always gives a floor no lower.
+    ),
+    (
+        "heartbeats: a floor below the beat is accepted",
+        "src/frame.rs",
+        "                        if beat.is_some_and(|beat| beat > floor) {",
+        "                        if beat.is_some_and(|beat| beat > floor) && floor == u64::MAX {",
+        "unit",  # A replica's floor is never below the beat it gives.
+    ),
+    (
         "heartbeats: a priority decodes as 0",
         "src/frame.rs",
         ".and_then(|priority| u8::try_from(priority).ok())",
@@ -653,6 +693,24 @@ BUGS = [
         "src/replicator.rs",
         "                self.beat = reading.max(self.beat.saturating_add(1));",
         "                self.beat = self.beat.max(reading.min(1));",
+    ),
+    (
+        "heartbeats: a hub's beat goes on above the beats it is given, not the floors",
+        "src/replicator.rs",
+        "                    self.beat = self.beat.max(heartbeat.floor.unwrap_or(0));",
+        "                    self.beat = self.beat.max(heartbeat.beat.unwrap_or(0));",
+    ),
+    (
+        "heartbeats: a hub's beat ignores the floors it is given",
+        "src/replicator.rs",
+        "                if !heartbeat.acting && heartbeat.hub == Some(self.device) {",
+        "                if heartbeat.acting && heartbeat.hub == Some(self.device) {",
+    ),
+    (
+        "heartbeats: the floor given is the beat",
+        "src/replicator.rs",
+        "        let floor = self.election.floor(term).max(beat);",
+        "        let floor = beat;",
     ),
     (
         "heartbeats: a replica that can't be the hub now gives its priority",
@@ -716,13 +774,31 @@ BUGS = [
     (
         "election: a heartbeat acting as another device's hub gives a beat",
         "src/election.rs",
-        """        if heartbeat.acting {
-            if hub != from {
-                return;
-            }""",
-        """        if heartbeat.acting {""",
+        """        if heartbeat.acting && hub != from {
+            return;
+        }
+""",
+        "",
         # No replica says it acts as another's hub: only a frame made up for a known answer can.
         "unit",
+    ),
+    (
+        "election: a peer's floor isn't kept",
+        "src/election.rs",
+        "        let known = heartbeat.floor.max(heartbeat.beat);",
+        "        let known = heartbeat.beat;",
+    ),
+    (
+        "election: a floor heard replaces a later one",
+        "src/election.rs",
+        "            *floor = (*floor).max(known);",
+        "            *floor = known;",
+    ),
+    (
+        "election: a replica gives the latest floor of any term",
+        "src/election.rs",
+        "        self.floors.get(&term?).copied()",
+        "        term.and(self.floors.values().copied().max())",
     ),
     (
         "election: learning of a claim isn't hearing its hub",

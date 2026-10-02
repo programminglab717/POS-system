@@ -2,6 +2,7 @@
 //! claims make, the records each term's cut fences, a split brain healing, a store that is
 //! behind, and the check.
 
+use core::fmt::Write as _;
 use core::num::NonZeroU8;
 
 use keel_domain::hub::{Claimed, Epoch, HubEvent, Term};
@@ -334,3 +335,80 @@ fn the_check_finds_a_chain_that_isnt_what_the_claims_make() {
     assert!(hub.check().unwrap().is_empty());
     assert_eq!(hub.terms().unwrap(), terms);
 }
+
+/// The rows of `table` in `store`, in `order`, one a line, its columns split by `|`: integers in
+/// decimal, blobs in hex, and nulls as `null`.
+fn rows(store: &TestStore, table: &str, order: &str) -> String {
+    let mut statement =
+        store.db().prepare(&format!("SELECT * FROM {table} ORDER BY {order}")).unwrap();
+    let columns = statement.column_count();
+    let rows = statement
+        .query_map([], |row| {
+            (0..columns)
+                .map(|column| {
+                    Ok(match row.get::<_, rusqlite::types::Value>(column)? {
+                        rusqlite::types::Value::Null => "null".to_owned(),
+                        rusqlite::types::Value::Integer(n) => n.to_string(),
+                        rusqlite::types::Value::Blob(bytes) => {
+                            bytes.iter().fold(String::new(), |mut hex, byte| {
+                                let _ = write!(hex, "{byte:02x}");
+                                hex
+                            })
+                        }
+                        other => format!("{other:?}"),
+                    })
+                })
+                .collect::<Result<Vec<_>, rusqlite::Error>>()
+        })
+        .unwrap();
+    rows.map(|row| row.unwrap().join("|")).collect::<Vec<_>>().join("\n")
+}
+
+/// The golden rows of the claims projection, the chain of terms it keeps, and the sequence
+/// projection, for a fixed history: the hub numbers device 3's first two events in epoch 1, and
+/// the standby, holding all three, claims epoch 2, cutting the hub's log after its record, and
+/// numbers the third and its claim. If this test fails, a projection's rows changed, because its
+/// columns or what it makes of the events changed: bump the projection's version, so that stores
+/// rebuild it, then update the expected rows.
+#[test]
+fn claims_terms_and_sequence_rows_are_pinned() {
+    let dir = TempDir::new();
+    let three = log_of(3, here(), 3);
+    let mut hub = open_hub(&dir.db());
+    take(&mut hub, &three[..2]);
+    hub.sequence(at(1_100)).unwrap();
+    let mut standby = open_as(&dir.file("standby.db"), 2);
+    take(&mut standby, &hub.log(own().0, 0, 10).unwrap());
+    take(&mut standby, &three);
+    claim(&mut standby, at(2_000));
+    standby.sequence(at(2_200)).unwrap();
+    let claims = rows(&standby, "claims", "stream");
+    let terms = rows(&standby, "terms", "epoch");
+    let sequence = rows(&standby, "sequence", "record, run");
+    assert_eq!(claims, GOLDEN_CLAIMS, "\n{claims}");
+    assert_eq!(terms, GOLDEN_TERMS, "\n{terms}");
+    assert_eq!(sequence, GOLDEN_SEQUENCE, "\n{sequence}");
+}
+
+const GOLDEN_CLAIMS: &str = "\
+01a0e54fb06475d7844c3cd7f43c661c|01a0e54fb06475d8a6984080bab12a02|\
+0192f0c1000070008000000000000001|1|1|1|null|null
+01a0e54fb7d076cebfc846100bfc1e42|01a0e54fb7d076cf987bbcbfdd7e532f|\
+0192f0c1000070008000000000000002|1|2|1|01a0e54fb06475d8a6984080bab12a02|\
+0192f0c10000700080000000000000010000000000000002";
+const GOLDEN_TERMS: &str = "\
+1|0192f0c1000070008000000000000001|01a0e54fb06475d8a6984080bab12a02|1|2
+2|0192f0c1000070008000000000000002|01a0e54fb7d076cf987bbcbfdd7e532f|1|null";
+const GOLDEN_SEQUENCE: &str = "\
+01a0e54fb44c71cbb3d33b666a1e21da|0|0192f0c1000070008000000000000001|2|1|1|\
+0192f0c1000070008000000000000001|1|1|\
+1da844e57f5566147aea50acf5425be9c29f9e54cacff15cbdb1eef6abc597be
+01a0e54fb44c71cbb3d33b666a1e21da|1|0192f0c1000070008000000000000001|2|1|2|\
+0192f0c1000070008000000000000003|1|2|\
+98b601a4c1dc09e3951360b41dd890c60a7a6dab288d8dc53100cfc10d36f63b
+01a0e54fb89876648fc446b53f17fb29|0|0192f0c1000070008000000000000002|2|2|1|\
+0192f0c1000070008000000000000003|3|3|\
+9a8b2b487d3cbae94aaba42e36aa39fa9682ba6401bc603d3abc435be5ea9cd9
+01a0e54fb89876648fc446b53f17fb29|1|0192f0c1000070008000000000000002|2|2|2|\
+0192f0c1000070008000000000000002|1|1|\
+60dc363533947ddc48f982258737e7cf6a3569f98ba69911bcdf7a85a0ebe0e3";

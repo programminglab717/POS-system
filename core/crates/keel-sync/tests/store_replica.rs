@@ -139,6 +139,7 @@ fn two_stores_replicate_through_their_replicators() {
         [device(3)],
         config,
         Roles::default(),
+        0x5eed_0001_0000_0000,
         at(0),
     )
     .unwrap();
@@ -147,6 +148,7 @@ fn two_stores_replicate_through_their_replicators() {
         [device(1)],
         config,
         Roles::default(),
+        0x5eed_0002_0000_0000,
         at(0),
     )
     .unwrap();
@@ -185,6 +187,7 @@ fn a_store_interrupted_mid_write_stores_nothing_and_is_sent_the_events_again() {
         [device(3)],
         config,
         Roles::default(),
+        0x5eed_0003_0000_0000,
         at(0),
     )
     .unwrap();
@@ -193,6 +196,7 @@ fn a_store_interrupted_mid_write_stores_nothing_and_is_sent_the_events_again() {
         [device(1)],
         config,
         Roles::default(),
+        0x5eed_0004_0000_0000,
         at(0),
     )
     .unwrap();
@@ -277,6 +281,7 @@ fn a_hub_answers_a_request_for_an_order_then_numbers_its_answer() {
         [device(1), device(2)],
         SyncConfig::DEFAULT,
         roles,
+        0x5eed_0005_0000_0000,
         at(0),
     )
     .unwrap();

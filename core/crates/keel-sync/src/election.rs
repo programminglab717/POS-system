@@ -16,6 +16,13 @@
 //!   directly, then again through a peer, is no newer for it: hearing the hub through a peer
 //!   never outlasts hearing it directly. A replica that hears the hub only through peers hears
 //!   each beat up to a period late, and so counts the hub lost up to a period later.
+//! - **Floors.** A hub's beat is its clock's reading, and a hub that restarts with its clock set
+//!   back would beat below its last beats, which its peers had better than, and be taken for lost
+//!   while it served. So each heartbeat also gives its term's floor, the latest beat of the term
+//!   its sender knows, however old, from beats and from its peers' floors; and the hub's beats go
+//!   on above every floor of its term it hears. Within a period or two of a restart, every
+//!   replica within two hops that knew a later beat has told it, through its peers. Floors never
+//!   count as hearing the hub: they are old news.
 //! - Learning of a winning claim another replica made counts as hearing its hub, in the period
 //!   it was learned. A claim travels faster than the beats of its hub, which a peer passes on only
 //!   as its next period begins; without this, a replica whose epoch a new claim had just raised
@@ -68,6 +75,9 @@ pub(crate) struct Election {
     /// The latest beat the replica knows of each hub's term, of its own epoch or a later one,
     /// from the hub or from a peer that had it directly.
     latest: BTreeMap<Term, Heard>,
+    /// Each term's floor, of the replica's own epoch or a later one: the latest beat of it the
+    /// replica knows, however old, from beats and floors it heard.
+    floors: BTreeMap<Term, u64>,
     /// The period in which the replica learned of the winning claim it holds, if another replica
     /// made it.
     learned: Option<u64>,
@@ -77,11 +87,12 @@ pub(crate) struct Election {
 }
 
 impl Election {
-    /// Begins the next period, for a replica of `epoch`: the beats of earlier epochs' hubs are
-    /// forgotten, since they can never again be heard as its hub's.
+    /// Begins the next period, for a replica of `epoch`: the beats and floors of earlier epochs'
+    /// terms are forgotten, since they can never again be its own.
     pub(crate) fn tick(&mut self, epoch: u64) {
         self.period = self.period.saturating_add(1);
         self.latest.retain(|&(of, _), _| of >= epoch);
+        self.floors.retain(|&(of, _), _| of >= epoch);
     }
 
     /// The heartbeat periods begun since the replicator started.
@@ -90,7 +101,7 @@ impl Election {
     }
 
     /// Notes `heartbeat`, from `from`, in the current period. A heartbeat that says it acts as a
-    /// hub other than its sender gives no beat.
+    /// hub other than its sender gives no beat or floor.
     pub(crate) fn hear(&mut self, from: Id<Device>, heartbeat: &Heartbeat) {
         let period = self.period;
         let peer = self.peers.entry(from).or_insert(Peer {
@@ -100,11 +111,18 @@ impl Election {
         });
         peer.spoke = period;
         peer.priority = heartbeat.priority;
-        let (Some(hub), Some(beat)) = (heartbeat.hub, heartbeat.beat) else { return };
+        let Some(hub) = heartbeat.hub else { return };
+        if heartbeat.acting && hub != from {
+            return;
+        }
+        let term = (heartbeat.epoch, hub);
+        let known = heartbeat.floor.max(heartbeat.beat);
+        if let Some(known) = known {
+            let floor = self.floors.entry(term).or_insert(known);
+            *floor = (*floor).max(known);
+        }
+        let Some(beat) = heartbeat.beat else { return };
         if heartbeat.acting {
-            if hub != from {
-                return;
-            }
             let epoch = heartbeat.epoch;
             peer.acting = match peer.acting {
                 Some((of, heard)) if of > epoch => Some((of, heard)),
@@ -112,7 +130,6 @@ impl Election {
                 _ => Some((epoch, Heard { beat, period })),
             };
         }
-        let term = (heartbeat.epoch, hub);
         let heard = later(self.latest.get(&term).copied(), beat, period);
         self.latest.insert(term, heard);
     }
@@ -134,6 +151,12 @@ impl Election {
         let (epoch, hub) = term?;
         let (of, heard) = self.peers.get(&hub)?.acting?;
         (of == epoch && self.is_recent(heard.period, silence)).then_some(heard.beat)
+    }
+
+    /// The floor of `term`, the replica's own: the latest beat of it the replica knows, however
+    /// old.
+    pub(crate) fn floor(&self, term: Option<Term>) -> Option<u64> {
+        self.floors.get(&term?).copied()
     }
 
     /// Whether the replica, holding the winning claim of `term`, if any, learned of that claim

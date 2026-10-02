@@ -27,6 +27,6 @@ supersedes the old one.
 | [0019](./0019-replication-and-deterministic-simulation.md) | Replication and deterministic simulation: anti-entropy over version vectors, folds in HLC order, and a seeded single-process simulator | Accepted |
 | [0020](./0020-hub-sequencing.md) | Hub sequencing: signed sequencing records in the hub's log, confirmation by hash, and durability watermarks | Accepted |
 | [0021](./0021-ownership-leases.md) | Ownership leases: an order's owning device in its own events, requests answered by the hub, and a manager's override when the hub can't be reached | Accepted |
-| [0022](./0022-hub-election-and-failover.md) | Hub election and failover: hub terms claimed in the log, heartbeats and priorities, and a deposed hub's records fenced by its successor's claim | Proposed |
+| [0022](./0022-hub-election-and-failover.md) | Hub election and failover: hub terms claimed in the log, heartbeats and priorities, and a deposed hub's records fenced by its successor's claim | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

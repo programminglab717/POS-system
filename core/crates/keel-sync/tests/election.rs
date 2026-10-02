@@ -26,6 +26,7 @@ use keel_domain::schema::DomainEvent;
 use keel_domain::sequence::{Assigned, Run, SequenceEvent};
 use keel_events::event::SignedEvent;
 use keel_sync::{Frame, Heartbeat, Outgoing, Replicator, Roles, SyncConfig};
+use keel_types::{Entropy, SeededEntropy};
 use support::{Model, at, device, here, is_claim, is_record, registry};
 
 /// A heartbeat every second, the hub lost after three silent, and batches large enough for
@@ -55,6 +56,8 @@ struct Net {
     now: i64,
     /// The last heartbeat each replica had from each peer: (replica, peer) → heartbeat.
     heard: BTreeMap<(u8, u8), Heartbeat>,
+    /// The random bits each start numbers its batches from.
+    nonces: SeededEntropy,
 }
 
 /// Replica `n`'s number, from its device.
@@ -85,6 +88,7 @@ impl Net {
             queue: VecDeque::new(),
             now: 0,
             heard: BTreeMap::new(),
+            nonces: SeededEntropy::new(0),
         }
     }
 
@@ -106,9 +110,10 @@ impl Net {
             })
             .collect();
         let time = self.time(n);
+        let nonce = self.nonces.next_u64().unwrap();
         let model = self.models.get_mut(&n).unwrap();
         let (replicator, out) =
-            Replicator::start(model, peers, CONFIG, self.roles[&n], time).unwrap();
+            Replicator::start(model, peers, CONFIG, self.roles[&n], nonce, time).unwrap();
         self.replicators.insert(n, replicator);
         self.send(n, out);
         self.deliver();
@@ -237,11 +242,18 @@ impl Net {
 
 /// A heartbeat from a replica of `priority`, holding the claim of `term`, its hub and epoch, if
 /// any, acting as the hub or not, with the hub's beat it gave, or had directly, at `beat_at`
-/// milliseconds.
-fn beat(priority: u8, term: Option<(u8, u64)>, acting: bool, beat_at: Option<i64>) -> Heartbeat {
-    let beat = beat_at.map(|ms| u64::try_from(at(ms).as_micros()).unwrap());
+/// milliseconds, and the term's floor, the latest beat of it it knows, given at `floor_at`.
+fn beat(
+    priority: u8,
+    term: Option<(u8, u64)>,
+    acting: bool,
+    beat_at: Option<i64>,
+    floor_at: Option<i64>,
+) -> Heartbeat {
+    let micros = |ms: i64| u64::try_from(at(ms).as_micros()).unwrap();
+    let (beat, floor) = (beat_at.map(micros), floor_at.map(micros));
     let (epoch, hub) = term.map_or((0, None), |(hub, epoch)| (epoch, Some(device(hub))));
-    Heartbeat { location: here(), priority, epoch, hub, acting, beat }
+    Heartbeat { location: here(), priority, epoch, hub, acting, beat, floor }
 }
 
 /// A run of device `n`'s log.
@@ -269,9 +281,9 @@ fn the_most_preferred_candidate_claims_once_it_has_listened_for_the_periods_of_s
     // claim and no hub.
     net.run_to(2_000);
     assert!(net.replicators.keys().all(|n| net.claims(*n) == 0 && net.term(*n).is_none()));
-    assert_eq!(net.heard(2, 1), beat(2, None, false, None));
-    assert_eq!(net.heard(1, 2), beat(1, None, false, None));
-    assert_eq!(net.heard(1, 3), beat(0, None, false, None));
+    assert_eq!(net.heard(2, 1), beat(2, None, false, None, None));
+    assert_eq!(net.heard(1, 2), beat(1, None, false, None, None));
+    assert_eq!(net.heard(1, 3), beat(0, None, false, None, None));
     // At the third, replica 1 claims epoch 1; replica 2, hearing replica 1, preferred, doesn't.
     net.run_to(3_000);
     assert_eq!((net.claims(1), net.claims(2)), (1, 0));
@@ -286,9 +298,9 @@ fn the_most_preferred_candidate_claims_once_it_has_listened_for_the_periods_of_s
     // Its heartbeats say it acts as the hub of epoch 1, with its beat, its clock's reading; the
     // others pass on the beat they had from it.
     net.run_to(4_000);
-    assert_eq!(net.heard(2, 1), beat(2, Some((1, 1)), true, Some(4_000)));
-    assert_eq!(net.heard(1, 2), beat(1, Some((1, 1)), false, Some(3_000)));
-    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, Some(3_000)));
+    assert_eq!(net.heard(2, 1), beat(2, Some((1, 1)), true, Some(4_000), Some(4_000)));
+    assert_eq!(net.heard(1, 2), beat(1, Some((1, 1)), false, Some(3_000), Some(3_000)));
+    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, Some(3_000), Some(3_000)));
     assert!(net.replicators.values().all(Replicator::hub_reachable));
 }
 
@@ -308,7 +320,7 @@ fn the_standby_takes_over_after_three_missed_heartbeats_and_not_before() {
     assert_eq!(net.claims(2), 0);
     assert_eq!(net.term(2), Some((1, 1)));
     assert!(net.replicators[&2].hub_reachable());
-    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, Some(4_000)));
+    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, Some(4_000), Some(4_000)));
     // As the period after the third begins, it claims epoch 2: 3.5 s after the hub failed.
     net.run_to(8_000);
     assert_eq!(net.claims(2), 1);
@@ -326,7 +338,7 @@ fn the_standby_takes_over_after_three_missed_heartbeats_and_not_before() {
     let model = &net.models[&2];
     let runs = vec![run(model, 3, 1, 1), run(model, 2, 1, 1)];
     assert_eq!(net.record_at(2, 2), Assigned::new(2, 1, runs).unwrap());
-    assert_eq!(net.heard(3, 2), beat(1, Some((2, 2)), true, Some(8_000)));
+    assert_eq!(net.heard(3, 2), beat(1, Some((2, 2)), true, Some(8_000), Some(8_000)));
 }
 
 #[test]
@@ -369,9 +381,10 @@ fn a_replica_hears_the_hub_through_a_peer_that_hears_it_directly_and_no_further(
     assert_eq!(net.claims(2), 0);
     assert_eq!(net.term(2), Some((1, 1)));
     assert!(net.replicators[&2].hub_reachable());
-    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, Some(9_000)));
-    // Replica 2 passes on nothing it hears through a peer: replica 4 hears no hub.
-    assert_eq!(net.heard(4, 2), beat(1, Some((1, 1)), false, None));
+    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, Some(9_000), Some(9_000)));
+    // Replica 2 passes on nothing it hears through a peer: replica 4 hears no hub. The term's
+    // floor it gives is the hub's beat of 8 s, which replica 3 passed on at 9 s.
+    assert_eq!(net.heard(4, 2), beat(1, Some((1, 1)), false, None, Some(8_000)));
     assert!(!net.replicators[&4].hub_reachable());
     // The hub fails after its heartbeat at 10 s. Replica 3 passes its last beat on until it has
     // missed three, and replica 2, which had it from replica 3 at 11 s, a period late, claims a
@@ -379,9 +392,9 @@ fn a_replica_hears_the_hub_through_a_peer_that_hears_it_directly_and_no_further(
     // without a new beat begins.
     net.crash(1);
     net.run_to(13_000);
-    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, Some(10_000)));
+    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, Some(10_000), Some(10_000)));
     net.run_to(14_000);
-    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, None));
+    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, None, Some(10_000)));
     assert_eq!(net.claims(2), 0);
     net.run_to(15_000);
     assert_eq!(net.claims(2), 1);
@@ -502,7 +515,7 @@ fn a_hub_steps_down_when_a_better_claim_reaches_it() {
     // takes the role back: its only claim is its first.
     net.run_to(20_000);
     assert_eq!(net.log(1).len(), 4);
-    assert_eq!(net.heard(2, 1), beat(2, Some((2, 2)), false, Some(19_000)));
+    assert_eq!(net.heard(2, 1), beat(2, Some((2, 2)), false, Some(19_000), Some(19_000)));
     assert_eq!(net.claims(1), 1);
     assert_eq!(net.serving(), [2]);
 }
@@ -549,6 +562,7 @@ fn a_heartbeat_acting_as_another_devices_hub_gives_no_beat() {
             hub: Some(device(hub)),
             acting: true,
             beat: Some(5_000),
+            floor: Some(5_000),
         };
         Frame::Heartbeat(heartbeat).encode()
     };
@@ -581,14 +595,124 @@ fn a_hub_that_restarts_resumes_its_term_once_settled() {
     // it isn't acting; but its peers answer at once, so it serves again, in the same term.
     net.now = 6_500;
     net.start(1);
-    assert_eq!(net.heard(2, 1), beat(0, Some((1, 1)), false, None));
+    assert_eq!(net.heard(2, 1), beat(0, Some((1, 1)), false, None, None));
     assert_eq!(net.serving(), [1]);
     // Replica 2 still had its last heartbeat acting as the hub, and didn't claim meanwhile.
     net.run_to(12_000);
     assert_eq!((net.claims(1), net.claims(2)), (0, 0));
     assert_eq!(net.term(2), Some((1, 1)));
-    assert_eq!(net.heard(2, 1), beat(1, Some((1, 1)), true, Some(12_000)));
+    assert_eq!(net.heard(2, 1), beat(1, Some((1, 1)), true, Some(12_000), Some(12_000)));
     assert_eq!(net.log(1).len(), 2);
+}
+
+/// Hub restarts with a clock set back, found reviewing the slice: a hub's beat began again from
+/// its clock's reading when it restarted, so with its clock set back its beats were no newer than
+/// the last its peers had, for as long as the clock had gone back. Its peers took it for lost
+/// while it served: islands, or a standby claiming. A hub now beats on above every floor of its
+/// term a peer gives it, the latest beat of it the peer knows.
+#[test]
+fn a_hub_that_restarts_with_its_clock_set_back_beats_on_above_its_last_beat() {
+    // Replica 1, of priority 1, is the hub; replica 2, of priority 2, started later, defers to it.
+    let mut net = Net::new(&[(1, Some(1)), (2, Some(2)), (3, None)], &[(1, 2), (1, 3), (2, 3)]);
+    net.start(1);
+    net.start(3);
+    net.run_to(3_000);
+    net.now = 3_500;
+    net.start(2);
+    net.run_to(6_000);
+    let last = beat(1, Some((1, 1)), true, Some(6_000), Some(6_000)).beat.unwrap();
+    // The hub restarts, its clock set back 5 s, and serves at once. Its peers give it the term's
+    // floor, its beat of 6 s, at 7 s; at 8 s, as its first period begins, its clock reads 3 s,
+    // which they have had better than, and it beats on above 6 s instead.
+    net.now = 6_500;
+    net.ahead.insert(1, -5_000);
+    net.start(1);
+    assert_eq!(net.serving(), [1]);
+    net.run_to(7_000);
+    assert_eq!(net.heard(1, 3), beat(0, Some((1, 1)), false, Some(6_000), Some(6_000)));
+    net.run_to(8_000);
+    assert_eq!(net.heard(2, 1).beat, Some(last + 1));
+    // Its peers hear it all along, and the standby never claims.
+    for ms in (9_000..=16_000).step_by(1_000) {
+        net.run_to(ms);
+        let hearing = [2, 3].map(|n| net.replicators[&n].hub_reachable());
+        assert_eq!(hearing, [true, true], "at {ms} ms");
+    }
+    assert_eq!((net.claims(1), net.claims(2)), (0, 0));
+    assert_eq!(net.serving(), [1]);
+    // Its clock passed 6 s at 11 s, and its beats are its clock's readings again.
+    assert_eq!(net.heard(2, 1), beat(1, Some((1, 1)), true, Some(11_000), Some(11_000)));
+}
+
+/// As above, after the hub has been down for longer than the periods of silence, with no other
+/// candidate to claim: its peers have had no beat of it lately, but the term's floor, however
+/// old, still says how far its beats went.
+#[test]
+fn a_hub_back_after_a_while_with_its_clock_set_back_is_heard_again_at_once() {
+    let mut net = Net::new(&[(1, Some(1)), (2, None), (3, None)], &[(1, 2), (1, 3), (2, 3)]);
+    net.start_all();
+    net.run_to(4_000);
+    assert_eq!(net.serving(), [1]);
+    let last = beat(1, Some((1, 1)), true, Some(4_000), Some(4_000)).beat.unwrap();
+    // The hub is down for 8 s, and its peers, taking it for lost, are islands.
+    net.crash(1);
+    net.run_to(12_000);
+    assert!(!net.replicators[&2].hub_reachable());
+    assert_eq!(net.heard(3, 2), beat(0, Some((1, 1)), false, None, Some(4_000)));
+    // It comes back with its clock set back 30 s, and serves at once. Its peers give it the
+    // term's floor, its beat of 4 s, and from its first period it beats on above that: they hear
+    // it again 1.5 s after it came back, not when its clock passes 4 s, 21.5 s later.
+    net.now = 12_500;
+    net.ahead.insert(1, -30_000);
+    net.start(1);
+    assert_eq!(net.serving(), [1]);
+    net.run_to(13_000);
+    assert_eq!(net.heard(1, 2), beat(0, Some((1, 1)), false, None, Some(4_000)));
+    assert!(!net.replicators[&2].hub_reachable());
+    for ms in (14_000..=20_000).step_by(1_000) {
+        net.run_to(ms);
+        let hearing = [2, 3].map(|n| net.replicators[&n].hub_reachable());
+        assert_eq!(hearing, [true, true], "at {ms} ms");
+    }
+    assert_eq!(net.heard(2, 1).beat, Some(last + 7));
+}
+
+/// As above, where only a replica two hops from the hub knows its last beat: replica 2, between
+/// the hub and replica 3, restarted while the hub was down, and forgot the hub's beats. Replica
+/// 3's floor reaches the hub through replica 2, which keeps the latest floor it hears.
+#[test]
+fn a_hub_hears_of_its_last_beat_from_two_hops_away() {
+    // A line: replica 1, the hub and the only candidate; replica 2; and replica 3.
+    let mut net = Net::new(&[(1, Some(1)), (2, None), (3, None)], &[(1, 2), (2, 3)]);
+    net.start_all();
+    net.run_to(4_000);
+    assert_eq!(net.serving(), [1]);
+    // The hub fails at 4.5 s, its last beat at 4 s, which replica 2 passes on at 5 s.
+    net.now = 4_500;
+    net.crash(1);
+    net.run_to(5_000);
+    assert_eq!(net.heard(3, 2), beat(0, Some((1, 1)), false, Some(4_000), Some(4_000)));
+    // Replica 2 restarts at 6.5 s, and replica 3 gives it the term's floor.
+    net.now = 6_500;
+    net.start(2);
+    net.run_to(10_000);
+    assert_eq!(net.heard(2, 3), beat(0, Some((1, 1)), false, None, Some(4_000)));
+    assert_eq!(net.heard(3, 2), beat(0, Some((1, 1)), false, None, Some(4_000)));
+    // The hub comes back at 10.5 s, its clock set back 30 s. Replica 2 gives it the floor at
+    // 11 s, and the hub beats on above it at 12 s; replica 3 has the beat through replica 2 at
+    // 13 s, and hears the hub again, 21.5 s before the hub's clock passes 4 s.
+    net.now = 10_500;
+    net.ahead.insert(1, -30_000);
+    net.start(1);
+    net.run_to(12_000);
+    let last = beat(1, Some((1, 1)), true, Some(4_000), None).beat.unwrap();
+    assert_eq!(net.heard(2, 1).beat, Some(last + 1));
+    assert!(!net.replicators[&3].hub_reachable());
+    for ms in (13_000..=20_000).step_by(1_000) {
+        net.run_to(ms);
+        assert!(net.replicators[&3].hub_reachable(), "at {ms} ms");
+    }
+    assert_eq!(net.heard(3, 2).beat, Some(last + 8));
 }
 
 #[test]
@@ -682,7 +806,7 @@ fn a_replica_whose_log_forked_gives_no_priority_and_never_claims() {
     // Its heartbeats give no priority, so replica 2 doesn't defer to it, and claims; it never
     // does.
     net.run_to(1_000);
-    assert_eq!(net.heard(2, 1), beat(0, None, false, None));
+    assert_eq!(net.heard(2, 1), beat(0, None, false, None, None));
     net.run_to(10_000);
     assert_eq!((net.claims(1), net.claims(2)), (0, 1));
     assert_eq!(net.serving(), [2]);

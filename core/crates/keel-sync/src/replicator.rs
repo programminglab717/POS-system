@@ -19,8 +19,10 @@
 //!
 //! Every replica sends each peer a heartbeat every heartbeat period: its priority as hub; its
 //! term, the epoch and the hub of the winning claim it holds; whether it is acting as that hub;
-//! and the hub's beat, its own or the latest it had from the hub directly ([`crate::frame`]). A
-//! replica that can be hub claims the next epoch when all of these hold (ADR-0022):
+//! the hub's beat, its own or the latest it had from the hub directly; and the term's floor, the
+//! latest beat of it the replica knows, however old, which the hub's beats go on above
+//! ([`crate::frame`], [`crate::election`]). A replica that can be hub claims the next epoch when
+//! all of these hold (ADR-0022):
 //! - its log is settled, and no peer has refused its own log, which would mean it forked;
 //! - it hears no hub ([`Replicator::hub_reachable`]), and has listened for the periods of
 //!   silence since it started, and since it learned of the winning claim it holds;
@@ -213,6 +215,10 @@ impl Replicator {
     /// Starts replicating `replica` with `peers`, in `roles`, at time `now`: returns the
     /// replicator and the `have` and heartbeat frames to send them.
     ///
+    /// Its batches to each peer are numbered on from `nonce`, 64 bits the caller draws at random
+    /// for each start, from the device's entropy: so a peer's acknowledgement of a batch sent
+    /// before a restart acknowledges none sent after it, whatever the clock did meanwhile.
+    ///
     /// # Errors
     /// If the replica's store can't be read.
     pub fn start<R: Replica>(
@@ -220,14 +226,15 @@ impl Replicator {
         peers: impl IntoIterator<Item = Id<Device>>,
         config: SyncConfig,
         roles: Roles,
+        nonce: u64,
         now: Timestamp,
     ) -> Result<(Replicator, Vec<Outgoing>), R::Error> {
         let ours = replica.version_vector()?;
         let terms = replica.terms()?;
         let device = replica.device();
-        // Batches are numbered from the time the replicator starts, so a peer's acknowledgement
-        // of a batch sent before a restart acknowledges none sent after it.
-        let first = u64::try_from(now.as_micros()).unwrap_or(0);
+        // 63 of the random bits, leaving room to count up. Numbering from the clock's reading as
+        // the replicator started, as before, repeated numbers when a restart set the clock back.
+        let first = nonce >> 1;
         let peers: BTreeMap<Id<Device>, Peer> = peers
             .into_iter()
             .filter(|peer| *peer != device)
@@ -295,6 +302,12 @@ impl Replicator {
             }
             Ok(Frame::Heartbeat(heartbeat)) if heartbeat.location == self.location => {
                 self.election.hear(from, &heartbeat);
+                // A floor of a term the replica is the hub of, which a peer gives it: its own
+                // beats go on above it, so that they rise across its restarts too, whatever its
+                // clock says. Rising past an earlier term's floor too does no harm.
+                if !heartbeat.acting && heartbeat.hub == Some(self.device) {
+                    self.beat = self.beat.max(heartbeat.floor.unwrap_or(0));
+                }
                 Ok(Vec::new())
             }
             Ok(Frame::Have(_) | Frame::Durable(_) | Frame::Heartbeat(_)) | Err(_) => {
@@ -504,8 +517,9 @@ impl Replicator {
     }
 
     /// The heartbeat for `to`: the replica's priority, 0 if it can't be the hub now, its log
-    /// being unsettled or forked; its term; whether it acts as the term's hub; and the hub's
-    /// beat, its own as the hub, else the latest it had from the hub directly.
+    /// being unsettled or forked; its term; whether it acts as the term's hub; the hub's beat,
+    /// its own as the hub, else the latest it had from the hub directly, if recent; and the
+    /// term's floor, the latest beat of it the replica knows, however old.
     fn heartbeat(&self, to: Id<Device>) -> Outgoing {
         let silence = u64::from(self.config.silence);
         let eligible = self.settled && !self.forked();
@@ -514,6 +528,7 @@ impl Replicator {
         let acting = self.serving();
         let beat =
             if acting { Some(self.beat) } else { self.election.beat_heard_directly(term, silence) };
+        let floor = self.election.floor(term).max(beat);
         let heartbeat = Heartbeat {
             location: self.location,
             priority,
@@ -521,6 +536,7 @@ impl Replicator {
             hub: term.map(|(_, hub)| hub),
             acting,
             beat,
+            floor,
         };
         Outgoing { to, frame: Frame::Heartbeat(heartbeat).encode() }
     }

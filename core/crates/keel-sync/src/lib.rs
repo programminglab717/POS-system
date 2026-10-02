@@ -8,14 +8,16 @@
 //!   far into its log the replica holds, and whether the replica asks for the peer's in return;
 //!   `events`, a batch of signed events, each device's in order; `durable`, the durable-ack
 //!   watermark; and `heartbeat`, a replica's priority as hub, its term, the epoch and hub of the
-//!   winning claim it holds, whether it acts as that hub, and the hub's beat. All are canonical
-//!   CBOR, at most [`MAX_FRAME`] bytes.
+//!   winning claim it holds, whether it acts as that hub, the hub's beat, and the term's floor,
+//!   the latest beat of it the replica knows. All are canonical CBOR, at most [`MAX_FRAME`]
+//!   bytes.
 //! - **The replicator** ([`Replicator`]): one replica's side of replication with its peers. It
 //!   does no I/O: the caller hands it each frame received, and a tick when
-//!   [`Replicator::next_tick`] asks, and sends the frames it returns. It assumes nothing of
-//!   delivery: frames may be lost, duplicated, reordered or delayed, and replicas still
-//!   converge, since each `have` says exactly what its sender holds, and receiving an event twice
-//!   changes nothing.
+//!   [`Replicator::next_tick`] asks, and sends the frames it returns, and gives it random bits
+//!   as it starts, which it numbers its batches from. It assumes nothing of delivery or of the
+//!   clock: frames may be lost, duplicated, reordered or delayed, and the clock may jump, and
+//!   replicas still converge, since each `have` says exactly what its sender holds, and
+//!   receiving an event twice changes nothing.
 //! - **Replicas** ([`Replica`]): what the replicator needs of a store: its version vector, a
 //!   device's log after a position, receiving a batch of events, the chain of hub terms, and,
 //!   for the hub, claiming, answering and sequencing. [`StoreReplica`] adapts `keel-store`'s

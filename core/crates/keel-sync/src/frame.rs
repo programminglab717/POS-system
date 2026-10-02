@@ -15,14 +15,16 @@
 //! - `[1, 2, location, [[device, position], ...]]`: `durable`. How far into each device's log the
 //!   location's durable replica, the cloud, holds, as far as the sender knows: the durable-ack
 //!   watermark. Listed as in `have`.
-//! - `[1, 3, location, priority, epoch, hub, acting, beat]`: `heartbeat`, sent to each peer every
-//!   heartbeat period. The sender's priority as hub, from 0, which it can't be now, to 255; the
-//!   term of the winning claim it holds: its epoch, from 1 to 2^63 − 1, and its hub, the 16 bytes
-//!   of the device's identifier, or 0 and `null` if it holds none; whether the sender is that
-//!   hub, acting as one, a boolean; and that hub's beat, a number the hub raises with every period
-//!   it acts: the sender's own if it acts, else the latest it had from the hub directly in its
-//!   periods of silence, `null` if none. A replica that holds no claim gives no beat, and one
-//!   that acts always does.
+//! - `[1, 3, location, priority, epoch, hub, acting, beat, floor]`: `heartbeat`, sent to each
+//!   peer every heartbeat period. The sender's priority as hub, from 0, which it can't be now, to
+//!   255; the term of the winning claim it holds: its epoch, from 1 to 2^63 − 1, and its hub, the
+//!   16 bytes of the device's identifier, or 0 and `null` if it holds none; whether the sender is
+//!   that hub, acting as one, a boolean; that hub's beat, a number the hub raises with every
+//!   period it acts: the sender's own if it acts, else the latest it had from the hub directly in
+//!   its periods of silence, `null` if none; and the term's floor, the latest beat of the term
+//!   the sender knows, however old, from the hub, through a peer or in a peer's floor, `null` if
+//!   none, which the hub's beats go on above. A replica that holds no claim gives no beat or
+//!   floor, one that acts always gives both, and a beat comes with a floor no lower.
 
 use std::collections::BTreeMap;
 
@@ -116,6 +118,12 @@ pub struct Heartbeat {
     /// as the hub, else the latest it had from the hub directly, in its periods of silence.
     /// `None` if it had none; always while it acts, and never while it holds no claim.
     pub beat: Option<u64>,
+    /// The term's floor: the latest beat of the term the sender knows, however old, had from the
+    /// hub, through a peer, or in a peer's floor; its own beat if it acts. A hub's beats go on
+    /// above every floor naming it as the hub that it hears, so that they rise across its
+    /// restarts, whatever its clock does. `None` if it knows none, and never while it holds no
+    /// claim; never below the beat.
+    pub floor: Option<u64>,
 }
 
 /// Why a frame was dropped.
@@ -169,6 +177,7 @@ impl Frame {
                 heartbeat.hub.map_or(Value::Null, |hub| Value::Bytes(hub.to_bytes().to_vec())),
                 Value::Bool(heartbeat.acting),
                 heartbeat.beat.map_or(Value::Null, Value::Unsigned),
+                heartbeat.floor.map_or(Value::Null, Value::Unsigned),
             ]),
         };
         value.encode()
@@ -202,7 +211,7 @@ impl Frame {
             (Some(DURABLE), [location, vv]) => {
                 Ok(Frame::Durable(Durable { location: id(location)?, vv: version_vector(vv)? }))
             }
-            (Some(HEARTBEAT), [location, priority, epoch, hub, acting, beat]) => {
+            (Some(HEARTBEAT), [location, priority, epoch, hub, acting, beat, floor]) => {
                 let epoch = epoch.as_u64().filter(|&epoch| epoch <= MAX_EPOCH);
                 let epoch = epoch.ok_or(FrameError::Malformed)?;
                 let acting = acting.as_bool().ok_or(FrameError::Malformed)?;
@@ -218,6 +227,18 @@ impl Frame {
                     beat if epoch > 0 => Some(beat.as_u64().ok_or(FrameError::Malformed)?),
                     _ => return Err(FrameError::Malformed),
                 };
+                // A floor is of a term, and no lower than the beat that comes with it.
+                let floor = match floor {
+                    Value::Null if beat.is_none() => None,
+                    floor if epoch > 0 => {
+                        let floor = floor.as_u64().ok_or(FrameError::Malformed)?;
+                        if beat.is_some_and(|beat| beat > floor) {
+                            return Err(FrameError::Malformed);
+                        }
+                        Some(floor)
+                    }
+                    _ => return Err(FrameError::Malformed),
+                };
                 Ok(Frame::Heartbeat(Heartbeat {
                     location: id(location)?,
                     priority: priority
@@ -228,6 +249,7 @@ impl Frame {
                     hub,
                     acting,
                     beat,
+                    floor,
                 }))
             }
             (Some(EVENTS), [batch, events]) => Ok(Frame::Events(Events {

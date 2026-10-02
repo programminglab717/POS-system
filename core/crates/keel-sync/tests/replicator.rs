@@ -97,8 +97,22 @@ fn start_as(
     roles: Roles,
     now: Timestamp,
 ) -> (Replicator, Vec<(u8, Frame)>) {
-    let (replicator, out) =
-        Replicator::start(model, peers.iter().map(|n| device(*n)), CONFIG, roles, now).unwrap();
+    start_with(model, peers, roles, NONCE, now)
+}
+
+/// The random bits a replicator's batches are numbered from, unless a test says otherwise.
+const NONCE: u64 = 0x5eed_0000_0000_0001;
+
+/// As [`start_as`], its batches numbered from `nonce`.
+fn start_with(
+    model: &mut Model,
+    peers: &[u8],
+    roles: Roles,
+    nonce: u64,
+    now: Timestamp,
+) -> (Replicator, Vec<(u8, Frame)>) {
+    let peers = peers.iter().map(|n| device(*n));
+    let (replicator, out) = Replicator::start(model, peers, CONFIG, roles, nonce, now).unwrap();
     (replicator, decoded(&out))
 }
 
@@ -324,6 +338,44 @@ fn a_batch_unacknowledged_in_time_is_taken_as_lost() {
     assert_ne!(again, lost);
     assert_eq!(positions(&events), [(1, 1), (1, 2)]);
     assert_eq!(replicator.stats().timeouts, 1);
+}
+
+/// Found reviewing slice 4, once the protocol property set clocks back as replicas restarted:
+/// batches were numbered from the clock's reading as the replicator started, so after a restart
+/// that set the clock back they could take the numbers of batches sent before it, and a peer's
+/// late acknowledgement of one of those passed for one of these, here making the replica take its
+/// own log for forked. Each start now numbers its batches from random bits of its own.
+#[test]
+fn a_restart_that_sets_the_clock_back_doesnt_take_old_acknowledgements_for_new() {
+    let mut a = with_events(1, 5);
+    let now = at(10_000);
+    // The replica sends a batch, which the peer acknowledges, and another, which is lost.
+    let (mut replicator, _) = start_with(&mut a, &[2], Roles::default(), NONCE, now);
+    let out = decoded(&replicator.on_frame(&mut a, device(2), &have(&[], 0), now).unwrap());
+    let (acknowledged, _) = batch(&out[0].1);
+    let out = replicator.on_frame(&mut a, device(2), &have(&[(1, 2)], acknowledged), now);
+    let (lost, _) = batch(&decoded(&out.unwrap())[0].1);
+    // It restarts with its clock set back to when it last started, and sends the peer the events
+    // it lacks as soon as the peer says what it holds.
+    let (mut replicator, _) = start_with(&mut a, &[2], Roles::default(), NONCE ^ 1 << 40, now);
+    let out = replicator.on_frame(&mut a, device(2), &have(&[(1, 2)], acknowledged), now);
+    let out = decoded(&out.unwrap());
+    let [(2, frame)] = out.as_slice() else { panic!("{out:?}") };
+    let (next, events) = batch(frame);
+    assert!(next != acknowledged && next != lost, "batch {next}");
+    assert_eq!(positions(&events), [(1, 3), (1, 4)]);
+    // The peer's next `have`, which still acknowledges the batch from before, and a late one
+    // acknowledging the lost batch, don't acknowledge the new one: the replica waits for it, and
+    // doesn't take the peer for refusing its log.
+    for old in [acknowledged, lost] {
+        let out = replicator.on_frame(&mut a, device(2), &have(&[(1, 2)], old), now).unwrap();
+        assert!(decoded(&out).is_empty(), "{out:?}");
+        assert!(!replicator.forked());
+    }
+    let out = replicator.on_frame(&mut a, device(2), &have(&[(1, 4)], next), now).unwrap();
+    let out = decoded(&out);
+    let [(2, frame)] = out.as_slice() else { panic!("{out:?}") };
+    assert_eq!(batch(frame).0, next + 1);
 }
 
 #[test]

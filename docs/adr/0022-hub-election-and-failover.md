@@ -1,6 +1,7 @@
 # ADR-0022: Hub election and failover: hub terms claimed in the log, heartbeats and priorities, and a deposed hub's records fenced by its successor's claim
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-02) after review, with the details settled in building and
+  reviewing it, under "As built"
 - **Date:** 2026-10-01
 
 ## Context
@@ -184,7 +185,7 @@ What slices 1 to 3 built shapes the rest:
 
 ## As built
 
-Details settled in building it, for review with it:
+Details settled in building it, and in reviewing it:
 
 - **A claimant holds the whole chain** (amends decision 3). A successor's cuts fence a deposed
   hub's records only if the successor held, when it claimed, everything that still counted: with
@@ -215,13 +216,16 @@ Details settled in building it, for review with it:
     cut numbered. The property found this.
   - `Store::term()`, `terms()` and `claim(priority, now)`, and `StoreError::NotHub` and `Behind`,
     as decision 9 says.
-- **The heartbeat** is `[1, 3, location, priority, epoch, hub, acting, beat]` (amends decision
-  5).
+- **The heartbeat** is `[1, 3, location, priority, epoch, hub, acting, beat, floor]` (amends
+  decision 5).
   - `epoch` and `hub` are the sender's term: the epoch of the winning claim it holds and the
     claimant's device, or 0 and `null` if it holds none. `acting` says the sender is that hub.
     `beat` is the hub's beat, a number the hub raises with every period it acts, its clock's
-    reading in microseconds or one past its last beat if that is later: the sender's own, if it
-    acts, else the latest it had from its term's hub directly, while recent; `null` if none.
+    reading in microseconds or one past its last beat if that is later, and past every floor of
+    its term it has heard: the sender's own, if it acts, else the latest it had from its term's
+    hub directly, while recent; `null` if none. `floor` is the term's floor, the latest beat of
+    the term the sender knows, however old, from beats and from its peers' floors; `null` if
+    none, and never below `beat`.
   - A replica hears its hub while the latest beat of its own term's hub, or of the hub of any
     later epoch, first reached it in the current period or the three before, from the hub or
     from a peer that had it directly; or it learned of the winning claim, another replica's, as
@@ -249,6 +253,27 @@ Details settled in building it, for review with it:
   - A replica keeps each peer's latest heartbeat acting as the hub, not only its last heartbeat:
     a hub that restarts says it isn't acting until its log settles again, and mustn't be taken
     for lost meanwhile.
+  - **Floors**, found reviewing the slice. A hub's beat began again from its clock's reading as
+    it restarted, so a hub whose clock was set back meanwhile, as a clock without its battery
+    is, beat below its last beats, and its peers took it for lost while it served, for as long
+    as the clock had gone back: islands, or a standby claiming needlessly. Every heartbeat now
+    gives its term's floor; replicas keep the latest floor they hear; and the hub's beats go on
+    above every floor of its term it hears. A hub back from a restart is heard again within a
+    period or two, even when only a replica two hops away still knew its last beat, the peer
+    between having restarted too. Floors never count as hearing the hub: they are old news. A
+    replica that takes on the hub's term only after such a restart, knowing a later beat of it
+    from before, may hear no hub for a period or so, until the hub's beats pass that one. Giving
+    the hub of a replica's term the latest beat the replica knew was tried first, and the
+    protocol property found the replica two hops away.
+- **Batch numbers** (amends [ADR-0019](./0019-replication-and-deterministic-simulation.md), "As
+  built"). Batches were numbered from the clock's reading as the replicator started, which held,
+  ADR-0019 noted, unless the clock went back. A restart that set it back could number batches as
+  the run before had, and a peer's late acknowledgement of one of those passed for a new one; in
+  this slice that can make a replica take its own log for forked, and a hub stop serving. Each
+  start now numbers its batches from random bits the caller draws from the device's entropy,
+  `Replicator::start`'s `nonce`. Numbering past a peer's last acknowledgement from an earlier run
+  was tried first: two quick restarts numbered past the same one, with batches in flight, and
+  the protocol property found the second taking the first's acknowledgement.
 - **Catching up** (amends decision 5): a candidate waits only for as much of each earlier hub's
   log as its peers other than that hub say they hold. What a hub it no longer hears said of its
   own log, the candidate could only have from that hub, and a hub that spoke again would be heard
@@ -276,6 +301,11 @@ Details settled in building it, for review with it:
   role from each other in turn. A location's links must keep every pair of candidates within two
   hops: the hub and its standby link to each other, and in the protocol property every pair of
   candidates is within two hops.
+- **The protocol property** sets clocks back by up to half a minute as a third of its replicas
+  restart; checks that a replica takes a `have` for the acknowledgement of its last batch only if
+  it acknowledges that very batch; and, once the replicas agree on all else after the faults
+  stop, every replica having held the hub's term for the periods of silence and two more, that
+  every replica within two hops of the hub hears it at once, not only in the end.
 - **The simulator** detects a device's fork by what the other replicas hold: a device restored
   from an older copy that writes before it holds its log back as far as another replica does
   forks it, whether or not its log had settled, since settling against the peers that answer

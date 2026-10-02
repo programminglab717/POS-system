@@ -12,7 +12,7 @@ use keel_events::keys::{SignatureAlgorithm, Signer, SoftwareSigner};
 use keel_events::verify::DeviceRegistry;
 use keel_store::{Faults, Point, Store, StoreConfig, StoreError, StoreKey};
 use keel_sync::{Outgoing, Replicator, Roles, StoreReplica, SyncConfig, VersionVector};
-use keel_types::{Id, IdGenerator, SeededEntropy, Timestamp};
+use keel_types::{Entropy, Id, IdGenerator, SeededEntropy, Timestamp};
 
 /// The hub appliance: the most preferred candidate for the Store Hub's role (ADR-0022).
 pub(crate) const HUB: u8 = 10;
@@ -238,11 +238,13 @@ impl Node {
         .map_err(|error| SimError::Store(self.n, format!("opening: {error}")))?;
         let peers = self.peers.iter().map(|&peer| device(peer));
         let now = self.time(ms);
+        let nonce = entropy(3).next_u64().map_err(|error| SimError::Setup(error.to_string()))?;
         let (replicator, out) = Replicator::start(
             &mut StoreReplica::new(&mut store, registry),
             peers,
             config,
             roles(self.n),
+            nonce,
             now,
         )
         .map_err(|error| SimError::Store(self.n, format!("starting: {error}")))?;
