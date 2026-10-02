@@ -1709,3 +1709,30 @@ fn a_replica_that_has_only_now_taken_on_the_hubs_term_may_hear_it_a_period_late(
     };
     converge(case).unwrap();
 }
+
+/// Keeps in reach a planted bug that the property's cases had reached only by chance, and lost
+/// when the review changed how crashes are drawn: a replica passing on, as its own term's beat, a
+/// beat its term's hub gave acting in a later term. Replica 2, hub of epoch 1, was succeeded and
+/// elected again, while replica 3, which held only the claim of epoch 1, had its beats; it gives
+/// no beat of a term it doesn't hold.
+#[test]
+fn a_replica_passes_on_no_beat_of_a_later_term_as_its_own_terms() {
+    let case = Case {
+        replicas: 3,
+        topology: Topology::Line,
+        loss: 172,
+        duplication: 0,
+        decline: 0,
+        delay: 40,
+        appends: vec![(117, 1, 2), (30, 2, 3), (73, 1, 1), (113, 2, 1)],
+        cuts: vec![(14, 82, 36), (89, 91, 23)],
+        crashes: vec![(138, 1, 16, 0), (52, 3, 0, 0)],
+        jumps: vec![(41, 1, 3)],
+        priorities: vec![Some(1), Some(2), None],
+        batch_events: 2,
+        batch_bytes: 262_144,
+        heartbeat: HEARTBEAT,
+        seed: 6_082_114_685_575_815_477,
+    };
+    converge(case).unwrap();
+}
