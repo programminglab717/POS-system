@@ -710,7 +710,7 @@ BUGS = [
         "election: the beats of two hubs of one epoch are compared",
         "src/election.rs",
         "        let heard = later(self.latest.get(&term).copied(), beat, period);",
-        """        let rivals = self.latest.iter().filter(|(&(of, _), _)| of == heartbeat.epoch);
+        """        let rivals = self.latest.iter().filter(|(term, _)| term.0 == heartbeat.epoch);
         let heard = later(rivals.map(|(_, heard)| *heard).max_by_key(|heard| heard.beat), beat, period);""",
     ),
     (

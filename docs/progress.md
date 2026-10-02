@@ -11,9 +11,9 @@ simulator and the sync engine, in four slices
 ([ADR-0019](./adr/0019-replication-and-deterministic-simulation.md)). Slice 1, replication and
 the simulator, slice 2, hub sequencing ([ADR-0020](./adr/0020-hub-sequencing.md)), and slice 3,
 ownership leases ([ADR-0021](./adr/0021-ownership-leases.md)), are built and reviewed. Slice 4,
-hub election and failover, is built and pushed; its last verification runs are under way, and
-then it awaits review ([ADR-0022](./adr/0022-hub-election-and-failover.md), proposed). Step 5,
-`keel-store`, is done: built in three slices, each reviewed.
+hub election and failover, is built and verified, and awaits review
+([ADR-0022](./adr/0022-hub-election-and-failover.md), proposed). Step 5, `keel-store`, is done:
+built in three slices, each reviewed.
 
 ## Phase 0 milestones
 
@@ -26,7 +26,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 3 | `keel-events`: the signed, hash-chained event log | Done, 2026-09-27. Its schema registry was built with the first domain events, in `keel-domain`. | [`core/crates/keel-events`](../core/crates/keel-events/), [ADR-0012](./adr/0012-event-wire-format.md) |
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
-| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 to 3 of 4 built and reviewed; slice 4 built, its verification finishing | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
+| 6 | `keel-sim` and `keel-sync` v0 | In progress: slices 1 to 3 of 4 built and reviewed; slice 4 built, awaiting review | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md) |
 | 7 | Android register shell | Not started | |
 | 8 | Cloud cell v0 | Not started | |
 
@@ -80,9 +80,8 @@ Step 6 is built in four slices, each ending with a review
 
 ## Current slice
 
-Step 6, slice 4, hub election and failover, is built, and its last verification runs are under
-way (see "Completed"), as [ADR-0022](./adr/0022-hub-election-and-failover.md), proposed,
-describes:
+Step 6, slice 4, hub election and failover, is built and verified (see "Completed"), as
+[ADR-0022](./adr/0022-hub-election-and-failover.md), proposed, describes:
 
 - A hub's term begins with a signed claim in its log: its epoch, its priority, the claim it
   succeeds, and how far into each earlier hub's log it holds. Every replica works out the same
@@ -103,9 +102,8 @@ describes:
 | `keel-store`: the claims projection; fencing in confirmation and sequencing; claiming, and refusing to serve when not the hub | Done |
 | `keel-sync`: heartbeats and beats, the election, serving only while the term wins, forks, settling against every peer, and islands | Done |
 | `keel-sim`: the standby, splits, failover, and the new invariants | Done |
-| Known answers, property tests and probes | Done |
-| Planted bugs, soaks and the simulator's seeds on the final code | Under way |
-| CI-equivalent run and docs | Done; CI runs on the pushed commit |
+| Known answers, property tests, the simulator's seeds, planted bugs and probes | Done |
+| Soak, CI-equivalent run, docs | Done |
 | Review, and accepting ADR-0022 | Next |
 
 Building it settled what ADR-0022's "As built" records. The largest changes to the design: a
@@ -121,10 +119,10 @@ simulator, and each failure is a named regression test.
 
 ### Hub election and failover: step 6, slice 4 (2026-10-01)
 
-Built and pushed while its last verification runs: the restart of the build machine stopped
-them, and a heartbeat fix late in the build calls for some to run again on the final code. What
-is still under way is marked so below, and recorded as it lands.
-[ADR-0022](./adr/0022-hub-election-and-failover.md) is proposed, waiting on review.
+Commit `d14e128`, and `abf80e4`, which raised CI's time limit, with CI green on it (51.3
+minutes). The run on `d14e128` passed everything up to its second test pass, where the old
+45-minute limit cut it off. [ADR-0022](./adr/0022-hub-election-and-failover.md) is proposed,
+waiting on review.
 
 - **Built** ([ADR-0022](./adr/0022-hub-election-and-failover.md)):
   - `keel-domain`:
@@ -182,8 +180,7 @@ is still under way is marked so below, and recorded as it lands.
     runs for every crate.
   - CI: the job's time limit rises from 45 minutes to 75. This slice's tests, the store's terms
     property, the protocol property and the simulator's failover runs above all, take each of
-    its two test passes from 14 minutes to 25, and its first commit's run would have been cut
-    off.
+    its two test passes from 14 minutes to 25.
 - **Verified:**
   - Known answers:
     - `keel-domain`, 18 tests: the payload pinned byte for byte, in payloads Python's `cbor2`
@@ -222,36 +219,35 @@ is still under way is marked so below, and recorded as it lands.
       and at the end that the replicas agree, with one hub serving, heard within two hops, and
       every event numbered once by the records that count. Five failures it found are named
       regression tests.
-    - 100,000 cases each passed, in release builds, alongside other runs: the hub properties in
-      24 s (a million earlier, in 209 s), the payload properties in 3 minutes, and the store's
-      sequencing property in 82 minutes and its terms property in 58. The protocol property passed
-      100,000 cases in 16 minutes before its last changes, and 8,000 since; 100,000 on the final
-      property, and the store's ownership property's, are under way.
-  - The simulator: 5,000 seeds passed in a release build, in 92 minutes on two threads alongside
-    other runs, on the code before the heartbeat fix below; a run on the final code is under way.
-    - The candidates made 8,481 claims, more than one in 2,877 runs; the winning epoch was 1 in
-      2,387 runs, 2 in 2,245, 3 in 353 and 4 in 15. 4,993 splits, in 3,325 runs, ran a hub on
-      each side. Where the node serving as the hub crashed, in 765 runs, another claimed 3.5 s
+    - 100,000 cases each passed, in release builds, alongside other runs: the protocol property
+      in 43 minutes, the hub properties in 24 s (a million earlier, in 209 s), the payload
+      properties in 3 minutes, and the store's sequencing property in 82 minutes, its terms
+      property in 58 and its ownership property in 57.
+  - The simulator: 5,000 seeds passed in a release build, in 74 minutes on two threads,
+    alongside other runs.
+    - The candidates made 8,453 claims, more than one in 2,878 runs; the winning epoch was 1 in
+      2,414 runs, 2 in 2,222, 3 in 350 and 4 in 14. 4,993 splits, in 3,325 runs, ran a hub on
+      each side. Where the node serving as the hub crashed, in 762 runs, another claimed 3.5 s
       after at the median, 6.5 s at the 90th percentile and 24 s at most, the other faults
       delaying it.
-    - Devices made 114,072 moves as islands, hearing no hub, in every run: no hub is heard until
-      the first claim, three seconds in.
-    - Devices made 47,181 requests for orders; hubs granted 39,794 and refused 1,352 for a moved
-      lease, 7,780 for a payment in progress and 1 for the device owning the order already. 4,999
-      overrides applied and 175 were stale; 1,410 grants were stale; 2,598 events were recorded
+    - Devices made 109,443 moves as islands, hearing no hub, in every run: no hub is heard until
+      the first claim, three seconds in. A run of the same seeds before the heartbeat fix made
+      114,072, and 28 more claims.
+    - Devices made 47,502 requests for orders; hubs granted 40,081 and refused 1,338 for a moved
+      lease, 7,828 for a payment in progress and 1 for the device owning the order already. 4,702
+      overrides applied and 168 were stale; 1,412 grants were stale; 2,581 events were recorded
       by a device that didn't own the order.
-    - The runs met 683,310 events appended; 17 million frames, of which 973,000 were lost,
-      942,000 duplicated, 950,000 cut off and 287,000 sent to a node that was down; 3,472 crashes
+    - The runs met 683,442 events appended; 17 million frames, of which 973,000 were lost,
+      941,000 duplicated, 950,000 cut off and 287,000 sent to a node that was down; 3,472 crashes
       between writes, 3,517 in the middle of one, 3,711 rollbacks, 7,284 clock jumps and 7,575
-      cuts; 2,722 events lost to rollbacks, held by no other replica, and 213 devices forked;
-      20,718 writes held back until a log settled. 391,027 records that count numbered 734,885
+      cuts; 2,758 events lost to rollbacks, held by no other replica, and 210 devices forked;
+      20,658 writes held back until a log settled. 391,156 records that count numbered 735,297
       events, and replicas sent 4.4 million `durable` frames.
     - The replicas agreed after healing within 0.8 s at the median, 1.6 s at the 90th
-      percentile, 2.4 s at the 99th, and 6.5 s at most.
+      percentile, 2.3 s at the 99th, and 6.5 s at most.
   - Failover: in 1,000 seeds without other faults, the hub crashing at moments spread over a
     heartbeat period, the standby claimed 3.0 to 4.0 s after the crash, spread evenly, a quarter
-    in each 250 ms (before the heartbeat fix, which changes nothing where one hub holds each
-    epoch).
+    in each 250 ms.
   - Coverage probes, all passing:
     - the hub property, over 2,002 cases: chains of two terms or more in 46%, three in 11% and
       four in 1.6%; records that a later claim cut off in 40%, and records of a claim that lost
@@ -261,25 +257,24 @@ is still under way is marked so below, and recorded as it lands.
       a candidate down for seconds in 41%, a peer refusing a replica's log, a fork until it takes
       it, in 54%; clocks jumping in 67%, and two claims of one epoch with them in 9%; another
       heartbeat period than a second in 31%;
-    - the simulator, over 300 seeds, before the heartbeat fix: more than one claim in 177, the winning epoch past 1 in
-      155 and past 2 in 26; 296 splits; 49 failovers; 6,676 moves made as islands; 2,925
-      requests for orders, 348 overrides and 87 stale grants; 24,208 records counted; 18 devices
+    - the simulator, over 300 seeds: more than one claim in 177, the winning epoch past 1 in
+      154 and past 2 in 26; 296 splits; 50 failovers; 6,438 moves made as islands; 2,928
+      requests for orders, 331 overrides and 89 stale grants; 24,211 records counted; 18 devices
       forked.
-  - Planted bugs:
-    - `keel-domain`: the 34 new ones, all caught by the property tests; slice 3's 50 of
-      ownership, run again against this slice's changes, 49 caught and the one left to a unit
-      test; and the six that had gone stale, re-texted, all caught.
-    - `keel-store`: the 43 new or changed ones, 31 caught by the property tests and 12 by unit
-      tests alone; of the 151 others, the 93 in files this slice changed, run again against its
-      property tests: 79 so far, 65 caught and 14 left to unit tests, the rest under way.
-    - `keel-sync`: 113, 32 of them left to unit tests, each with the test that catches it. The
-      final runs, against the property tests and, for those 32, all the tests, are under way;
-      the first runs' misses are under "Found and fixed".
+  - Planted bugs, all caught, on the final code:
+    - `keel-domain`: the 34 new ones, by the property tests; slice 3's 50 of ownership, run again
+      against this slice's changes, 49 by the property tests and the one that only a unit test
+      can reach, the largest lease; and the six that had gone stale, re-texted, by the property
+      tests.
+    - `keel-store`: 136, the 43 new or changed and every other one in a file this slice changed:
+      110 by the property tests, and 26 that only unit tests can reach.
+    - `keel-sync`: all 113, 81 by the property tests and the simulator, and 32 that only unit
+      tests can reach, each confirmed against them.
   - A CI-equivalent run passed every step before the last property and heartbeat changes:
     formatting, the planted bugs' texts, both lint runs, the tests with the exhaustive sweeps and
     4,096 cases a property (41 minutes alongside other runs), the tests without default features
-    (37), the docs, the `wasm32` build, the currency table and the golden baskets. On the final
-    code, formatting, the bugs' texts, both lint runs and the tests pass; CI runs the rest.
+    (37), the docs, the `wasm32` build, the currency table and the golden baskets. CI passed
+    them all on the final code.
 - **Decisions:** [ADR-0022](./adr/0022-hub-election-and-failover.md), proposed, with what
   building it settled under "As built": a claimant holds the whole chain; the hub's beat in place
   of "hears the hub directly", and a heartbeat naming its hub's term, beats compared only within
@@ -332,6 +327,9 @@ is still under way is marked so below, and recorded as it lands.
       now and then, by up to half a minute;
     - a heartbeat sent as another kind of frame: both ends read the kind they write, so only the
       pinned bytes can tell, and it is left to them.
+  - Two of `keel-sync`'s bugs that only the known answers had caught, a log settling against the
+    first peer to answer and one waiting for every peer, are now the property's to catch too, now
+    that it models settling.
   - Six of `keel-domain`'s planted bugs had gone stale in slice 3, when the commands they plant
     in changed, unnoticed because only that slice's own bugs ran. They plant again, all caught,
     and CI now checks every list (`--stale`).
