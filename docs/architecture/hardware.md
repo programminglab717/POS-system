@@ -71,7 +71,7 @@ and the UI:
 
 ```text
 print(job: KeelDoc, target: PrinterRef | Route) -> JobId
-job_status(JobId) -> queued|sending|printed|failed(reason)
+job_status(JobId) -> queued|sending|printed|failed(reason)|unconfirmed
 open_drawer(DrawerRef) ; drawer_state(DrawerRef) -> open|closed|unknown
 read_weight(ScaleRef) -> { net, tare, unit, stable, legal_for_trade }
 scanner_events() -> stream<ScanEvent { symbology, raw, parsed(GS1) }>
@@ -132,7 +132,10 @@ Receipts, kitchen tickets, labels, reports and digital receipts all come from **
   shaping) and sends it as **raster graphics** when the printer can't render it natively. Every
   language prints correctly on any printer.
 - **Print job lifecycle**:
-  - A persistent queue with retries.
+  - A persistent queue with retries, while none of a job has been sent. Once any of it has, a
+    job that fails, or is found sending after a restart, is **unconfirmed**: a printer can't
+    always say what it printed, so it is never sent again by itself, and staff decide whether to
+    reprint ([ADR-0023](../adr/0023-register-shell.md)).
   - Status polling for paper-out, cover-open and offline states (ESC/POS automatic status back,
     Star status).
   - Staff-visible failures, with a tap-to-reroute.

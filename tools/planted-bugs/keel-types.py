@@ -119,4 +119,75 @@ BUGS = [
         if instant >= self.start_of(date)? { Ok(date) } else { date.previous() }
     }""",
     ),
+    # Locales (ADR-0023).
+    (
+        "locales: digits are grouped from the left",
+        "src/locale.rs",
+        "let left = integer.len().saturating_sub(index);",
+        "let left = index;",
+    ),
+    (
+        "locales: the minus sign follows the symbol",
+        "src/locale.rs",
+        """        if amount.minor() < 0 {
+            text.push(self.0.minus);
+        }
+        text.push_str(symbol);""",
+        """        text.push_str(symbol);
+        if amount.minor() < 0 {
+            text.push(self.0.minus);
+        }""",
+    ),
+    (
+        "locales: a symbol ending in a letter runs into the digits",
+        "src/locale.rs",
+        "        if spaced {",
+        "        if spaced && symbol.is_empty() {",
+    ),
+    (
+        "locales: an ISO code in place of a symbol runs into the digits",
+        "src/locale.rs",
+        ".map_or((code, true), |symbol| (symbol.text, symbol.spaced))",
+        ".map_or((code, false), |symbol| (symbol.text, symbol.spaced))",
+    ),
+    (
+        "locales: the symbol table is searched the wrong way round",
+        "src/locale.rs",
+        ".binary_search_by(|symbol| symbol.code.cmp(code))",
+        ".binary_search_by(|symbol| code.cmp(symbol.code))",
+    ),
+    (
+        "locales: an amount under one unit loses its leading zero",
+        "src/locale.rs",
+        """let padded = format!("{value:0>width$}", width = decimals.saturating_add(1));""",
+        """let padded = format!("{value:0>width$}", width = decimals);""",
+    ),
+    (
+        "locales: groups are separated by the decimal symbol",
+        "src/locale.rs",
+        """            if index > 0 && left.is_multiple_of(3) {
+                text.push(self.0.group);""",
+        """            if index > 0 && left.is_multiple_of(3) {
+                text.push(self.0.decimal);""",
+    ),
+    (
+        "locales: the most negative amount overflows",
+        "src/locale.rs",
+        "self.digits(&mut text, amount.minor().unsigned_abs(), usize::from(currency.minor_units()));",
+        "self.digits(&mut text, amount.minor().abs().unsigned_abs(), usize::from(currency.minor_units()));",
+    ),
+    (
+        "locales: a whole quantity keeps a decimal",
+        "src/locale.rs",
+        "while decimals > 0 && value.is_multiple_of(10) {",
+        "while decimals > 1 && value.is_multiple_of(10) {",
+    ),
+    (
+        "locales: tags match only in their own case",
+        "src/locale.rs",
+        ".find(|locale| locale.0.tag.eq_ignore_ascii_case(tag))",
+        ".find(|locale| locale.0.tag == tag)",
+        # Only shells look a locale up by its tag; no property test has a tag to look up.
+        "unit",
+    ),
 ]

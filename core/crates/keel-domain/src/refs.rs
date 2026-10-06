@@ -4,9 +4,18 @@
 //! Like every entity, these are identified by UUIDv7s ([`keel_types::Id`]); the markers only keep
 //! one kind of identifier from being passed where another is expected.
 
+/// Marks identifiers of catalog items: what a merchant thinks of as one thing they sell, such
+/// as "Latte", whatever its sizes.
+#[derive(Debug)]
+pub enum Item {}
+
 /// Marks identifiers of catalog variants: the sellable, stockable units (SKUs).
 #[derive(Debug)]
 pub enum Variant {}
+
+/// Marks identifiers of catalog modifier groups, such as "Milk" or "Extra shots".
+#[derive(Debug)]
+pub enum ModifierGroup {}
 
 /// Marks identifiers of catalog modifiers, such as "extra shot".
 #[derive(Debug)]

@@ -260,7 +260,10 @@ Keel, and **never lose a sale to Keel**.
    ([ADR-0021](./adr/0021-ownership-leases.md)); and hub election and failover
    ([ADR-0022](./adr/0022-hub-election-and-failover.md)). See [progress](./progress.md).*
 7. **Android register shell**: ring an order with modifiers, pay cash, print a receipt (ESC/POS over
-   TCP), running on a reference all-in-one against a local hub.
+   TCP), running on a reference all-in-one against a local hub. *Status: designed in
+   [ADR-0023](./adr/0023-register-shell.md) (proposed), in five slices; slice 1, the device
+   runtime and the location profile, built 2026-10-06, its review next. See
+   [progress](./progress.md).*
 8. **Cloud cell v0**: sync ingest, catalog publishing, a minimal back office (catalog editor, reports).
 
 ## 9. Decision gates

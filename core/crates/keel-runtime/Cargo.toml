@@ -1,0 +1,22 @@
+[package]
+name = "keel-runtime"
+version = "0.1.0"
+description = "Keel's device runtime: a cashier's intents as the kernel's commands, one write each, and views of the store with their display text."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+keel-types.workspace = true
+keel-events = { workspace = true, features = ["stored"] }
+keel-domain.workspace = true
+keel-pricing.workspace = true
+keel-store.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

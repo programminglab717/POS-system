@@ -2379,4 +2379,136 @@ BUGS = [
         "        let succession = Succession { previous: winning.claim, cuts: cuts.collect() };",
         "        let succession = Succession { previous: first.claim, cuts: cuts.collect() };",
     ),
+    # The location profile (ADR-0023): ringing.
+    (
+        "profile: a group's maximum isn't enforced",
+        "src/profile/catalog.rs",
+        "if applications > u32::from(group.max.get()) {",
+        "if applications > u32::from(group.max.get()).saturating_add(1) {",
+    ),
+    (
+        "profile: a required group may go one short",
+        "src/profile/catalog.rs",
+        "if applications < u32::from(group.min) {",
+        "if applications < u32::from(group.min).saturating_sub(1) {",
+    ),
+    (
+        "profile: a modifier may be chosen twice at one level",
+        "src/profile/catalog.rs",
+        "if placed.iter().any(|earlier| earlier.choice.modifier == choice.modifier) {",
+        "if placed.iter().any(|earlier| earlier.choice.modifier == choice.modifier && choices.is_empty()) {",
+    ),
+    (
+        "profile: a modifier applies twice where each applies once",
+        "src/profile/catalog.rs",
+        "if choice.quantity.get() > 1 && !group.repeat {",
+        "if choice.quantity.get() > 2 && !group.repeat {",
+    ),
+    (
+        "profile: a modifier rings where its group isn't offered",
+        "src/profile/catalog.rs",
+        "let offered_at = offered.iter().position(|id| *id == group.id).ok_or(not_offered)?;",
+        "let offered_at = offered.iter().position(|id| *id == group.id).unwrap_or(0);",
+    ),
+    (
+        "profile: free applications go to the most expensive",
+        "src/profile/catalog.rs",
+        "applications.sort_unstable();",
+        "applications.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));",
+    ),
+    (
+        "profile: ties in price go to the modifier listed last",
+        "src/profile/catalog.rs",
+        "let application = (placed.modifier.price.minor(), placed.position, choice);",
+        "let application = (placed.modifier.price.minor(), usize::MAX.saturating_sub(placed.position), choice);",
+    ),
+    (
+        "profile: free applications count each choice once, whatever its quantity",
+        "src/profile/catalog.rs",
+        "core::iter::repeat_n(application, usize::from(placed.choice.quantity.get()))",
+        "core::iter::repeat_n(application, 1)",
+    ),
+    (
+        "profile: modifiers ring in the order they were chosen",
+        "src/profile/catalog.rs",
+        "placed.sort_by_key(|placed| (placed.offered_at, placed.position));",
+        "placed.sort_by_key(|placed| placed.offered_at);",
+    ),
+    (
+        "profile: a modifier's free applications are dropped",
+        "src/profile/catalog.rs",
+        "for (quantity, price) in [(charged, modifier.price), (free, zero)] {",
+        "for (quantity, price) in [(charged, modifier.price)] {",
+    ),
+    (
+        "profile: free applications are charged, and charged ones free",
+        "src/profile/catalog.rs",
+        "for (quantity, price) in [(charged, modifier.price), (free, zero)] {",
+        "for (quantity, price) in [(charged, zero), (free, modifier.price)] {",
+    ),
+    (
+        "profile: choices under a modifier are neither checked nor rung",
+        "src/profile/catalog.rs",
+        """                let under =
+                    self.ring_level(index, &placed.modifier.groups, &placed.choice.choices)?;""",
+        """                let under: Vec<ChosenModifier> = Vec::new();""",
+    ),
+    # The location profile: its encoding and checks.
+    (
+        "profile: a group's minimum is written as its maximum",
+        "src/profile/mod.rs",
+        ".optional(catalog_key::GROUP_MIN, NonZeroU8::new(self.min).as_ref())",
+        ".optional(catalog_key::GROUP_MIN, Some(&self.max))",
+    ),
+    (
+        "profile: the catalog's version hashes the pricing rules",
+        "src/profile/mod.rs",
+        """        let catalog_version =
+            CatalogVersion::from_bytes(sha256(&catalog_value(&data.catalog).encode()));""",
+        """        let catalog_version =
+            CatalogVersion::from_bytes(sha256(&rules::to_value(&data.rules).encode()));""",
+        # Every version the properties compare is computed the same wrong way: only the pinned
+        # hash shows it.
+        "unit",
+    ),
+    (
+        "profile: a tax on the premises is written as to go",
+        "src/profile/rules.rs",
+        "Dining::OnPremises => 0_u64,",
+        "Dining::OnPremises => 1_u64,",
+        # The random catalogs keep the demo's pricing rules, whose tax applies to both.
+        "unit",
+    ),
+    (
+        "profile: two modifier groups may share an identifier",
+        "src/profile/mod.rs",
+        "if index.groups.insert(group.id, position).is_some() {",
+        "if index.groups.insert(group.id, position).is_some() && catalog.groups.is_empty() {",
+        # The random catalogs are valid; the profile's checks are known answers.
+        "unit",
+    ),
+    (
+        "profile: a modifier group nested within itself goes unnoticed",
+        "src/profile/mod.rs",
+        """            return Err(ProfileError::Invalid("a modifier group nested within itself"));""",
+        """            return Ok(());""",
+        # As above: a property of valid catalogs never meets a cycle.
+        "unit",
+    ),
+    (
+        "profile: modifier groups nest a level too deep",
+        "src/profile/mod.rs",
+        "if depth > MAX_DEPTH {",
+        "if depth > MAX_DEPTH.saturating_add(1) {",
+        # The random catalogs nest four deep at most.
+        "unit",
+    ),
+    (
+        "profile: prices in another currency are accepted",
+        "src/profile/mod.rs",
+        "if price.currency() != currency {",
+        "if price.currency() != currency && price.is_zero() {",
+        # The random catalogs price in the location's currency.
+        "unit",
+    ),
 ]

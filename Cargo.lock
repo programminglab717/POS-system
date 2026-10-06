@@ -643,6 +643,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-runtime"
+version = "0.1.0"
+dependencies = [
+ "keel-domain",
+ "keel-events",
+ "keel-pricing",
+ "keel-store",
+ "keel-types",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "keel-sim"
 version = "0.1.0"
 dependencies = [
@@ -690,6 +703,7 @@ dependencies = [
  "num-integer",
  "proptest",
  "rust_decimal",
+ "serde_json",
  "thiserror",
  "uuid",
 ]

@@ -2,15 +2,16 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-10-02.
+> Last updated: 2026-10-06.
 
 ## Where we are
 
-**Phase 0 (Foundations), step 7 of 8:** the Android register shell. Its design comes first.
-Step 6, `keel-sim` and `keel-sync` v0, the deterministic simulator and the sync engine, is done:
-built in four slices, each reviewed, the last, hub election and failover
-([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted after a review that found and
-fixed two bugs.
+**Phase 0 (Foundations), step 7 of 8:** the Android register shell, slice 1 of 5, the device
+runtime and the location profile, built and verified; its review is next. The step's design is
+[ADR-0023](./adr/0023-register-shell.md), proposed. Step 6, `keel-sim` and `keel-sync` v0, the
+deterministic simulator and the sync engine, is done: built in four slices, each reviewed, the
+last, hub election and failover ([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted
+after a review that found and fixed two bugs.
 
 ## Phase 0 milestones
 
@@ -24,7 +25,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
-| 7 | Android register shell | In progress: design | |
+| 7 | Android register shell | In progress: slice 1 of 5 built, its review next | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
 | 8 | Cloud cell v0 | Not started | |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
@@ -77,14 +78,92 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
-Step 7 begins with its design: the Android register shell
-([roadmap §8](./roadmap.md#8-first-engineering-milestones-the-next-build-steps),
-[ADR-0004](./adr/0004-client-ui-stack.md)), ringing an order with modifiers, taking cash and
-printing a receipt (ESC/POS over TCP), on a reference all-in-one against a local hub. That means
-the shell's structure in Kotlin and Compose; what the kernel exposes to it, and how it calls the
-kernel; the store's key in the Android keystore; the transport between the register and the hub;
-printing; and how the shell is built and tested, in CI and on a device. It will be recorded in a
-proposed ADR, with step 7 split into slices, each ending with a review.
+Step 7, the Android register shell ([ADR-0023](./adr/0023-register-shell.md), proposed), comes in
+five slices, each ending with a review, each designed in detail in an ADR of its own when it
+begins:
+
+1. **The device runtime and the location profile** (built 2026-10-06, review next):
+   `keel-runtime`, which turns a cashier's intents into the kernel's commands, one write each,
+   and the store into views; the location profile, with its catalog and the rules for ringing an
+   item with modifiers; and `Locale` v0, the kernel's display text for amounts.
+2. **Receipts and printing**: KeelDoc v0, an ESC/POS renderer, and raw TCP to port 9100, with
+   unconfirmed jobs never printed twice by themselves.
+3. **The bindings**: `keel-ffi` with UniFFI, and a Kotlin/JVM library tested on the host.
+4. **The Android app**: the register's screens, keys in the Android Keystore, the build for
+   Android, CI on an emulator, and the performance harness on a reference device.
+5. **The local hub**: `keel-net`, WebSocket over TLS 1.3 with mutual TLS, the hub role in the
+   app and in a Linux daemon, and a provisioning tool standing in for the Device CA.
+
+The design drew on four research tracks, on the current state of UniFFI and the Android
+toolchain, ESC/POS printing over TCP, and networking in Rust on Android; ADR-0023 cites their
+sources.
+
+Built in slice 1, each verified as it landed:
+
+- **`Locale` v0** (`keel-types`): amounts and quantities as `en-US` and `es-US` show them, from
+  a snapshot of CLDR 48's data (`data/cldr/`), which a generator turns into a table and CI
+  checks. Known answers; every currency's symbol and both locales' separators checked against
+  the snapshot; a property test against a model built from arbitrary-precision integers; and
+  2,254 amounts (seven of each of the 161 currencies, in both locales) identical to ICU 78.2's,
+  which has CLDR 48. All ten planted bugs caught, nine by the property and snapshot tests.
+- **The location profile** (`keel_domain::profile`): a location's settings, pricing rules,
+  catalog, menu and team, in canonical CBOR, checked whole; the catalog's and rules' versions
+  are SHA-256 hashes of their encodings; ringing a variant with a cashier's choices. Known
+  answers: the demo café's items rung, free applications at ties, every refusal, every rule a
+  profile is checked against, and the demo pinned byte for byte, with its versions, against the
+  same profile built independently with Python's `cbor2`. Property tests: ringing against a
+  model written separately, over random catalogs and choices aimed at each group's bounds and at
+  ties in price (10,000 cases pass), and profiles round-tripping. Of 19 planted bugs, the 13 the
+  property tests can reach are caught by them; the first run missed one, ties in price going to
+  the modifier listed last, until the generator tied prices within groups and made half its
+  choices valid. The other six are caught by unit tests.
+- `keel-events` exposes its SHA-256 (`hash::sha256`), which the profile's versions use.
+- **`keel-runtime`**: a device's store and its location's profile, with the intents a register
+  makes, each one write of the store: start an order; add an item, rung from the catalog; change
+  a line's quantity; take a line off; abandon an order, its lines taken off first; and take cash,
+  the payment started and captured with what was tendered and its cash rounding, then the check
+  and the order closed. Its views are whole, every amount with its text: an order's ticket, the
+  open orders, the menu, and an item's modifier groups. A team member signs in, and every event
+  records them, the business date the profile's policy gives the clock's time, and a
+  correlation per intent. Refusals are typed.
+  - Known answers (11 tests): the demo café's sale rung, changed and paid, with change, and a
+    tender short of it refused; cash rounded to five cents, a tender short of the rounded cash
+    refused, and the payment recording the tender and the rounding; an order that costs nothing
+    closing with no payment; an order's owner; events' business dates either side of the cutoff
+    (a second before 4 am in New York is still the day before) and their correlations; the menu's
+    pages, prices and required choices, and an item's groups with those under its modifiers.
+  - A property test against a model of a register: random intents on the demo café, with and
+    without cash rounding, tendering on either side of what is due before rounding and after,
+    some interrupted at each point of their write where the store can fail, and the store now
+    and then opened again. After each intent every ticket matches the model's: its lines as the
+    catalog rings them, with their modifiers, and its amounts as pricing prices the model's
+    basket. Each intent is refused exactly when the model says, and one interrupted leaves
+    nothing behind. 2,000 cases pass.
+  - A probe of 1,000 cases: every intent done, interrupted at each point of its write, and
+    refused in each way the model knows; cash rounded up in 6% of cases and down in 10%; a
+    tender short only of the rounded cash in 3%; the store opened again with an open order in
+    22% and with a closed one in 12%; a modifier chosen under another on a ticket in 5%, the
+    most the demo nests. The probe found that the property never tendered between what is due
+    before rounding and after: tenders now count from either, aimed at their boundaries.
+  - All 19 planted bugs caught: the 12 the property can reach by it, and the other 7 (who may
+    sign in, events' business dates and correlations, an order's owner, the menu and the item
+    view) by unit tests.
+  - Found and fixed during the build: a closed order's ticket listed its lines in the order of
+    their identifiers, as the check's snapshot does, rather than the order they were rung.
+    Opening the store again starts the runtime's identifiers afresh, so a line rung after a
+    restart could sort first. The property found it; a named regression test keeps the case,
+    and a planted bug the fix.
+  - Latency on the development machine (a 2.1 GHz Xeon, the store on ext4 with every commit
+    synced), the baseline for slice 4's harness: 500 sales, each paid once ten more were
+    started, so that eleven are open at a time. An intent, its ticket included, takes 0.9 ms at
+    the median and up to 2.7 ms at the 99th percentile; paying cash, four events in one write,
+    1.8 ms and 4.2 ms. A ticket takes 59 µs, the open orders 0.7 ms for eleven, the menu 5 µs,
+    an item 3.5 µs. On tmpfs, without the sync, an intent takes 0.4 to 0.5 ms and paying 1.2 ms.
+- The workspace's tests, with the exhaustive sweeps (558 tests, 3 minutes 44 seconds), clippy
+  with all features and none, the documentation, the wasm build, every planted bug's text, and
+  both generated tables pass, as CI runs them.
+
+Next: the slice's review, then ADR-0023's as-built details and its acceptance.
 
 ## Completed
 
@@ -1436,6 +1515,10 @@ design, the feature catalog and the roadmap. See the [README](../README.md).
 - Updating the pinned Rust toolchain from 1.94 to 1.98.
 - License and security-advisory checks in CI (`cargo-deny`), GitHub Actions pinned to commit
   hashes, and CI on macOS and Windows.
+- For step 7's slice 4: network access to `dl.google.com` for this build environment, whose
+  policy denies it now (Google's Maven repository sends every download there), so that the
+  Android build can be verified here and not only in CI; and the reference all-in-one to buy
+  (ADR-0023 suggests a 2 GB device with Android 11 and a built-in printer, such as iMin's Swan 1).
 
 ## Known gaps
 
@@ -1446,7 +1529,16 @@ Work deliberately left for later, so it isn't forgotten:
   - A way to re-admit genuine events quarantined by a revocation.
   - Hardware signers, which the platform apps provide through the `Signer` trait.
   - Negotiating schema versions between kernels, in `keel-sync`.
-- **`keel-types`:** `Locale`, with the first UI.
+- **`keel-types`:** `Locale` for more locales, with the languages the product adds; units'
+  names beside quantities, with the first items sold by weight.
+- **`keel-runtime`:**
+  - The open orders view prices every open order again: 0.7 ms for eleven on the development
+    machine. A location with hundreds open will need the projection's rows, or tickets kept.
+  - Cash taken only for the whole of what is due: partial payments, cards and other tenders,
+    splitting checks, voids, comps, discounts and an order's attributes come with the screens
+    that need them.
+  - PINs for signing in (security §2.2), and checking what a member may do (`keel-policy`).
+  - A profile replaced while running: a new one takes a restart (ADR-0023, decision 3).
 - **`keel-store`:**
   - Power-loss tests, which need keel-sim's simulated disk; until then the durability settings
     are checked as SQLite reports them.

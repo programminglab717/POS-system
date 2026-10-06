@@ -1,8 +1,8 @@
 //! # keel-types
 //!
 //! The value types every other part of Keel is built from: money and currencies, rounding,
-//! rates, quantities and units, identifiers, timestamps, hybrid logical clocks and business
-//! dates.
+//! rates, quantities and units, identifiers, timestamps, hybrid logical clocks, business dates,
+//! and the locales amounts are shown in.
 //!
 //! This crate is the bottom of the kernel, and everything above it handles real money, so its
 //! rules are strict:
@@ -44,6 +44,7 @@ pub mod currency;
 mod fixed_point;
 pub mod hlc;
 pub mod id;
+pub mod locale;
 pub mod money;
 pub mod quantity;
 pub mod rate;
@@ -56,6 +57,7 @@ pub use hlc::{Hlc, HlcClock, HlcError};
 #[cfg(feature = "os")]
 pub use id::OsEntropy;
 pub use id::{Entropy, EntropyError, Id, IdError, IdGenerator, SeededEntropy};
+pub use locale::{Locale, LocaleError};
 pub use money::{Money, MoneyError};
 pub use quantity::{Dimension, Quantity, QuantityError, Unit};
 pub use rate::{Rate, RateError};

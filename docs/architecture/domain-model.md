@@ -284,6 +284,26 @@ classDiagram
   and activated locally by the kernel at the effective time, even if the store is offline at that
   moment.
 
+### 5.6 As built: the catalog v0
+
+The first catalog a register rings from is part of a location's profile
+([ADR-0023](../adr/0023-register-shell.md), `keel_domain::profile`), until the cloud publishes
+catalogs:
+
+- **Items** have a tax category, one or more **variants** (each with its price, and a name such as
+  "Large" when an item has several), and the **modifier groups** offered for them, in order.
+- A **group** has bounds on its applications (`min` and `max`), a number of free ones (`free`),
+  whether a modifier may be applied more than once (`repeat`), and its **modifiers**, each with a
+  name, a prefix, a price and the groups offered under it, nested at most four deep.
+- **Ringing** a variant with a cashier's choices checks each group's bounds at every level, and
+  gives the line's item snapshot (named "Latte (Large)") and its modifiers, in the catalog's
+  order. A group's free applications go to its lowest-priced ones, ties to the modifier listed
+  first, so the same choices always cost the same; a modifier part charged and part free
+  appears twice.
+- The catalog's canonical encoding hashes to the `CatalogVersion` every line records.
+- Not yet: placement, per-variant modifier prices, defaults, barcodes, price lists, menus by
+  channel and daypart, and availability.
+
 ---
 
 ## 6. Orders — the universal transaction

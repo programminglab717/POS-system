@@ -23,6 +23,8 @@
 //! starting a payment, closing a check, and money that doesn't fit the order. [`sequence`] holds
 //! the Store Hub's sequencing records, which number the store's events, and [`hub`] the claims by
 //! which a replica takes the hub's role, and the rules that say which hub's records count.
+//! [`profile`] holds a location's profile: its settings, pricing rules, catalog, menu and team,
+//! and the rules by which a cashier's choices ring as a line.
 //!
 //! Like the rest of the kernel, this crate is deterministic, never panics, and builds for
 //! `wasm32`.
@@ -33,6 +35,7 @@ pub mod codec;
 pub mod hub;
 pub mod order;
 pub mod payment;
+pub mod profile;
 pub mod refs;
 pub mod schema;
 pub mod sequence;

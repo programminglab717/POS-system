@@ -1,11 +1,13 @@
-//! Event hashes: SHA-256, the links of each device's hash chain.
+//! Hashes: SHA-256, the links of each device's hash chain, and the identity of published
+//! reference data.
 
 use core::fmt;
 
 use sha2::{Digest, Sha256};
 
-/// SHA-256 of `bytes`.
-pub(crate) fn sha256(bytes: &[u8]) -> [u8; 32] {
+/// SHA-256 of `bytes`: how Keel identifies content, such as an event's body, a key, or a
+/// published version of a location's reference data.
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 

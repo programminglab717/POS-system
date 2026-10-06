@@ -227,7 +227,7 @@ Test-only dependencies must be permissively licensed, but need not build for `wa
 | `proptest` | Property testing. |
 | `num-bigint`, `num-integer` | The exact arithmetic oracle, and the scalar arithmetic that crafts invalid Ed25519 signatures. |
 | `ciborium` | An independent CBOR implementation, which the codec's property tests agree with. |
-| `serde_json` | Reads the golden baskets, which the Python oracle writes as JSON. |
+| `serde_json` | Reads the golden baskets, which the Python oracle writes as JSON, and the CLDR snapshot the locale table is checked against. |
 | `csv` | Reads the ISO 4217 snapshot in the currency table test. |
 
 `Cargo.lock` is committed. Update dependencies deliberately (`cargo update -p <crate>`), read
@@ -239,10 +239,10 @@ commit hashes.
 
 ## 5. Reference data
 
-Reference data compiled into the kernel, such as the ISO 4217 currency list, lives next to its
-crate as a snapshot, with a README recording its source, how it was verified and how to update it.
-A generator script turns the snapshot into Rust source, and CI checks that the generated file
-matches.
+Reference data compiled into the kernel, such as the ISO 4217 currency list and CLDR's number
+data for the locales amounts are shown in, lives next to its crate as a snapshot, with a README
+recording its source, how it was verified and how to update it. A generator script turns the
+snapshot into Rust source, and CI checks that the generated file matches.
 
 ## 6. Documentation
 
