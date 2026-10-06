@@ -40,6 +40,19 @@ BUGS = [
         # Tickets don't show owners.
         "unit",
     ),
+    # Each intent answers from inside its write.
+    (
+        "runtime: an intent's ticket is made after its write",
+        "src/runtime.rs",
+        """            append(w, order.cast(), &event, meta)?;
+            view(w, order, &payments, profile, locale)
+        })""",
+        """            append(w, order.cast(), &event, meta)
+        })?;
+        self.ticket(order)""",
+        # The property's orders always price: only an order that overflows shows it.
+        "unit",
+    ),
     # Abandoning.
     (
         "runtime: an order is abandoned with its lines still on it",
@@ -53,16 +66,25 @@ BUGS = [
     ),
     # Paying cash.
     (
+        "runtime: a negative tender is taken",
+        "src/runtime.rs",
+        """        if tendered.is_negative() {
+            return Err(RuntimeError::NegativeTender);
+        }
+""",
+        "",
+    ),
+    (
         "runtime: a tender is short only of what is due before cash rounding",
         "src/runtime.rs",
-        """                if tendered.compare(cash.due)?.is_lt() {""",
-        """                if tendered.compare(due)?.is_lt() {""",
+        """            if tendered.compare(cash.due)?.is_lt() {""",
+        """            if tendered.compare(due)?.is_lt() {""",
     ),
     (
         "runtime: change ignores cash rounding",
         "src/runtime.rs",
-        """                change = tendered.checked_sub(cash.due)?;""",
-        """                change = tendered.checked_sub(due)?;""",
+        """            let change = tendered.checked_sub(cash.due)?;""",
+        """            let change = tendered.checked_sub(due)?;""",
     ),
     (
         "runtime: a cash payment captures what is due after rounding",
@@ -83,11 +105,12 @@ BUGS = [
         "runtime: an order with nothing due starts a payment",
         "src/runtime.rs",
         """            if due.is_positive() {
-                let cash = cash_due(profile, due)?;""",
+                let started =""",
         """            if !due.is_negative() {
-                let cash = cash_due(profile, due)?;""",
-        # Caught when an order with no lines is tendered less than nothing: refused as short,
-        # not by checkout.
+                let started =""",
+        # The demo sells nothing for nothing, and checkout refuses an order with no lines either
+        # way.
+        "unit",
     ),
     # Tickets.
     (
@@ -106,6 +129,15 @@ BUGS = [
         .iter()
         .filter_map(|charge| Some(ticket_line(order.line(charge.line)?, charge.gross, locale)))
         .collect();""",
+    ),
+    (
+        "runtime: a paid ticket lists its taxes by identifier",
+        "src/ticket.rs",
+        """    charges.sort_by_key(|charge| {
+        rules.taxes.iter().position(|tax| tax.id == charge.tax).unwrap_or(usize::MAX)
+    });
+""",
+        "",
     ),
     (
         "runtime: a ticket's cash due ignores cash rounding",

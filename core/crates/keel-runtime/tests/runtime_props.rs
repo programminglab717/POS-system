@@ -1,6 +1,6 @@
 //! Property tests of the runtime (ADR-0023, decision 2) against a model of a register: random
-//! intents on the demo café's profile, with and without cash rounding, some interrupted at a
-//! point of their write, and the store now and then opened again. After every intent each
+//! intents on the demo café's profile, with and without cash rounding and a second tax, some
+//! interrupted at a point of their write, and the store now and then opened again. After every intent each
 //! order's ticket must be the model's: its lines as the catalog rings them, and its amounts as
 //! pricing prices the model's basket. Each intent is refused exactly when the model says, and an
 //! interrupted one leaves nothing behind.
@@ -24,12 +24,12 @@ use keel_domain::profile::{Choice, Profile, Rung, demo};
 use keel_domain::refs::{ModifierGroup, Variant};
 use keel_events::envelope::Device;
 use keel_events::keys::{SignatureAlgorithm, SoftwareSigner};
-use keel_pricing::{Basket, Dining, round_cash};
+use keel_pricing::{Basket, Dining, Tax, round_cash};
 use keel_runtime::{Identity, Runtime, RuntimeError, Ticket, TicketState};
 use keel_store::{Faults, Point, StoreError, StoreKey};
 use keel_types::{
-    Currency, Id, Locale, ManualClock, Money, Quantity, RoundingMode, RoundingRule, SeededEntropy,
-    Unit,
+    Currency, Id, Locale, ManualClock, Money, Quantity, Rate, RoundingMode, RoundingRule,
+    SeededEntropy, Unit,
 };
 use proptest::prelude::*;
 
@@ -133,11 +133,22 @@ fn any_intent() -> impl Strategy<Value = Intent> {
     ]
 }
 
-/// A case: whether the location rounds cash to five cents, and the intents, each perhaps
-/// interrupted at the `n`th point of its write.
-fn any_case() -> impl Strategy<Value = (bool, Vec<(Intent, Option<u32>)>)> {
+/// How a case's location differs from the demo café.
+#[derive(Clone, Copy, Debug)]
+struct Setup {
+    /// Whether it rounds cash to five cents.
+    rounding: bool,
+    /// Whether food and drink eaten on the premises bear a second tax, listed after the sales
+    /// tax, with an identifier sorting before it.
+    dine_in_tax: bool,
+}
+
+/// A case: its location, and the intents, each perhaps interrupted at the `n`th point of its
+/// write.
+fn any_case() -> impl Strategy<Value = (Setup, Vec<(Intent, Option<u32>)>)> {
     (
-        any::<bool>(),
+        (any::<bool>(), any::<bool>())
+            .prop_map(|(rounding, dine_in_tax)| Setup { rounding, dine_in_tax }),
         prop::collection::vec((any_intent(), prop::option::weighted(0.15, 1_u32..=6)), 1..40),
     )
 }
@@ -227,8 +238,8 @@ struct ModelTicket {
     /// Its live lines, and what each costs before tax.
     lines: Vec<(Id<Line>, Money)>,
     subtotal: Money,
-    /// Each tax with something to tax.
-    taxes: Vec<Money>,
+    /// Each tax with something to tax, and what it comes to.
+    taxes: Vec<(Id<Tax>, Money)>,
     total: Money,
     paid: Money,
     due: Money,
@@ -259,7 +270,8 @@ fn model_ticket(profile: &Profile, order: &ModelOrder) -> ModelTicket {
     };
     let totals = keel_pricing::price(&basket, &profile.data().rules).unwrap();
     let lines = live.iter().zip(&totals.lines).map(|(line, t)| (line.id, t.gross)).collect();
-    let taxes = totals.taxes.iter().filter(|t| t.taxable.is_positive()).map(|t| t.tax).collect();
+    let taxes =
+        totals.taxes.iter().filter(|t| t.taxable.is_positive()).map(|t| (t.id, t.tax)).collect();
     let (paid, due) = match order.state {
         TicketState::Open | TicketState::Closed => {
             (order.paid, totals.total.checked_sub(order.paid).unwrap())
@@ -306,7 +318,8 @@ fn check_tickets(
             prop_assert_eq!(shown, flat);
         }
         prop_assert_eq!(ticket.subtotal.money, model.subtotal);
-        let got_taxes: Vec<Money> = ticket.taxes.iter().map(|t| t.amount.money).collect();
+        let got_taxes: Vec<(Id<Tax>, Money)> =
+            ticket.taxes.iter().map(|t| (t.tax, t.amount.money)).collect();
         prop_assert_eq!(got_taxes, model.taxes);
         prop_assert_eq!(ticket.total.money, model.total);
         prop_assert_eq!(ticket.paid.money, model.paid);
@@ -374,6 +387,7 @@ fn kind(error: &RuntimeError) -> &'static str {
         RuntimeError::Order(_) => "order",
         RuntimeError::Checkout(_) => "checkout",
         RuntimeError::TenderShort { .. } => "short",
+        RuntimeError::NegativeTender => "negative",
         RuntimeError::Store(StoreError::Interrupted(_)) => "interrupted",
         _ => "other",
     }
@@ -454,6 +468,7 @@ fn prepare(
             let live = orders[at].lines.iter().any(|l| l.live);
             let tendered = if unrounded { due } else { cash }.checked_add(usd(extra)).unwrap();
             let expect = match orders[at].state {
+                _ if tendered.is_negative() => Expect::Refused("negative"),
                 TicketState::Open if !live => Expect::Refused("checkout"),
                 TicketState::Open if tendered.minor() < cash.minor() => Expect::Refused("short"),
                 // Started, captured, the check closed and the order closed.
@@ -476,11 +491,20 @@ fn prepare(
     Some((expect, act))
 }
 
-fn run(rounding: bool, intents: &[(Intent, Option<u32>)]) -> Result<(), TestCaseError> {
+fn run(setup: Setup, intents: &[(Intent, Option<u32>)]) -> Result<(), TestCaseError> {
     let mut data = demo().unwrap().data().clone();
-    if rounding {
+    if setup.rounding {
         data.cash_rounding =
             Some(RoundingRule::new(RoundingMode::HalfAwayFromZero, NonZeroU32::new(5).unwrap()));
+    }
+    if setup.dine_in_tax {
+        data.rules.taxes.push(Tax {
+            id: id(0x1f),
+            name: "Dine-in tax".to_owned(),
+            rate: Rate::from_fraction("0.01".parse().unwrap()),
+            categories: vec![id(0x10)],
+            dining: Some(Dining::OnPremises),
+        });
     }
     let profile = Profile::new(data).unwrap();
     let variants = variants(&profile);
@@ -593,8 +617,8 @@ fn apply(
 proptest! {
     /// A register's intents do what the model says, and its tickets show what the model shows.
     #[test]
-    fn a_register_rings_and_takes_cash_as_the_model_says((rounding, intents) in any_case()) {
-        run(rounding, &intents)?;
+    fn a_register_rings_and_takes_cash_as_the_model_says((setup, intents) in any_case()) {
+        run(setup, &intents)?;
     }
 }
 
@@ -613,5 +637,5 @@ fn a_closed_tickets_lines_stay_in_the_order_they_were_rung() {
         (Intent::Add { order: 2, variant: 0, seed: 969_140, quantity: 1 }, None),
         (Intent::Pay { order: 2, unrounded: false, extra: 0 }, None),
     ];
-    run(false, &case).unwrap();
+    run(Setup { rounding: false, dine_in_tax: false }, &case).unwrap();
 }

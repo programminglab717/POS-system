@@ -18,6 +18,14 @@ pub(crate) struct Cash {
     pub(crate) rounding: Money,
 }
 
+impl Cash {
+    /// Nothing due, in `due`'s currency.
+    pub(crate) fn none(due: Money) -> Cash {
+        let zero = Money::from_minor(0, due.currency());
+        Cash { due: zero, rounding: zero }
+    }
+}
+
 /// What is due in cash for `due`, rounded as the location rounds cash.
 pub(crate) fn cash_due(profile: &Profile, due: Money) -> Result<Cash, RuntimeError> {
     Ok(match profile.data().cash_rounding {
@@ -95,9 +103,14 @@ fn charged(
         .collect();
     let subtotal =
         Money::sum(closed.total.currency(), closed.lines.iter().map(|charge| charge.net))?;
-    let taxes = closed
-        .taxes
-        .iter()
+    // In the location's order of taxes, too, as an open order's ticket lists them: the snapshot
+    // lists them by identifier. A tax the rules no longer have goes last.
+    let mut charges: Vec<_> = closed.taxes.iter().collect();
+    charges.sort_by_key(|charge| {
+        rules.taxes.iter().position(|tax| tax.id == charge.tax).unwrap_or(usize::MAX)
+    });
+    let taxes = charges
+        .into_iter()
         .map(|charge| TicketTax {
             tax: charge.tax,
             name: tax_name(rules, charge.tax),

@@ -163,7 +163,22 @@ Built in slice 1, each verified as it landed:
   with all features and none, the documentation, the wasm build, every planted bug's text, and
   both generated tables pass, as CI runs them.
 
-Next: the slice's review, then ADR-0023's as-built details and its acceptance.
+- **Review** (in progress, 2026-10-06). Found and fixed so far, in `keel-runtime`:
+  - An intent wrote, then made its ticket. An order the domain accepts can still overflow when
+    priced, as a line of a huge price can, so such an intent was done but answered with an error,
+    and its order could no longer be shown. Each intent now makes its ticket inside its write: it
+    happens and answers, or is refused whole.
+  - A paid order's ticket listed its taxes as the check's snapshot does, by identifier, not in
+    the location's order an open ticket uses. The property now runs with a second tax as well,
+    and compares each tax by its identifier.
+  - A negative tender, on an order that owes nothing, closed it with negative change. It is
+    refused, `RuntimeError::NegativeTender`.
+
+  Each has a known answer and a planted bug the tests catch (22 in the runtime's list now), and
+  a sale that cash rounds to nothing is a new known answer: it closes with nothing tendered.
+
+Next: the rest of the review (`Locale`, the profile and ringing), then ADR-0023's as-built
+details and its acceptance.
 
 ## Completed
 

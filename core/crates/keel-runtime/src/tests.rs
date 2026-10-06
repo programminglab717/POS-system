@@ -7,12 +7,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use keel_domain::checkout::CheckoutError;
 use keel_domain::order::{Channel, CommandError, Lease, Mode, Order, Ownership, Prefix};
 use keel_domain::payment::{CashTendered, Payment};
-use keel_domain::profile::{Choice, Profile, RingError, demo};
+use keel_domain::profile::{CatalogVariant, Choice, Profile, ProfileData, RingError, demo};
 use keel_events::envelope::{Actor, Device};
 use keel_events::keys::{SignatureAlgorithm, SoftwareSigner};
+use keel_pricing::{Dining, PricingError, Tax};
 use keel_store::StoreKey;
 use keel_types::{
-    BusinessDate, Currency, Id, Locale, ManualClock, Money, RoundingMode, RoundingRule,
+    BusinessDate, Currency, Id, Locale, ManualClock, Money, Rate, RoundingMode, RoundingRule,
     SeededEntropy,
 };
 
@@ -81,6 +82,23 @@ fn register_at(scratch: &Scratch, profile: Profile, now: &str) -> TestRuntime {
         Locale::EN_US,
     )
     .unwrap()
+}
+
+/// The demo café's profile, changed by `change`.
+fn demo_with(change: impl FnOnce(&mut ProfileData)) -> Profile {
+    let mut data = demo().unwrap().data().clone();
+    change(&mut data);
+    Profile::new(data).unwrap()
+}
+
+/// The variant `n` of `data`'s catalog.
+fn variant(data: &mut ProfileData, n: u64) -> &mut CatalogVariant {
+    data.catalog
+        .items
+        .iter_mut()
+        .flat_map(|item| item.variants.iter_mut())
+        .find(|variant| variant.id == id(n))
+        .unwrap()
 }
 
 fn signed_in(scratch: &Scratch) -> TestRuntime {
@@ -176,16 +194,8 @@ fn events_record_the_business_date_and_who_did_what() {
 #[test]
 fn an_order_that_costs_nothing_closes_without_a_payment() {
     let scratch = Scratch::new();
-    let mut data = demo().unwrap().data().clone();
-    let water = data
-        .catalog
-        .items
-        .iter_mut()
-        .flat_map(|item| item.variants.iter_mut())
-        .find(|variant| variant.id == id(0x409))
-        .unwrap();
-    water.price = usd(0);
-    let mut runtime = register(&scratch, Profile::new(data).unwrap());
+    let profile = demo_with(|data| variant(data, 0x409).price = usd(0));
+    let mut runtime = register(&scratch, profile);
     runtime.sign_in(id(0x501)).unwrap();
     let order = runtime.start_order(Mode::Takeout).unwrap().order;
     let ticket = runtime.add_item(order, id(0x409), &[], one()).unwrap();
@@ -193,10 +203,87 @@ fn an_order_that_costs_nothing_closes_without_a_payment() {
         texts(&ticket),
         ("$0.00".into(), String::new(), "$0.00".into(), "$0.00".into(), "$0.00".into())
     );
+    // Nothing is owed, but a tender is never less than nothing.
+    assert!(matches!(runtime.pay_cash(order, usd(-500)), Err(RuntimeError::NegativeTender)));
     let paid = runtime.pay_cash(order, usd(0)).unwrap();
     assert_eq!(paid.change.text, "$0.00");
     assert_eq!(paid.ticket.state, TicketState::Closed);
     assert!(runtime.store().payments_of(order).unwrap().is_empty());
+}
+
+#[test]
+fn a_sale_that_cash_rounds_to_nothing_takes_nothing() {
+    let scratch = Scratch::new();
+    let profile = demo_with(|data| {
+        // Coffee beans, untaxed, at two cents: no cash at all, rounded to five cents.
+        variant(data, 0x40a).price = usd(2);
+        data.cash_rounding =
+            Some(RoundingRule::new(RoundingMode::HalfAwayFromZero, NonZeroU32::new(5).unwrap()));
+    });
+    let mut runtime = register(&scratch, profile);
+    runtime.sign_in(id(0x501)).unwrap();
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    let ticket = runtime.add_item(order, id(0x40a), &[], one()).unwrap();
+    assert_eq!((ticket.due.text.as_str(), ticket.cash_due.text.as_str()), ("$0.02", "$0.00"));
+    let paid = runtime.pay_cash(order, usd(0)).unwrap();
+    assert_eq!((paid.change.text.as_str(), paid.ticket.paid.text.as_str()), ("$0.00", "$0.02"));
+    let payments = runtime.store().payments_of(order).unwrap();
+    let payment = runtime.store().load(Payment::new(payments[0].id)).unwrap();
+    let captured = payment.captured().unwrap();
+    assert_eq!(
+        (captured.amount, captured.cash),
+        (usd(2), Some(CashTendered { tendered: usd(0), rounding: Some(usd(-2)) }))
+    );
+}
+
+#[test]
+fn an_intent_whose_ticket_cant_be_priced_is_refused_whole() {
+    let scratch = Scratch::new();
+    // Bottled water at forty quadrillion dollars: one prices, three overflow.
+    let profile = demo_with(|data| variant(data, 0x409).price = usd(4_000_000_000_000_000_000));
+    let mut runtime = register(&scratch, profile);
+    runtime.sign_in(id(0x501)).unwrap();
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(order, id(0x409), &[], one()).unwrap();
+    let before = runtime.store().log(id(0xd1), 0, 100).unwrap().len();
+    assert!(matches!(
+        runtime.add_item(order, id(0x409), &[], NonZeroU32::new(2).unwrap()),
+        Err(RuntimeError::Pricing(PricingError::Overflow))
+    ));
+    // Nothing was written: the order still shows, with its one line.
+    assert_eq!(runtime.store().log(id(0xd1), 0, 100).unwrap().len(), before);
+    assert_eq!(runtime.ticket(order).unwrap().lines.len(), 1);
+}
+
+#[test]
+fn a_paid_ticket_lists_its_taxes_in_the_locations_order() {
+    let scratch = Scratch::new();
+    // A tax on food eaten on the premises, after the sales tax, with an identifier sorting before
+    // it.
+    let profile = demo_with(|data| {
+        data.rules.taxes.push(Tax {
+            id: id(0x1f),
+            name: "Dine-in tax".to_owned(),
+            rate: Rate::from_fraction("0.01".parse().unwrap()),
+            categories: vec![id(0x10)],
+            dining: Some(Dining::OnPremises),
+        });
+    });
+    let mut runtime = register(&scratch, profile);
+    runtime.sign_in(id(0x501)).unwrap();
+    let order = runtime.start_order(Mode::DineIn).unwrap().order;
+    let open = runtime.add_item(order, id(0x403), &big_latte(), one()).unwrap();
+    let taxes = |ticket: &Ticket| -> Vec<(String, String)> {
+        ticket.taxes.iter().map(|tax| (tax.name.clone(), tax.amount.text.clone())).collect()
+    };
+    let expected = vec![
+        ("NYC sales tax".to_owned(), "$0.75".to_owned()),
+        ("Dine-in tax".to_owned(), "$0.09".to_owned()),
+    ];
+    assert_eq!(taxes(&open), expected);
+    let paid = runtime.pay_cash(order, usd(1000)).unwrap();
+    assert_eq!(taxes(&paid.ticket), expected);
+    assert_eq!(paid.ticket.total.text, "$9.34");
 }
 
 #[test]

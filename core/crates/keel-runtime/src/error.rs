@@ -47,6 +47,9 @@ pub enum RuntimeError {
     /// The tender is in another currency than the location's.
     #[error("the tender is in another currency than the location's")]
     WrongCurrency,
+    /// The tender is less than nothing.
+    #[error("the tender is negative")]
+    NegativeTender,
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),

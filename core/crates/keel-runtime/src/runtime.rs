@@ -23,7 +23,7 @@ use keel_types::{
 };
 
 use crate::error::RuntimeError;
-use crate::ticket::{self, cash_due};
+use crate::ticket::{self, Cash, cash_due};
 use crate::views::{
     Amount, CashPaid, ItemView, MenuButton, MenuPage, MenuView, Ticket, group_views,
 };
@@ -43,9 +43,10 @@ pub struct Identity<S> {
 /// The device runtime: what a shell drives (ADR-0023).
 ///
 /// It holds the device's store and its location's profile. Each intent is one write of the
-/// store, so it happens entirely or not at all; each view is read whole from the store. It
-/// reads no clock and draws no randomness but through its `Clock` and its `Entropy`, and does
-/// no I/O but the store's.
+/// store, which makes the intent's answer too, its order's ticket: so an intent happens entirely
+/// and answers, or doesn't happen at all. Each view is read whole from the store. It reads no
+/// clock and draws no randomness but through its `Clock` and its `Entropy`, and does no I/O but
+/// the store's.
 pub struct Runtime<S, E, C, I> {
     store: Store<S, E>,
     profile: Profile,
@@ -190,8 +191,11 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             self.device,
             OrderCommand::Create(created),
         )?;
-        self.store.write(|w| append(w, order.cast(), &event, &meta))?;
-        self.ticket(order)
+        let (profile, locale) = (&self.profile, self.locale);
+        self.store.write(|w| {
+            append(w, order.cast(), &event, &meta)?;
+            view(w, order, &[], profile, locale)
+        })
     }
 
     /// Adds `quantity` of `variant` to `order`, with the modifiers in `choices`, rung from the
@@ -218,8 +222,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             course: None,
             notes: None,
         };
-        self.decide(order, OrderCommand::AddLine(added), &meta)?;
-        self.ticket(order)
+        self.decide(order, OrderCommand::AddLine(added), &meta)
     }
 
     /// Changes how many of `line` `order` has.
@@ -237,8 +240,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             quantity: Some(Quantity::from_whole(i64::from(quantity.get()), Unit::Each)?),
             ..LineChanged::to(line)
         };
-        self.decide(order, OrderCommand::ChangeLine(change), &meta)?;
-        self.ticket(order)
+        self.decide(order, OrderCommand::ChangeLine(change), &meta)
     }
 
     /// Takes `line` off `order`.
@@ -251,8 +253,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         line: Id<keel_domain::order::Line>,
     ) -> Result<Ticket, RuntimeError> {
         let meta = self.meta()?;
-        self.decide(order, OrderCommand::RemoveLine(line), &meta)?;
-        self.ticket(order)
+        self.decide(order, OrderCommand::RemoveLine(line), &meta)
     }
 
     /// Drops `order`: takes off every line it has, then abandons it, in one write.
@@ -262,7 +263,9 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// was sent to be prepared.
     pub fn abandon(&mut self, order: Id<Order>) -> Result<Ticket, RuntimeError> {
         let meta = self.meta()?;
+        let payments = self.payments(order)?;
         let (location, device) = (self.location(), self.device);
+        let (profile, locale) = (&self.profile, self.locale);
         self.store.write(|w| {
             let mut loaded = w.load(Order::new(order))?;
             known(&loaded)?;
@@ -273,18 +276,21 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 loaded = w.load(Order::new(order))?;
             }
             let event = loaded.decide(location, device, OrderCommand::Abandon)?;
-            append(w, order.cast(), &event, &meta)
-        })?;
-        self.ticket(order)
+            append(w, order.cast(), &event, &meta)?;
+            view(w, order, &payments, profile, locale)
+        })
     }
 
     /// Takes `tendered` in cash for what `order` owes: the payment is initiated and captured,
     /// with the location's cash rounding, and the order's check and the order closed, all in
-    /// one write. Nothing owed, the order closes with no payment. Answers with the change.
+    /// one write. Nothing owed, the order closes with no payment. Answers with the change and the
+    /// order's ticket.
     ///
     /// # Errors
-    /// [`RuntimeError::TenderShort`] if `tendered` is less than what is due in cash, and
-    /// [`RuntimeError`] if no one is signed in or the order can't be paid as it stands.
+    /// [`RuntimeError::TenderShort`] if `tendered` is less than what is due in cash,
+    /// [`RuntimeError::WrongCurrency`] or [`RuntimeError::NegativeTender`] if it isn't cash at
+    /// the location, and [`RuntimeError`] if no one is signed in or the order can't be paid as it
+    /// stands.
     pub fn pay_cash(
         &mut self,
         order: Id<Order>,
@@ -294,26 +300,27 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         if tendered.currency() != self.profile.data().currency {
             return Err(RuntimeError::WrongCurrency);
         }
+        if tendered.is_negative() {
+            return Err(RuntimeError::NegativeTender);
+        }
         let payment: Id<Payment> = self.ids.generate(meta.now)?;
-        // Read just before the write, as a write can't list them: the runtime is its store's one
-        // writer, so nothing comes between.
         let payments = self.payments(order)?;
         let (location, device) = (self.location(), self.device);
-        let profile = &self.profile;
-        let change = self.store.write(|w| {
+        let (profile, locale) = (&self.profile, self.locale);
+        self.store.write(|w| {
             let loaded = w.load(Order::new(order))?;
             known(&loaded)?;
             let check: Id<Check> = order.cast();
             let rules = &profile.data().rules;
             let checkout = Checkout::new(&loaded, payments.iter(), rules, profile.rules_version());
             let due = checkout.balance(check)?.due;
-            let mut change = tendered;
+            let cash = if due.is_positive() { cash_due(profile, due)? } else { Cash::none(due) };
+            if tendered.compare(cash.due)?.is_lt() {
+                return Err(RuntimeError::TenderShort { due: cash.due });
+            }
+            let change = tendered.checked_sub(cash.due)?;
+            let mut paid = payments.clone();
             if due.is_positive() {
-                let cash = cash_due(profile, due)?;
-                if tendered.compare(cash.due)?.is_lt() {
-                    return Err(RuntimeError::TenderShort { due: cash.due });
-                }
-                change = tendered.checked_sub(cash.due)?;
                 let started =
                     checkout.start_payment(location, device, payment, check, Tender::Cash, due)?;
                 append(w, payment.cast(), &started, &meta)?;
@@ -329,33 +336,36 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 let paying = w.load(Payment::new(payment))?;
                 let event = paying.decide(location, PaymentCommand::Capture(captured))?;
                 append(w, payment.cast(), &event, &meta)?;
+                paid.push(w.load(Payment::new(payment))?);
             }
-            let mut paid = payments.clone();
-            paid.push(w.load(Payment::new(payment))?);
             let checkout = Checkout::new(&loaded, paid.iter(), rules, profile.rules_version());
             let closed = checkout.close_check(location, device, check)?;
             append(w, order.cast(), &closed, &meta)?;
             let loaded = w.load(Order::new(order))?;
             let event = loaded.decide(location, device, OrderCommand::Close)?;
             append(w, order.cast(), &event, &meta)?;
-            Ok::<_, RuntimeError>(change)
-        })?;
-        Ok(CashPaid { change: Amount::new(change, self.locale), ticket: self.ticket(order)? })
+            let ticket = ticket::ticket(&w.load(Order::new(order))?, &paid, profile, locale)?;
+            Ok(CashPaid { change: Amount::new(change, locale), ticket })
+        })
     }
 
-    /// Loads `order`, decides `command` on it, and appends the event, in one write.
+    /// Loads `order`, decides `command` on it, and appends the event, in one write that answers
+    /// with the order's ticket.
     fn decide(
         &mut self,
         order: Id<Order>,
         command: OrderCommand,
         meta: &Meta,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<Ticket, RuntimeError> {
+        let payments = self.payments(order)?;
         let (location, device) = (self.location(), self.device);
+        let (profile, locale) = (&self.profile, self.locale);
         self.store.write(|w| {
             let loaded = w.load(Order::new(order))?;
             known(&loaded)?;
             let event = loaded.decide(location, device, command)?;
-            append(w, order.cast(), &event, meta)
+            append(w, order.cast(), &event, meta)?;
+            view(w, order, &payments, profile, locale)
         })
     }
 
@@ -363,7 +373,8 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         self.profile.data().location
     }
 
-    /// The payments of `order` the store holds.
+    /// The payments of `order` the store holds. An intent reads them just before its write, as a
+    /// write can't list them: the runtime is its store's one writer, so nothing comes between.
     fn payments(&self, order: Id<Order>) -> Result<Vec<Payment>, RuntimeError> {
         let mut payments = Vec::new();
         for summary in self.store.payments_of(order)? {
@@ -447,6 +458,19 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
 /// Fails unless `order` was created.
 fn known(order: &Order) -> Result<(), RuntimeError> {
     order.info().map(|_| ()).ok_or(RuntimeError::UnknownOrder(order.id()))
+}
+
+/// The ticket of `order`, whose payments are `payments`, as the write `w` leaves it. An intent
+/// makes its ticket inside its write, so that one whose ticket can't be made, its order no longer
+/// priced without overflowing, is refused whole rather than done with no answer.
+fn view<S: Signer, E: Entropy>(
+    w: &Writing<'_, S, E>,
+    order: Id<Order>,
+    payments: &[Payment],
+    profile: &Profile,
+    locale: Locale,
+) -> Result<Ticket, RuntimeError> {
+    ticket::ticket(&w.load(Order::new(order))?, payments, profile, locale)
 }
 
 /// Appends `event` to the stream `stream` of its kind, with what every event of the intent
