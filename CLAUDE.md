@@ -39,6 +39,8 @@ KEEL_SIM_SEEDS=2000 cargo test --release -p keel-sim --test seeds every_seed  # 
 KEEL_SIM_FIRST_SEED=<seed> KEEL_SIM_SEEDS=1 KEEL_SIM_LOG=1 cargo test -p keel-sim --test seeds every_seed  # replay a seed
 python3 core/crates/keel-pricing/tests/golden/generate.py  # after changing how pricing works
 python3 core/crates/keel-types/tools/gen_currency_table.py  # after changing the ISO 4217 snapshot
+python3 core/crates/keel-types/tools/gen_locale_table.py    # after changing the CLDR snapshot
+cargo run -q -p keel-types --example locale_dump > /tmp/keel-locale.tsv && node core/crates/keel-types/tools/icu_crosscheck.js /tmp/keel-locale.tsv  # compare with ICU, as CI does
 KEEL_STORE_MAKE_GOLDEN=1 cargo test -p keel-store --test golden_store -- --ignored  # once, for a new store schema version
 ```
 

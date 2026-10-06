@@ -3,18 +3,23 @@
 //!
 //! The kernel formats what it shows, rather than each platform's libraries, whose symbols,
 //! spaces and digits differ from one another and from what a printer prints. A [`Locale`]
-//! follows CLDR's data for it (CLDR 48, `data/cldr/`), with one deliberate difference:
+//! follows CLDR's data for it (CLDR 48, `data/cldr/`), as ICU applies it:
 //!
 //! - **The currency's symbol** comes first: `$1,234.56`, `€12.34`, `CA$5.00`. A currency without a
-//!   symbol of its own in the locale shows its ISO 4217 code, and a symbol ending in a letter is
-//!   kept apart from the digits by a no-break space, as CLDR's `alphaNextToNumber` pattern does:
-//!   `EUR 12.34` in `es-US`.
+//!   symbol of its own in the locale shows its ISO 4217 code. A symbol ending in anything but a
+//!   symbol or a space, a letter (`EUR`) or a period (`Cg.`), is kept apart from the digits by a
+//!   no-break space, as CLDR's currency spacing does: `EUR 12.34` in `es-US`.
 //! - **Digits** are grouped by thousands from four digits on, with the locale's decimal and
 //!   grouping symbols.
 //! - **A negative amount** has the minus sign before the symbol: `-$0.05`.
-//! - **Every minor unit is shown**, from the currency's ISO 4217 exponent: an amount reads exactly
-//!   as it is held, never rounded for display. (CLDR's own digit counts differ from ISO's for a
-//!   few currencies; the kernel never shows fewer digits than an amount has.)
+//!
+//! It differs from CLDR deliberately in showing every digit a value has, so that it reads
+//! exactly as it is held, never rounded for display:
+//!
+//! - **Every minor unit of an amount**, from the currency's ISO 4217 exponent. CLDR's own digit
+//!   counts differ from ISO's for a few currencies.
+//! - **Every decimal of a quantity**, up to the millionths it is held in, where CLDR's pattern
+//!   shows three: `0.000001`, not `0`.
 //!
 //! v0 knows `en-US` and `es-US`.
 //!
@@ -64,7 +69,8 @@ pub(crate) struct Symbol {
 /// The space between a symbol ending in a letter and the digits.
 const NO_BREAK_SPACE: char = '\u{a0}';
 
-/// A quantity's fraction digits: quantities are whole millionths of a unit.
+/// A quantity's fraction digits, [`Quantity::DECIMAL_PLACES`]: quantities are whole millionths
+/// of a unit.
 const QUANTITY_DECIMALS: usize = 6;
 
 impl Locale {
@@ -76,7 +82,10 @@ impl Locale {
     /// Every locale Keel knows.
     pub const ALL: [Locale; 2] = [Locale::EN_US, Locale::ES_US];
 
-    /// The locale for a BCP 47 tag, such as `en-US`, in any case.
+    /// The locale whose BCP 47 tag is `tag`, compared without regard to case: `en-US` or
+    /// `es-US`, so far. A tag with more to it, such as a script, a variant or an extension
+    /// (`en-US-u-nu-arab`), or less (`en`), names no locale Keel formats for: a shell passes its
+    /// locale's language and region alone.
     ///
     /// # Errors
     /// [`LocaleError::Unknown`] if Keel doesn't format for that locale.
@@ -216,6 +225,9 @@ mod tests {
             (Locale::EN_US, "1.25", "KWD", "KWD\u{a0}1.250"),
             (Locale::EN_US, "-1.25", "KWD", "-KWD\u{a0}1.250"),
             (Locale::EN_US, "7", "XOF", "F\u{202f}CFA\u{a0}7"),
+            // A symbol ending in a period is spaced as one ending in a letter is.
+            (Locale::EN_US, "-5", "XCG", "-Cg.\u{a0}5.00"),
+            (Locale::ES_US, "5", "XCG", "Cg.\u{a0}5.00"),
             (Locale::ES_US, "1234.5", "USD", "$1,234.50"),
             (Locale::ES_US, "-0.01", "USD", "-$0.01"),
             (Locale::ES_US, "12.34", "EUR", "EUR\u{a0}12.34"),
@@ -270,11 +282,29 @@ mod tests {
         assert_eq!(Locale::from_tag("en-US"), Ok(Locale::EN_US));
         assert_eq!(Locale::from_tag("EN-us"), Ok(Locale::EN_US));
         assert_eq!(Locale::from_tag("es-US"), Ok(Locale::ES_US));
-        for unknown in ["en", "es", "en-GB", "es-MX", "", "en_US", "en-US-x"] {
+        let unknown = [
+            "en",
+            "es",
+            "en-GB",
+            "es-MX",
+            "es-419",
+            "",
+            "en_US",
+            "en-US-x",
+            "en-Latn-US",
+            "en-US-u-nu-arab",
+            "en-US-u-mu-celsius",
+        ];
+        for unknown in unknown {
             assert_eq!(Locale::from_tag(unknown), Err(LocaleError::Unknown(unknown.to_owned())));
         }
         assert_eq!(Locale::EN_US.to_string(), "en-US");
         assert_eq!(format!("{:?}", Locale::ES_US), "Locale(es-US)");
+    }
+
+    #[test]
+    fn quantities_show_the_decimals_they_are_held_in() {
+        assert_eq!(usize::try_from(Quantity::DECIMAL_PLACES), Ok(QUANTITY_DECIMALS));
     }
 
     #[test]

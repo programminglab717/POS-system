@@ -481,7 +481,9 @@ impl<'a> Reader<'a> {
 
     /// A length or count, which must fit in what remains of the input: every byte of a string,
     /// and every element of an array or map, takes at least one byte. This check comes before
-    /// any allocation, so a hostile length can't exhaust memory.
+    /// any allocation, so a string is never longer than the input. Arrays and maps reserve room
+    /// for few elements before they decode ([`with_room`]), so a declared count, which only this
+    /// check bounds, can't make nested ones reserve far more memory than the input could fill.
     fn count(
         &self,
         argument: u64,
@@ -532,7 +534,7 @@ impl<'a> Reader<'a> {
             4 => {
                 let child_depth = enter(depth, start)?;
                 let count = self.count(argument, 1, start)?;
-                let mut items = Vec::with_capacity(count);
+                let mut items = with_room(count);
                 for _ in 0..count {
                     items.push(self.value(child_depth)?);
                 }
@@ -541,7 +543,7 @@ impl<'a> Reader<'a> {
             5 => {
                 let child_depth = enter(depth, start)?;
                 let count = self.count(argument, 2, start)?;
-                let mut entries = Vec::with_capacity(count);
+                let mut entries = with_room(count);
                 let mut previous_key: Option<&'a [u8]> = None;
                 for _ in 0..count {
                     let key_start = self.position;
@@ -572,6 +574,17 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// The most elements an array or map reserves room for before they decode; it grows as more
+/// arrive. A declared count is checked only against the bytes left, so reserving room for all of
+/// it would let arrays nested 32 deep, each declaring nearly all the bytes left, reserve about a
+/// thousand times the input before their first element fails to decode.
+const ROOM: usize = 1024;
+
+/// An empty vector with room for `count` elements, or for [`ROOM`] if `count` is more.
+fn with_room<T>(count: usize) -> Vec<T> {
+    Vec::with_capacity(count.min(ROOM))
+}
+
 /// Enters an array or map at `depth`, returning its children's depth.
 fn enter(depth: usize, start: usize) -> Result<usize, CborError> {
     if depth >= MAX_DEPTH {
@@ -583,6 +596,23 @@ fn enter(depth: usize, start: usize) -> Result<usize, CborError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrays_and_maps_reserve_room_only_for_a_few_elements_up_front() {
+        assert_eq!(with_room::<Value>(3).capacity(), 3);
+        assert_eq!(with_room::<Value>(1 << 20).capacity(), ROOM);
+        assert_eq!(with_room::<(Value, Value)>(usize::MAX).capacity(), ROOM);
+        // Arrays nested as deep as allowed, each declaring every byte left as an element, are
+        // refused as truncated.
+        let mut hostile = Vec::new();
+        for level in 1..=MAX_DEPTH {
+            let left = u16::try_from((MAX_DEPTH - level) * 3 + 4096).unwrap();
+            hostile.push(0x99);
+            hostile.extend(left.to_be_bytes());
+        }
+        hostile.resize(hostile.len() + 4096, 0xf6);
+        assert_eq!(decode(&hostile).unwrap_err().kind, CborErrorKind::Truncated);
+    }
 
     fn hex(text: &str) -> Vec<u8> {
         text.as_bytes()

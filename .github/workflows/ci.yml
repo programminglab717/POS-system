@@ -74,6 +74,16 @@ jobs:
           python3 core/crates/keel-types/tools/gen_locale_table.py
           git diff --exit-code -- core/crates/keel-types/src/locale/table.rs
 
+      # Node.js 22.22's ICU 78.2 has CLDR 48, the release of keel-types' snapshot.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+
+      - name: Amounts and quantities show as ICU shows them
+        run: |
+          cargo run -q -p keel-types --example locale_dump > "$RUNNER_TEMP/keel-locale.tsv"
+          node core/crates/keel-types/tools/icu_crosscheck.js "$RUNNER_TEMP/keel-locale.tsv"
+
       - name: Golden baskets match the Python pricing oracle
         run: |
           python3 core/crates/keel-pricing/tests/golden/generate.py

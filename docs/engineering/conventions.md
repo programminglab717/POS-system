@@ -63,7 +63,9 @@ Release builds keep `overflow-checks` on as a second line of defense for code ou
 - **Errors.** Each module has one `thiserror` error enum, marked `#[non_exhaustive]`, with lowercase
   messages and no trailing period.
 - **Text.** Parsing is strict (APIs, imports and tests). `Display` is canonical and
-  locale-independent. Formatting for people is the UI's job.
+  locale-independent. Amounts and quantities are formatted for people by `keel_types::Locale`
+  ([ADR-0023](../adr/0023-register-shell.md)), so that every screen and receipt shows them alike;
+  the UI formats the rest.
 
 ## 3. Testing
 

@@ -26,18 +26,19 @@
 //! | 4 | address | up to four names, the lines a receipt shows |
 //! | 5 | currency | a circulating currency, every price's |
 //! | 6 | business day | `[IANA time zone, cutoff hour, cutoff minute]` |
-//! | 7 | cash rounding | `[rounding mode, increment in minor units]`; absent when cash isn't rounded |
+//! | 7 | cash rounding | `[rounding mode, increment in minor units, more than 1]`; absent when cash isn't rounded |
 //! | 8 | rules | the pricing rules, below |
 //! | 9 | catalog | the catalog, below |
 //! | 10 | menu | `{1: pages}`; a page is `{1: name, 2: [variant, ...]}`, with at least one button |
 //! | 11 | team | members, each `{1: identifier, 2: name}`; at least one |
 //!
 //! The pricing rules: `{1: extension rounding, 2: discount rounding, 3: taxes, 4: [tax rounding
-//! scope, mode]}`. A tax is `{1: identifier, 2: name, 3: rate, 4: [tax category, ...], 5:
-//! dining}`, its rate a decimal fraction in text, `0.08875` for 8.875%, with no trailing zeros,
-//! and dining (0 on the premises, 1 to go) absent when it applies to both. Rounding modes are
-//! coded in the order of `RoundingMode::ALL`, from 0; tax rounding scopes are 0 per line and 1
-//! per document.
+//! scope, mode]}`. A tax is `{1: identifier, 2: name, 3: rate, 4: tax categories, 5: dining}`:
+//! its rate a decimal fraction in text, `0.08875` for 8.875%, with no trailing zeros; its tax
+//! categories a set of identifiers, at most [`MAX_CATEGORIES`]; and dining (0 on the premises, 1
+//! to go) absent when it applies to both. Rounding modes are coded 0 half away from zero, 1 half
+//! even, 2 half toward zero, 3 away from zero, 4 toward zero, 5 ceiling and 6 floor; tax rounding
+//! scopes 0 per line and 1 per document.
 //!
 //! The catalog: `{1: items, 2: modifier groups}`.
 //!
@@ -77,8 +78,12 @@ pub const FORMAT: u64 = 1;
 
 /// The most items a catalog holds.
 pub const MAX_ITEMS: usize = 200_000;
+/// The most variants a catalog holds, of all its items.
+pub const MAX_ALL_VARIANTS: usize = 1_000_000;
 /// The most modifier groups a catalog holds.
 pub const MAX_GROUPS: usize = 100_000;
+/// The most modifiers a catalog holds, in all its groups.
+pub const MAX_ALL_MODIFIERS: usize = 1_000_000;
 /// The most variants an item has.
 pub const MAX_VARIANTS: usize = 100;
 /// The most modifiers in a group, and groups offered by an item or a modifier.
@@ -87,7 +92,7 @@ pub const MAX_PER_GROUP: usize = 255;
 pub const MAX_DEPTH: usize = 4;
 /// The most address lines a receipt shows.
 pub const MAX_ADDRESS: usize = 4;
-/// The most menu pages, buttons on a page, team members and taxes.
+/// The most menu pages.
 pub const MAX_PAGES: usize = 100;
 /// The most buttons on a menu page.
 pub const MAX_BUTTONS: usize = 500;
@@ -95,6 +100,8 @@ pub const MAX_BUTTONS: usize = 500;
 pub const MAX_TEAM: usize = 10_000;
 /// The most taxes.
 pub const MAX_TAXES: usize = 64;
+/// The most tax categories a tax applies to.
+pub const MAX_CATEGORIES: usize = 1_000;
 
 /// A location's business-day policy, as a profile writes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,7 +189,7 @@ pub enum ProfileError {
     Payload(#[from] PayloadError),
     /// An identifier appears twice: two items, variants, modifier groups, modifiers, taxes or team
     /// members share it.
-    #[error("two {0}s share an identifier")]
+    #[error("two {0} share an identifier")]
     Duplicate(&'static str),
     /// A reference to something the profile doesn't have.
     #[error("a reference to a {0} the profile doesn't have")]
@@ -206,9 +213,15 @@ impl Profile {
             data.business_day.cutoff_minute,
         )
         .map_err(|_| ProfileError::Invalid("a business day policy that doesn't exist"))?;
-        // An alias, such as `US/Eastern`, would give two encodings of one time zone.
+        // A time zone is found whatever the case of its name, and read back in the database's:
+        // `america/new_york` would encode as `America/New_York`. Each of the database's names
+        // for a zone, such as `US/Eastern` for New York's, is a name of its own.
         if business_day.time_zone() != data.business_day.time_zone {
-            return Err(ProfileError::Invalid("a time zone by another name than its own"));
+            return Err(ProfileError::Invalid("a time zone not named as the database names it"));
+        }
+        // Absent, cash isn't rounded: rounding to the minor unit would be a second way to say so.
+        if data.cash_rounding.is_some_and(|rule| rule.increment().get() == 1) {
+            return Err(ProfileError::Invalid("cash rounded to the minor unit, which rounds none"));
         }
         if !data.currency.is_circulating() {
             return Err(ProfileError::Invalid("a currency that isn't circulating"));
@@ -271,8 +284,8 @@ impl Profile {
             .field(key::CURRENCY, &data.currency)
             .field(key::BUSINESS_DAY, &data.business_day)
             .optional(key::CASH_ROUNDING, data.cash_rounding.map(RoundingRuleField).as_ref())
-            .field(key::RULES, &RulesField(data.rules.clone()))
-            .field(key::CATALOG, &CatalogField(data.catalog.clone()))
+            .field(key::RULES, &Encoded(rules::to_value(&data.rules)))
+            .field(key::CATALOG, &Encoded(catalog_value(&data.catalog)))
             .field(key::MENU, &data.menu)
             .field(key::TEAM, &data.team)
             .build()
@@ -348,10 +361,18 @@ fn check_catalog(catalog: &Catalog, currency: Currency) -> Result<Index, Profile
             Ok(())
         }
     };
+    let variants = catalog.items.iter().map(|item| item.variants.len());
+    if variants.fold(0_usize, usize::saturating_add) > MAX_ALL_VARIANTS {
+        return Err(ProfileError::Invalid("more variants than a catalog holds"));
+    }
+    let modifiers = catalog.groups.iter().map(|group| group.modifiers.len());
+    if modifiers.fold(0_usize, usize::saturating_add) > MAX_ALL_MODIFIERS {
+        return Err(ProfileError::Invalid("more modifiers than a catalog holds"));
+    }
     let mut index = Index::default();
     for (position, group) in catalog.groups.iter().enumerate() {
         if index.groups.insert(group.id, position).is_some() {
-            return Err(ProfileError::Duplicate("modifier group"));
+            return Err(ProfileError::Duplicate("modifier groups"));
         }
         if group.modifiers.is_empty() {
             return Err(ProfileError::Invalid("a modifier group with no modifiers"));
@@ -372,7 +393,7 @@ fn check_catalog(catalog: &Catalog, currency: Currency) -> Result<Index, Profile
         }
         for (at, modifier) in group.modifiers.iter().enumerate() {
             if index.modifiers.insert(modifier.id, (position, at)).is_some() {
-                return Err(ProfileError::Duplicate("modifier"));
+                return Err(ProfileError::Duplicate("modifiers"));
             }
             priced(modifier.price)?;
             offered(&modifier.groups)?;
@@ -399,14 +420,14 @@ fn check_catalog(catalog: &Catalog, currency: Currency) -> Result<Index, Profile
             let name = full_name(&item.name, variant.name.as_ref())
                 .ok_or(ProfileError::Invalid("a variant whose full name is too long"))?;
             if index.variants.insert(variant.id, (position, at, name)).is_some() {
-                return Err(ProfileError::Duplicate("variant"));
+                return Err(ProfileError::Duplicate("variants"));
             }
         }
     }
     let mut items = BTreeSet::new();
     for item in &catalog.items {
         if !items.insert(item.id) {
-            return Err(ProfileError::Duplicate("item"));
+            return Err(ProfileError::Duplicate("items"));
         }
     }
     check_nesting(catalog, &index)?;
@@ -502,7 +523,7 @@ fn check_team(team: &[Member]) -> Result<(), ProfileError> {
         return Err(ProfileError::Invalid("more team members than allowed"));
     }
     let ids: BTreeSet<_> = team.iter().map(|member| member.id).collect();
-    if ids.len() == team.len() { Ok(()) } else { Err(ProfileError::Duplicate("team member")) }
+    if ids.len() == team.len() { Ok(()) } else { Err(ProfileError::Duplicate("team members")) }
 }
 
 /// Profile keys.
@@ -564,6 +585,19 @@ impl Field for RoundingRuleField {
         let [mode, increment] = value.as_array()? else { return None };
         let increment = NonZeroU32::new(u32::try_from(increment.as_u64()?).ok()?)?;
         Some(RoundingRuleField(RoundingRule::new(rules::mode_from(mode)?, increment)))
+    }
+}
+
+/// A part of the profile, already encoded.
+struct Encoded(Value);
+
+impl Field for Encoded {
+    fn to_value(&self) -> Value {
+        self.0.clone()
+    }
+
+    fn from_value(value: &Value) -> Option<Encoded> {
+        Some(Encoded(value.clone()))
     }
 }
 

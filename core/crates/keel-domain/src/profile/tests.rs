@@ -179,17 +179,17 @@ fn a_profile_that_breaks_a_rule_is_refused() {
     use ProfileError::{Duplicate, Invalid, Unknown};
     type Change = fn(&mut ProfileData);
     let cases: Vec<(Change, ProfileError)> = vec![
-        (|d| d.catalog.items[1].id = d.catalog.items[0].id, Duplicate("item")),
+        (|d| d.catalog.items[1].id = d.catalog.items[0].id, Duplicate("items")),
         (
             |d| d.catalog.items[1].variants[0].id = d.catalog.items[0].variants[0].id,
-            Duplicate("variant"),
+            Duplicate("variants"),
         ),
-        (|d| d.catalog.groups[1].id = d.catalog.groups[0].id, Duplicate("modifier group")),
+        (|d| d.catalog.groups[1].id = d.catalog.groups[0].id, Duplicate("modifier groups")),
         (
             |d| d.catalog.groups[1].modifiers[0].id = d.catalog.groups[0].modifiers[0].id,
-            Duplicate("modifier"),
+            Duplicate("modifiers"),
         ),
-        (|d| d.team[1].id = d.team[0].id, Duplicate("team member")),
+        (|d| d.team[1].id = d.team[0].id, Duplicate("team members")),
         (|d| d.catalog.items[0].groups.push(id(0x1ff)), Unknown("modifier group")),
         (|d| d.catalog.groups[0].modifiers[0].groups.push(id(0x1ff)), Unknown("modifier group")),
         (|d| d.menu.pages[0].buttons.push(id(0x4ff)), Unknown("variant")),
@@ -248,22 +248,19 @@ fn a_profile_that_breaks_a_rule_is_refused() {
         ),
         (
             |d| d.business_day.time_zone = "america/new_york".to_owned(),
-            Invalid("a time zone by another name than its own"),
+            Invalid("a time zone not named as the database names it"),
         ),
         (
             |d| d.business_day.time_zone = "Mars/Olympus".to_owned(),
             Invalid("a business day policy that doesn't exist"),
         ),
         (|d| d.business_day.cutoff_hour = 24, Invalid("a business day policy that doesn't exist")),
-        (|d| d.rules.taxes.push(d.rules.taxes[0].clone()), Duplicate("tax")),
+        (|d| d.rules.taxes.push(d.rules.taxes[0].clone()), Duplicate("taxes")),
         (
             |d| d.rules.taxes[0].rate = keel_types::Rate::from_basis_points(-1),
             Invalid("a negative tax rate"),
         ),
-        (
-            |d| d.rules.taxes[0].categories.clear(),
-            Invalid("a tax with no tax categories, or one twice"),
-        ),
+        (|d| d.rules.taxes[0].categories.clear(), Invalid("a tax with no tax categories")),
         (|d| d.rules.taxes[0].name = String::new(), Invalid("a tax without a valid name")),
     ];
     for (index, (change, expected)) in cases.into_iter().enumerate() {

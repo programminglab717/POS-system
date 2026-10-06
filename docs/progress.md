@@ -177,7 +177,27 @@ Built in slice 1, each verified as it landed:
   Each has a known answer and a planted bug the tests catch (22 in the runtime's list now), and
   a sale that cash rounds to nothing is a new known answer: it closes with nothing tendered.
 
-Next: the rest of the review (`Locale`, the profile and ringing), then ADR-0023's as-built
+  Found and fixed since, by three independent reviews of `Locale`, the profile and ringing,
+  committed as work in progress:
+  - `Locale` showed nothing wrongly: 104,976 strings, 324 values in each of the 161 currencies in
+    both locales, as amounts and as quantities, are identical to ICU 78.2's (CLDR 48). But the
+    table's generator checked the spacing rule for a symbol after the digits, which `Locale` never
+    writes, not the one before them, and left the decimal pattern and currencies' own
+    separators unchecked; it checks them all now. The comparison with ICU is a committed tool
+    (`examples/locale_dump.rs`, `tools/icu_crosscheck.js`) that CI runs with Node.js 22.22.
+  - The CBOR decoder reserved room for as many elements as an array declared, checked only
+    against the bytes left: arrays nested 32 deep could reserve about a thousand times their
+    input before failing. Arrays and maps now reserve room for at most 1,024 up front.
+  - The profile: a tax rate's text with more digits than a rate holds was read, rounded, as
+    another rate's; tax categories were a list, so one set had many encodings and versions;
+    rounding modes were coded by their position in a list; cash rounding to the minor unit was a
+    second way to say none. Each is refused or fixed, and catalogs have limits on their variants
+    and modifiers in all.
+
+Next, still to do in the review: the profile's remaining fixes and tests (placeholder time zones,
+every count limit, round-trip and decoding properties over every field, a second golden profile
+from Python); ringing's (free applications not given to modifiers that cost nothing, a test of
+the line's tax category, a wider generator); then re-verifying everything, ADR-0023's as-built
 details and its acceptance.
 
 ## Completed

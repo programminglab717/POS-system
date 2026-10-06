@@ -5,11 +5,18 @@ Run from anywhere:  python3 core/crates/keel-types/tools/gen_locale_table.py
 
 For each locale Keel formats for, the snapshot holds CLDR's `numbers.json` and `currencies.json`.
 The script takes from them the decimal, grouping and minus symbols, and each currency's symbol,
-and checks that every pattern is one `Locale` implements: `¤#,##0.00` for a symbol ending in a
-currency sign, `¤ #,##0.00` (with a no-break space) for one ending in a letter, grouping by
-thousands from four digits, and the minus sign before the symbol. Anything else stops it with an
-error, so a CLDR update can never change how amounts look without a change to the code that
-formats them. See data/cldr/README.md.
+and checks that everything else CLDR says about how an amount or a quantity looks is what
+`Locale` implements:
+
+- the currency pattern `¤#,##0.00`, and `¤ #,##0.00` (with a no-break space) beside a letter;
+- currency spacing, on both sides of the symbol: a no-break space between a digit and a symbol
+  whose nearest character isn't a symbol or a separator;
+- the decimal pattern `#,##0.###`, grouping by thousands from four digits, and Latin digits;
+- no separators of currency amounts' own, and no currency with a separator or pattern of its own.
+
+Anything else stops it with an error, so that a CLDR update can change only the symbols and
+separators the table holds, which CI's check of the table shows, and never how `Locale` arranges
+them. See data/cldr/README.md.
 """
 
 from __future__ import annotations
@@ -62,8 +69,10 @@ def rust_char(value: str) -> str:
 def spaced(symbol: str) -> bool:
     """Whether CLDR puts a no-break space between `symbol` and the digits after it.
 
-    CLDR uses the `alphaNextToNumber` pattern when the symbol's last character matches
-    `[[:^S:]&[:^Z:]]`: anything but a symbol (such as `$`) or a separator.
+    Its currency spacing does, after the symbol, when the symbol's last character matches
+    `[[:^S:]&[:^Z:]]`: anything but a symbol (such as `$`) or a separator. That covers letters,
+    as the `alphaNextToNumber` pattern does, and also punctuation, such as the period of `Cg.`,
+    as ICU spaces it.
     """
     category = unicodedata.category(symbol[-1])
     return not (category.startswith("S") or category.startswith("Z"))
@@ -101,17 +110,34 @@ def main() -> None:
             fail(f"{tag}: currency pattern {formats.get('standard')!r}")
         if formats.get("standard-alphaNextToNumber") != f"¤{NBSP}#,##0.00":
             fail(f"{tag}: alphaNextToNumber pattern {formats.get('standard-alphaNextToNumber')!r}")
-        spacing = formats.get("currencySpacing", {}).get("beforeCurrency", {})
-        if spacing.get("currencyMatch") != "[[:^S:]&[:^Z:]]" or spacing.get("insertBetween") != NBSP:
-            fail(f"{tag}: currency spacing {spacing!r}")
+        # `afterCurrency` governs a symbol before the digits, which is where `Locale` puts it;
+        # `beforeCurrency` one after them. Both must be the rule `spaced` implements.
+        expected_spacing = {
+            "currencyMatch": "[[:^S:]&[:^Z:]]",
+            "surroundingMatch": "[:digit:]",
+            "insertBetween": NBSP,
+        }
+        spacing = formats.get("currencySpacing", {})
+        for side in ("afterCurrency", "beforeCurrency"):
+            if spacing.get(side) != expected_spacing:
+                fail(f"{tag}: currency spacing {side} {spacing.get(side)!r}")
+        decimal_pattern = numbers["decimalFormats-numberSystem-latn"].get("standard")
+        if decimal_pattern != "#,##0.###":
+            fail(f"{tag}: decimal pattern {decimal_pattern!r}")
         decimal, group, minus = symbols["decimal"], symbols["group"], symbols["minusSign"]
         if decimal == group:
             fail(f"{tag}: decimal and group symbols are both {decimal!r}")
+        for own in ("currencyDecimal", "currencyGroup"):
+            if own in symbols:
+                fail(f"{tag}: amounts of money have a separator of their own, {own}")
 
         entries = []
         for code in sorted(currencies):
             if len(code) != 3 or not code.isascii() or not code.isalpha() or not code.isupper():
                 fail(f"{tag}: malformed currency code {code!r}")
+            for own in ("decimal", "group", "pattern"):
+                if own in currencies[code]:
+                    fail(f"{tag}: {code} has a {own} of its own, {currencies[code][own]!r}")
             symbol = currencies[code].get("symbol", code)
             if not symbol or any(unicodedata.category(c).startswith("C") for c in symbol):
                 fail(f"{tag}: unusable symbol {symbol!r} for {code}")

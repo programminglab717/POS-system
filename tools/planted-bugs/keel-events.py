@@ -522,4 +522,12 @@ BUGS = [
         Id::parse("0192f0c1-0000-7000-8000-000000000001").map_err(|_| IdError::Exhausted)
     }""",
     ),
+    (
+        "cbor: an array reserves room for every element it declares",
+        "src/cbor.rs",
+        """    Vec::with_capacity(count.min(ROOM))""",
+        """    Vec::with_capacity(count)""",
+        # What a vector reserves doesn't change what decodes.
+        "unit",
+    ),
 ]
