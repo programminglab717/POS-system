@@ -93,6 +93,34 @@ What is built shapes the rest:
      faults;
    - planted bugs in the roster's checks and the peer's identity, caught by the tests.
 
+## As built
+
+Details settled in building it, for review with it:
+
+- **A peer's name** is a DNS name its certificate carries, `<uuid>.devices.keel` (amends
+  decision 3's URI): `rustls`'s verifier checks a certificate for a DNS name with no other
+  parser, and the hub's certificate carries the roster's hub name beside its own.
+- **Keys in the roster** are written with their COSE algorithm identifiers, -7 for ES256 and -8
+  for EdDSA, and each in its one encoding: a P-256 key compressed is refused.
+- **The runtime pushes lazily**: `take_frames`, which the shell calls after each intent, and
+  `on_frame` and `on_tick`, which push first, read the device's own log from where it last
+  pushed, so no intent changed. What the hub's replicator writes to its own log as it numbers
+  is marked as pushed after each frame and tick.
+- **`keel-net`** runs a `tokio` runtime of its own, on one thread, talking to the caller through
+  channels; a newer connection of a peer replaces an older one; a frame for a peer not connected
+  is dropped, as the replicator sends again what a peer lacks; the WebSocket's own limits sit a
+  little above a frame's, and the crate closes a connection on any frame larger than a frame may
+  be.
+- **`keel-hub`** is a library too: `step`, one turn of the loop that joins a runtime to the
+  network, which the daemon runs, the end-to-end test runs, and slice 4's shell will.
+- **`keel-provision`** writes a kit per device, a directory named by its identifier holding
+  `device`, `name`, `signing.key`, `store.key`, `tls.key`, `tls.crt`, `ca.crt`, `roster` and
+  `profile`, and the CA's `ca.crt` and `ca.key` beside them; the profile is the demo café's.
+- **A hub alone never settles**: `keel-sync` settles a log only once a peer has answered
+  (ADR-0019), so a hub waits for its first device, and a location of one device, a hub with no
+  peers, can't write. A known gap, until a device can settle alone, which needs knowing it was
+  never restored from an older copy.
+
 ## Consequences
 
 **Positive**

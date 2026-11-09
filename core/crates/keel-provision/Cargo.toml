@@ -1,0 +1,20 @@
+[package]
+name = "keel-provision"
+version = "0.1.0"
+description = "Keel's provisioning tool (ADR-0026): a location's development CA, its devices' keys and certificates, and its roster, until the Device CA."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+keel-types = { workspace = true, features = ["os"] }
+keel-events.workspace = true
+keel-domain.workspace = true
+keel-net.workspace = true
+thiserror.workspace = true
+rcgen.workspace = true
+rustls-pki-types.workspace = true
+
+[lints]
+workspace = true

@@ -934,6 +934,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-hub"
+version = "0.1.0"
+dependencies = [
+ "keel-domain",
+ "keel-events",
+ "keel-net",
+ "keel-provision",
+ "keel-runtime",
+ "keel-store",
+ "keel-sync",
+ "keel-types",
+]
+
+[[package]]
 name = "keel-net"
 version = "0.1.0"
 dependencies = [
@@ -970,6 +984,19 @@ version = "0.1.0"
 dependencies = [
  "keel-doc",
  "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "keel-provision"
+version = "0.1.0"
+dependencies = [
+ "keel-domain",
+ "keel-events",
+ "keel-net",
+ "keel-types",
+ "rcgen",
+ "rustls-pki-types",
  "thiserror",
 ]
 

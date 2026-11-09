@@ -56,6 +56,7 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["h
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 keel-net = { path = "core/crates/keel-net" }
+keel-provision = { path = "core/crates/keel-provision" }
 
 # Test-only dependencies. num-bigint (with num-integer) is the exact-arithmetic oracle that
 # property tests check money and rounding against; ciborium is the independent CBOR implementation

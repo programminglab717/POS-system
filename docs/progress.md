@@ -12,7 +12,8 @@ the step's design, [ADR-0023](./adr/0023-register-shell.md), slice 2's,
 [ADR-0024](./adr/0024-receipts-and-printing.md), and slice 3's, the bindings,
 [ADR-0025](./adr/0025-bindings.md), are accepted. Slice 5, the local hub, comes next, before
 slice 4 ([ADR-0026](./adr/0026-local-hub.md), proposed): the Android app can only be built in
-CI from here, and the hub can be built and verified here, for the app to host. Step 6, `keel-sim` and `keel-sync` v0, the
+CI from here, and the hub can be built and verified here, for the app to host. It is built; its
+review is next. Step 6, `keel-sim` and `keel-sync` v0, the
 deterministic simulator and the sync engine, is done: built in four slices, each reviewed, the
 last, hub election and failover ([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted
 after a review that found and fixed two bugs.
@@ -29,7 +30,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
-| 7 | Android register shell | In progress: slices 1 to 3 of 5 built and reviewed; slice 5 next, then 4 | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
+| 7 | Android register shell | In progress: slices 1 to 3 of 5 built and reviewed; slice 5 built, its review next; then 4 | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
 | 8 | Cloud cell v0 | Not started | |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
@@ -132,6 +133,21 @@ Built in slice 5 so far, each verified as it landed:
   connection, and the device coming back; a certificate from another CA, a device the roster
   doesn't have, a certificate with no device's name, and a hub without the roster's name, each
   refused; a device reconnecting after its hub restarts. All 3 planted bugs caught.
+- **`keel-provision`** and **`keel-hub`**: the provisioning tool, which makes a development CA,
+  and for each device its identifier, signing key, store key, TLS key and certificate, with the
+  roster and the profile, in memory and as a kit of files; and the hub's daemon, a runtime over
+  its own store listening at the roster's port, with `step`, the loop that joins a runtime to the
+  network. Known answers (2 tests, `tests/location.rs`): a location provisioned in memory, a hub
+  and a register as runtimes on the system's clock, each on its own thread, joined over real TLS:
+  the register settles, rings and pays a sale, which is confirmed by the hub within 2 s of being
+  paid (3 s for the whole test), and the hub holds it closed; and the kits written and read back,
+  every key drawn on its own, a short key and a missing file refused. All 4 planted bugs caught;
+  a fifth, the loop's own push left out, changes nothing a test can see, since `on_frame` and
+  `on_tick` push first. The binaries run: `keel-provision` writes a location, and `keel-hub`
+  listens on it, waiting, as `keel-sync` requires, for its first device to settle.
+- The workspace's tests, with the exhaustive sweeps (650 tests, 5 minutes 4 seconds), and without
+  default features (646); clippy with all features and none; the documentation; and every
+  planted bug's text.
 
 Built in slice 3, each verified as it landed:
 
@@ -1855,6 +1871,10 @@ Work deliberately left for later, so it isn't forgotten:
   - `confirmed()` reads every run of every record. The UI, which shows what is provisional, will
     need each device's confirmed start kept as records arrive.
 - **`keel-sync`:**
+  - A hub alone never settles its log, since `keel-sync` settles only once a peer has answered: a
+    location of one device can't write yet (ADR-0026, as built).
+  - One hub address, provisioned: devices don't follow a standby that takes over, until
+    discovery.
   - Every pair of candidates for the hub must be within two hops of each other, or two of them
     take the role from each other in turn (ADR-0022): the location's links, which discovery will
     make, must keep them so. Nothing checks it as the replicas run.

@@ -1,0 +1,21 @@
+[package]
+name = "keel-hub"
+version = "0.1.0"
+description = "Keel's Store Hub daemon (ADR-0026), and the loop that joins a device runtime to the local network."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+keel-types = { workspace = true, features = ["os"] }
+keel-events.workspace = true
+keel-domain.workspace = true
+keel-store.workspace = true
+keel-runtime.workspace = true
+keel-net.workspace = true
+keel-sync.workspace = true
+keel-provision.workspace = true
+
+[lints]
+workspace = true
