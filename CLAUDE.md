@@ -42,6 +42,7 @@ python3 core/crates/keel-types/tools/gen_currency_table.py  # after changing the
 python3 core/crates/keel-types/tools/gen_locale_table.py    # after changing the CLDR snapshot
 cargo run -q -p keel-types --example locale_dump > /tmp/keel-locale.tsv && node core/crates/keel-types/tools/icu_crosscheck.js /tmp/keel-locale.tsv  # compare with ICU, as CI does
 KEEL_STORE_MAKE_GOLDEN=1 cargo test -p keel-store --test golden_store -- --ignored  # once, for a new store schema version
+(cd bindings/kotlin && gradle test --no-daemon)  # the Kotlin bindings, generated from keel-ffi, against the host's kernel
 ```
 
 ## Testing expectations

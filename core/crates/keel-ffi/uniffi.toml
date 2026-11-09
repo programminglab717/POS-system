@@ -1,0 +1,4 @@
+# What UniFFI's bindgen writes for each language (ADR-0025), given to it with --config.
+[crates.keel_ffi.bindings.kotlin]
+package_name = "dev.keel.kernel"
+cdylib_name = "keel_ffi"

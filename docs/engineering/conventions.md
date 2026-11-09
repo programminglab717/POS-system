@@ -194,13 +194,15 @@ Every dependency is a liability in a money kernel. A new dependency needs an ent
 below, and must be:
 
 - **pure Rust**, and for kernel crates, buildable for `wasm32-unknown-unknown`;
-- **permissively licensed** (MIT, Apache-2.0, BSD, ISC, Zlib or Unicode);
+- **permissively licensed** (MIT, Apache-2.0, BSD, ISC, Zlib or Unicode), with one exception
+  the table records, UniFFI (MPL-2.0), for the bindings;
 - **deterministic**, with no hidden I/O, clock reads or randomness;
 - **well maintained and widely used**, with a stable API;
 - **minimal**: default features off unless they are needed.
 
 **Platform crates** are the exception to "pure Rust". `keel-store`, `keel-sync` (which adapts the
-store for replication, and does no I/O itself), and later the bindings and drivers, may use a
+store for replication, and does no I/O itself), `keel-runtime`, `keel-print`, the driver, and
+`keel-ffi`, the bindings, may use a
 native library that an ADR chooses. They aren't built for `wasm32`, and the portable kernel
 crates (`keel-types`, `keel-events`, `keel-domain`, `keel-pricing`, `keel-doc`) never depend on them.
 `keel-sim`, the simulator, is for tests only and never shipped. Such a library may draw on the operating system's
@@ -221,6 +223,7 @@ bytes.
 | `rusqlite` (and `libsqlite3-sys`) | keel-store | SQLite, compiled in as SQLCipher (`bundled-sqlcipher-vendored-openssl`: SQLCipher 4.14.0 on SQLite 3.51.3 today), so every platform runs the same version and encrypts the same way ([ADR-0016](../adr/0016-device-store.md), [ADR-0018](../adr/0018-encryption-at-rest-and-integrity-checks.md)). A platform dependency: it builds C code with `cc`. Default features off. MIT; SQLite itself is in the public domain, and SQLCipher's community edition is BSD-licensed. Its other dependencies (`bitflags`, `fallible-iterator`, `fallible-streaming-iterator`, `smallvec`) and build tools (`cc`, `pkg-config`, `vcpkg`, with theirs) are MIT or Apache-2.0. |
 | `openssl-sys`, `openssl-src` | keel-store, through `libsqlite3-sys` | OpenSSL's crypto, for SQLCipher: built from source (OpenSSL 3.6.3 today) and linked statically, the same on every platform, rather than each platform's own ([ADR-0018](../adr/0018-encryption-at-rest-and-integrity-checks.md)). Building it takes Perl and a `make`. SQLCipher uses only its ciphers, hashes and random generator. Follow OpenSSL's security advisories through `openssl-src` releases. `openssl-sys` is MIT, `openssl-src` MIT or Apache-2.0, and OpenSSL 3 Apache-2.0. |
 | `zeroize` | keel-store | Zeroes the store's key in memory when it is dropped, without the compiler optimizing the writes away. Already in the tree through `ed25519-dalek`. Default features off but `alloc`. Apache-2.0 or MIT. |
+| `uniffi` (and `uniffi_core`, `uniffi_macros`, `uniffi_meta`, `uniffi_pipeline`, `uniffi_internal_macros`) | keel-ffi | The bindings to the platform shells ([ADR-0025](../adr/0025-bindings.md)): Kotlin now, Swift later, generated from the compiled library. Pinned exactly (`=0.32.2`): its minor versions change what it generates. **MPL-2.0**, the one exception to the permissive list: a copyleft that applies file by file, which obliges nothing of Keel's own files when UniFFI is used unmodified as a library; a change to UniFFI itself would have to be published under the MPL. Its other dependencies (`anyhow`, `bytes`, `camino`, `fs-err`, `once_cell`, `static_assertions`, and, at build time, `serde`, `toml` and their own) are MIT or Apache-2.0. Its bindgen, behind keel-ffi's `bindgen` feature, is a build tool, never shipped; its dependencies are MIT, Apache-2.0, BSD-3-Clause, Unlicense or Unicode-3.0. No default features. |
 
 Test-only dependencies must be permissively licensed, but need not build for `wasm32`:
 

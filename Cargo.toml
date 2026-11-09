@@ -35,6 +35,7 @@ keel-doc = { path = "core/crates/keel-doc" }
 keel-store = { path = "core/crates/keel-store" }
 keel-sync = { path = "core/crates/keel-sync" }
 keel-print = { path = "core/crates/keel-print" }
+keel-runtime = { path = "core/crates/keel-runtime" }
 
 # Platform dependencies: native libraries that platform crates (keel-store) use, each chosen by
 # an ADR, never used by the portable kernel crates. SQLite is compiled in, so every platform runs
@@ -42,6 +43,8 @@ keel-print = { path = "core/crates/keel-print" }
 # (ADR-0018). zeroize clears the store's key from memory when it is dropped.
 rusqlite = { version = "0.40", default-features = false, features = ["bundled-sqlcipher-vendored-openssl"] }
 zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
+# The bindings (ADR-0025): UniFFI, pinned exactly, in keel-ffi alone.
+uniffi = { version = "=0.32.2", default-features = false }
 
 # Test-only dependencies. num-bigint (with num-integer) is the exact-arithmetic oracle that
 # property tests check money and rounding against; ciborium is the independent CBOR implementation

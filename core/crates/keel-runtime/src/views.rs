@@ -21,6 +21,11 @@ impl Amount {
     pub(crate) fn new(money: Money, locale: Locale) -> Amount {
         Amount { money, text: locale.money(money) }
     }
+
+    /// `money`, with the text `locale` shows it as.
+    pub fn of(money: Money, locale: Locale) -> Amount {
+        Amount::new(money, locale)
+    }
 }
 
 /// Where an order is in its life, as its ticket shows it.

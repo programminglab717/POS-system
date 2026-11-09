@@ -9,7 +9,8 @@
 **Phase 0 (Foundations), step 7 of 8:** the Android register shell. Slice 1 of 5, the device
 runtime and the location profile, and slice 2, receipts and printing, are built and reviewed;
 the step's design, [ADR-0023](./adr/0023-register-shell.md), and slice 2's,
-[ADR-0024](./adr/0024-receipts-and-printing.md), are accepted. Slice 3, the bindings, is next. Step 6, `keel-sim` and `keel-sync` v0, the
+[ADR-0024](./adr/0024-receipts-and-printing.md), are accepted. Slice 3, the bindings, is built
+([ADR-0025](./adr/0025-bindings.md), proposed); its review is next. Step 6, `keel-sim` and `keel-sync` v0, the
 deterministic simulator and the sync engine, is done: built in four slices, each reviewed, the
 last, hub election and failover ([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted
 after a review that found and fixed two bugs.
@@ -26,7 +27,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
-| 7 | Android register shell | In progress: slices 1 and 2 of 5 built and reviewed; slice 3 next | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
+| 7 | Android register shell | In progress: slices 1 and 2 of 5 built and reviewed; slice 3 built, its review next | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
 | 8 | Cloud cell v0 | Not started | |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
@@ -91,13 +92,43 @@ ADR of its own when it begins:
    [ADR-0024](./adr/0024-receipts-and-printing.md)): KeelDoc v0 in `keel-doc`, an ESC/POS
    renderer, the print driver and raw TCP to port 9100 in `keel-print`, and print jobs in the
    outbox, never sent twice by themselves.
-3. **The bindings**: `keel-ffi` with UniFFI, and a Kotlin/JVM library tested on the host.
+3. **The bindings** (built 2026-11-09, [ADR-0025](./adr/0025-bindings.md), proposed; review
+   next): `keel-ffi` with UniFFI, and a Kotlin/JVM library tested on the host.
 4. **The Android app**: the register's screens, keys in the Android Keystore, the build for
    Android, CI on an emulator, and the performance harness on a reference device.
 5. **The local hub**: `keel-net`, WebSocket over TLS 1.3 with mutual TLS, the hub role in the
    app and in a Linux daemon, and a provisioning tool standing in for the Device CA.
 
-Slice 3's design comes first, in an ADR of its own, as each slice's has.
+Built in slice 3, each verified as it landed:
+
+- **`keel-ffi`**, the bindings, on UniFFI 0.32.2 pinned exactly, its bindgen behind a feature:
+  a `Register` object holding one device runtime behind a lock, with a method for each intent
+  and view, and for printing; `printTcp`, which runs the driver on the caller's thread, outside
+  the lock; `demoProfile`; records for every view, enumerations for modes, prefixes, states and
+  outcomes, and `KeelError`, a variant for each refusal a cashier meets. The workspace's lints
+  hold, `unsafe_code` forbidden included: UniFFI's generated code isn't the crate's own. The
+  register reads the system's clock and the operating system's randomness: the one place the
+  kernel does.
+  - Known answers (5 tests): flattened choices built into their tree, and every bad parent and
+    quantity refused; a register refusing a key of the wrong length, a device that isn't an
+    identifier, a profile that doesn't decode, a locale it doesn't know, and another store's key;
+    a sale signed in, rung with modifiers, refused by the catalog, changed, refused short and
+    negative, paid, its drawer kick and receipt sent over TCP to a fake printer and done, and a
+    reprint not sent where no printer listens; every outcome across the boundary and back; every
+    prefix and mode.
+  - Planted bugs: all 6 caught, one only once the last test was written.
+- **`bindings/kotlin`**, the Kotlin library: Gradle with Kotlin 2.4.21 and JNA 5.19.1, its sources
+  generated by `generate.sh` from the library built for the host. Two JUnit tests: a sale on the
+  demo café's profile, refusals as `KeelException`'s subclasses (not signed in, the catalog's, a
+  short tender with what is due and its text, a negative one), cash taken, and the drawer kick and
+  receipt sent with `printTcp` to a fake printer written in Kotlin; and bad arguments refused. Both
+  pass here and run in CI's new job.
+- The dependency policy gains UniFFI, MPL-2.0, the one exception to its permissive list.
+- The workspace's tests, with the exhaustive sweeps (631 tests, 4 minutes 28 seconds), and
+  without default features (627); clippy with all features and none; the documentation; and
+  every planted bug's text.
+- The disk this environment allows filled twice: the many planted-bug runs leave 13 GB of
+  incremental build caches. Local runs now set `CARGO_INCREMENTAL=0`, as CI does.
 
 ## Completed
 
