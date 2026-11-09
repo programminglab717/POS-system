@@ -7,9 +7,9 @@
 ## Where we are
 
 **Phase 0 (Foundations), step 7 of 8:** the Android register shell. Slice 1 of 5, the device
-runtime and the location profile, is built and reviewed, and the step's design,
-[ADR-0023](./adr/0023-register-shell.md), accepted. Slice 2, receipts and printing, is designed
-([ADR-0024](./adr/0024-receipts-and-printing.md), proposed) and being built. Step 6, `keel-sim` and `keel-sync` v0, the
+runtime and the location profile, and slice 2, receipts and printing, are built and reviewed;
+the step's design, [ADR-0023](./adr/0023-register-shell.md), and slice 2's,
+[ADR-0024](./adr/0024-receipts-and-printing.md), are accepted. Slice 3, the bindings, is next. Step 6, `keel-sim` and `keel-sync` v0, the
 deterministic simulator and the sync engine, is done: built in four slices, each reviewed, the
 last, hub election and failover ([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted
 after a review that found and fixed two bugs.
@@ -26,7 +26,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
-| 7 | Android register shell | In progress: slice 1 of 5 built and reviewed; slice 2 being built | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
+| 7 | Android register shell | In progress: slices 1 and 2 of 5 built and reviewed; slice 3 next | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
 | 8 | Cloud cell v0 | Not started | |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
@@ -87,14 +87,25 @@ ADR of its own when it begins:
    `keel-runtime`, which turns a cashier's intents into the kernel's commands, one write each,
    and the store into views; the location profile, with its catalog and the rules for ringing an
    item with modifiers; and `Locale` v0, the kernel's display text for amounts.
-2. **Receipts and printing** (designed 2026-11-09, [ADR-0024](./adr/0024-receipts-and-printing.md),
-   proposed; building): KeelDoc v0 in `keel-doc`, an ESC/POS renderer, the print driver and raw
-   TCP to port 9100 in `keel-print`, and print jobs in the outbox, never sent twice by themselves.
+2. **Receipts and printing** (built and reviewed 2026-11-09,
+   [ADR-0024](./adr/0024-receipts-and-printing.md)): KeelDoc v0 in `keel-doc`, an ESC/POS
+   renderer, the print driver and raw TCP to port 9100 in `keel-print`, and print jobs in the
+   outbox, never sent twice by themselves.
 3. **The bindings**: `keel-ffi` with UniFFI, and a Kotlin/JVM library tested on the host.
 4. **The Android app**: the register's screens, keys in the Android Keystore, the build for
    Android, CI on an emulator, and the performance harness on a reference device.
 5. **The local hub**: `keel-net`, WebSocket over TLS 1.3 with mutual TLS, the hub role in the
    app and in a Linux daemon, and a provisioning tool standing in for the Device CA.
+
+Slice 3's design comes first, in an ADR of its own, as each slice's has.
+
+## Completed
+
+### Receipts and printing: step 7, slice 2 (2026-11-09)
+
+Commits `7b7fa3d` (the documents and the driver), `e93703c` (print jobs in the runtime), and
+REVIEW2_COMMIT, which fixes what the review found and accepts
+[ADR-0024](./adr/0024-receipts-and-printing.md).
 
 Slice 2's design settles what ADR-0023's decision 6 left open: a job is unconfirmed while it is
 running and not with the driver, so the outbox holds every state a job has without a new store
@@ -104,7 +115,7 @@ the write that closes the order, so it shows the order as it closed. Its researc
 Epson's and a printer maker's manual hosts outside this environment's network policy: the
 status bits follow Epson's reference as widely implemented, and the tests' fake printer pins them.
 
-Built in slice 2 so far, each verified as it landed:
+Built, each verified as it landed:
 
 - **`keel-doc`**, portable and built for `wasm32`: KeelDoc v0 (text, rows, rules, feeds, cuts and
   drawer kicks, in bold, wide and tall), its canonical encoding, Windows-1252 text with
@@ -167,7 +178,39 @@ Built in slice 2 so far, each verified as it landed:
   without default features (608); clippy with all features and none; the documentation; the
   wasm build, `keel-doc` now in it; and every planted bug's text.
 
-## Completed
+- **Review** (2026-11-09), by three independent reviewers, of the documents, the driver and the
+  runtime's jobs. They found no path that hands an unconfirmed job to the driver again, and
+  every command's bytes right against Epson's reference. They found, each now fixed with a named
+  regression test and a planted bug (ADR-0024, as built):
+  - A cash order of about 200 lines couldn't be paid: its receipt went past a document's 1,000
+    blocks and failed the closing write. Lines are capped by blocks as well as bytes, and a
+    receipt that can't be made whole is printed short; nothing about a receipt refuses a sale.
+  - After the clock was set back, jobs waited for it to catch up, so the drawer stayed shut. A job
+    due later than any wait it could have been given is due at once (`reschedule`, new in the
+    outbox).
+  - With `GS r 1`, the driver took a byte of an automatic status block for the printer's word;
+    for a printer that confirms nothing, it said the job printed before the printer read it; a
+    printer that stopped reading held the send for ever; and a printer sending automatic status
+    as the connection opened could never print. Answers are read as blocks, the driver waits for
+    the printer's own close, sends time out, and automatic status is skipped.
+  - Line breaks and tabs glued words together; no-break spaces broke; tags and other format
+    characters printed as `?`.
+  - Without a cutter, a cut fed lines in the style before it: the property found it once its
+    model compared every line's style.
+  - Nearly every job's process ID was `0001`; the job views read the whole outbox history; a
+    reprint after the locale changed could be marked twice.
+  - Tests that couldn't fail: the encoding was pinned for one block only (a consistent swap of
+    wide and tall passed everything); the property's model took its text from the crate's own
+    table; the test of a job cut off mid-way ended it after the whole job had arrived; and no
+    test caught a send that failed part way reported as none of it sent.
+  - Left as known gaps: `reprint` reads the whole outbox; full-width lines on generic firmware,
+    to measure on the reference printer.
+- **After the review:** the workspace's tests, with the exhaustive sweeps (626 tests, 3 minutes 4
+  seconds), and without default features (620); clippy with all features and none; the
+  documentation; the wasm build; every planted bug in the slice's lists caught (`keel-doc` 24,
+  `keel-print` 12, the runtime's 38, and the outbox's two new ones); and soaks of 20,000 cases of
+  the documents' properties and 10,000 of the jobs' and the outbox's.
+
 
 ### The device runtime and the location profile: step 7, slice 1 (2026-10-06, reviewed 2026-11-09)
 

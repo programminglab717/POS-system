@@ -74,21 +74,27 @@ pub fn render(doc: &Doc, printer: &PrinterProfile) -> Vec<u8> {
         out.extend_from_slice(command);
     }
     let mut current = Style::default();
+    let mut line = |out: &mut Vec<u8>, text: &[u8], style: Style| {
+        if style.bold != current.bold {
+            out.extend(bold(style.bold));
+        }
+        if (style.wide, style.tall) != (current.wide, current.tall) {
+            out.extend(size(style));
+        }
+        current = style;
+        out.extend_from_slice(text);
+        out.push(LINE_FEED);
+    };
     for laid in layout(doc, printer.columns) {
         match laid {
-            Laid::Line(line) => {
-                if line.style.bold != current.bold {
-                    out.extend(bold(line.style.bold));
-                }
-                if (line.style.wide, line.style.tall) != (current.wide, current.tall) {
-                    out.extend(size(line.style));
-                }
-                current = line.style;
-                out.extend(line.text);
-                out.push(LINE_FEED);
-            }
+            Laid::Line(laid) => line(&mut out, &laid.text, laid.style),
             Laid::Cut if printer.cutter => out.extend(CUT),
-            Laid::Cut => out.extend([LINE_FEED; 3]),
+            // Feeds past the tear bar, as plain lines whatever came before.
+            Laid::Cut => {
+                for _ in 0..3 {
+                    line(&mut out, &[], Style::default());
+                }
+            }
             Laid::DrawerKick => out.extend(DRAWER_KICK),
         }
     }
@@ -206,9 +212,17 @@ pub fn process_id(n: u64) -> [u8; 4] {
     [digit(1000), digit(100), digit(10), digit(1)]
 }
 
-/// Whether `byte` is an answer to `GS r 1`: bits 4 and 7 clear.
+/// Whether `byte` could be an answer to `GS r 1`: bits 4 to 7 clear, as Epson fixes them. Other
+/// answers share such bytes (the last three of an automatic status block, or a process ID
+/// response's), so a driver reads the printer's answers as blocks to tell them apart.
 pub const fn is_processed(byte: u8) -> bool {
-    byte & 0x90 == 0
+    byte & 0xF0 == 0
+}
+
+/// Whether `byte` starts a block of automatic status back (`GS a`): bit 4 set, bits 0, 1 and 7
+/// clear. The three bytes after it are part of it.
+pub const fn is_automatic_status(byte: u8) -> bool {
+    byte & 0b1001_0011 == 0b0001_0000
 }
 
 #[cfg(test)]
@@ -291,5 +305,16 @@ mod tests {
         assert!(
             is_processed(0x00) && is_processed(0x0F) && !is_processed(0x37) && !is_processed(0x80)
         );
+        assert!(!is_processed(0x20) && !is_processed(0x40));
+        // An automatic status block's first byte, never a `DLE EOT` answer's.
+        assert!(
+            is_automatic_status(0x10) && is_automatic_status(0x38) && is_automatic_status(0x7C)
+        );
+        assert!(
+            !is_automatic_status(0x12) && !is_automatic_status(0x37) && !is_automatic_status(0x90)
+        );
+        for byte in 0..=u8::MAX {
+            assert!(!(is_status(byte) && is_automatic_status(byte)), "{byte:#x}");
+        }
     }
 }

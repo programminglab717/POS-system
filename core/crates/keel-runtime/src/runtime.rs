@@ -382,7 +382,12 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 at: closed_at,
                 reprint: false,
             };
-            let doc = receipt::receipt(&ticket, &closing_info, profile, locale)?;
+            // Nothing about the receipt can refuse the sale: one that can't be made whole is made
+            // short.
+            let doc = receipt::receipt(&ticket, &closing_info, profile, locale)
+                .ok()
+                .filter(|doc| doc.encode().len() <= keel_store::MAX_PAYLOAD)
+                .map_or_else(|| receipt::short(&ticket, &closing_info, profile, locale), Ok)?;
             w.enqueue(
                 &print::effect(receipt_job, JobKind::Receipt, &doc, Some(closing))?,
                 meta.now,
@@ -509,19 +514,15 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// # Errors
     /// [`RuntimeError::Store`] if the store can't be read.
     pub fn print_jobs(&self) -> Result<Vec<JobView>, RuntimeError> {
-        let mut jobs: Vec<JobView> = self
-            .store
-            .effects()?
-            .iter()
-            .filter_map(|queued| print::view(queued, self.sending))
-            .collect();
-        jobs.retain(|job| matches!(job.kind, JobKind::Receipt | JobKind::Drawer));
-        Ok(jobs)
+        let unfinished = self.store.unfinished_effects()?;
+        Ok(unfinished.iter().filter_map(|queued| print::view(queued, self.sending)).collect())
     }
 
     /// The earliest job that is due, started and rendered for the printer, for the driver: one
     /// at a time, so `None` while one is with the driver, and while no printer is set. A job
-    /// whose document can't be read fails, for a person to look at.
+    /// whose document can't be read fails, for a person to look at. A job due later than any
+    /// wait it could have been given is due now: the clock was set back since it was enqueued
+    /// or retried, and it mustn't wait for the clock to catch up.
     ///
     /// # Errors
     /// [`RuntimeError::Store`] if the store can't be read or written.
@@ -531,9 +532,24 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             return Ok(None);
         }
         let now = self.clock.now();
-        for queued in self.store.due_effects(now, u32::MAX)? {
+        let latest = print::after(now, print::MAX_WAIT)?;
+        let mut pending: Vec<_> = self
+            .store
+            .unfinished_effects()?
+            .into_iter()
+            .enumerate()
+            .filter(|(_, queued)| queued.state == keel_store::EffectState::Pending)
+            .filter(|(_, queued)| queued.due <= now || queued.due > latest)
+            .filter(|(_, queued)| print::job_of(queued).is_some())
+            .collect();
+        // The earliest due first, then the earliest enqueued; those the clock left behind, now.
+        pending.sort_by_key(|(seq, queued)| (queued.due.min(now), *seq));
+        for (_, queued) in pending {
             let Some((job, kind)) = print::job_of(&queued) else { continue };
             let key = queued.effect.key.clone();
+            if queued.due > now {
+                self.store.write(|w| w.reschedule(&key, now))?;
+            }
             let Ok(doc) = Doc::decode(&queued.effect.payload) else {
                 self.store.write(|w| -> Result<(), RuntimeError> {
                     w.start(&key, now)?;
@@ -549,7 +565,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 kind,
                 bytes: render(&doc, &printer),
                 confirm: printer.confirm,
-                process_id: process_id(u64::from(started.attempts)),
+                process_id: process_id(print::process_number(job, started.attempts)),
             }));
         }
         Ok(None)
@@ -646,7 +662,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 continue;
             }
             let doc = Doc::decode(&queued.effect.payload)?;
-            if !self.is_reprint(&doc) {
+            if !is_reprint(&doc) {
                 original = Some((doc, cause));
             }
         }
@@ -659,13 +675,9 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         Ok(job)
     }
 
-    fn is_reprint(&self, doc: &Doc) -> bool {
-        doc.blocks().first() == Some(&receipt::reprint_banner(self.locale))
-    }
-
     /// `doc` marked as a reprint above and below, unless it is already.
     fn as_reprint(&self, doc: &Doc) -> Result<Doc, RuntimeError> {
-        if self.is_reprint(doc) {
+        if is_reprint(doc) {
             return Ok(doc.clone());
         }
         let banner = receipt::reprint_banner(self.locale);
@@ -682,6 +694,11 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         blocks.extend(tail);
         Ok(Doc::new(blocks)?)
     }
+}
+
+/// Whether `doc` is a reprint, in whatever language it was printed.
+fn is_reprint(doc: &Doc) -> bool {
+    doc.blocks().first().is_some_and(receipt::is_banner)
 }
 
 /// Fails unless `order` was created.

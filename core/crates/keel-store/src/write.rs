@@ -234,6 +234,15 @@ impl<S: Signer, E: Entropy> Writing<'_, S, E> {
         outbox::retry(self.tx, key, due).map_err(|error| noted(self.health, error))
     }
 
+    /// Makes the pending effect with key `key` due at `due` instead, earlier or later.
+    ///
+    /// # Errors
+    /// [`StoreError::Effect`] if no effect has the key or it isn't pending;
+    /// [`StoreError::Database`] if the outbox can't be read or written.
+    pub fn reschedule(&mut self, key: &[u8], due: Timestamp) -> Result<(), StoreError> {
+        outbox::reschedule(self.tx, key, due).map_err(|error| noted(self.health, error))
+    }
+
     /// Fails the running effect with key `key` for good, for a person to look at.
     ///
     /// # Errors

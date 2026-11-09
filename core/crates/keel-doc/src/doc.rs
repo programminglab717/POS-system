@@ -336,6 +336,38 @@ mod tests {
         assert!(Doc::new(vec![Block::Rule; MAX_BLOCKS]).is_ok());
     }
 
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().fold(String::new(), |mut text, byte| {
+            let _ = core::fmt::Write::write_fmt(&mut text, format_args!("{byte:02x}"));
+            text
+        })
+    }
+
+    /// Found in review: only one block's kind and one style were pinned, so a change made to the
+    /// encoder and decoder together, such as swapping wide and tall, passed every test, and the
+    /// documents queued in a store would read differently after an upgrade. Every kind of block,
+    /// every field of a row and every style bit, pinned against Python's `cbor2`:
+    /// `cbor2.dumps({1: 1, 2: [[0, "Hi", 0, 1], [0, "Hi", 1, 2], [0, "Hi", 2, 4],
+    /// [1, "Tea", "$2", 3, 0], [2], [3, 9], [4], [5]]}, canonical=True)`.
+    #[test]
+    fn every_kind_of_block_is_pinned() {
+        let plain = Style::default();
+        let doc = Doc::new(vec![
+            Block::text("Hi", Align::Left, Style { bold: true, ..plain }),
+            Block::text("Hi", Align::Center, Style { wide: true, ..plain }),
+            Block::text("Hi", Align::Right, Style { tall: true, ..plain }),
+            Block::Row { left: "Tea".to_owned(), right: "$2".to_owned(), indent: 3, style: plain },
+            Block::Rule,
+            Block::Feed(9),
+            Block::Cut,
+            Block::DrawerKick,
+        ])
+        .unwrap();
+        let pinned = "a2010102888400624869000184006248690102840062486902048501635465616224320300810282030981048105";
+        assert_eq!(hex(&doc.encode()), pinned);
+        assert_eq!(Doc::decode(&doc.encode()).unwrap(), doc);
+    }
+
     /// A document's encoding, with its blocks replaced by `blocks`.
     fn with_blocks(blocks: Vec<Value>) -> Vec<u8> {
         let entries = vec![

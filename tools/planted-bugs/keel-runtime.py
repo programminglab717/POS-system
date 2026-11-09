@@ -217,10 +217,8 @@ BUGS = [
     (
         "print: a job running when the runtime opens is handed to the driver",
         "src/runtime.rs",
-        "        for queued in self.store.due_effects(now, u32::MAX)? {",
-        """        let mut due = self.store.running_effects()?;
-        due.extend(self.store.due_effects(now, u32::MAX)?);
-        for queued in due {""",
+        "            .filter(|(_, queued)| queued.state == keel_store::EffectState::Pending)",
+        "            .filter(|(_, queued)| queued.state != keel_store::EffectState::Done)",
     ),
     (
         "print: a job not sent waits as long each time",
@@ -231,8 +229,8 @@ BUGS = [
     (
         "print: a job not sent waits past a minute",
         "src/print.rs",
-        "    Duration::from_secs(wait.min(60))",
-        "    Duration::from_secs(wait.min(64))",
+        "    Duration::from_secs(wait).min(MAX_WAIT)",
+        "    Duration::from_secs(wait).min(MAX_WAIT.saturating_mul(2))",
         # A job fails to be sent six times in a row in few runs; the known answer counts them.
         "unit",
     ),
@@ -275,10 +273,10 @@ BUGS = [
     (
         "print: a reprint printed again is marked twice",
         "src/runtime.rs",
-        """        if self.is_reprint(doc) {
+        """        if is_reprint(doc) {
             return Ok(doc.clone());
         }""",
-        """        if self.is_reprint(doc) && doc.blocks().is_empty() {
+        """        if is_reprint(doc) && doc.blocks().is_empty() {
             return Ok(doc.clone());
         }""",
         # The property doesn't read documents; the known answers do.
@@ -287,9 +285,48 @@ BUGS = [
     (
         "print: a receipt shows no change",
         "src/receipt.rs",
-        """        if let Some(change) = captured.change() {""",
-        """        if let Some(change) = captured.change().filter(|_| false) {""",
+        """        if let Some(change) = captured.change() {
+            blocks.push(Block::row(words.change, money(change)));""",
+        """        if let Some(change) = captured.change().filter(|_| false) {
+            blocks.push(Block::row(words.change, money(change)));""",
         # As above.
+        "unit",
+    ),
+    # Found in review.
+    (
+        "print: jobs the clock left behind wait for it",
+        "src/runtime.rs",
+        """            if queued.due > now {
+                self.store.write(|w| w.reschedule(&key, now))?;
+            }""",
+        "",
+    ),
+    (
+        "print: a receipt's lines aren't capped by blocks",
+        "src/receipt.rs",
+        "            || lines.len().saturating_add(these.len()) > MAX_LINES_BLOCKS",
+        "            || lines.len().saturating_add(these.len()) > usize::MAX",
+        "unit",
+    ),
+    (
+        "print: a receipt too big for the outbox fails the sale",
+        "src/runtime.rs",
+        "                .filter(|doc| doc.encode().len() <= keel_store::MAX_PAYLOAD)",
+        "                .filter(|doc| !doc.blocks().is_empty())",
+        "unit",
+    ),
+    (
+        "print: a reprint is recognised only in English",
+        "src/receipt.rs",
+        "    [ENGLISH.reprint, SPANISH.reprint]",
+        "    [ENGLISH.reprint]",
+        "unit",
+    ),
+    (
+        "print: jobs share process IDs",
+        "src/print.rs",
+        "    u64::from_be_bytes(tail).wrapping_add(u64::from(attempts))",
+        "    u64::from(attempts).wrapping_add(u64::from(tail.len() > 99))",
         "unit",
     ),
 ]

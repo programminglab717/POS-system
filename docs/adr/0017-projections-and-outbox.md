@@ -119,6 +119,10 @@ Details settled in building it, for review with it:
   under one key would be deduplicated as one by their executor. An effect's cause must be an
   event the store holds, the write's own included. Due effects come earliest due first, then in
   the order they were enqueued.
+- **Amended by [ADR-0024](./0024-receipts-and-printing.md)** (2026-11-09): `reschedule` gives a
+  pending effect another due time, for an executor whose clock was set back; and
+  `unfinished_effects` lists the pending and running effects, without the history of those done
+  or failed.
 
 ## Consequences
 

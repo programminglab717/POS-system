@@ -25,6 +25,15 @@ impl Tcp {
         stream.set_nodelay(true)?;
         Ok(Tcp { stream })
     }
+
+    /// Waits at most `wait` for a write to make progress: a printer that stops reading, its
+    /// buffer full or its cover opened mid-job, fails the send rather than holding it for ever.
+    ///
+    /// # Errors
+    /// Any error setting it.
+    pub fn set_send_wait(&mut self, wait: Duration) -> io::Result<()> {
+        self.stream.set_write_timeout(Some(wait.max(Duration::from_millis(1))))
+    }
 }
 
 impl Transport for Tcp {
@@ -69,7 +78,10 @@ pub fn print(
     waits: Waits,
 ) -> Outcome {
     match Tcp::connect(address, waits.status) {
-        Ok(mut tcp) => crate::print(&mut tcp, job, confirm, id, waits),
+        Ok(mut tcp) => match tcp.set_send_wait(waits.word) {
+            Ok(()) => crate::print(&mut tcp, job, confirm, id, waits),
+            Err(_) => Outcome::NotSent(NotSent::Unreachable),
+        },
         Err(_) => Outcome::NotSent(NotSent::Unreachable),
     }
 }

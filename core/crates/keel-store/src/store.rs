@@ -694,6 +694,15 @@ impl<S: Signer, E: Entropy> Store<S, E> {
         self.read(|db| outbox::in_state(db, EffectState::Running))
     }
 
+    /// The effects still to happen, pending or running, in the order they were enqueued: what an
+    /// executor's view shows, without the history of those done or failed.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn unfinished_effects(&self) -> Result<Vec<Queued>, StoreError> {
+        self.read(outbox::unfinished)
+    }
+
     /// Every effect in the outbox, in the order they were enqueued.
     ///
     /// # Errors

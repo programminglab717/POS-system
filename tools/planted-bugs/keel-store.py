@@ -1540,4 +1540,19 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         # Only a unit test changes the terms behind the store's back.
         "unit",
     ),
+    # Rescheduling and the unfinished effects (ADR-0024).
+    (
+        "outbox: a running effect can be rescheduled",
+        "src/outbox.rs",
+        """    expect(db, key, EffectState::Pending)?;
+    db.execute("UPDATE outbox SET due = ?2 WHERE key = ?1", params![key, millis(due)])?;""",
+        """    get(db, key)?.ok_or(EffectError::Unknown)?;
+    db.execute("UPDATE outbox SET due = ?2 WHERE key = ?1", params![key, millis(due)])?;""",
+    ),
+    (
+        "outbox: the unfinished effects include the done",
+        "src/outbox.rs",
+        "WHERE state IN ('pending', 'running') ORDER BY seq",
+        "WHERE state IN ('pending', 'running', 'done') ORDER BY seq",
+    ),
 ]

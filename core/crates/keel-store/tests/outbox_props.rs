@@ -40,10 +40,23 @@ enum Cause {
 
 #[derive(Clone, Debug)]
 enum Step {
-    Enqueue { key: usize, kind: usize, payload: u8, cause: Cause },
+    Enqueue {
+        key: usize,
+        kind: usize,
+        payload: u8,
+        cause: Cause,
+    },
     Start(usize),
     Finish(usize),
-    Retry { key: usize, delay: u16 },
+    Retry {
+        key: usize,
+        delay: u16,
+    },
+    /// A pending effect due at `now` plus `offset`, which may be negative.
+    Reschedule {
+        key: usize,
+        offset: i16,
+    },
     Fail(usize),
     Append,
     Wait(u16),
@@ -68,6 +81,7 @@ fn any_step() -> impl Strategy<Value = Step> {
         4 => k.clone().prop_map(Step::Start),
         2 => k.clone().prop_map(Step::Finish),
         3 => (k.clone(), 0_u16..300).prop_map(|(key, delay)| Step::Retry { key, delay }),
+        2 => (k.clone(), -300_i16..300).prop_map(|(key, offset)| Step::Reschedule { key, offset }),
         1 => k.prop_map(Step::Fail),
         1 => Just(Step::Append),
         2 => (0_u16..200).prop_map(Step::Wait),
@@ -153,6 +167,14 @@ impl Model {
                 }
                 Ok(Outcome::Changed)
             }
+            Step::Reschedule { key, offset } => {
+                let queued = self.get(KEYS[*key]).ok_or(EffectError::Unknown)?;
+                if queued.state != EffectState::Pending {
+                    return Err(EffectError::State(queued.state));
+                }
+                queued.due = at(millis(now) + i64::from(*offset));
+                Ok(Outcome::Changed)
+            }
             Step::Append | Step::Wait(_) => Ok(Outcome::Changed),
         }
     }
@@ -199,6 +221,13 @@ fn agrees(store: &TestStore, model: &Model, now: Timestamp) -> Result<(), TestCa
         }
     }
     prop_assert_eq!(store.running_effects().unwrap(), model.running());
+    let unfinished: Vec<Queued> = model
+        .effects
+        .iter()
+        .filter(|queued| matches!(queued.state, EffectState::Pending | EffectState::Running))
+        .cloned()
+        .collect();
+    prop_assert_eq!(store.unfinished_effects().unwrap(), unfinished);
     for key in KEYS {
         let expected = model.effects.iter().find(|queued| queued.effect.key == key).cloned();
         prop_assert_eq!(store.effect(key).unwrap(), expected);
@@ -267,6 +296,9 @@ proptest! {
                                 Step::Fail(k) => w.fail(KEYS[*k]).map(|()| Outcome::Changed),
                                 Step::Retry { key, delay } => w
                                     .retry(KEYS[*key], at(now_ms + i64::from(*delay)))
+                                    .map(|()| Outcome::Changed),
+                                Step::Reschedule { key, offset } => w
+                                    .reschedule(KEYS[*key], at(now_ms + i64::from(*offset)))
                                     .map(|()| Outcome::Changed),
                                 Step::Append => {
                                     let event = w.append(draft(1, 0), now)?;

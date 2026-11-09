@@ -2,13 +2,15 @@
 //! character, so that a column is a byte.
 //!
 //! - The characters the code page has map to their bytes.
-//! - Spaces of other widths, no-break ones included, become a space; the minus sign and the
-//!   hyphens the code page lacks become `-`.
+//! - Line breaks, tabs and spaces of other widths become a space, and no-break spaces the code
+//!   page's own, `0xA0`, which the layout never breaks a line at and prints as a space; the minus
+//!   sign and the hyphens the code page lacks become `-`.
 //! - Letters with marks the code page lacks become their base letters (`ł` to `l`, `ő` to `o`),
 //!   for Latin Extended-A; combining marks are dropped, so a letter written with one becomes its
 //!   base letter.
-//! - Control and format characters are dropped: C0, DEL, C1, the soft hyphen, and the zero-width
-//!   and direction-changing marks.
+//! - Other control and format characters are dropped: C0, DEL, C1, the soft hyphen, the
+//!   zero-width and direction-changing marks, variation selectors and tags; and so are combining
+//!   marks.
 //! - Anything else becomes `?`.
 //!
 //! So no text yields a byte below `0x20`, nor `0x7F`.
@@ -61,6 +63,9 @@ OoOoRrRrRrSsSsSs\
 SsTtTtTtUuUuUuUu\
 UuUuWwYyYZzZzZzs";
 
+/// The byte of a no-break space: the layout breaks lines only at `0x20`, and prints this as one.
+pub const NO_BREAK_SPACE: u8 = 0xA0;
+
 /// What a character becomes.
 enum Mapped {
     /// One byte.
@@ -77,19 +82,46 @@ fn map(c: char) -> Mapped {
         0x20..=0x7E | 0xA1..=0xAC | 0xAE..=0xFF => {
             u8::try_from(code).map_or(Mapped::Byte(b'?'), Mapped::Byte)
         }
-        0xA0 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000 => Mapped::Byte(b' '),
+        // No-break spaces stay no-break: the layout never breaks a line there, and prints a space.
+        0xA0 | 0x2007 | 0x202F => Mapped::Byte(NO_BREAK_SPACE),
+        // Line breaks and tabs separate words, as other spaces do.
+        0x09..=0x0D
+        | 0x85
+        | 0x1680
+        | 0x2000..=0x2006
+        | 0x2008..=0x200A
+        | 0x2028
+        | 0x2029
+        | 0x205F
+        | 0x3000 => Mapped::Byte(b' '),
+        // Controls, format characters and combining marks.
         0xAD
-        | 0x00..=0x1F
-        | 0x7F..=0x9F
+        | 0x00..=0x08
+        | 0x0E..=0x1F
+        | 0x7F..=0x84
+        | 0x86..=0x9F
         | 0x0300..=0x036F
+        | 0x061C
+        | 0x180E
+        | 0x1AB0..=0x1AFF
+        | 0x1DC0..=0x1DFF
         | 0x200B..=0x200F
-        | 0x2028..=0x202E
+        | 0x202A..=0x202E
+        | 0x20D0..=0x20FF
         | 0x2060..=0x206F
         | 0xFE00..=0xFE0F
-        | 0xFEFF => Mapped::Dropped,
+        | 0xFE20..=0xFE2F
+        | 0xFEFF
+        | 0xFFF9..=0xFFFB
+        | 0xE0000..=0xE007F => Mapped::Dropped,
         0x0132 => Mapped::Two(b'I', b'J'),
         0x0133 => Mapped::Two(b'i', b'j'),
-        0x2010..=0x2012 | 0x2015 | 0x2212 => Mapped::Byte(b'-'),
+        // Romanian's letters with a comma below.
+        0x0218 => Mapped::Byte(b'S'),
+        0x0219 => Mapped::Byte(b's'),
+        0x021A => Mapped::Byte(b'T'),
+        0x021B => Mapped::Byte(b't'),
+        0x2010..=0x2012 | 0x2015 | 0x2043 | 0x2212 | 0xFE63 | 0xFF0D => Mapped::Byte(b'-'),
         _ => {
             if let Some(at) = HIGH.iter().position(|high| *high == Some(c)) {
                 // `at` is below 32.
@@ -156,9 +188,18 @@ mod tests {
 
     #[test]
     fn other_spaces_and_dashes_become_the_code_pages() {
-        assert_eq!(encode("EUR\u{a0}12.34"), b"EUR 12.34");
-        assert_eq!(encode("12\u{202f}345\u{2009}6\u{3000}"), b"12 345 6 ");
+        assert_eq!(encode("EUR\u{a0}12.34"), b"EUR\xa012.34");
+        assert_eq!(
+            encode("12\u{202f}345\u{2007}6\u{2009}7\u{3000}\u{1680}"),
+            b"12\xa0345\xa06 7  "
+        );
+        // Found in review: line breaks and tabs were dropped, gluing words together.
+        assert_eq!(
+            encode("123 Main St\nSpringfield\tNY\r\n\u{2028}x\u{2029}y\u{85}z"),
+            b"123 Main St Springfield NY   x y z"
+        );
         assert_eq!(encode("\u{2212}5 a\u{2010}b\u{2011}c\u{2012}d\u{2015}"), b"-5 a-b-c-d-");
+        assert_eq!(encode("\u{2043}\u{fe63}\u{ff0d}"), b"---");
     }
 
     #[test]
@@ -167,17 +208,32 @@ mod tests {
         assert_eq!(encode("Ő ű ř ğ ı İ Ĳsselmeer ĳs ſ"), b"O u r g i I IJsselmeer ijs s");
         // Combining marks are dropped: an e written with a combining acute is an e.
         assert_eq!(encode("e\u{301}"), b"e");
-        for code in 0x100..=0x17F_u32 {
+        // Every letter of Latin Extended-A. Those Unicode decomposes become the first character of
+        // their decomposition, as Python's `unicodedata.normalize("NFD", c)[0]` gives it; the 20
+        // it doesn't decompose are named after the letter they look like; the code page's own
+        // (`Œ œ Š š Ÿ Ž ž`) are themselves, and the digraphs two letters.
+        let expected = "AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIiIiJjKkkLlLlLlLlLlNnNnNnnNnOoOoOoŒœRrRrRrSsSsSsŠšTtTtTtUuUuUuUuUuUuWwYyŸZzZzŽžs";
+        for (code, expected) in (0x100..=0x17F_u32).zip(expected.chars()) {
             let c = char::from_u32(code).unwrap();
-            let bytes = encode(&c.to_string());
-            assert!(bytes.iter().all(u8::is_ascii_alphabetic) || bytes.len() == 1, "{c}");
+            let want = match c {
+                'Ĳ' => b"IJ".to_vec(),
+                'ĳ' => b"ij".to_vec(),
+                _ => encode(&expected.to_string()),
+            };
+            assert_eq!(encode(&c.to_string()), want, "{c}");
         }
     }
 
     #[test]
     fn controls_and_format_characters_are_dropped() {
-        let text = "a\u{0}\u{4}\u{10}\u{1b}\n\t\u{7f}\u{85}\u{9b}\u{ad}\u{200b}\u{200e}\u{202e}\u{2066}\u{feff}\u{fe0f}b";
+        let text = "a\u{0}\u{4}\u{10}\u{1b}\u{7f}\u{9b}\u{ad}\u{200b}\u{200e}\u{202e}\u{2066}\u{feff}\u{fe0f}b";
         assert_eq!(encode(text), b"ab");
+        // Found in review: these printed as `?`. A direction mark, a vowel separator, annotation
+        // marks, tags (England's flag is a black flag and six of them), and combining marks
+        // outside the first block.
+        let more = "a\u{61c}\u{180e}\u{fff9}\u{fffb}\u{e0067}\u{e007f}e\u{20dd}1\u{fe0f}\u{20e3}\u{1ab0}\u{1dc0}\u{fe20}b";
+        assert_eq!(encode(more), b"ae1b");
+        assert_eq!(encode("ș ț Ș Ț s\u{326}"), b"s t S T s");
     }
 
     #[test]

@@ -128,7 +128,10 @@ fn jobs_wait_for_a_printer_and_go_to_it_one_at_a_time_in_order() {
     let drawer = runtime.next_print_job().unwrap().unwrap();
     assert_eq!(drawer.kind, JobKind::Drawer);
     assert_eq!(drawer.bytes, render(&doc_of(&runtime, drawer.job), &PRINTER));
-    assert_eq!(drawer.process_id, *b"0001");
+    // Its process ID comes from the job and its attempt, so no two jobs share one.
+    let process =
+        |job, attempts| keel_doc::escpos::process_id(crate::print::process_number(job, attempts));
+    assert_eq!(drawer.process_id, process(drawer.job, 1));
     // One at a time: the receipt waits while the drawer's job is with the driver.
     assert_eq!(runtime.next_print_job().unwrap(), None);
     assert_eq!(
@@ -138,6 +141,7 @@ fn jobs_wait_for_a_printer_and_go_to_it_one_at_a_time_in_order() {
     runtime.print_outcome(drawer.job, PRINTED).unwrap();
     let receipt = runtime.next_print_job().unwrap().unwrap();
     assert_eq!(receipt.kind, JobKind::Receipt);
+    assert_ne!(receipt.process_id, drawer.process_id);
     runtime.print_outcome(receipt.job, Outcome::Printed { paper_low: true }).unwrap();
     assert_eq!(states(&runtime), []);
     assert_eq!(runtime.next_print_job().unwrap(), None);
@@ -277,4 +281,98 @@ fn a_spanish_receipt_says_so_in_spanish() {
     let order = runtime.store().orders(keel_store::OrderState::Closed).unwrap()[0].id;
     let reprint = runtime.reprint(order).unwrap();
     assert!(plain_text(&doc_of(&runtime, reprint), Columns::PAPER_80MM).contains("REIMPRESIÓN"));
+}
+
+/// Found in review: a receipt past a document's 1,000 blocks failed the closing write, so a large
+/// order couldn't be paid; and one just under it couldn't be reprinted.
+#[test]
+fn a_large_order_is_paid_and_its_receipt_says_how_many_lines_it_leaves_out() {
+    let scratch = Scratch::new();
+    let mut runtime = signed_in(&scratch);
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    for _ in 0..200 {
+        runtime.add_item(order, id(0x403), &big_latte(), NonZeroU32::MIN).unwrap();
+    }
+    runtime.pay_cash(order, usd(1_000_000)).unwrap();
+    let job = runtime.print_jobs().unwrap()[1].job;
+    let doc = doc_of(&runtime, job);
+    assert!(doc.blocks().len() <= keel_doc::doc::MAX_BLOCKS - 2);
+    let text = plain_text(&doc, Columns::PAPER_80MM);
+    // 800 blocks of lines, five to a latte: 160 shown, 40 left out.
+    assert!(text.contains("… 40 more lines"), "{text}");
+    assert!(text.contains("TOTAL"));
+    let reprint = runtime.reprint(order).unwrap();
+    assert_eq!(doc_of(&runtime, reprint).blocks().len(), doc.blocks().len() + 2);
+}
+
+/// Found in review: a receipt whose encoding passed what an effect holds failed the sale too. It
+/// is printed short instead.
+#[test]
+fn a_receipt_too_big_for_the_outbox_is_printed_short() {
+    let scratch = Scratch::new();
+    let profile = crate::tests::demo_with(|data| {
+        let template = data.rules.taxes[0].clone();
+        data.rules.taxes = (0..64_u64)
+            .map(|n| keel_pricing::Tax {
+                id: id(0x7000 + n),
+                name: "税".repeat(200),
+                rate: keel_types::Rate::from_basis_points(10),
+                ..template.clone()
+            })
+            .collect();
+        // A latte whose name takes 570 bytes, so that its lines fill their budget.
+        data.catalog.items[1].name = keel_domain::codec::Name::new(&"珈".repeat(190)).unwrap();
+    });
+    let mut runtime = crate::tests::register(&scratch, profile);
+    runtime.sign_in(id(0x501)).unwrap();
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    for _ in 0..150 {
+        runtime.add_item(order, id(0x403), &big_latte(), NonZeroU32::MIN).unwrap();
+    }
+    runtime.pay_cash(order, usd(1_000_000)).unwrap();
+    let job = runtime.print_jobs().unwrap()[1].job;
+    let text = plain_text(&doc_of(&runtime, job), Columns::PAPER_80MM);
+    assert!(text.contains("The register shows this order in full."), "{text}");
+    assert!(text.contains("TOTAL") && text.contains("Change"), "{text}");
+}
+
+/// Found in review: jobs enqueued just before the clock was set back waited for it to catch up,
+/// so the drawer didn't open.
+#[test]
+fn jobs_the_clock_left_behind_are_due_at_once() {
+    let scratch = Scratch::new();
+    let mut runtime = signed_in(&scratch);
+    sale(&mut runtime);
+    runtime.set_printer(PRINTER);
+    let back: keel_types::Timestamp = "2026-10-02T12:00:00Z".parse().unwrap();
+    runtime.clock().set(back);
+    let drawer = runtime.next_print_job().unwrap().unwrap();
+    assert_eq!(drawer.kind, JobKind::Drawer);
+    // Not sent, it waits its 2 s from the clock as it reads now, not from where it was.
+    runtime.print_outcome(drawer.job, Outcome::NotSent(NotSent::Offline)).unwrap();
+    let receipt = runtime.next_print_job().unwrap().unwrap();
+    assert_eq!(receipt.kind, JobKind::Receipt);
+    runtime.print_outcome(receipt.job, PRINTED).unwrap();
+    assert_eq!(runtime.next_print_job().unwrap(), None);
+    later(&mut runtime, Duration::from_secs(2));
+    assert_eq!(runtime.next_print_job().unwrap().unwrap().job, drawer.job);
+}
+
+/// Found in review: a reprint was recognised only in the runtime's language, so after the locale
+/// changed a reprint could be taken for the original and marked again.
+#[test]
+fn reprints_are_recognised_in_any_language() {
+    let scratch = Scratch::new();
+    let mut runtime = crate::tests::register_with_locale(&scratch, Locale::ES_US);
+    runtime.sign_in(id(0x501)).unwrap();
+    let order = sale(&mut runtime);
+    runtime.reprint(order).unwrap();
+    drop(runtime);
+    let mut runtime = crate::tests::register_with_locale(&scratch, Locale::EN_US);
+    let job = runtime.reprint(order).unwrap();
+    let banner = |text: &str| Block::text(text, keel_doc::Align::Center, keel_doc::Style::LARGE);
+    let (english, spanish) = (banner("REPRINT"), banner("REIMPRESIÓN"));
+    let blocks = doc_of(&runtime, job).blocks().to_vec();
+    assert_eq!(blocks.iter().filter(|b| **b == english || **b == spanish).count(), 2);
+    assert_eq!(doc_of(&runtime, job).blocks()[0], crate::receipt::reprint_banner(Locale::EN_US));
 }

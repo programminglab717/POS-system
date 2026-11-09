@@ -107,6 +107,8 @@ enum Step {
     ToDue {
         early: bool,
     },
+    /// The clock set back, as a correction does.
+    Back(u64),
     /// The runtime stops and opens again, and the shell sets the printer again, or doesn't.
     Restart {
         printer: bool,
@@ -139,6 +141,7 @@ fn any_step() -> impl Strategy<Value = Step> {
         3 => prop::sample::select(vec![0_u64, 1_999, 2_000, 3_999, 4_000, 16_000, 60_000, 120_000]).prop_map(Step::Later),
         3 => any::<bool>().prop_map(|early| Step::ToDue { early }),
         1 => prop::bool::weighted(0.75).prop_map(|printer| Step::Restart { printer }),
+        1 => prop::sample::select(vec![1_000_u64, 59_000, 61_000, 3_600_000]).prop_map(Step::Back),
     ]
 }
 
@@ -225,10 +228,15 @@ proptest! {
                     let expected = if !model.printer || model.sending().is_some() {
                         None
                     } else {
-                        // The earliest due, then the earliest enqueued.
+                        // The earliest due, then the earliest enqueued; a job due later than any wait
+                        // it could have been given was left behind by the clock, and is due now.
+                        let due = |k: usize| {
+                            let job = &model.jobs[k];
+                            if job.due > model.now + 60_000 { model.now } else { job.due }
+                        };
                         (0..model.jobs.len())
-                            .filter(|&k| model.jobs[k].state == Some(JobState::Queued) && model.jobs[k].due <= model.now)
-                            .min_by_key(|&k| (model.jobs[k].due, k))
+                            .filter(|&k| model.jobs[k].state == Some(JobState::Queued) && due(k) <= model.now)
+                            .min_by_key(|&k| (due(k), k))
                     };
                     let got = runtime.next_print_job().unwrap();
                     match (expected, got) {
@@ -288,6 +296,12 @@ proptest! {
                     let order = *at.get(&model.orders);
                     runtime.reprint(order).unwrap();
                     model.enqueued(&runtime, &[JobKind::Receipt]);
+                }
+                Step::Back(millis) => {
+                    let now = runtime.clock().now();
+                    let back = Timestamp::from_millis(now.as_millis() - i64::try_from(millis).unwrap()).unwrap();
+                    runtime.clock().set(back);
+                    model.now -= i64::try_from(millis).unwrap();
                 }
                 Step::Later(millis) => {
                     runtime.clock().advance(Duration::from_millis(millis)).unwrap();

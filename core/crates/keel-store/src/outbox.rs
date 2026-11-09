@@ -241,6 +241,15 @@ pub(crate) fn in_state(db: &Connection, state: EffectState) -> Result<Vec<Queued
     rows.map(|row| row?).collect()
 }
 
+/// The effects still to happen, pending or running, in the order they were enqueued.
+pub(crate) fn unfinished(db: &Connection) -> Result<Vec<Queued>, StoreError> {
+    let mut statement = db.prepare(&format!(
+        "SELECT {COLUMNS} FROM outbox WHERE state IN ('pending', 'running') ORDER BY seq"
+    ))?;
+    let rows = statement.query_map([], queued)?;
+    rows.map(|row| row?).collect()
+}
+
 /// Checks every effect: that it reads, its cause is stored, and its state, attempts and start
 /// time agree. An effect is started once for each attempt, and keeps its last start time.
 pub(crate) fn check(db: &Connection, problems: &mut Vec<Problem>) -> Result<(), StoreError> {
@@ -340,6 +349,14 @@ pub(crate) fn start(db: &Connection, key: &[u8], now: Timestamp) -> Result<Queue
 pub(crate) fn end(db: &Connection, key: &[u8], state: EffectState) -> Result<(), StoreError> {
     expect(db, key, EffectState::Running)?;
     db.execute("UPDATE outbox SET state = ?2 WHERE key = ?1", params![key, state.code()])?;
+    Ok(())
+}
+
+/// Makes the pending effect with key `key` due at `due` instead, earlier or later: for an
+/// executor whose clock was set back, so that what it enqueued "now" isn't left waiting.
+pub(crate) fn reschedule(db: &Connection, key: &[u8], due: Timestamp) -> Result<(), StoreError> {
+    expect(db, key, EffectState::Pending)?;
+    db.execute("UPDATE outbox SET due = ?2 WHERE key = ?1", params![key, millis(due)])?;
     Ok(())
 }
 

@@ -15,6 +15,10 @@ use crate::views::Ticket;
 /// with more lines than fit ends its list with how many more there are.
 const MAX_LINES_BYTES: usize = 40_000;
 
+/// The most blocks a receipt's lines take: a document holds 1,000, and the rest of a receipt, its
+/// taxes included, and a reprint's two banners need the others.
+const MAX_LINES_BLOCKS: usize = 800;
+
 /// A receipt's words, in one language.
 struct Words {
     order: &'static str,
@@ -27,6 +31,7 @@ struct Words {
     thanks: &'static str,
     reprint: &'static str,
     more: &'static str,
+    see_register: &'static str,
     prefixes: [&'static str; 6],
 }
 
@@ -41,6 +46,7 @@ const ENGLISH: Words = Words {
     thanks: "Thank you!",
     reprint: "REPRINT",
     more: "more lines",
+    see_register: "The register shows this order in full.",
     prefixes: ["", "No", "Extra", "Light", "Side", "Sub"],
 };
 
@@ -55,6 +61,7 @@ const SPANISH: Words = Words {
     thanks: "¡Gracias!",
     reprint: "REIMPRESIÓN",
     more: "líneas más",
+    see_register: "La caja muestra esta orden completa.",
     prefixes: ["", "Sin", "Extra", "Poco", "Aparte", "Cambio a"],
 };
 
@@ -65,6 +72,13 @@ fn words(locale: Locale) -> &'static Words {
 /// The banner a reprint carries above and below, in `locale`'s language.
 pub(crate) fn reprint_banner(locale: Locale) -> Block {
     Block::text(words(locale).reprint, Align::Center, Style::LARGE)
+}
+
+/// Whether `block` is a reprint's banner, in any language a receipt is printed in.
+pub(crate) fn is_banner(block: &Block) -> bool {
+    [ENGLISH.reprint, SPANISH.reprint]
+        .iter()
+        .any(|reprint| *block == Block::text(*reprint, Align::Center, Style::LARGE))
 }
 
 /// What a receipt needs besides the ticket.
@@ -179,7 +193,9 @@ fn lines(ticket: &Ticket, words: &Words, locale: Locale) -> Result<Vec<Block>, R
             });
         }
         let bytes: usize = these.iter().map(block_size).sum();
-        if size.saturating_add(bytes) > MAX_LINES_BYTES {
+        if size.saturating_add(bytes) > MAX_LINES_BYTES
+            || lines.len().saturating_add(these.len()) > MAX_LINES_BLOCKS
+        {
             break;
         }
         size = size.saturating_add(bytes);
@@ -195,6 +211,39 @@ fn lines(ticket: &Ticket, words: &Words, locale: Locale) -> Result<Vec<Block>, R
         ));
     }
     Ok(lines)
+}
+
+/// A receipt for when the whole one can't be made, because its parts go past what a document
+/// or an effect holds: the location, the order, what it cost and the change, and a line saying
+/// the register shows the rest.
+pub(crate) fn short(
+    ticket: &Ticket,
+    closing: &Closing<'_>,
+    profile: &Profile,
+    locale: Locale,
+) -> Result<Doc, RuntimeError> {
+    let words = words(locale);
+    let id = ticket.order.to_string();
+    let short = id.get(id.len().saturating_sub(6)..).unwrap_or_default().to_uppercase();
+    let mut blocks = vec![
+        Block::text(profile.data().name.as_str(), Align::Center, Style::LARGE),
+        Block::Rule,
+        Block::row(format!("{} {short}", words.order), closing.at.to_string()),
+        Block::Rule,
+        Block::row(words.total, ticket.total.text.clone()),
+    ];
+    for payment in closing.payments {
+        let Some(captured) = payment.captured() else { continue };
+        if let Some(change) = captured.change() {
+            blocks.push(Block::row(words.change, locale.money(change)));
+        }
+    }
+    blocks.extend([
+        Block::text(words.see_register, Align::Left, Style::default()),
+        Block::Feed(2),
+        Block::Cut,
+    ]);
+    Ok(Doc::new(blocks)?)
 }
 
 fn prefix_code(prefix: Prefix) -> u8 {

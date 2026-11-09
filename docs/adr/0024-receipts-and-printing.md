@@ -1,6 +1,7 @@
 # ADR-0024: Receipts and printing: KeelDoc v0, an ESC/POS renderer, a raw TCP driver, and print jobs in the outbox that are never sent twice by themselves
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-09) after review, with the details settled in building and
+  reviewing it, under "As built"
 - **Date:** 2026-11-09
 
 ## Context
@@ -183,6 +184,56 @@ Printers constrain the design:
     - the driver against a scripted fake printer on TCP: printing, each status that refuses,
       garbled status, a reset mid-job, silence after the job, and a printer without `GS ( H`;
     - planted bugs, caught by the property tests where they can reach them.
+
+## As built
+
+Details settled in building slice 2, and in its review, which three independent reviewers made
+of the documents, the driver and the runtime's jobs:
+
+- **The outbox gains two operations** (amends [ADR-0017](./0017-projections-and-outbox.md)):
+  `reschedule`, which gives a pending effect another due time, and `unfinished_effects`, the
+  pending and running effects in the order they were enqueued, without the history of those
+  done or failed, which the job views read.
+- **Which job goes next**: the earliest due, then the earliest enqueued; a job waiting to be
+  tried again lets those behind it go. A job due later than the longest wait it could have been
+  given (60 s) was left behind by a clock set back: it is due at once, rescheduled in the write
+  that starts it. The review found the drawer staying shut for an hour after such a correction.
+- **Nothing about a receipt refuses a sale.** Its lines take at most 800 blocks and about 40 KB,
+  and an order with more says how many lines it leaves out; a receipt that still goes past what
+  a document or an effect holds is printed short (the location, the order, the total, the
+  change, and that the register shows the rest). The review found that a cash order of about 200
+  lines couldn't be paid, its receipt past the document's 1,000 blocks.
+- **Reprints** print the document the order printed when it closed, found by the job's cause,
+  its closing event, so they show the cashier and the time of the close; the banner is known in
+  either language, so a reprint is never taken for an original after the locale changes.
+- **Process IDs** come from the job's identifier and its attempt, so that a late answer for one
+  job is never taken for another's: the first build gave nearly every job `0001`.
+- **Text** (amends decision 3): line breaks and tabs become spaces, where the first build
+  dropped them and glued words together; no-break spaces stay `0xA0` through the layout, which
+  never breaks a line there, and print as spaces, so an amount never splits from its symbol;
+  more format characters (tags, annotation marks, the Arabic letter mark) and combining marks
+  beyond the first block are dropped rather than printed as `?`; and Romanian's letters with a
+  comma below become their base letters. The Latin Extended-A table is checked against
+  Unicode's decompositions.
+- **The renderer** aligns lines by padding them, with `ESC a 0` once, so the plain text and the
+  paper agree; a cut without a cutter feeds plain lines, whatever style came before.
+- **Limits**: 1,000 bytes in each of a block's texts, so a row holds two; rows indented at most 8
+  columns.
+- **The driver** (amends decision 6) reads the printer's answers as blocks: automatic status
+  blocks (`GS a`), which a printer may send unasked, at connection open too, and "header to
+  NUL" blocks are never taken for an answer, where the first build took any byte with bits 4 and
+  7 clear for `GS r 1`'s. For a printer that confirms nothing, the job is printed only once the
+  printer closes the connection itself, where the first build said so the moment it queued its
+  own end. A send waits at most as long as the word would for a write to make progress, where
+  the first build could block for ever on a printer that stopped reading. Each answer is read in
+  at most 16 reads, each waiting its time.
+- **The encoding is pinned** against Python's `cbor2` with every kind of block, every field of
+  a row and every style bit, since its documents are on disk in the outbox: the first build
+  pinned one block, and a consistent change to the encoder and decoder passed every test.
+- **A risk to measure on the reference printer** (slice 4): rows and rules fill their line to
+  the last column before its line feed. Epson's printers wrap only when the next character
+  doesn't fit; some generic firmware wraps as the line fills, and would feed an empty line after
+  each.
 
 ## Consequences
 

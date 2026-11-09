@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5e7cc4ba58abbe4499b938c43700927dbdb8ba9c43fe387a39dbea2eb7320165 # shrinks to doc = Doc { blocks: [Row { left: "\u{a0}", right: "$0.00", indent: 0, style: Style { bold: false, wide: false, tall: false } }] }, columns = Columns(24), cutter = false
+cc 40afcea8d2014c63cd25ec10ca804d6fdd78ece1ca4edecdf3bb3e58c1999427 # shrinks to (doc, texts) = (Doc { blocks: [Text { text: "", align: Left, style: Style { bold: false, wide: false, tall: true } }, Cut] }, [[[]], []]), columns = Columns(24), cutter = false

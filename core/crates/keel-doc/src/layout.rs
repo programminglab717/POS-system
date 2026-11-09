@@ -97,7 +97,13 @@ pub fn layout(doc: &Doc, columns: Columns) -> Vec<Laid> {
     out
 }
 
-fn line_of(text: Vec<u8>, style: Style) -> Laid {
+/// A line, its no-break spaces printed as spaces.
+fn line_of(mut text: Vec<u8>, style: Style) -> Laid {
+    for byte in &mut text {
+        if *byte == text::NO_BREAK_SPACE {
+            *byte = b' ';
+        }
+    }
     Laid::Line(Line { text, style })
 }
 
@@ -263,6 +269,23 @@ mod tests {
         assert_eq!(lines(vec![Block::row("Cash", "")], 24), ["Cash"]);
         // Nothing on its left is its right, aligned right.
         assert_eq!(lines(vec![Block::row("", "$1.00")], 24), [format!("{}$1.00", " ".repeat(19))]);
+    }
+
+    /// Found in review: no-break spaces became spaces before the layout, so an amount could break
+    /// between its symbol and its digits.
+    #[test]
+    fn lines_never_break_at_a_no_break_space() {
+        // With spaces it would be "Amount due today: EUR" and "12.34".
+        let due = Block::text("Amount due today: EUR\u{a0}12.34", Align::Left, Style::default());
+        assert_eq!(lines(vec![due], 24), ["Amount due today:", "EUR 12.34"]);
+        let total = Block::text("Total: 1\u{202f}234\u{202f}567,89", Align::Left, Style::default());
+        assert_eq!(lines(vec![total], 24), ["Total: 1 234 567,89"]);
+        let amount = Block::text("Due EUR\u{a0}12.34 now", Align::Left, Style::default());
+        assert_eq!(lines(vec![amount], 24), ["Due EUR 12.34 now"]);
+        assert_eq!(
+            lines(vec![Block::row("Cash", "-EUR\u{a0}12.34")], 24),
+            ["Cash          -EUR 12.34"]
+        );
     }
 
     #[test]

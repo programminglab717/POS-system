@@ -129,12 +129,25 @@ pub(crate) fn view(queued: &Queued, sending: Option<Id<Job>>) -> Option<JobView>
     Some(JobView { job, kind, state, attempts: queued.attempts })
 }
 
+/// The longest a job waits before it is tried again.
+pub(crate) const MAX_WAIT: Duration = Duration::from_secs(60);
+
+/// The number a job's process ID is made from, for its attempt `attempts`: from its identifier's
+/// random bits and the attempt, so that the printer's word for one job is never taken for
+/// another's.
+pub(crate) fn process_number(job: Id<Job>, attempts: u32) -> u64 {
+    let bytes = job.to_bytes();
+    let tail: [u8; 8] = bytes.get(8..).and_then(|tail| tail.try_into().ok()).unwrap_or_default();
+    // Wrapping is the point: only the number's last digits are used.
+    u64::from_be_bytes(tail).wrapping_add(u64::from(attempts))
+}
+
 /// How long a job that wasn't sent waits before it is tried again: 2 s after its first
 /// attempt, doubling to at most 60 s.
 pub(crate) fn backoff(attempts: u32) -> Duration {
     let doublings = attempts.saturating_sub(1).min(5);
     let wait = 2_u64.checked_shl(doublings).unwrap_or(60);
-    Duration::from_secs(wait.min(60))
+    Duration::from_secs(wait).min(MAX_WAIT)
 }
 
 /// `now`, `wait` later.

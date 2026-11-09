@@ -54,34 +54,27 @@ BUGS = [
     (
         "text: C1 controls are printed as the code page's characters",
         "src/text.rs",
-        "        | 0x7F..=0x9F\n",
-        "        | 0x7F..=0x7F\n",
-        # A C1 control maps to `?`, which the property, encoding with the same table, can't tell
-        # from the right answer.
-        "unit",
+        "        | 0x86..=0x9F\n",
+        "        | 0x86..=0x86\n",
     ),
     (
         "text: no-break spaces stay no-break",
         "src/text.rs",
-        "        0xA0 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000 => Mapped::Byte(b' '),",
-        "        0x2000..=0x200A | 0x202F | 0x205F | 0x3000 => Mapped::Byte(b' '),",
-        # 0xA0 then prints as itself, a printable byte the property's model takes as a letter.
-        "unit",
+        "        0xA0 | 0x2007 | 0x202F => Mapped::Byte(NO_BREAK_SPACE),",
+        "        0x2007 | 0x202F => Mapped::Byte(NO_BREAK_SPACE),",
     ),
     (
         "text: letters with marks become a question mark",
         "src/text.rs",
         "            Mapped::Byte(base.copied().unwrap_or(b'?'))",
         "            Mapped::Byte(base.map_or(b'?', |_| b'?'))",
-        # As above: the model encodes with the same table.
-        "unit",
     ),
     # The ESC/POS renderer.
     (
         "escpos: bold is never turned off",
         "src/escpos.rs",
-        "if line.style.bold != current.bold {",
-        "if line.style.bold && !current.bold {",
+        "        if style.bold != current.bold {",
+        "        if style.bold && !current.bold {",
     ),
     (
         "escpos: a printer without a cutter is sent the cut",
@@ -130,6 +123,38 @@ BUGS = [
         "Block::Feed(lines) if *lines == 0 || *lines > MAX_FEED => {",
         "Block::Feed(lines) if *lines > MAX_FEED => {",
         # The random documents' feeds are valid.
+        "unit",
+    ),
+    # Found in review.
+    (
+        "layout: no-break spaces print as the code page's",
+        "src/layout.rs",
+        "        if *byte == text::NO_BREAK_SPACE {",
+        "        if *byte == text::NO_BREAK_SPACE && byte.is_ascii() {",
+    ),
+    (
+        "text: line breaks and tabs glue words together",
+        "src/text.rs",
+        "        0x09..=0x0D\n",
+        "        0x0B..=0x0C\n",
+    ),
+    (
+        "text: tags print as question marks",
+        "src/text.rs",
+        "        | 0xE0000..=0xE007F => Mapped::Dropped,",
+        "        | 0xE0000..=0xE0000 => Mapped::Dropped,",
+    ),
+    (
+        "escpos: a cut without a cutter feeds in the style before it",
+        "src/escpos.rs",
+        "                    line(&mut out, &[], Style::default());",
+        "                    out.push(LINE_FEED);",
+    ),
+    (
+        "escpos: any byte that starts with bit 4 is automatic status",
+        "src/escpos.rs",
+        "    byte & 0b1001_0011 == 0b0001_0000",
+        "    byte & 0b0001_0000 == 0b0001_0000",
         "unit",
     ),
 ]

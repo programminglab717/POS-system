@@ -7,11 +7,15 @@
 //! 2. The job. A send that fails before any of its bytes is accepted is [`Outcome::NotSent`];
 //!    one that fails after is [`Outcome::Unconfirmed`].
 //! 3. The printer's word, as its profile says: `GS ( H`, answered once the job has printed;
-//!    `GS r 1`, answered once it is processed; or nothing, where a clean close is all there is.
-//!    No word in time is [`Outcome::Unconfirmed`].
+//!    `GS r 1`, answered once it is processed; or, for a printer with neither, its own clean
+//!    close of the connection once it has read the job. No word in time is
+//!    [`Outcome::Unconfirmed`].
 //!
-//! The driver reads no clock: a transport waits at most a given time for each answer, and the
-//! driver reads a bounded number of bytes for each.
+//! The printer's answers are read as blocks, so that a block of automatic status back (`GS a`),
+//! which a printer may send unasked, is never taken for an answer.
+//!
+//! The driver reads no clock: a transport waits at most a given time for each read and each
+//! write, and the driver makes a bounded number of reads for each answer.
 //!
 //! A platform crate: [`tcp`] is the transport over `std::net`, to port 9100.
 
@@ -121,8 +125,12 @@ pub enum Outcome {
     Unconfirmed(Unconfirmed),
 }
 
-/// The most bytes read while waiting for the printer's word: anything else it sends is skipped.
-const MAX_SKIPPED: usize = 256;
+/// The most reads the driver makes while waiting for an answer, each waiting at most its time:
+/// anything else the printer sends is skipped.
+const MAX_READS: usize = 16;
+
+/// The most automatic status blocks skipped while waiting for a status.
+const MAX_AUTOMATIC: usize = 4;
 
 /// Runs `job`, rendered ESC/POS bytes, against the printer at the other end of `transport`, which
 /// confirms jobs as `confirm` says, under the process ID `id`.
@@ -152,12 +160,17 @@ pub fn print(
     }
     let word = match confirm {
         Confirm::Printed => {
-            wait_for(transport, waits.word, |seen| seen.ends_with(&escpos::printed(id)))
+            let printed = escpos::printed(id);
+            wait_for(transport, waits.word, |answers| {
+                answers.iter().any(|answer| *answer == printed)
+            })
         }
-        Confirm::Processed => wait_for(transport, waits.word, |seen| {
-            seen.last().is_some_and(|byte| escpos::is_processed(*byte))
+        Confirm::Processed => wait_for(transport, waits.word, |answers| {
+            answers
+                .iter()
+                .any(|answer| matches!(answer.as_slice(), [byte] if escpos::is_processed(*byte)))
         }),
-        Confirm::Nothing => transport.finish().map_err(|_| Unconfirmed::SendFailed),
+        Confirm::Nothing => closed(transport, waits.word),
     };
     match word {
         Ok(()) => Outcome::Printed { paper_low },
@@ -182,41 +195,107 @@ fn ready(transport: &mut impl Transport, wait: Duration) -> Result<Paper, NotSen
     if paper.end { Err(NotSent::PaperOut) } else { Ok(paper) }
 }
 
-/// Asks `question`, and reads the status byte that answers it.
+/// Asks `question`, and reads the status byte that answers it, skipping automatic status
+/// blocks.
 fn ask(transport: &mut impl Transport, question: Question, wait: Duration) -> Result<u8, NotSent> {
     transport.send(&escpos::status(question)).map_err(|_| NotSent::NoAnswer)?;
     let mut byte = [0_u8; 1];
-    match transport.receive(&mut byte, wait) {
-        Ok(1) if escpos::is_status(byte[0]) => Ok(byte[0]),
-        Ok(1) => Err(NotSent::NotAStatus(byte[0])),
-        _ => Err(NotSent::NoAnswer),
+    let mut skip = [0_u8; 3];
+    for _ in 0..=MAX_AUTOMATIC {
+        match transport.receive(&mut byte, wait) {
+            Ok(1) if escpos::is_status(byte[0]) => return Ok(byte[0]),
+            Ok(1) if escpos::is_automatic_status(byte[0]) => {
+                receive_exact(transport, &mut skip, wait).map_err(|()| NotSent::NoAnswer)?;
+            }
+            Ok(1) => return Err(NotSent::NotAStatus(byte[0])),
+            _ => return Err(NotSent::NoAnswer),
+        }
+    }
+    Err(NotSent::NoAnswer)
+}
+
+/// Fills `buf` from the printer, each read waiting at most `wait`.
+fn receive_exact(transport: &mut impl Transport, buf: &mut [u8], wait: Duration) -> Result<(), ()> {
+    let mut filled = 0_usize;
+    for _ in 0..MAX_READS {
+        let Some(rest) = buf.get_mut(filled..).filter(|rest| !rest.is_empty()) else {
+            return Ok(());
+        };
+        match transport.receive(rest, wait) {
+            Ok(0) | Err(_) => return Err(()),
+            Ok(n) => filled = filled.saturating_add(n),
+        }
+    }
+    if filled >= buf.len() { Ok(()) } else { Err(()) }
+}
+
+/// The printer's answers, read as blocks: an automatic status block of four bytes; a "header
+/// to NUL" block, such as a process ID response, from `0x37` to its `0x00`; or a single byte.
+#[derive(Default)]
+struct Blocks {
+    answers: Vec<Vec<u8>>,
+    current: Vec<u8>,
+}
+
+impl Blocks {
+    fn push(&mut self, byte: u8) {
+        let head = self.current.first().copied().unwrap_or(byte);
+        self.current.push(byte);
+        let whole = if escpos::is_automatic_status(head) {
+            self.current.len() == 4
+        } else if head == 0x37 {
+            byte == 0 && self.current.len() > 1
+        } else {
+            true
+        };
+        if whole {
+            self.answers.push(core::mem::take(&mut self.current));
+        }
     }
 }
 
-/// Reads from the printer until what it sent satisfies `done`, each read waiting at most `wait`.
+/// Whether `error` is a read that waited its time for nothing.
+fn timed_out(error: &io::Error) -> bool {
+    matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)
+}
+
+/// Reads the printer's answers until `done` finds the one awaited, each read waiting at most
+/// `wait`, for at most [`MAX_READS`] reads.
 fn wait_for(
     transport: &mut impl Transport,
     wait: Duration,
-    done: impl Fn(&[u8]) -> bool,
+    done: impl Fn(&[Vec<u8>]) -> bool,
 ) -> Result<(), Unconfirmed> {
-    let mut seen = Vec::new();
+    let mut blocks = Blocks::default();
     let mut buf = [0_u8; 64];
-    while seen.len() < MAX_SKIPPED {
+    for _ in 0..MAX_READS {
         match transport.receive(&mut buf, wait) {
             Ok(0) => return Err(Unconfirmed::Closed),
             Ok(n) => {
                 for byte in buf.get(..n).unwrap_or_default() {
-                    seen.push(*byte);
-                    if done(&seen) {
-                        return Ok(());
-                    }
+                    blocks.push(*byte);
+                }
+                if done(&blocks.answers) {
+                    return Ok(());
                 }
             }
-            Err(error)
-                if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) =>
-            {
-                return Err(Unconfirmed::NoWord);
-            }
+            Err(error) if timed_out(&error) => return Err(Unconfirmed::NoWord),
+            Err(_) => return Err(Unconfirmed::Closed),
+        }
+    }
+    Err(Unconfirmed::NoWord)
+}
+
+/// Ends the job and waits for the printer to close the connection itself, the only word a
+/// printer that confirms nothing gives that it read the job: a reset, or silence, is no word.
+fn closed(transport: &mut impl Transport, wait: Duration) -> Result<(), Unconfirmed> {
+    transport.finish().map_err(|_| Unconfirmed::SendFailed)?;
+    let mut buf = [0_u8; 64];
+    for _ in 0..MAX_READS {
+        match transport.receive(&mut buf, wait) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(error) if timed_out(&error) => return Err(Unconfirmed::NoWord),
             Err(_) => return Err(Unconfirmed::Closed),
         }
     }

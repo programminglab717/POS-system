@@ -34,6 +34,13 @@ struct Script {
     reset_after: Option<usize>,
     /// Bytes it sends before its word, as a printer with something else to say might.
     chatter: Vec<u8>,
+    /// Bytes it sends as the connection opens, as a printer with automatic status back on does.
+    greeting: Vec<u8>,
+    /// Once it has answered every question, it waits for the job and closes the connection
+    /// without reading it, which resets it.
+    close_unread: bool,
+    /// Once it has answered every question, it reads nothing more for three seconds.
+    stall: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +51,8 @@ enum Word {
     ProcessedOnly,
     /// It answers nothing.
     Silent,
+    /// It answers `GS ( H` with another job's process ID.
+    Stale,
 }
 
 /// A ready printer: online, with paper, answering everything.
@@ -55,6 +64,9 @@ fn ready() -> Script {
         word: Word::Both,
         reset_after: None,
         chatter: vec![],
+        greeting: vec![],
+        close_unread: false,
+        stall: false,
     }
 }
 
@@ -72,6 +84,7 @@ fn fake(script: Script) -> Fake {
     let recorded = Arc::clone(&job);
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(&script.greeting).unwrap();
         let mut pending: Vec<u8> = Vec::new();
         let mut buf = [0_u8; 4096];
         loop {
@@ -101,6 +114,14 @@ fn fake(script: Script) -> Fake {
                     if let (Some(answer), Some(_)) = (answer, script.printer) {
                         stream.write_all(&[answer]).unwrap();
                     }
+                    if n == 4 && script.stall {
+                        thread::sleep(Duration::from_secs(10));
+                        return;
+                    }
+                    if n == 4 && script.close_unread {
+                        thread::sleep(Duration::from_millis(200));
+                        return;
+                    }
                     continue;
                 }
                 break;
@@ -119,6 +140,9 @@ fn fake(script: Script) -> Fake {
                 stream.write_all(&script.chatter).unwrap();
                 if script.word == Word::Both {
                     stream.write_all(&escpos::printed(id)).unwrap();
+                }
+                if script.word == Word::Stale {
+                    stream.write_all(&escpos::printed(*b"0041")).unwrap();
                 }
                 continue;
             }
@@ -146,7 +170,7 @@ fn fake(script: Script) -> Fake {
 }
 
 /// Short waits, so that tests of silence are quick.
-const WAITS: Waits = Waits { status: Duration::from_millis(300), word: Duration::from_millis(500) };
+const WAITS: Waits = Waits { status: Duration::from_secs(1), word: Duration::from_secs(1) };
 
 const ID: [u8; 4] = *b"0042";
 
@@ -159,8 +183,13 @@ fn job() -> Vec<u8> {
 
 /// Runs the job against `script`, and what the printer recorded of it.
 fn run(script: Script, confirm: Confirm) -> (Outcome, Vec<u8>) {
+    run_job(script, confirm, &job())
+}
+
+/// Runs `job` against `script`, and what the printer recorded of it.
+fn run_job(script: Script, confirm: Confirm, job: &[u8]) -> (Outcome, Vec<u8>) {
     let fake = fake(script);
-    let outcome = tcp::print(fake.address, &job(), confirm, ID, WAITS);
+    let outcome = tcp::print(fake.address, job, confirm, ID, WAITS);
     // The driver is done with the connection: dropping it ends the server's loop.
     let job = Arc::clone(&fake.job);
     fake.server.join().unwrap();
@@ -253,12 +282,90 @@ fn a_printer_that_confirms_nothing_has_the_job_and_nothing_more() {
 
 #[test]
 fn what_a_printer_says_before_its_word_is_skipped() {
-    let chatty = Script { chatter: vec![0x12, 0x37, 0x22, b'9', b'9'], ..ready() };
+    // A stray status byte, a block of automatic status back, and another job's process ID.
+    let chatter = vec![0x12, 0x38, 0, 0, 0, 0x37, 0x22, b'0', b'0', b'4', b'1', 0];
+    let chatty = Script { chatter: chatter.clone(), ..ready() };
     let (outcome, _) = run(chatty, Confirm::Printed);
     assert_eq!(outcome, Outcome::Printed { paper_low: false });
+    let chatty = Script { chatter: chatter.clone(), ..ready() };
+    assert_eq!(run(chatty, Confirm::Processed).0, Outcome::Printed { paper_low: false });
+}
+
+/// Another job's process ID isn't this job's word.
+#[test]
+fn another_jobs_process_id_isnt_the_word() {
+    let (outcome, _) = run(Script { word: Word::Stale, ..ready() }, Confirm::Printed);
+    assert_eq!(outcome, Outcome::Unconfirmed(Unconfirmed::NoWord));
+}
+
+/// Found in review: with `GS r 1`, any byte with bits 4 and 7 clear was taken for its answer,
+/// and the last three bytes of an automatic status block are such bytes.
+#[test]
+fn an_automatic_status_block_isnt_taken_for_the_printers_word() {
+    let chatty = Script { chatter: vec![0x38, 0, 0, 0], word: Word::Silent, ..ready() };
+    assert_eq!(run(chatty, Confirm::Processed).0, Outcome::Unconfirmed(Unconfirmed::NoWord));
+    let chatty = Script {
+        chatter: vec![0x37, 0x22, b'0', b'0', b'4', b'1', 0],
+        word: Word::Silent,
+        ..ready()
+    };
+    assert_eq!(run(chatty, Confirm::Processed).0, Outcome::Unconfirmed(Unconfirmed::NoWord));
+    assert_eq!(
+        run(
+            Script { chatter: vec![0x37, 0x22, b'0', b'0', b'4', b'1', 0], ..ready() },
+            Confirm::Printed
+        )
+        .0,
+        Outcome::Printed { paper_low: false }
+    );
+}
+
+/// Found in review: a printer sending automatic status as the connection opens could never
+/// print, its first byte taken for a status that isn't one.
+#[test]
+fn automatic_status_before_the_first_answer_is_skipped() {
+    let greeting = Script { greeting: vec![0x18, 0x00, 0x00, 0x0F, 0x10, 0, 0, 0], ..ready() };
+    assert_eq!(run(greeting, Confirm::Printed).0, Outcome::Printed { paper_low: false });
+}
+
+/// Found in review: for a printer that confirms nothing, the driver said it printed as soon as
+/// it had queued its end of the connection, before the printer read anything.
+#[test]
+fn a_printer_that_confirms_nothing_must_close_the_connection_itself() {
+    let (outcome, recorded) = run(Script { word: Word::Silent, ..ready() }, Confirm::Nothing);
+    assert_eq!(outcome, Outcome::Printed { paper_low: false });
+    assert_eq!(recorded, job());
+    let unread = Script { close_unread: true, ..ready() };
+    let (outcome, _) = run(unread, Confirm::Nothing);
+    assert!(matches!(outcome, Outcome::Unconfirmed(_)), "{outcome:?}");
+}
+
+/// Found in review: the test of a job cut off mid-way ended it after the whole job had arrived.
+/// This printer reads 100 KB of an 8 MB job and resets the connection.
+#[test]
+fn a_job_reset_part_way_through_its_send_is_unconfirmed() {
+    let big = vec![b'x'; 8 << 20];
+    let (outcome, recorded) =
+        run_job(Script { reset_after: Some(100_000), ..ready() }, Confirm::Printed, &big);
+    assert_eq!(outcome, Outcome::Unconfirmed(Unconfirmed::SendFailed));
+    assert!(recorded.len() >= 100_000 && recorded.len() < big.len());
 }
 
 #[test]
 fn the_status_questions_are_the_ones_the_printer_answers() {
     assert_eq!(escpos::status(Question::Printer), [0x10, 0x04, 0x01]);
+}
+
+/// Found in review: a printer that stopped reading held the send for ever. It waits as long as
+/// the printer's word would, and some of the job may have been sent.
+#[test]
+fn a_printer_that_stops_reading_fails_the_send() {
+    let big = vec![b'x'; 64 << 20];
+    let started = std::time::Instant::now();
+    let fake = fake(Script { stall: true, ..ready() });
+    let outcome = tcp::print(fake.address, &big, Confirm::Printed, ID, WAITS);
+    // Long before the printer gives up, after 10 s.
+    assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+    assert_eq!(outcome, Outcome::Unconfirmed(Unconfirmed::SendFailed));
+    fake.server.join().unwrap();
 }
