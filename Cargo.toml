@@ -45,6 +45,17 @@ rusqlite = { version = "0.40", default-features = false, features = ["bundled-sq
 zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
 # The bindings (ADR-0025): UniFFI, pinned exactly, in keel-ffi alone.
 uniffi = { version = "=0.32.2", default-features = false }
+# The local network (ADR-0026): WebSocket over TLS 1.3 with mutual TLS, in keel-net, on tokio,
+# with rustls and its ring provider; rcgen makes certificates in keel-provision and the tests.
+tokio = { version = "1.54", default-features = false, features = ["rt", "net", "time", "sync", "macros", "io-util"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rustls-pki-types = { version = "1.15", default-features = false, features = ["std"] }
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+keel-net = { path = "core/crates/keel-net" }
 
 # Test-only dependencies. num-bigint (with num-integer) is the exact-arithmetic oracle that
 # property tests check money and rounding against; ciborium is the independent CBOR implementation

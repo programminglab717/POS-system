@@ -202,7 +202,7 @@ below, and must be:
 
 **Platform crates** are the exception to "pure Rust". `keel-store`, `keel-sync` (which adapts the
 store for replication, and does no I/O itself), `keel-runtime`, `keel-print`, the driver, and
-`keel-ffi`, the bindings, may use a
+`keel-ffi`, the bindings, and `keel-net`, the local network, may use a
 native library that an ADR chooses. They aren't built for `wasm32`, and the portable kernel
 crates (`keel-types`, `keel-events`, `keel-domain`, `keel-pricing`, `keel-doc`) never depend on them.
 `keel-sim`, the simulator, is for tests only and never shipped. Such a library may draw on the operating system's
@@ -224,6 +224,11 @@ bytes.
 | `openssl-sys`, `openssl-src` | keel-store, through `libsqlite3-sys` | OpenSSL's crypto, for SQLCipher: built from source (OpenSSL 3.6.3 today) and linked statically, the same on every platform, rather than each platform's own ([ADR-0018](../adr/0018-encryption-at-rest-and-integrity-checks.md)). Building it takes Perl and a `make`. SQLCipher uses only its ciphers, hashes and random generator. Follow OpenSSL's security advisories through `openssl-src` releases. `openssl-sys` is MIT, `openssl-src` MIT or Apache-2.0, and OpenSSL 3 Apache-2.0. |
 | `zeroize` | keel-store | Zeroes the store's key in memory when it is dropped, without the compiler optimizing the writes away. Already in the tree through `ed25519-dalek`. Default features off but `alloc`. Apache-2.0 or MIT. |
 | `uniffi` (and `uniffi_core`, `uniffi_macros`, `uniffi_meta`, `uniffi_pipeline`, `uniffi_internal_macros`) | keel-ffi | The bindings to the platform shells ([ADR-0025](../adr/0025-bindings.md)): Kotlin now, Swift later, generated from the compiled library. Pinned exactly (`=0.32.2`): its minor versions change what it generates. **MPL-2.0**, the one exception to the permissive list: a copyleft that applies file by file, which obliges nothing of Keel's own files when UniFFI is used unmodified as a library. Shipping it in an app means telling those who receive it where UniFFI's source is (MPL-2.0 §3.2), in the app's notices; a change to UniFFI itself would have to be published under the MPL. Its other dependencies are MIT or Apache-2.0, `unicode-ident` with Unicode-3.0 too: `anyhow`, `bytes`, `camino`, `fs-err`, `once_cell`, `static_assertions`, `heck`, `indexmap` (with `hashbrown` and `equivalent`), `siphasher`, `winnow`, and, at build time, `serde`, `syn`, `toml`, `tempfile` (with `rustix`, `fastrand` and `getrandom`) and their own. Its bindgen, behind keel-ffi's `bindgen` feature, is a build tool, never shipped; its dependencies are MIT, Apache-2.0, BSD-3-Clause, Unlicense or Unicode-3.0. No default features. |
+| `tokio` | keel-net | The local network's runtime ([ADR-0026](../adr/0026-local-hub.md)): sockets and timers on one thread of its own, which talks to the runtime's thread through channels. Features `rt`, `net`, `time`, `sync`, `macros`, `io-util` only. MIT; its own dependencies (`mio`, `socket2`, `bytes`, `pin-project-lite`, `slab`) MIT or Apache-2.0. |
+| `rustls`, `tokio-rustls`, `rustls-pki-types`, `rustls-webpki` | keel-net | TLS 1.3 with mutual TLS between a location's devices and its hub, and reading the names a certificate carries. The `ring` provider alone, no TLS 1.2. Apache-2.0, ISC or MIT. |
+| `ring` (and `untrusted`) | keel-net, through `rustls` | The crypto behind TLS: builds for every target with a C compiler alone, Android's included, where `aws-lc-rs` needs CMake. Apache-2.0 and ISC. A second crypto library in the process beside SQLCipher's OpenSSL, each for its own purpose. |
+| `tokio-tungstenite`, `tungstenite`, `futures-util` | keel-net | WebSocket over the TLS connection, each binary message one frame. With `http`, `httparse`, `sha1`, `data-encoding`, `log` and `rand`, which draws the operating system's randomness for WebSocket masks, where nothing the kernel computes depends on it. MIT or Apache-2.0. |
+| `rcgen` | keel-net's tests, keel-provision | Certificates for a development CA and its devices, until the Device CA (step 8). MIT or Apache-2.0. |
 
 Test-only dependencies must be permissively licensed, but need not build for `wasm32`:
 

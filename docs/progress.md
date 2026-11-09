@@ -121,6 +121,17 @@ Built in slice 5 so far, each verified as it landed:
   the register refusing to write until settled, then ringing and paying a sale that reaches the
   hub, closed, and is confirmed back; and every roster that isn't the device's refused. All 3
   planted bugs caught.
+- **`keel-net`**: `keel-sync`'s frames over WebSocket on TLS 1.3 with mutual TLS, `rustls` with
+  `ring`, on a `tokio` runtime of its own that talks to the caller's thread through channels. The
+  hub listens; a device connects to the roster's address and again after a backoff, 1 s doubling
+  to 30 s. A peer is the roster's device whose name its certificate carries,
+  `<uuid>.devices.keel`, a DNS name rather than ADR-0026's URI, since `rustls`'s verifier checks
+  names without another parser; the hub's certificate also carries the roster's hub name, which
+  the device checks. Known answers (3 tests, over real TLS on the host): a hub and a device
+  exchanging frames, the largest a frame may be included; a frame one byte larger closing the
+  connection, and the device coming back; a certificate from another CA, a device the roster
+  doesn't have, a certificate with no device's name, and a hub without the roster's name, each
+  refused; a device reconnecting after its hub restarts. All 3 planted bugs caught.
 
 Built in slice 3, each verified as it landed:
 
