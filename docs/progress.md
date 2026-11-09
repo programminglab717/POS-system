@@ -109,7 +109,7 @@ status bits follow Epson's reference as widely implemented, and the tests' fake 
 ### The device runtime and the location profile: step 7, slice 1 (2026-10-06, reviewed 2026-11-09)
 
 Commits `cf064f5` (the step's design and the slice), `a3901e7` and `484cba6` (the review's first
-fixes), and REVIEW_COMMIT, which finishes the review and accepts
+fixes), and `54b1d2f`, which finishes the review and accepts
 [ADR-0023](./adr/0023-register-shell.md).
 
 Built in slice 1, each verified as it landed:
