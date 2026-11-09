@@ -30,8 +30,9 @@ pub enum StoreError {
     /// everything until it is opened again.
     #[error("the store lost its connection in a rekey: open it again")]
     Closed,
-    /// Another connection is using the store's file. A store belongs to one process at a time.
-    #[error("another connection is using the store")]
+    /// The store is open already, in this process or another, or another connection is using
+    /// its file. A store has one writer: open it once.
+    #[error("the store is open already")]
     Busy,
     /// SQLite won't run with a setting the store needs for durability.
     #[error("the database can't run with {0}")]

@@ -1555,4 +1555,17 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         "WHERE state IN ('pending', 'running') ORDER BY seq",
         "WHERE state IN ('pending', 'running', 'done') ORDER BY seq",
     ),
+    (
+        "store: a store can be opened twice",
+        "src/store.rs",
+        """    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(_) => Err(StoreError::Busy),
+    }""",
+        """    match file.try_lock() {
+        Ok(()) | Err(_) => Ok(file),
+    }""",
+        # Only a second open in the same test sees it.
+        "unit",
+    ),
 ]

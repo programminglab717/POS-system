@@ -41,6 +41,11 @@ impl Drop for Scratch {
     }
 }
 
+/// The demo's identifier ending in `n`.
+fn id<T>(n: u64) -> Id<T> {
+    Id::parse(&demo_id(n)).unwrap()
+}
+
 fn demo_id(n: u64) -> String {
     format!("0192f0c1-0000-7000-8000-{n:012x}")
 }
@@ -111,7 +116,16 @@ fn a_register_opens_only_with_what_it_needs() {
     drop(Register::open(config(&scratch)).unwrap());
     // Another key doesn't open the store.
     let wrong = RegisterConfig { store_key: vec![0x4c; 32], ..config(&scratch) };
-    assert!(matches!(Register::open(wrong), Err(KeelError::Device { .. })));
+    assert!(matches!(Register::open(wrong), Err(KeelError::WrongKey)));
+    // Found in review: a store opened twice had two writers. The second open is refused until
+    // the first register is gone.
+    let first = Register::open(config(&scratch)).unwrap();
+    assert!(matches!(Register::open(config(&scratch)), Err(KeelError::StoreInUse)));
+    drop(first);
+    drop(Register::open(config(&scratch)).unwrap());
+    // Identifiers in their canonical form only: lowercase, as the register gives them.
+    let upper = RegisterConfig { device: demo_id(0xd1).to_uppercase(), ..config(&scratch) };
+    assert!(matches!(Register::open(upper), Err(KeelError::InvalidArgument { .. })));
 }
 
 /// A printer that takes one connection, answers as a ready Epson, and gives back the job.
@@ -218,7 +232,7 @@ fn a_sale_rings_pays_and_prints_through_the_register() {
     let mut kinds = Vec::new();
     while let Some(job) = register.next_print_job().unwrap() {
         let (port, server) = printer();
-        let outcome = print_tcp("127.0.0.1".into(), port, job.clone(), waits);
+        let outcome = print_tcp("127.0.0.1".into(), port, job.clone(), waits).unwrap();
         assert_eq!(outcome, Outcome::Printed { paper_low: false });
         assert!(server.join().unwrap().windows(job.bytes.len()).any(|w| w == job.bytes.as_slice()));
         register.print_outcome(job.job.clone(), outcome).unwrap();
@@ -236,7 +250,7 @@ fn a_sale_rings_pays_and_prints_through_the_register() {
     let job = register.next_print_job().unwrap().unwrap();
     assert_eq!(job.job, reprint);
     let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let outcome = print_tcp("127.0.0.1".into(), closed, job.clone(), waits);
+    let outcome = print_tcp("127.0.0.1".into(), closed, job.clone(), waits).unwrap();
     assert_eq!(outcome, Outcome::NotSent { reason: NotSent::Unreachable });
     register.print_outcome(job.job.clone(), outcome).unwrap();
     assert_eq!(register.print_jobs().unwrap()[0].state, JobState::Queued);
@@ -300,4 +314,308 @@ fn every_prefix_and_mode_crosses_as_itself() {
     for (ffi, domain) in modes {
         assert_eq!(order::Mode::from(ffi), domain);
     }
+}
+
+#[test]
+fn every_store_failure_has_a_variant() {
+    use keel_store::StoreError as S;
+    let cases = [
+        (S::Busy, KeelError::StoreInUse),
+        (S::KeyRejected, KeelError::WrongKey),
+        (S::NewerSchema { found: 9, known: 3 }, KeelError::StoreNewer),
+        (S::NotThisDevice, KeelError::NotThisDevice),
+        (S::WrongSigner, KeelError::NotThisDevice),
+        (S::Damaged, KeelError::Damaged),
+    ];
+    for (store, keel) in cases {
+        assert_eq!(KeelError::from(keel_runtime::RuntimeError::Store(store)), keel);
+    }
+    assert!(matches!(KeelError::from(S::Corrupt("a row")), KeelError::Device { .. }));
+}
+
+#[test]
+fn every_refusal_a_cashier_meets_has_a_variant() {
+    use keel_domain::checkout::CheckoutError;
+    use keel_domain::order::CommandError;
+    use keel_domain::payment::PaymentError;
+    use keel_domain::profile::RingError;
+    use keel_runtime::RuntimeError as R;
+    let refused = |error: R| matches!(KeelError::from(error), KeelError::Refused { .. });
+    assert!(refused(R::Order(CommandError::NotCreated)));
+    assert!(refused(R::Checkout(CheckoutError::InvalidAmount)));
+    assert!(refused(R::Payment(PaymentError::NotInitiated)));
+    assert!(matches!(
+        KeelError::from(R::Ring(RingError::UnknownVariant(id(1)))),
+        KeelError::Catalog { .. }
+    ));
+    let cases = [
+        (R::NotSignedIn, KeelError::NotSignedIn),
+        (R::UnknownMember(id(2)), KeelError::UnknownMember { member: demo_id(2) }),
+        (R::UnknownOrder(id(3)), KeelError::UnknownOrder { order: demo_id(3) }),
+        (R::WrongCurrency, KeelError::WrongCurrency),
+        (R::NegativeTender, KeelError::NegativeTender),
+        (R::UnknownJob(id(4)), KeelError::UnknownJob { job: demo_id(4) }),
+        (R::NotUnconfirmed(id(5)), KeelError::NotUnconfirmed { job: demo_id(5) }),
+        (R::NoReceipt(id(6)), KeelError::NoReceipt { order: demo_id(6) }),
+    ];
+    for (runtime, keel) in cases {
+        assert_eq!(KeelError::from(runtime), keel);
+    }
+}
+
+fn amount(minor: i64) -> keel_runtime::Amount {
+    keel_runtime::Amount::of(
+        keel_types::Money::from_minor(minor, keel_types::Currency::USD),
+        keel_types::Locale::EN_US,
+    )
+}
+
+fn usd(minor: i64, text: &str) -> Amount {
+    Amount { minor, currency: "USD".into(), text: text.into() }
+}
+
+/// Found in review: most conversions could lose or swap a field unnoticed. Every field of a
+/// ticket, each a different value, crosses as itself.
+#[test]
+fn a_ticket_crosses_field_for_field() {
+    use keel_runtime as rt;
+    let ticket = rt::Ticket {
+        order: id(1),
+        state: rt::TicketState::Voided,
+        lines: vec![rt::TicketLine {
+            line: id(2),
+            name: keel_domain::codec::Name::new("Latte").unwrap(),
+            quantity: keel_types::Quantity::from_whole(3, keel_types::Unit::Each).unwrap(),
+            quantity_text: "3".into(),
+            modifiers: vec![rt::TicketModifier {
+                depth: 2,
+                modifier: id(3),
+                prefix: keel_domain::order::Prefix::Side,
+                name: keel_domain::codec::Name::new("Oat").unwrap(),
+                quantity: 4,
+                price: amount(75),
+            }],
+            amount: amount(1_000),
+        }],
+        subtotal: amount(1_001),
+        taxes: vec![rt::TicketTax { tax: id(4), name: "Tax".into(), amount: amount(89) }],
+        total: amount(1_090),
+        paid: amount(500),
+        due: amount(590),
+        cash_due: amount(590 + 5),
+    };
+    let crossed = Ticket::from(&ticket);
+    let expected = Ticket {
+        order: demo_id(1),
+        state: TicketState::Voided,
+        lines: vec![TicketLine {
+            line: demo_id(2),
+            name: "Latte".into(),
+            quantity_millionths: 3_000_000,
+            quantity_text: "3".into(),
+            modifiers: vec![TicketModifier {
+                depth: 2,
+                modifier: demo_id(3),
+                prefix: Prefix::Side,
+                name: "Oat".into(),
+                quantity: 4,
+                price: usd(75, "$0.75"),
+            }],
+            amount: usd(1_000, "$10.00"),
+        }],
+        subtotal: usd(1_001, "$10.01"),
+        taxes: vec![TicketTax { tax: demo_id(4), name: "Tax".into(), amount: usd(89, "$0.89") }],
+        total: usd(1_090, "$10.90"),
+        paid: usd(500, "$5.00"),
+        due: usd(590, "$5.90"),
+        cash_due: usd(595, "$5.95"),
+    };
+    assert_eq!(crossed, expected);
+    for (state, ffi) in [
+        (rt::TicketState::Open, TicketState::Open),
+        (rt::TicketState::Closed, TicketState::Closed),
+        (rt::TicketState::Voided, TicketState::Voided),
+        (rt::TicketState::Abandoned, TicketState::Abandoned),
+    ] {
+        assert_eq!(Ticket::from(&rt::Ticket { state, ..ticket.clone() }).state, ffi);
+    }
+}
+
+#[test]
+fn an_items_groups_cross_field_for_field() {
+    let scratch = Scratch::new();
+    let register = Register::open(config(&scratch)).unwrap();
+    // The latte's milk, extra shots and syrup: each group's bounds, free applications and
+    // whether it repeats, and each modifier's prefix and price.
+    let item = register.item(demo_id(0x403)).unwrap();
+    let bounds: Vec<_> =
+        item.groups.iter().map(|g| (g.name.as_str(), g.min, g.max, g.free, g.repeat)).collect();
+    assert_eq!(
+        bounds,
+        [("Milk", 0, 1, 0, false), ("Extra shots", 0, 4, 0, true), ("Syrup", 0, 3, 1, true)]
+    );
+    assert_eq!(
+        item.groups[1].modifiers[0],
+        ModifierOption {
+            modifier: demo_id(0x205),
+            name: "Shot".into(),
+            prefix: Prefix::Extra,
+            price: usd(95, "$0.95")
+        }
+    );
+    assert_eq!(item.groups[0].modifiers[1].price, usd(75, "$0.75"));
+    let bagel = register.item(demo_id(0x407)).unwrap();
+    assert_eq!(bagel.groups[0].min, 1);
+    assert_eq!(bagel.groups[0].modifiers[2].prefix, Prefix::No);
+}
+
+#[test]
+fn every_job_enumeration_crosses_as_itself() {
+    use keel_runtime as rt;
+    for (state, ffi) in [
+        (rt::JobState::Queued, JobState::Queued),
+        (rt::JobState::Sending, JobState::Sending),
+        (rt::JobState::Unconfirmed, JobState::Unconfirmed),
+    ] {
+        let view = rt::JobView {
+            job: Id::parse(&demo_id(1)).unwrap(),
+            kind: rt::JobKind::Receipt,
+            state,
+            attempts: 7,
+        };
+        assert_eq!(
+            Job::from(&view),
+            Job { job: demo_id(1), kind: JobKind::Receipt, state: ffi, attempts: 7 }
+        );
+    }
+    assert_eq!(JobKind::from(rt::JobKind::Drawer), JobKind::Drawer);
+    for confirm in [Confirm::Printed, Confirm::Processed, Confirm::Nothing] {
+        assert_eq!(Confirm::from(keel_doc::Confirm::from(confirm)), confirm);
+    }
+    assert_eq!(keel_doc::Confirm::from(Confirm::Processed), keel_doc::Confirm::Processed);
+    assert_eq!(keel_doc::Confirm::from(Confirm::Nothing), keel_doc::Confirm::Nothing);
+    for (ffi, runtime) in [
+        (Resolution::Printed, rt::Resolution::Printed),
+        (Resolution::Again, rt::Resolution::Again),
+        (Resolution::Dismiss, rt::Resolution::Dismiss),
+    ] {
+        assert_eq!(rt::Resolution::from(ffi), runtime);
+    }
+}
+
+#[test]
+fn a_printer_without_a_cutter_gets_feeds_and_its_confirmation_is_the_jobs() {
+    let scratch = Scratch::new();
+    let register = Register::open(config(&scratch)).unwrap();
+    register.sign_in(demo_id(0x501)).unwrap();
+    let order = register.start_order(Mode::Takeout).unwrap().order;
+    register.add_item(order.clone(), demo_id(0x401), vec![], 1).unwrap();
+    register.pay_cash(order, 1_000).unwrap();
+    register
+        .set_printer(Printer { columns: 32, cutter: false, confirm: Confirm::Processed })
+        .unwrap();
+    let drawer = register.next_print_job().unwrap().unwrap();
+    assert_eq!(drawer.confirm, Confirm::Processed);
+    assert!(drawer.bytes.ends_with(&escpos::DRAWER_KICK));
+    register.print_outcome(drawer.job, Outcome::Printed { paper_low: false }).unwrap();
+    let receipt = register.next_print_job().unwrap().unwrap();
+    assert!(receipt.bytes.ends_with(b"\n\n\n\n\n") && !receipt.bytes.ends_with(&escpos::CUT));
+    // A process ID that isn't four printable bytes is refused, not taken for an unreachable printer.
+    for process_id in [vec![1, 2, 3], vec![1, 2, 3, 4], vec![b'0', b'0', b'0', 0x7F]] {
+        let bad = PrintJob { process_id, ..receipt.clone() };
+        let waits = Waits { status_ms: 10, word_ms: 10 };
+        assert!(matches!(
+            print_tcp("127.0.0.1".into(), 9, bad, waits),
+            Err(KeelError::InvalidArgument { .. })
+        ));
+    }
+    let bad = PrintJob { process_id: vec![1, 2, 3], ..receipt.clone() };
+    assert!(matches!(
+        print_tcp("127.0.0.1".into(), 9, bad, Waits { status_ms: 10, word_ms: 10 }),
+        Err(KeelError::InvalidArgument { .. })
+    ));
+    // The waits cross as themselves: a printer that answers its status but never its word gives
+    // up after the word's wait, not the status's.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0_u8; 16384];
+        let mut answered = 0;
+        let mut all = Vec::new();
+        while let Ok(n) = stream.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            all.extend_from_slice(&buf[..n]);
+            let questions = all.windows(2).filter(|w| *w == [0x10, 0x04]).count();
+            while answered < questions {
+                stream.write_all(&[0x12]).unwrap();
+                answered += 1;
+            }
+        }
+    });
+    let started = std::time::Instant::now();
+    let outcome =
+        print_tcp("127.0.0.1".into(), port, receipt, Waits { status_ms: 3_000, word_ms: 300 })
+            .unwrap();
+    assert_eq!(outcome, Outcome::Unconfirmed { reason: Unconfirmed::NoWord });
+    assert!(started.elapsed() < std::time::Duration::from_millis(2_500), "{:?}", started.elapsed());
+    server.join().unwrap();
+}
+
+/// A printer that answers each status question after `delay`, and `GS r 1` with its paper's
+/// state, but never `GS ( H`.
+fn slow_printer(delay: std::time::Duration) -> (u16, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let (mut all, mut buf) = (Vec::new(), [0_u8; 16384]);
+        let (mut answered, mut processed) = (0, 0);
+        while let Ok(n) = stream.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            all.extend_from_slice(&buf[..n]);
+            let questions = all.windows(2).filter(|w| *w == [0x10, 0x04]).count();
+            while answered < questions {
+                thread::sleep(delay);
+                stream.write_all(&[0x12]).unwrap();
+                answered += 1;
+            }
+            let asked = all.windows(3).filter(|w| *w == escpos::PROCESSED).count();
+            while processed < asked {
+                stream.write_all(&[0x00]).unwrap();
+                processed += 1;
+            }
+        }
+    });
+    (port, server)
+}
+
+#[test]
+fn print_tcp_waits_and_confirms_as_the_job_says() {
+    let scratch = Scratch::new();
+    let register = Register::open(config(&scratch)).unwrap();
+    register.sign_in(demo_id(0x501)).unwrap();
+    let order = register.start_order(Mode::Takeout).unwrap().order;
+    register.add_item(order.clone(), demo_id(0x401), vec![], 1).unwrap();
+    register.pay_cash(order, 1_000).unwrap();
+    register
+        .set_printer(Printer { columns: 48, cutter: true, confirm: Confirm::Processed })
+        .unwrap();
+    let job = register.next_print_job().unwrap().unwrap();
+    // The printer answers `GS r 1`: printed, as the job asked for that word.
+    let (port, server) = slow_printer(std::time::Duration::ZERO);
+    let waits = Waits { status_ms: 2_000, word_ms: 2_000 };
+    let outcome = print_tcp("127.0.0.1".into(), port, job.clone(), waits).unwrap();
+    assert_eq!(outcome, Outcome::Printed { paper_low: false });
+    server.join().unwrap();
+    // Each status takes half a second: within the status's wait, past the word's.
+    let (port, server) = slow_printer(std::time::Duration::from_millis(500));
+    let waits = Waits { status_ms: 2_000, word_ms: 200 };
+    let outcome = print_tcp("127.0.0.1".into(), port, job, waits).unwrap();
+    assert_eq!(outcome, Outcome::Printed { paper_low: false });
+    server.join().unwrap();
 }

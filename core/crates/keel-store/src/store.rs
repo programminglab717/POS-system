@@ -53,6 +53,9 @@ pub struct Store<S, E> {
     faults: Box<dyn Faults + Send>,
     health: Cell<Health>,
     recovered: bool,
+    /// The store's lock, held while it is open: a store has one writer, so a second open of it,
+    /// from this process or another, is refused ([`StoreError::Busy`]).
+    _lock: std::fs::File,
 }
 
 /// Whether the store can go on using its connection to the database.
@@ -136,6 +139,7 @@ impl<S: Signer, E: Entropy> Store<S, E> {
         mut faults: Box<dyn Faults + Send>,
     ) -> Result<Store<S, E>, StoreError> {
         let path = path.as_ref().to_path_buf();
+        let lock = take_lock(&path)?;
         // SQLite removes its journal when the store closes cleanly, so one left behind means the
         // store wasn't. If that can't be told, it is safer to assume it wasn't.
         let recovered = journal(&path).try_exists().unwrap_or(true);
@@ -167,6 +171,7 @@ impl<S: Signer, E: Entropy> Store<S, E> {
             faults,
             health: Cell::new(Health::Sound),
             recovered,
+            _lock: lock,
         };
         let stale = store.proven(projection::stale(&store.db))?;
         if !stale.is_empty() {
@@ -769,6 +774,24 @@ fn event_at(
 }
 
 /// The WAL journal of the database at `path`, which SQLite keeps beside it.
+/// The lock of the store at `path`: a file beside it, `<path>.lock`, locked exclusively. The
+/// operating system releases it when the store closes or its process dies, so a lock never
+/// outlives its holder.
+fn take_lock(path: &Path) -> Result<std::fs::File, StoreError> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(PathBuf::from(name))
+        .map_err(|_| StoreError::Busy)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(_) => Err(StoreError::Busy),
+    }
+}
+
 fn journal(path: &Path) -> PathBuf {
     let mut journal = path.as_os_str().to_owned();
     journal.push("-wal");

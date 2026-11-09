@@ -313,8 +313,8 @@ fn keys_after(stdout: &str) -> &'static [u8] {
 type TestStore = Store<SoftwareSigner, SeededEntropy>;
 
 /// Opens the store in `scratch` with each key: exactly one must open it, one of `keys`. Returns
-/// the store, and the key that opened it.
-fn open_with_one_key(scratch: &Scratch, keys: &[u8]) -> (TestStore, u8) {
+/// the store, the key that opened it, and whether the store was recovering from a crash.
+fn open_with_one_key(scratch: &Scratch, keys: &[u8]) -> (TestStore, u8, bool) {
     let open = |key: u8| {
         Store::open(
             scratch.db(),
@@ -324,14 +324,25 @@ fn open_with_one_key(scratch: &Scratch, keys: &[u8]) -> (TestStore, u8) {
             SeededEntropy::new(4242),
         )
     };
-    match (open(OLD_KEY), open(NEW_KEY)) {
-        (Ok(store), Err(StoreError::KeyRejected)) if keys.contains(&OLD_KEY) => (store, OLD_KEY),
-        (Err(StoreError::KeyRejected), Ok(store)) if keys.contains(&NEW_KEY) => (store, NEW_KEY),
-        (old, new) => panic!(
-            "with the old key {:?}, with the new {:?}, where {keys:?} may open it",
-            old.map(|_| ()),
-            new.map(|_| ())
-        ),
+    // One key after the other, since a store opens once at a time; whether it was recovering is
+    // what the first open that succeeds found.
+    match open(OLD_KEY) {
+        Ok(store) if keys.contains(&OLD_KEY) => {
+            let recovered = store.recovered();
+            drop(store);
+            let new = open(NEW_KEY).map(drop);
+            assert!(
+                matches!(new, Err(StoreError::KeyRejected)),
+                "the new key opened it too: {new:?}"
+            );
+            (open(OLD_KEY).unwrap(), OLD_KEY, recovered)
+        }
+        Err(StoreError::KeyRejected) if keys.contains(&NEW_KEY) => {
+            let store = open(NEW_KEY).unwrap();
+            let recovered = store.recovered();
+            (store, NEW_KEY, recovered)
+        }
+        old => panic!("with the old key {:?}, where {keys:?} may open it", old.map(|_| ())),
     }
 }
 
@@ -346,8 +357,8 @@ fn check_store(
     keys: &[u8],
     crashed: bool,
 ) -> (usize, u8) {
-    let (mut store, key) = open_with_one_key(scratch, keys);
-    assert_eq!(store.recovered(), crashed, "whether the store was closed cleanly");
+    let (mut store, key, recovered) = open_with_one_key(scratch, keys);
+    assert_eq!(recovered, crashed, "whether the store was closed cleanly");
     assert_eq!(store.check().unwrap(), [], "the full check");
     let all_own = store.log(device(OWN), 0, 10_000).unwrap();
     let (own, ordered): (Vec<SignedEvent>, Vec<SignedEvent>) = all_own

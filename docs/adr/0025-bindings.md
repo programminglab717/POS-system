@@ -1,6 +1,7 @@
 # ADR-0025: The bindings: `keel-ffi` with UniFFI 0.32, a register object that answers with whole views, and a Kotlin/JVM library tested on the host
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-09) after review, with the details settled in building and
+  reviewing it, under "As built"
 - **Date:** 2026-11-09
 
 ## Context
@@ -100,7 +101,7 @@ this environment's proxy now and then: Gradle runs with one worker, and retries.
 
 ## As built
 
-Details settled in building it, for review with it:
+Details settled in building it:
 
 - **Nothing crosses that nests itself**: an item's groups are one list, each group with its depth
   and the modifier it is offered under, and a cashier's choices one list, each naming the index of
@@ -114,8 +115,38 @@ Details settled in building it, for review with it:
   `generate.sh` passes to the bindgen as its configuration (`[crates.keel_ffi.bindings.kotlin]`):
   with UniFFI's default features off, the bindgen finds no crate's configuration by itself.
 - **What is due** when a tender is short crosses with its text, in the register's locale.
-- **The Gradle build** runs `generate.sh` before it compiles, points JNA at the library it built,
+- **The Gradle build** runs `generate.sh` before it compiles and before it tests, points JNA at
+  the library it built, where `CARGO_TARGET_DIR` puts it, reruns the tests whenever the library
+  changes (the review found them skipped after a change to Rust that left the Kotlin as it was),
   and downloads one thing at a time.
+
+The review, an independent one, found and these fix, each with a test or a planted bug:
+
+- **A store opened twice had two writers**, whatever the register's lock: a second `open` of the
+  same path, as Android recreating an activity does, succeeded, and every write of the second
+  register failed once the first had written. The store now takes an exclusive lock on a file
+  beside it, `<path>.lock`, which the operating system releases when the store closes or its
+  process dies; a second open is refused, `KeelError.StoreInUse` (`StoreError::Busy` in the
+  store). A shell must close a register before it opens its store again: `Register` is
+  `AutoCloseable`, and the Kotlin tests close theirs with `use`.
+- **Store failures** have variants of their own, where they were all `Device`: `StoreInUse`,
+  `WrongKey` (the keystore's key isn't this store's), `StoreNewer` (the app was downgraded),
+  `NotThisDevice` and `Damaged`.
+- **A panic** under the register's lock poisoned it, and the register refused everything after.
+  The lock is recovered: whatever the call was writing was rolled back, as every write is a
+  transaction. The panic itself reaches Kotlin as UniFFI's `InternalException`.
+- **Identifiers** must be in their canonical, lowercase form, as every identifier the register
+  gives is, so a shell compares like with like: an uppercase one is `InvalidArgument`.
+- **`printTcp`** refuses a process ID that isn't four printable bytes, `InvalidArgument`, where it
+  said the printer was unreachable and the job was tried for ever; and tries each address its
+  host resolves to while none is reached. Resolving a name takes as long as the system's resolver
+  does: an address is quicker.
+- **The tests** caught 3 of 25 bugs planted in the conversions; they check every field of every
+  record and every case of every enumeration now, and the list holds all 28, each caught.
+- **A gap**: Kotlin's `message` of a `KeelException` is UniFFI's rendering of its fields
+  (`reason=…`), not the Rust error's text, and empty for the variants without fields. Shells
+  show their own words for each variant, and `reason` where there is one.
+- `generate.sh` runs under macOS's bash 3.2, which can't expand an empty array under `set -u`.
 
 ## Consequences
 

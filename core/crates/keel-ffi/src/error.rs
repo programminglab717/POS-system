@@ -3,6 +3,7 @@
 //! exceptions already have.
 
 use keel_runtime::RuntimeError;
+use keel_store::StoreError;
 
 use crate::records::Amount;
 
@@ -66,6 +67,22 @@ pub enum KeelError {
         /// The order.
         order: String,
     },
+    /// The store is open already: a register opens its store once, and must be closed before it
+    /// opens again.
+    #[error("the store is open already")]
+    StoreInUse,
+    /// The store's key doesn't open it: the key the platform's keystore gave isn't this store's.
+    #[error("the key doesn't open the store")]
+    WrongKey,
+    /// The store was written by a newer kernel: the app was downgraded.
+    #[error("the store is newer than this kernel")]
+    StoreNewer,
+    /// The store belongs to another device, or another location.
+    #[error("the store is another device's")]
+    NotThisDevice,
+    /// The store is damaged: it needs restoring from its peers.
+    #[error("the store is damaged")]
+    Damaged,
     /// An argument the shell passed isn't valid: an identifier that doesn't parse, a key of the
     /// wrong length, a profile that doesn't decode.
     #[error("{reason}")]
@@ -85,6 +102,19 @@ impl KeelError {
     /// An invalid argument, `what`.
     pub(crate) fn invalid(what: impl core::fmt::Display) -> KeelError {
         KeelError::InvalidArgument { reason: what.to_string() }
+    }
+}
+
+impl From<StoreError> for KeelError {
+    fn from(error: StoreError) -> KeelError {
+        match error {
+            StoreError::Busy => KeelError::StoreInUse,
+            StoreError::KeyRejected => KeelError::WrongKey,
+            StoreError::NewerSchema { .. } => KeelError::StoreNewer,
+            StoreError::NotThisDevice | StoreError::WrongSigner => KeelError::NotThisDevice,
+            StoreError::Damaged => KeelError::Damaged,
+            other => KeelError::Device { reason: other.to_string() },
+        }
     }
 }
 
@@ -115,6 +145,7 @@ impl From<RuntimeError> for KeelError {
             RuntimeError::UnknownJob(job) => KeelError::UnknownJob { job: job.to_string() },
             RuntimeError::NotUnconfirmed(job) => KeelError::NotUnconfirmed { job: job.to_string() },
             RuntimeError::NoReceipt(order) => KeelError::NoReceipt { order: order.to_string() },
+            RuntimeError::Store(store) => store.into(),
             _ => KeelError::Device { reason },
         }
     }

@@ -204,3 +204,18 @@ fn a_key_zeroes_what_it_was_made_from_and_never_prints() {
     assert_eq!(bytes, [0; 32]);
     assert_eq!(format!("{key:?}"), "StoreKey(..)");
 }
+
+/// Found in review: two registers could open one store, each with its own writer, and every
+/// write of the second failed once the first had written. A store opens once at a time.
+#[test]
+fn a_store_opens_once_at_a_time() {
+    let scratch = TempDir::new();
+    let store = open(&scratch.db());
+    let again = Store::open(scratch.db(), key(), config(), own().1, SeededEntropy::new(2));
+    assert!(matches!(again, Err(StoreError::Busy)), "{:?}", again.map(|_| ()));
+    // Even with the wrong key: the lock comes first.
+    let wrong = Store::open(scratch.db(), key_of(9), config(), own().1, SeededEntropy::new(3));
+    assert!(matches!(wrong, Err(StoreError::Busy)));
+    drop(store);
+    drop(open(&scratch.db()));
+}

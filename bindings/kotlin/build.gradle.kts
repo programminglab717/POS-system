@@ -20,6 +20,11 @@ kotlin {
 
 val repository = rootDir.resolve("../..").canonicalFile
 val profile = providers.gradleProperty("keelProfile").getOrElse("debug")
+// Cargo's target directory, wherever CARGO_TARGET_DIR puts it.
+val target = System.getenv("CARGO_TARGET_DIR")?.let { file(it) } ?: repository.resolve("target")
+val library = target.resolve(profile).resolve(
+    if (System.getProperty("os.name").startsWith("Mac")) "libkeel_ffi.dylib" else "libkeel_ffi.so",
+)
 
 val generate by tasks.registering(Exec::class) {
     description = "Builds keel-ffi and generates its Kotlin bindings."
@@ -40,8 +45,12 @@ tasks.compileKotlin {
 }
 
 tasks.test {
+    dependsOn(generate)
     useJUnitPlatform()
-    systemProperty("jna.library.path", repository.resolve("target/$profile").path)
+    // The tests run again whenever the library changes, even if the Kotlin generated from it
+    // doesn't.
+    inputs.file(library)
+    systemProperty("jna.library.path", library.parentFile.path)
     testLogging {
         events("passed", "failed")
         showStandardStreams = true

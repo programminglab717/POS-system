@@ -30,6 +30,6 @@ supersedes the old one.
 | [0022](./0022-hub-election-and-failover.md) | Hub election and failover: hub terms claimed in the log, heartbeats and priorities, and a deposed hub's records fenced by its successor's claim | Accepted |
 | [0023](./0023-register-shell.md) | The register shell: a device runtime the shell drives through generated bindings, a location profile to ring from, and the step in five slices | Accepted |
 | [0024](./0024-receipts-and-printing.md) | Receipts and printing: KeelDoc v0, an ESC/POS renderer, a raw TCP driver, and print jobs in the outbox that are never sent twice by themselves | Accepted |
-| [0025](./0025-bindings.md) | The bindings: `keel-ffi` with UniFFI 0.32, a register object that answers with whole views, and a Kotlin/JVM library tested on the host | Proposed |
+| [0025](./0025-bindings.md) | The bindings: `keel-ffi` with UniFFI 0.32, a register object that answers with whole views, and a Kotlin/JVM library tested on the host | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

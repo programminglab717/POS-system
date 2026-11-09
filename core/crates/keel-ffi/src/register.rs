@@ -40,9 +40,12 @@ pub struct Register {
     locale: Locale,
 }
 
-/// `text`, an identifier.
+/// `text`, an identifier in its canonical form: lowercase, as every identifier the register gives
+/// is, so that the shell compares what it holds with what it gets back.
 pub(crate) fn id<T>(text: &str) -> Result<Id<T>, KeelError> {
-    Id::parse(text).map_err(|_| KeelError::invalid(format!("{text:?} isn't an identifier")))
+    Id::parse(text).ok().filter(|id: &Id<T>| id.to_string() == text).ok_or_else(|| {
+        KeelError::invalid(format!("{text:?} isn't an identifier in its canonical form"))
+    })
 }
 
 /// `bytes`, 32 of them.
@@ -109,7 +112,10 @@ impl Register {
             OsEntropy,
             locale,
         )
-        .map_err(|error| KeelError::Device { reason: error.to_string() })?;
+        .map_err(|error| match error {
+            RuntimeError::Store(store) => KeelError::from(store),
+            other => KeelError::Device { reason: other.to_string() },
+        })?;
         Ok(Arc::new(Register { runtime: Mutex::new(runtime), locale }))
     }
 
@@ -320,10 +326,10 @@ impl Register {
         &self,
         call: impl FnOnce(&mut DeviceRuntime) -> Result<T, RuntimeError>,
     ) -> Result<T, KeelError> {
-        let mut runtime: MutexGuard<'_, DeviceRuntime> = self
-            .runtime
-            .lock()
-            .map_err(|_| KeelError::Device { reason: "the register's lock was poisoned".into() })?;
+        // A call that panicked left the lock poisoned. What it was writing was rolled back, as every
+        // write of the store is a transaction, so the register carries on.
+        let mut runtime: MutexGuard<'_, DeviceRuntime> =
+            self.runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         call(&mut runtime).map_err(|error| match error {
             // What is due, with its text.
             RuntimeError::TenderShort { due } => KeelError::TenderShort {
@@ -346,20 +352,38 @@ pub fn demo_profile() -> Vec<u8> {
 }
 
 /// Runs `job` against the printer at `host` and `port`, on the caller's thread and outside any
-/// register's lock, and says what happened, for [`Register::print_outcome`].
+/// register's lock, and says what happened, for [`Register::print_outcome`]. Each address the
+/// host resolves to is tried in turn while none is reached. Resolving a name can take as long as
+/// the system's resolver takes: an address is quicker.
+///
+/// # Errors
+/// [`KeelError::InvalidArgument`] if the job's process ID isn't four bytes from `0x20` to
+/// `0x7E`, as no job the register gives has.
 #[uniffi::export]
-pub fn print_tcp(host: String, port: u16, job: PrintJob, waits: Waits) -> Outcome {
+pub fn print_tcp(
+    host: String,
+    port: u16,
+    job: PrintJob,
+    waits: Waits,
+) -> Result<Outcome, KeelError> {
     let waits = keel_print::Waits {
         status: Duration::from_millis(waits.status_ms),
         word: Duration::from_millis(waits.word_ms),
     };
-    let address =
-        (host.as_str(), port).to_socket_addrs().ok().and_then(|mut addresses| addresses.next());
-    let process_id: Option<[u8; 4]> = job.process_id.as_slice().try_into().ok();
-    match (address, process_id) {
-        (Some(address), Some(id)) => {
-            keel_print::tcp::print(address, &job.bytes, job.confirm.into(), id, waits).into()
+    let id: [u8; 4] = job
+        .process_id
+        .as_slice()
+        .try_into()
+        .ok()
+        .filter(|id: &[u8; 4]| id.iter().all(|byte| (0x20..=0x7E).contains(byte)))
+        .ok_or_else(|| KeelError::invalid("a process ID is four printable bytes"))?;
+    let unreachable = keel_print::Outcome::NotSent(keel_print::NotSent::Unreachable);
+    let mut outcome = unreachable;
+    for address in (host.as_str(), port).to_socket_addrs().into_iter().flatten() {
+        outcome = keel_print::tcp::print(address, &job.bytes, job.confirm.into(), id, waits);
+        if outcome != unreachable {
+            break;
         }
-        _ => Outcome::NotSent { reason: crate::records::NotSent::Unreachable },
     }
+    Ok(outcome.into())
 }

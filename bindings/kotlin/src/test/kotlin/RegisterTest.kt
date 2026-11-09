@@ -29,18 +29,26 @@ import kotlin.test.assertTrue
 
 private fun id(n: Long) = "0192f0c1-0000-7000-8000-%012x".format(n)
 
-private fun register(): Register {
+/** A register on the demo profile, in a directory of its own, closed and removed after [body]. */
+private fun withRegister(body: (Register) -> Unit) {
     val dir = Files.createTempDirectory("keel-kotlin")
-    return Register.open(
-        RegisterConfig(
+    try {
+        val config = RegisterConfig(
             path = dir.resolve("store.db").toString(),
             storeKey = ByteArray(32) { 0x4b },
             device = id(0xd1),
             signingKey = ByteArray(32) { 7 },
             profile = demoProfile(),
             locale = "en-US",
-        ),
-    )
+        )
+        Register.open(config).use { register ->
+            // A store opens once at a time: a second register is refused until this one closes.
+            assertFailsWith<KeelException.StoreInUse> { Register.open(config) }
+            body(register)
+        }
+    } finally {
+        dir.toFile().deleteRecursively()
+    }
 }
 
 /** A printer that takes one connection, answers as a ready Epson, and gives back what it got. */
@@ -82,8 +90,7 @@ private fun printer(): Pair<Int, () -> ByteArray> {
 
 class RegisterTest {
     @Test
-    fun aSaleRingsPaysAndPrints() {
-        val register = register()
+    fun aSaleRingsPaysAndPrints() = withRegister { register ->
         assertFailsWith<KeelException.NotSignedIn> { register.startOrder(Mode.TAKEOUT) }
         register.signIn(id(0x501))
         val menu = register.menu()
@@ -140,8 +147,7 @@ class RegisterTest {
     }
 
     @Test
-    fun badArgumentsAreRefused() {
-        val register = register()
+    fun badArgumentsAreRefused() = withRegister { register ->
         register.signIn(id(0x501))
         assertFailsWith<KeelException.InvalidArgument> { register.ticket("not an identifier") }
         assertFailsWith<KeelException.UnknownOrder> { register.ticket(id(0x999)) }
