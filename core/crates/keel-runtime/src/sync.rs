@@ -17,6 +17,15 @@ use crate::runtime::Runtime;
 /// The most of the device's own events pushed to the replicator at once.
 const PUSH: u32 = 1_000;
 
+/// How long after replication starts a device waits for its log to settle before it writes as
+/// an island, which a device that can reach no peer must: ADR-0019's "up to a few seconds", as
+/// the simulator's devices wait.
+pub const ISLAND_AFTER: core::time::Duration = core::time::Duration::from_secs(3);
+
+/// The longest the replicator asks to wait for a tick: a round, 5 s. A tick asked for later than
+/// this was asked for by a clock since set back, and is due now.
+const LONGEST_WAIT: core::time::Duration = core::time::Duration::from_secs(10);
+
 /// A runtime's replication: its replicator, the location's devices and their keys, and how far
 /// into its own log it has told the replicator of.
 pub(crate) struct Sync {
@@ -24,12 +33,18 @@ pub(crate) struct Sync {
     registry: DeviceRegistry,
     roster: Roster,
     pushed: u64,
+    /// When replication started, by the runtime's clock.
+    started: Timestamp,
 }
 
 impl Sync {
-    /// Whether the device's own log is settled.
-    pub(crate) const fn settled(&self) -> bool {
-        self.replicator.settled()
+    /// Whether the device may write at `now`: its log is settled, or it has waited
+    /// [`ISLAND_AFTER`] for that and writes as an island. A clock set back since replication
+    /// started counts as having waited.
+    pub(crate) fn may_write(&self, now: Timestamp) -> bool {
+        let waited = now.as_millis().saturating_sub(self.started.as_millis());
+        let island = i64::try_from(ISLAND_AFTER.as_millis()).unwrap_or(i64::MAX);
+        self.replicator.settled() || waited >= island || waited < 0
     }
 }
 
@@ -80,7 +95,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             now,
         )?;
         let pushed = self.store.head(device)?.seq();
-        self.sync = Some(Sync { replicator, registry, roster, pushed });
+        self.sync = Some(Sync { replicator, registry, roster, pushed, started: now });
         Ok(outgoing)
     }
 
@@ -123,6 +138,16 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         self.sync.as_ref().and_then(|sync| sync.replicator.next_tick())
     }
 
+    /// Whether the replicator needs a tick now: its next tick has come, or lies further ahead
+    /// than any wait it asks for, which means the clock was set back since it asked. Found in
+    /// review: waiting for such a tick stopped heartbeats for as long as the clock went back.
+    pub fn tick_due(&self) -> bool {
+        let now = self.clock.now();
+        let longest = i64::try_from(LONGEST_WAIT.as_millis()).unwrap_or(i64::MAX);
+        self.next_tick()
+            .is_some_and(|at| at <= now || at.as_millis().saturating_sub(now.as_millis()) > longest)
+    }
+
     /// The frames that push to peers what this device has written since it last did: the shell
     /// takes them after each intent, so that a sale reaches the hub at once.
     ///
@@ -143,7 +168,12 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             outgoing.extend(
                 self.with_sync(|replicator, replica| replicator.appended(replica, &events, now))?,
             );
-            if let Some(sync) = self.sync.as_mut() {
+            if events.len() < usize::try_from(PUSH).unwrap_or(usize::MAX) {
+                // The last of it: everything is pushed, and the hub's records the replicator
+                // wrote after it, which it knows of. Found in review: they were handed to it
+                // again.
+                self.caught_up()?;
+            } else if let Some(sync) = self.sync.as_mut() {
                 sync.pushed = last;
             }
         }

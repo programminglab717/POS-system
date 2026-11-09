@@ -197,6 +197,9 @@ pub struct Replicator {
     settled: bool,
     /// The heartbeat period in which the first peer said what it holds.
     first_have: Option<u64>,
+    /// The hub owes the store a numbering: one it began failed, after the events it was for were
+    /// stored. It tries again each heartbeat until it succeeds.
+    owed: bool,
     /// What the replica has heard of the hub and the candidates.
     election: Election,
     /// When the replica last began a heartbeat period.
@@ -261,6 +264,7 @@ impl Replicator {
             peers,
             settled: false,
             first_have: None,
+            owed: false,
             election: Election::default(),
             heartbeat_at: now,
             terms,
@@ -336,7 +340,7 @@ impl Replicator {
             self.election.tick(self.epoch());
             let was_serving = self.serving();
             self.settle();
-            if self.serving() && !was_serving {
+            if self.serving() && (!was_serving || self.owed) {
                 outgoing.extend(self.sequence(replica, now)?);
             }
             outgoing.extend(self.elect(replica, now)?);
@@ -433,8 +437,12 @@ impl Replicator {
         if !self.serving() {
             return Ok(Vec::new());
         }
+        // Owed until it succeeds: the events it numbers are stored already, and no peer sends
+        // them again.
+        self.owed = true;
         let mut written = replica.answer_requests(now)?;
         written.extend(replica.sequence(now)?);
+        self.owed = false;
         if written.is_empty() {
             return Ok(Vec::new());
         }
@@ -556,10 +564,12 @@ impl Replicator {
         self.terms.first().is_some_and(|term| term.device == self.device)
     }
 
-    /// Whether the replica serves as the Store Hub: it holds the winning claim, and its log is
-    /// settled and not forked.
+    /// Whether the replica serves as the Store Hub: it holds the winning claim, its roles let it be
+    /// the hub, and its log is settled and not forked.
     pub fn serving(&self) -> bool {
-        self.settled && !self.forked() && self.is_hub()
+        // A replica its roles say can't be the hub never serves, even holding the winning claim,
+        // as one demoted since it claimed does: the next candidate claims after it falls silent.
+        self.settled && !self.forked() && self.is_hub() && self.roles.hub.is_some()
     }
 
     /// The winning claim's term, as the replica last read its store: the hub's epoch, device and

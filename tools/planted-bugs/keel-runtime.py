@@ -333,8 +333,8 @@ BUGS = [
     (
         "sync: a device writes before its log is settled",
         "src/runtime.rs",
-        "        if self.sync.as_ref().is_some_and(|sync| !sync.settled()) {",
-        "        if self.sync.as_ref().is_some_and(|sync| !sync.settled() && sync.settled()) {",
+        "        if self.sync.as_ref().is_some_and(|sync| !sync.may_write(self.clock.now())) {",
+        "        if self.sync.as_ref().is_some_and(|sync| !sync.may_write(self.clock.now()) && false) {",
         "unit",
     ),
     (
@@ -349,6 +349,35 @@ BUGS = [
         "src/sync.rs",
         "        if roster.data().location != self.profile.data().location || me.key != self.key {",
         "        if roster.data().location != self.profile.data().location {",
+        "unit",
+    ),
+    # Found in the slice's review.
+    (
+        "sync: a tick a set-back clock put off is waited for",
+        "src/sync.rs",
+        "            .is_some_and(|at| at <= now || at.as_millis().saturating_sub(now.as_millis()) > longest)",
+        "            .is_some_and(|at| at <= now && longest > 0)",
+        "unit",
+    ),
+    (
+        "sync: a device that hears no one never writes",
+        "src/sync.rs",
+        "        self.replicator.settled() || waited >= island || waited < 0",
+        "        self.replicator.settled() || waited < 0",
+        "unit",
+    ),
+    (
+        "sync: a numbering that fails isn't tried again",
+        "../keel-sync/src/replicator.rs",
+        "            if self.serving() && (!was_serving || self.owed) {",
+        "            if self.serving() && !was_serving {",
+        "unit",
+    ),
+    (
+        "sync: a hub the roster demotes goes on serving",
+        "../keel-sync/src/replicator.rs",
+        "        self.settled && !self.forked() && self.is_hub() && self.roles.hub.is_some()",
+        "        self.settled && !self.forked() && self.is_hub()",
         "unit",
     ),
 ]

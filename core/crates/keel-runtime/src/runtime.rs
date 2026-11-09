@@ -184,8 +184,9 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// in, and a correlation of their own.
     fn meta(&mut self) -> Result<Meta, RuntimeError> {
         let member = self.member.ok_or(RuntimeError::NotSignedIn)?;
-        // A device writes only once its log is settled, or it could fork it (ADR-0019).
-        if self.sync.as_ref().is_some_and(|sync| !sync.settled()) {
+        // A device writes only once its log is settled, or it could fork it, unless it has waited
+        // for that and must sell as an island (ADR-0019).
+        if self.sync.as_ref().is_some_and(|sync| !sync.may_write(self.clock.now())) {
             return Err(RuntimeError::NotSettled);
         }
         let now = self.clock.now();

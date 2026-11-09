@@ -16,8 +16,8 @@ use keel_domain::roster::Roster;
 use keel_events::keys::{SignatureAlgorithm, SoftwareSigner};
 use keel_net::Net;
 use keel_provision::Kit;
-use keel_runtime::{Identity, Runtime};
-use keel_store::StoreKey;
+use keel_runtime::{Identity, Runtime, RuntimeError};
+use keel_store::{StoreError, StoreKey};
 use keel_types::{Locale, OsEntropy, SystemClock};
 
 fn main() -> ExitCode {
@@ -52,6 +52,11 @@ fn run(dir: &std::path::Path) -> Result<(), String> {
         Locale::EN_US,
     )
     .map_err(|error| error.to_string())?;
+    // A device the roster gives no priority as the hub never serves: refuse it rather than
+    // listen and wait for ever.
+    if roster.device(kit.device).is_none_or(|device| device.hub.is_none()) {
+        return Err(format!("{} can't host the hub: the roster gives it no priority", kit.name));
+    }
     let listener = TcpListener::bind(("0.0.0.0", roster.data().hub.port.get()))
         .map_err(|error| error.to_string())?;
     let first = runtime.start_sync(roster.clone()).map_err(|error| error.to_string())?;
@@ -62,8 +67,18 @@ fn run(dir: &std::path::Path) -> Result<(), String> {
     println!("keel-hub: {} listening", kit.name);
     let mut shown = None;
     loop {
-        if let Err(error) = keel_hub::step(&mut runtime, &net, keel_hub::MAX_WAIT) {
-            eprintln!("keel-hub: {error}");
+        match keel_hub::step(&mut runtime, &net, keel_hub::MAX_WAIT) {
+            Ok(()) => {}
+            // A store that refuses everything until it is opened again: stop, for whoever runs
+            // the daemon to look at, rather than spin.
+            Err(RuntimeError::Store(error @ (StoreError::Damaged | StoreError::Closed))) => {
+                return Err(error.to_string());
+            }
+            // Anything else may pass: report it, and wait a moment before trying again.
+            Err(error) => {
+                eprintln!("keel-hub: {error}");
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
         }
         let status = runtime.sync_status();
         if status != shown {

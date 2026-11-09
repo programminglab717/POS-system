@@ -33,14 +33,29 @@ pub fn step<S: Signer, E: Entropy, C: Clock, I: Entropy>(
         let millis = u64::try_from(at.as_millis().saturating_sub(now)).unwrap_or(0);
         Duration::from_millis(millis).min(most)
     });
+    // A tick asked for further ahead than any wait was asked for by a clock since set back: no
+    // wait for it.
+    let wait = if runtime.tick_due() { Duration::ZERO } else { wait };
+    // Each part goes on whatever the one before it did, so a frame that fails never starves the
+    // ticks; the first failure is the step's.
+    let mut failed = None;
     if let Some(Event::Frame { from, frame }) = net.recv_timeout(wait) {
-        send(net, runtime.on_frame(from, &frame)?);
+        match runtime.on_frame(from, &frame) {
+            Ok(frames) => send(net, frames),
+            Err(error) => failed = Some(error),
+        }
     }
-    if runtime.next_tick().is_some_and(|at| at <= runtime.clock().now()) {
-        send(net, runtime.on_tick()?);
+    if runtime.tick_due() {
+        match runtime.on_tick() {
+            Ok(frames) => send(net, frames),
+            Err(error) => failed = failed.or(Some(error)),
+        }
     }
-    send(net, runtime.take_frames()?);
-    Ok(())
+    match runtime.take_frames() {
+        Ok(frames) => send(net, frames),
+        Err(error) => failed = failed.or(Some(error)),
+    }
+    failed.map_or(Ok(()), Err)
 }
 
 fn send(net: &Net, frames: Vec<keel_sync::Outgoing>) {

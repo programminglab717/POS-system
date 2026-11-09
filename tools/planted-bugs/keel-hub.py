@@ -9,8 +9,8 @@ BUGS = [
     (
         "hub: the loop never ticks the runtime",
         "src/lib.rs",
-        "    if runtime.next_tick().is_some_and(|at| at <= runtime.clock().now()) {",
-        "    if runtime.next_tick().is_some_and(|at| at < at) {",
+        "    if runtime.tick_due() {\n        match runtime.on_tick() {",
+        "    if false {\n        match runtime.on_tick() {",
         "unit",
     ),
     # Not a bug: leaving out the step's own push of what the device wrote changes nothing a
