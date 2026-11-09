@@ -206,4 +206,18 @@ BUGS = [
         "        .filter(|id: &[u8; 4]| !id.is_empty())",
         "unit",
     ),
+    (
+        "ffi: a new device's keys are 24 bytes",
+        "src/register.rs",
+        "        for _ in 0..4 {",
+        "        for _ in 0..3 {",
+        "unit",
+    ),
+    (
+        "ffi: a new device's store key is its signing key",
+        "src/register.rs",
+        "    Ok(NewDevice { device: device.to_string(), signing_key: key()?, store_key: key()? })",
+        "    let signing_key = key()?;\n    Ok(NewDevice { device: device.to_string(), store_key: signing_key.clone(), signing_key })",
+        "unit",
+    ),
 ]

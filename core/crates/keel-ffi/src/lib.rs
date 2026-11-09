@@ -19,4 +19,4 @@ mod tests;
 
 pub use error::KeelError;
 pub use records::*;
-pub use register::{Register, demo_profile, print_tcp};
+pub use register::{Register, demo_profile, new_device, print_tcp};

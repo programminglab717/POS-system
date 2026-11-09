@@ -248,6 +248,19 @@ zone rules.
 To do: check licenses and security advisories in CI (`cargo-deny`), and pin GitHub Actions to
 commit hashes.
 
+**The shells' dependencies** follow the same rules where they apply: permissively licensed,
+well maintained, minimal, and each version pinned in the shell's one catalog. The Android app's
+([ADR-0027](../adr/0027-android-app.md), `apps/android/gradle/libs.versions.toml`):
+
+| Dependency | Used by | Why |
+|---|---|---|
+| Android Gradle Plugin, Gradle (through its wrapper) | the build | Building the app; build tools, never shipped. Apache-2.0. |
+| `cargo-ndk` | the build | Builds `keel-ffi` with the NDK's toolchain for each ABI. MIT or Apache-2.0. A build tool, never shipped. |
+| Kotlin's standard library, `kotlinx-coroutines` | `:register`, `:app` | The language, and the register's state over the kernel's one worker. Apache-2.0. |
+| JNA (its Android archive) | `:kernel` | The bindings call the kernel through it (ADR-0025). Apache-2.0 or LGPL-2.1, used under Apache-2.0. |
+| AndroidX (`activity`, `lifecycle`) and Jetpack Compose (`ui`, `material3`), by Compose's BOM | `:app` | The activity, its view model, and the screens (ADR-0004). Apache-2.0. |
+| AndroidX Test, Compose's test library, `kotlin-test` | tests | The instrumented tests and the JVM tests; never shipped. Apache-2.0. |
+
 ## 5. Reference data
 
 Reference data compiled into the kernel, such as the ISO 4217 currency list and CLDR's number

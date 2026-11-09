@@ -17,12 +17,12 @@ use keel_events::envelope::Device;
 use keel_events::keys::{SignatureAlgorithm, SoftwareSigner};
 use keel_runtime::{Identity, Runtime, RuntimeError};
 use keel_store::StoreKey;
-use keel_types::{Id, Locale, Money, OsEntropy, SystemClock};
+use keel_types::{Clock, Entropy, Id, IdGenerator, Locale, Money, OsEntropy, SystemClock};
 
 use crate::error::KeelError;
 use crate::records::{
-    Amount, CashPaid, Choice, Item, Job, Menu, Mode, Outcome, PrintJob, Printer, RegisterConfig,
-    Resolution, Ticket, Waits,
+    Amount, CashPaid, Choice, Item, Job, Menu, Mode, NewDevice, Outcome, PrintJob, Printer,
+    RegisterConfig, Resolution, Ticket, Waits,
 };
 
 /// The runtime as a device runs it: the system's clock and the operating system's randomness,
@@ -343,6 +343,27 @@ impl Register {
 /// `n`, which must be 1 or more.
 fn positive(n: u32) -> Result<NonZeroU32, KeelError> {
     NonZeroU32::new(n).ok_or_else(|| KeelError::invalid("a quantity must be 1 or more"))
+}
+
+/// A new device's identity, its identifier and keys drawn from the operating system's
+/// randomness, each on its own.
+///
+/// # Errors
+/// [`KeelError::Device`] if the operating system's randomness fails.
+#[uniffi::export]
+pub fn new_device() -> Result<NewDevice, KeelError> {
+    let failed = |error: &dyn core::fmt::Display| KeelError::Device { reason: error.to_string() };
+    let device: Id<Device> =
+        IdGenerator::new(OsEntropy).generate(SystemClock.now()).map_err(|error| failed(&error))?;
+    let mut entropy = OsEntropy;
+    let mut key = || -> Result<Vec<u8>, KeelError> {
+        let mut bytes = Vec::with_capacity(32);
+        for _ in 0..4 {
+            bytes.extend(entropy.next_u64().map_err(|error| failed(&error))?.to_be_bytes());
+        }
+        Ok(bytes)
+    };
+    Ok(NewDevice { device: device.to_string(), signing_key: key()?, store_key: key()? })
 }
 
 /// The demo café's profile, encoded: for the shell before a location has its own, and for tests.

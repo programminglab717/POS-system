@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
 # Builds keel-ffi for this host and writes its Kotlin bindings into build/generated/uniffi, with
-# UniFFI's bindgen on the workspace's version (ADR-0025). The Gradle build runs it first.
+# UniFFI's bindgen on the workspace's version (ADR-0025), or into <dir> with --out. The Gradle
+# builds, this one's and the Android app's, run it first.
 #
-#   bindings/kotlin/generate.sh [--release]
+#   bindings/kotlin/generate.sh [--release] [--out <dir>]
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 profile=debug
 release=""
-if [[ "${1:-}" == "--release" ]]; then
-  profile=release
-  release=--release
-fi
+out="$here/build/generated/uniffi"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --release) profile=release; release=--release; shift ;;
+    --out) out="$2"; shift 2 ;;
+    *) echo "usage: $0 [--release] [--out <dir>]" >&2; exit 2 ;;
+  esac
+done
 # Cargo's target directory, wherever CARGO_TARGET_DIR puts it.
 target="${CARGO_TARGET_DIR:-$root/target}"
+# A relative --out is the caller's.
+[[ "$out" == /* ]] || out="$PWD/$out"
 cd "$root"
 # `$release` unquoted: macOS's bash 3.2 can't expand an empty array under `set -u`.
 cargo build -q -p keel-ffi --lib $release
@@ -21,7 +28,6 @@ case "$(uname -s)" in
   Darwin) library="$target/$profile/libkeel_ffi.dylib" ;;
   *) library="$target/$profile/libkeel_ffi.so" ;;
 esac
-out="$here/build/generated/uniffi"
 rm -rf "$out"
 cargo run -q -p keel-ffi --features bindgen --bin uniffi-bindgen $release -- \
   generate --library "$library" --language kotlin --out-dir "$out" --no-format \

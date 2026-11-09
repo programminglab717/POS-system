@@ -619,3 +619,24 @@ fn print_tcp_waits_and_confirms_as_the_job_says() {
     assert_eq!(outcome, Outcome::Printed { paper_low: false });
     server.join().unwrap();
 }
+
+#[test]
+fn a_new_device_opens_a_register_of_its_own() {
+    let (first, second) = (new_device().unwrap(), new_device().unwrap());
+    // Every part drawn on its own.
+    assert_ne!(first.device, second.device);
+    assert_ne!(first.signing_key, second.signing_key);
+    assert_ne!(first.store_key, second.store_key);
+    assert_ne!(first.signing_key, first.store_key);
+    assert_eq!((first.signing_key.len(), first.store_key.len()), (32, 32));
+    let scratch = Scratch::new();
+    let register = Register::open(RegisterConfig {
+        store_key: first.store_key.clone(),
+        device: first.device.clone(),
+        signing_key: first.signing_key.clone(),
+        ..config(&scratch)
+    })
+    .unwrap();
+    register.sign_in(domain::demo().unwrap().data().team[0].id.to_string()).unwrap();
+    assert!(register.start_order(Mode::Takeout).is_ok());
+}

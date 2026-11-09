@@ -651,3 +651,15 @@ pub struct RegisterConfig {
     /// The locale amounts are shown in, such as `en-US`.
     pub locale: String,
 }
+
+/// A new device's identity, which a shell keeps, its keys wrapped by the platform's keystore,
+/// before it opens its first register.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct NewDevice {
+    /// The device's identifier.
+    pub device: String,
+    /// Its signing key: a software Ed25519 key's 32 secret bytes.
+    pub signing_key: Vec<u8>,
+    /// Its store's key: 32 random bytes.
+    pub store_key: Vec<u8>,
+}
