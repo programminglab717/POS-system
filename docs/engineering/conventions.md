@@ -202,7 +202,7 @@ below, and must be:
 **Platform crates** are the exception to "pure Rust". `keel-store`, `keel-sync` (which adapts the
 store for replication, and does no I/O itself), and later the bindings and drivers, may use a
 native library that an ADR chooses. They aren't built for `wasm32`, and the portable kernel
-crates (`keel-types`, `keel-events`, `keel-domain`, `keel-pricing`) never depend on them.
+crates (`keel-types`, `keel-events`, `keel-domain`, `keel-pricing`, `keel-doc`) never depend on them.
 `keel-sim`, the simulator, is for tests only and never shipped. Such a library may draw on the operating system's
 randomness where nothing the kernel computes depends on it: SQLCipher gives each page a random
 IV, so a store's bytes differ from run to run, and tests compare what a store holds, never its

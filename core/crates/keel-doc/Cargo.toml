@@ -1,0 +1,18 @@
+[package]
+name = "keel-doc"
+version = "0.1.0"
+description = "KeelDoc v0: Keel's device-independent documents, such as receipts, their layout in columns, and renderers to ESC/POS and plain text."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+keel-events.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

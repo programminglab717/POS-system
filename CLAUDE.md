@@ -32,7 +32,7 @@ cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 cargo test --workspace --all-features                   # quick
 cargo test --workspace --all-features -- --include-ignored  # with the exhaustive sweeps, as CI runs
 PROPTEST_CASES=100000 cargo test --workspace            # soak before significant changes
-cargo build -p keel-types -p keel-events -p keel-domain -p keel-pricing --no-default-features --target wasm32-unknown-unknown
+cargo build -p keel-types -p keel-events -p keel-domain -p keel-pricing -p keel-doc --no-default-features --target wasm32-unknown-unknown
 python3 tools/planted-bugs/run.py <crate> [--props] [--release]  # plant the crate's known bugs, one at a time
 python3 tools/planted-bugs/run.py <crate> --stale      # check the bugs' texts are still in the code, as CI does
 KEEL_SIM_SEEDS=2000 cargo test --release -p keel-sim --test seeds every_seed  # soak the simulator

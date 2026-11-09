@@ -104,6 +104,35 @@ the write that closes the order, so it shows the order as it closed. Its researc
 Epson's and a printer maker's manual hosts outside this environment's network policy: the
 status bits follow Epson's reference as widely implemented, and the tests' fake printer pins them.
 
+Built in slice 2 so far, each verified as it landed:
+
+- **`keel-doc`**, portable and built for `wasm32`: KeelDoc v0 (text, rows, rules, feeds, cuts and
+  drawer kicks, in bold, wide and tall), its canonical encoding, Windows-1252 text with
+  transliteration and every control dropped, the layout in 24 to 64 columns, and the ESC/POS and
+  plain text renderers, which print the same lines.
+  - Known answers (17 tests): every command's bytes; a document rendered whole, with and without
+    a cutter; every status byte's bits; text wrapped, broken and aligned at each boundary; rows
+    sharing a line and not; every class of character, and every character of the first three
+    planes yielding no control byte; the document's limits; and an encoding pinned against
+    Python's `cbor2`, with every way one is refused.
+  - Property tests: documents round-trip their encoding; and any document's bytes, read back by
+    an interpreter written for the tests, give the lines a model of the layout gives (written to
+    take the longest run of words that fits, where the code streams them), none wider than its
+    columns, with no control byte outside the renderer's commands and no real-time command,
+    whatever the text. 20,000 cases pass. A probe of 2,000 documents: a word longer than its line
+    in 69%, a right text on a line of its own in 26% and sharing one in 61%, wide text in 73%,
+    controls in 37%; words exactly as wide as a line were in 4%, so the generator now writes them.
+  - Planted bugs: all 12 the property tests can reach are caught by them, once the model stopped
+    borrowing the crate's own width of a wide line; the other 7 by unit tests, one of which had
+    none until a planted bug showed it (a feed of no lines).
+- **`keel-print`**: the driver, one job on one connection, over a `Transport`, and raw TCP to
+  port 9100. Tested against a scripted fake printer on TCP: a job printed and confirmed, paper
+  near its end, cover open, paper out (offline and online), an error, offline for another reason,
+  a byte that isn't a status, a printer that doesn't answer or isn't there, a reset mid-job,
+  silence after the job, a printer without `GS ( H`, one that confirms nothing, and chatter before
+  the word; and, with an in-memory transport, a send failing before and after its first byte.
+  All 7 planted bugs caught, one of them only once that last test was written.
+
 ## Completed
 
 ### The device runtime and the location profile: step 7, slice 1 (2026-10-06, reviewed 2026-11-09)

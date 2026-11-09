@@ -84,10 +84,10 @@ Printers constrain the design:
 3. **Text for the printer.** Every text is turned into Windows-1252 before it is laid out, a
    character to a byte, so that a column is a byte:
    - the characters the code page has map to their bytes;
-   - spaces of other widths, no-break ones included, become a space; the minus sign and other
-     dashes become `-`;
+   - spaces of other widths, no-break ones included, become a space; the minus sign and the
+     hyphens the code page lacks become `-`;
    - letters with marks the code page lacks become their base letters (`ł` to `l`, `ő` to `o`),
-     from a table covering Latin Extended-A;
+     from a table covering Latin Extended-A, and combining marks are dropped;
    - control and format characters are dropped: C0, DEL, C1, and the zero-width and
      direction-changing marks;
    - anything else becomes `?`.
@@ -100,12 +100,16 @@ Printers constrain the design:
    confirms a job (decision 6). A document renders as:
    - `ESC @` (initialize), `ESC t 16` (Windows-1252), `ESC R 0` (the US set), `FS .` (Kanji
      mode cancelled);
-   - each line: `ESC a n` (alignment), `ESC E n` (bold), `GS ! n` (width and height), its bytes,
-     `LF`; the style reset when it changes;
+   - `ESC a 0` once: the layout aligns lines by padding them, so that the plain text and the
+     paper agree;
+   - each line: `ESC E n` (bold) and `GS ! n` (width and height) where its style changes, its
+     bytes, `LF`;
    - a feed as `LF`s; a cut as `GS V 66 0` (feed to the cutter and cut partly), or three feeds
      without a cutter; a drawer kick as `ESC p 0 25 250` (pin 2, 50 ms on, 500 ms off).
 
-   Arguments never hold `0x10`, so no real-time command can appear but the driver's own.
+   An argument can be `0x10` (`ESC t 16`, `GS ! 16`), but what follows it is always a command or
+   a text byte, so the bytes never hold `10 04`, `10 05` or `10 14`: no real-time command appears
+   but the driver's own.
 
 5. **Print jobs are effects.** Kinds `print.receipt` and `print.drawer`, keyed by an identifier
    the runtime draws, their payload the document. Their states are the outbox's:

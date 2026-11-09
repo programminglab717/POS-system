@@ -605,6 +605,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-doc"
+version = "0.1.0"
+dependencies = [
+ "keel-events",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "keel-domain"
 version = "0.1.0"
 dependencies = [
@@ -639,6 +648,15 @@ dependencies = [
  "num-integer",
  "proptest",
  "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "keel-print"
+version = "0.1.0"
+dependencies = [
+ "keel-doc",
+ "proptest",
  "thiserror",
 ]
 

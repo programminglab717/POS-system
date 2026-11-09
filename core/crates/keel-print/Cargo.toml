@@ -1,0 +1,18 @@
+[package]
+name = "keel-print"
+version = "0.1.0"
+description = "Keel's print driver: one job against a printer, never sent twice by itself, over raw TCP to port 9100."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+keel-doc.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
