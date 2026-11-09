@@ -664,9 +664,11 @@ dependencies = [
 name = "keel-runtime"
 version = "0.1.0"
 dependencies = [
+ "keel-doc",
  "keel-domain",
  "keel-events",
  "keel-pricing",
+ "keel-print",
  "keel-store",
  "keel-types",
  "proptest",

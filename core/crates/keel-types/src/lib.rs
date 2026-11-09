@@ -51,7 +51,7 @@ pub mod rate;
 pub mod rounding;
 pub mod time;
 
-pub use business_date::{BusinessDate, BusinessDateError, BusinessDayPolicy};
+pub use business_date::{BusinessDate, BusinessDateError, BusinessDayPolicy, LocalTime};
 pub use currency::{Currency, CurrencyError, CurrencyInfo, CurrencyStatus};
 pub use hlc::{Hlc, HlcClock, HlcError};
 #[cfg(feature = "os")]

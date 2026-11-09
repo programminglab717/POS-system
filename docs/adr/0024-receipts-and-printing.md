@@ -139,9 +139,10 @@ Printers constrain the design:
    with the reason.
 
 7. **The runtime's part**, each step one write:
-   - `next_print_job(now)`: the earliest due job, started, and rendered for the printer, unless
-     one is with the driver already: one job at a time, in the order they were enqueued, so the
-     drawer opens before its receipt prints.
+   - `next_print_job()`: the earliest due job, started, and rendered for the printer, unless
+     one is with the driver already: one job at a time, the earliest due first and then the
+     earliest enqueued, so the drawer opens before its receipt prints, and a job waiting to be
+     tried again lets those behind it go.
    - `print_outcome(job, outcome, now)`: printed finishes it; not sent retries it, due after a
      backoff that doubles from 2 s to at most 60 s; unconfirmed leaves it running, no longer
      with the driver.

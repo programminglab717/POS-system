@@ -10,6 +10,8 @@ use keel_pricing::PricingError;
 use keel_store::StoreError;
 use keel_types::{BusinessDateError, Id, IdError, Money, MoneyError, QuantityError};
 
+use crate::print::Job;
+
 /// Why an intent was refused, or a view couldn't be made.
 ///
 /// The refusals a cashier can meet come first, each saying what to put right; the failures
@@ -50,6 +52,15 @@ pub enum RuntimeError {
     /// The tender is less than nothing.
     #[error("the tender is negative")]
     NegativeTender,
+    /// No print job has this identifier, or it isn't the one with the driver.
+    #[error("no print job {0} is waiting for that")]
+    UnknownJob(Id<Job>),
+    /// The print job isn't unconfirmed: it is queued, with the driver, or over.
+    #[error("print job {0} isn't unconfirmed")]
+    NotUnconfirmed(Id<Job>),
+    /// The order isn't closed, or has no receipt to print again.
+    #[error("order {0} has no receipt to print again")]
+    NoReceipt(Id<Order>),
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -71,6 +82,15 @@ pub enum RuntimeError {
     /// An event couldn't be encoded.
     #[error(transparent)]
     Schema(#[from] SchemaError),
+    /// A document couldn't be made or read.
+    #[error(transparent)]
+    Doc(#[from] keel_doc::DocError),
+    /// The outbox refused an effect.
+    #[error(transparent)]
+    Effect(#[from] keel_store::EffectError),
+    /// A time out of range.
+    #[error("a time out of range")]
+    Time,
     /// An event's envelope couldn't be made.
     #[error(transparent)]
     Envelope(#[from] EnvelopeError),

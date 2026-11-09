@@ -10,6 +10,10 @@
 //!   and the order, and answers with the change.
 //! - **Views**, read whole: an order's ticket, the open orders, the menu, and an item's modifier
 //!   groups. Every amount comes with the text the locale shows ([`Amount`]).
+//! - **Print jobs** (ADR-0024): paying cash enqueues the drawer's kick and the receipt in the
+//!   write that closes the order; [`Runtime::next_print_job`] hands them to a driver one at a
+//!   time, and [`Runtime::print_outcome`] records what happened. A job some of which may have been
+//!   sent is never sent again by itself: staff [`Runtime::resolve`] it.
 //! - **A team member signs in** from the profile's team, and every event records them; until one
 //!   does, intents are refused.
 //! - It reads the time only from its [`Clock`](keel_types::Clock) and draws randomness only from
@@ -19,14 +23,19 @@
 //! Like `keel-store`, which it holds, this crate isn't built for `wasm32`.
 
 mod error;
+mod print;
+mod receipt;
 mod runtime;
 mod ticket;
 mod views;
 
 #[cfg(test)]
+mod print_tests;
+#[cfg(test)]
 mod tests;
 
 pub use error::RuntimeError;
+pub use print::{DRAWER, Job, JobKind, JobState, JobView, PrintJob, RECEIPT, Resolution};
 pub use runtime::{Identity, Runtime};
 pub use views::{
     Amount, CashPaid, GroupView, ItemView, MenuButton, MenuPage, MenuView, ModifierView, Ticket,

@@ -1,5 +1,8 @@
 """Planted bugs for keel-runtime: see run.py."""
 
+# Integration tests of known answers, which --props leaves out.
+KNOWN_ANSWERS = ["end_to_end"]
+
 BUGS = [
     # Signing in, and what every event records.
     (
@@ -199,6 +202,94 @@ BUGS = [
         "src/views.rs",
         """                    groups: group_views(profile, &modifier.groups, locale),""",
         """                    groups: Vec::new(),""",
+        "unit",
+    ),
+    # Print jobs (ADR-0024).
+    (
+        "print: an unconfirmed job is tried again",
+        "src/runtime.rs",
+        "            Outcome::Unconfirmed(_) => {}",
+        """            Outcome::Unconfirmed(_) => {
+                let due = self.clock.now();
+                self.store.write(|w| w.retry(&key, due))?;
+            }""",
+    ),
+    (
+        "print: a job running when the runtime opens is handed to the driver",
+        "src/runtime.rs",
+        "        for queued in self.store.due_effects(now, u32::MAX)? {",
+        """        let mut due = self.store.running_effects()?;
+        due.extend(self.store.due_effects(now, u32::MAX)?);
+        for queued in due {""",
+    ),
+    (
+        "print: a job not sent waits as long each time",
+        "src/print.rs",
+        "    let wait = 2_u64.checked_shl(doublings).unwrap_or(60);",
+        "    let wait = 2_u64.checked_shl(doublings.min(0)).unwrap_or(60);",
+    ),
+    (
+        "print: a job not sent waits past a minute",
+        "src/print.rs",
+        "    Duration::from_secs(wait.min(60))",
+        "    Duration::from_secs(wait.min(64))",
+        # A job fails to be sent six times in a row in few runs; the known answer counts them.
+        "unit",
+    ),
+    (
+        "print: jobs go to the driver two at a time",
+        "src/runtime.rs",
+        """        if self.sending.is_some() {
+            return Ok(None);
+        }
+        let now = self.clock.now();""",
+        """        let now = self.clock.now();""",
+    ),
+    (
+        "print: any job's outcome is taken",
+        "src/runtime.rs",
+        "        if self.sending != Some(job) {\n            return Err(RuntimeError::UnknownJob(job));",
+        "        if self.sending.is_none() {\n            return Err(RuntimeError::UnknownJob(job));",
+    ),
+    (
+        "print: the job with the driver can be resolved",
+        "src/runtime.rs",
+        "        if queued.state != keel_store::EffectState::Running || self.sending == Some(job) {",
+        "        if queued.state != keel_store::EffectState::Running {",
+    ),
+    (
+        "print: a sale that owes nothing opens the drawer",
+        "src/runtime.rs",
+        """            if due.is_positive() {
+                let kick = Doc::new(vec![Block::DrawerKick])?;""",
+        """            if !due.is_negative() {
+                let kick = Doc::new(vec![Block::DrawerKick])?;""",
+    ),
+    (
+        "print: printing a job again leaves it unconfirmed",
+        "src/runtime.rs",
+        """                    w.fail(&key)?;
+                    w.enqueue(&effect, now)?;""",
+        """                    w.enqueue(&effect, now)?;""",
+    ),
+    (
+        "print: a reprint printed again is marked twice",
+        "src/runtime.rs",
+        """        if self.is_reprint(doc) {
+            return Ok(doc.clone());
+        }""",
+        """        if self.is_reprint(doc) && doc.blocks().is_empty() {
+            return Ok(doc.clone());
+        }""",
+        # The property doesn't read documents; the known answers do.
+        "unit",
+    ),
+    (
+        "print: a receipt shows no change",
+        "src/receipt.rs",
+        """        if let Some(change) = captured.change() {""",
+        """        if let Some(change) = captured.change().filter(|_| false) {""",
+        # As above.
         "unit",
     ),
 ]

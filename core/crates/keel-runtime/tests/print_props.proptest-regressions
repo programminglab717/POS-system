@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 60076022e30cc6501c540d7ae0ffa44a8e7937e6f9c88f722cde3c0da9708403 # shrinks to steps = [SetPrinter, Sale { cash: false }, Reprint(Index(0)), Next, Outcome(NotSent(Offline)), Later(2000), Next]

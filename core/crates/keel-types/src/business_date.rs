@@ -214,6 +214,41 @@ impl BusinessDayPolicy {
     }
 }
 
+impl BusinessDayPolicy {
+    /// The local date and time, to the minute, at `instant` in the policy's time zone: what a
+    /// receipt prints.
+    ///
+    /// # Errors
+    /// [`BusinessDateError::OutOfRange`] if `instant` is outside the timestamp range.
+    pub fn local_time(&self, instant: Timestamp) -> Result<LocalTime, BusinessDateError> {
+        let jiff_instant = instant.to_jiff().map_err(|_| BusinessDateError::OutOfRange)?;
+        let local = self.time_zone.to_datetime(jiff_instant);
+        Ok(LocalTime {
+            date: BusinessDate::new(local.year(), local.month(), local.day())
+                .map_err(|_| BusinessDateError::OutOfRange)?,
+            hour: local.hour(),
+            minute: local.minute(),
+        })
+    }
+}
+
+/// A local date and time, to the minute, written `2026-10-06 08:15`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LocalTime {
+    /// The calendar date.
+    pub date: BusinessDate,
+    /// The hour, 0 to 23.
+    pub hour: i8,
+    /// The minute, 0 to 59.
+    pub minute: i8,
+}
+
+impl fmt::Display for LocalTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {:02}:{:02}", self.date, self.hour, self.minute)
+    }
+}
+
 impl PartialEq for BusinessDayPolicy {
     fn eq(&self, other: &Self) -> bool {
         self.time_zone_name == other.time_zone_name && self.cutoff == other.cutoff
@@ -367,6 +402,32 @@ mod tests {
             );
         }
         assert_eq!("2026-02-30".parse::<BusinessDate>(), Err(BusinessDateError::InvalidDate));
+    }
+
+    #[test]
+    fn local_times_are_the_zones_wall_clock() {
+        let new_york = policy("America/New_York", 4, 0);
+        // 3:59 am in New York, still the business day before, but the local date's.
+        let early = new_york.local_time(at("2026-10-06T07:59:30Z")).unwrap();
+        assert_eq!(early.to_string(), "2026-10-06 03:59");
+        assert_eq!(
+            new_york.business_date_of(at("2026-10-06T07:59:30Z")).unwrap(),
+            date("2026-10-05")
+        );
+        // Either side of the autumn change: 1:30 am twice.
+        assert_eq!(
+            new_york.local_time(at("2026-11-01T05:30:00Z")).unwrap().to_string(),
+            "2026-11-01 01:30"
+        );
+        assert_eq!(
+            new_york.local_time(at("2026-11-01T06:30:00Z")).unwrap().to_string(),
+            "2026-11-01 01:30"
+        );
+        let kolkata = policy("Asia/Kolkata", 0, 0);
+        assert_eq!(
+            kolkata.local_time(at("2026-12-31T18:45:00Z")).unwrap().to_string(),
+            "2027-01-01 00:15"
+        );
     }
 
     #[test]

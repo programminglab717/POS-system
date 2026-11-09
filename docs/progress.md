@@ -133,6 +133,40 @@ Built in slice 2 so far, each verified as it landed:
   the word; and, with an in-memory transport, a send failing before and after its first byte.
   All 7 planted bugs caught, one of them only once that last test was written.
 
+- **Print jobs in the runtime**: paying cash enqueues the drawer's kick, when cash changed
+  hands, and the receipt, in the write that closes the order, caused by its closing event. The
+  receipt (`receipt.rs`) is built there from the closed ticket and its payments, in English or
+  Spanish: the location, the order's short number, its local time of closing and its cashier,
+  each line with its modifiers, the totals, the cash, any rounding and the change. The runtime
+  hands jobs to a driver one at a time (`next_print_job`), the earliest due and then the
+  earliest enqueued, records their outcomes (`print_outcome`), retries what wasn't sent after
+  2 s, doubling to 60 s, and leaves what may have been sent unconfirmed for staff to `resolve`:
+  printed, again (marked "REPRINT"), or dismissed. `reprint(order)` prints the receipt the order
+  printed when it closed, marked above and below, whoever reprints it and whenever.
+  `BusinessDayPolicy::local_time` gives a receipt its time.
+  - Known answers (8 tests): the demo café's receipt pinned as text; a sale that owes nothing
+    opening no drawer; jobs waiting for a printer and going one at a time; the backoff, a
+    millisecond either side of each wait; an unconfirmed job never coming back by itself, then
+    resolved each way, a reprint of a reprint marked once; a job with the driver when the runtime
+    stopped found unconfirmed; reprints showing the close as it was; the receipt in Spanish.
+  - A property test against a model of the jobs: sales with and without cash, a printer set or
+    not, every outcome, outcomes for jobs not with the driver, staff's decisions, reprints, time
+    passing to each wait and a millisecond short of it, and restarts. After each step the jobs
+    shown are the model's, each job handed out is the model's, and none is handed out again once
+    any of it may have been sent. Its first run found the model wrong: a job waiting to be tried
+    again rightly lets a later one go first. A probe of 1,000 runs: 70% hand a job to the driver,
+    14% retry one, 43% leave one unconfirmed; the first generator set a printer in a quarter of
+    runs and missed a planted bug in the backoff until it set one in most.
+  - End to end: a sale rung and paid, its drawer kick and receipt sent over TCP by the driver to
+    a fake printer that answers as a ready Epson, the bytes it receives the jobs', and the jobs
+    done.
+  - Planted bugs: 11 in the runtime's list, the 8 the property can reach caught by it, the other
+    3 by known answers; and all 33 of the runtime's list caught, run again since paying cash
+    changed.
+- The workspace's tests, with the exhaustive sweeps (614 tests, 3 minutes 2 seconds), and
+  without default features (608); clippy with all features and none; the documentation; the
+  wasm build, `keel-doc` now in it; and every planted bug's text.
+
 ## Completed
 
 ### The device runtime and the location profile: step 7, slice 1 (2026-10-06, reviewed 2026-11-09)
@@ -1647,6 +1681,16 @@ Work deliberately left for later, so it isn't forgotten:
   - Negotiating schema versions between kernels, in `keel-sync`.
 - **`keel-types`:** `Locale` for more locales, with the languages the product adds; units'
   names beside quantities, with the first items sold by weight.
+- **Printing** (ADR-0024):
+  - One printer per device, set by the shell, until routes and fallbacks; kitchen tickets with
+    the kitchen.
+  - Receipts in Windows-1252 only, until raster text; times as `2026-10-06 08:15` until `Locale`
+    knows dates; labels in English and Spanish.
+  - `reprint` and `print_jobs` read the whole outbox, and `next_print_job` every due effect: fine
+    for a register's day, not for months of them, which retention will prune.
+  - Drawer openings as events, which audits want, with cash management.
+  - An order with so many lines that its receipt would pass 40 KB of lines prints the first and
+    says how many more.
 - **`keel-runtime`:**
   - The open orders view prices every open order again: 0.7 ms for eleven on the development
     machine. A location with hundreds open will need the projection's rows, or tickets kept.

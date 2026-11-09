@@ -13,6 +13,8 @@ keel-events = { workspace = true, features = ["stored"] }
 keel-domain.workspace = true
 keel-pricing.workspace = true
 keel-store.workspace = true
+keel-doc.workspace = true
+keel-print.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

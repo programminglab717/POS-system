@@ -22,7 +22,13 @@ use keel_types::{
     BusinessDate, Clock, Entropy, Id, IdGenerator, Locale, Money, Quantity, Timestamp, Unit,
 };
 
+use keel_doc::escpos::{process_id, render};
+use keel_doc::{Block, Doc, PrinterProfile};
+use keel_print::Outcome;
+
 use crate::error::RuntimeError;
+use crate::print::{self, Job, JobKind, JobView, PrintJob, Resolution};
+use crate::receipt::{self, Closing};
 use crate::ticket::{self, Cash, cash_due};
 use crate::views::{
     Amount, CashPaid, ItemView, MenuButton, MenuPage, MenuView, Ticket, group_views,
@@ -55,6 +61,10 @@ pub struct Runtime<S, E, C, I> {
     device: Id<Device>,
     locale: Locale,
     member: Option<Id<TeamMember>>,
+    /// The printer jobs go to, once the shell sets one.
+    printer: Option<PrinterProfile>,
+    /// The job with the driver, if one is.
+    sending: Option<Id<Job>>,
 }
 
 /// What every event of one intent records besides its payload.
@@ -118,12 +128,19 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             device: identity.device,
             locale,
             member: None,
+            printer: None,
+            sending: None,
         })
     }
 
     /// The location's profile.
     pub const fn profile(&self) -> &Profile {
         &self.profile
+    }
+
+    /// The clock the runtime reads.
+    pub const fn clock(&self) -> &C {
+        &self.clock
     }
 
     /// The locale amounts are shown in.
@@ -304,6 +321,11 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             return Err(RuntimeError::NegativeTender);
         }
         let payment: Id<Payment> = self.ids.generate(meta.now)?;
+        let drawer: Id<Job> = self.ids.generate(meta.now)?;
+        let receipt_job: Id<Job> = self.ids.generate(meta.now)?;
+        let cashier =
+            self.member.and_then(|member| self.profile.member(member)).map(|m| m.name.clone());
+        let closed_at = self.profile.business_day().local_time(meta.now)?;
         let payments = self.payments(order)?;
         let (location, device) = (self.location(), self.device);
         let (profile, locale) = (&self.profile, self.locale);
@@ -343,8 +365,28 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             append(w, order.cast(), &closed, &meta)?;
             let loaded = w.load(Order::new(order))?;
             let event = loaded.decide(location, device, OrderCommand::Close)?;
-            append(w, order.cast(), &event, &meta)?;
+            let closing = append(w, order.cast(), &event, &meta)?;
             let ticket = ticket::ticket(&w.load(Order::new(order))?, &paid, profile, locale)?;
+            // The drawer opens when cash changed hands, then the receipt prints: one job after
+            // the other, in the order they are enqueued.
+            if due.is_positive() {
+                let kick = Doc::new(vec![Block::DrawerKick])?;
+                w.enqueue(
+                    &print::effect(drawer, JobKind::Drawer, &kick, Some(closing))?,
+                    meta.now,
+                )?;
+            }
+            let closing_info = Closing {
+                payments: &paid,
+                cashier: cashier.as_ref(),
+                at: closed_at,
+                reprint: false,
+            };
+            let doc = receipt::receipt(&ticket, &closing_info, profile, locale)?;
+            w.enqueue(
+                &print::effect(receipt_job, JobKind::Receipt, &doc, Some(closing))?,
+                meta.now,
+            )?;
             Ok(CashPaid { change: Amount::new(change, locale), ticket })
         })
     }
@@ -455,6 +497,193 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     }
 }
 
+/// Print jobs (ADR-0024, decision 7).
+impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
+    /// Sets the printer jobs go to. Until one is set, jobs wait.
+    pub const fn set_printer(&mut self, printer: PrinterProfile) {
+        self.printer = Some(printer);
+    }
+
+    /// The jobs queued, with the driver, and unconfirmed, in the order they were enqueued.
+    ///
+    /// # Errors
+    /// [`RuntimeError::Store`] if the store can't be read.
+    pub fn print_jobs(&self) -> Result<Vec<JobView>, RuntimeError> {
+        let mut jobs: Vec<JobView> = self
+            .store
+            .effects()?
+            .iter()
+            .filter_map(|queued| print::view(queued, self.sending))
+            .collect();
+        jobs.retain(|job| matches!(job.kind, JobKind::Receipt | JobKind::Drawer));
+        Ok(jobs)
+    }
+
+    /// The earliest job that is due, started and rendered for the printer, for the driver: one
+    /// at a time, so `None` while one is with the driver, and while no printer is set. A job
+    /// whose document can't be read fails, for a person to look at.
+    ///
+    /// # Errors
+    /// [`RuntimeError::Store`] if the store can't be read or written.
+    pub fn next_print_job(&mut self) -> Result<Option<PrintJob>, RuntimeError> {
+        let Some(printer) = self.printer else { return Ok(None) };
+        if self.sending.is_some() {
+            return Ok(None);
+        }
+        let now = self.clock.now();
+        for queued in self.store.due_effects(now, u32::MAX)? {
+            let Some((job, kind)) = print::job_of(&queued) else { continue };
+            let key = queued.effect.key.clone();
+            let Ok(doc) = Doc::decode(&queued.effect.payload) else {
+                self.store.write(|w| -> Result<(), RuntimeError> {
+                    w.start(&key, now)?;
+                    w.fail(&key)?;
+                    Ok(())
+                })?;
+                continue;
+            };
+            let started = self.store.write(|w| w.start(&key, now))?;
+            self.sending = Some(job);
+            return Ok(Some(PrintJob {
+                job,
+                kind,
+                bytes: render(&doc, &printer),
+                confirm: printer.confirm,
+                process_id: process_id(u64::from(started.attempts)),
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Records what the driver says happened to `job`: printed, it is done; not sent, it waits
+    /// to be tried again, 2 s after its first attempt and twice as long after each, up to 60 s;
+    /// unconfirmed, it stays so until staff [resolve](Runtime::resolve) it.
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownJob`] unless `job` is the one with the driver, and
+    /// [`RuntimeError::Store`] if the store can't be written, which leaves it unconfirmed.
+    pub fn print_outcome(&mut self, job: Id<Job>, outcome: Outcome) -> Result<(), RuntimeError> {
+        if self.sending != Some(job) {
+            return Err(RuntimeError::UnknownJob(job));
+        }
+        // No longer with the driver, whatever the store makes of it: a job the store can't
+        // record the outcome of stays running, and so unconfirmed.
+        self.sending = None;
+        let key = job.to_bytes();
+        match outcome {
+            Outcome::Printed { .. } => self.store.write(|w| w.finish(&key))?,
+            Outcome::NotSent(_) => {
+                let queued = self.store.effect(&key)?.ok_or(RuntimeError::UnknownJob(job))?;
+                let due = print::after(self.clock.now(), print::backoff(queued.attempts))?;
+                self.store.write(|w| w.retry(&key, due))?;
+            }
+            Outcome::Unconfirmed(_) => {}
+        }
+        Ok(())
+    }
+
+    /// What staff decide about the unconfirmed `job`: that it printed, which finishes it; to
+    /// print it again, which ends it and enqueues its document again marked as a reprint; or to
+    /// dismiss it, which ends it. Answers with the new job, when there is one.
+    ///
+    /// # Errors
+    /// [`RuntimeError::UnknownJob`] if there is no such job, [`RuntimeError::NotUnconfirmed`] if it
+    /// isn't unconfirmed, and [`RuntimeError::Store`] if the store can't be written.
+    pub fn resolve(
+        &mut self,
+        job: Id<Job>,
+        resolution: Resolution,
+    ) -> Result<Option<Id<Job>>, RuntimeError> {
+        let key = job.to_bytes();
+        let queued = self.store.effect(&key)?.ok_or(RuntimeError::UnknownJob(job))?;
+        let (_, kind) = print::job_of(&queued).ok_or(RuntimeError::UnknownJob(job))?;
+        if queued.state != keel_store::EffectState::Running || self.sending == Some(job) {
+            return Err(RuntimeError::NotUnconfirmed(job));
+        }
+        match resolution {
+            Resolution::Printed => {
+                self.store.write(|w| w.finish(&key))?;
+                Ok(None)
+            }
+            Resolution::Dismiss => {
+                self.store.write(|w| w.fail(&key))?;
+                Ok(None)
+            }
+            Resolution::Again => {
+                let doc = Doc::decode(&queued.effect.payload)?;
+                let doc = match kind {
+                    JobKind::Receipt => self.as_reprint(&doc)?,
+                    JobKind::Drawer => doc,
+                };
+                let now = self.clock.now();
+                let again: Id<Job> = self.ids.generate(now)?;
+                let effect = print::effect(again, kind, &doc, queued.effect.cause)?;
+                self.store.write(|w| -> Result<(), RuntimeError> {
+                    w.fail(&key)?;
+                    w.enqueue(&effect, now)?;
+                    Ok(())
+                })?;
+                Ok(Some(again))
+            }
+        }
+    }
+
+    /// The receipt the closed `order` printed when it closed, printed again marked "REPRINT"
+    /// above and below.
+    ///
+    /// # Errors
+    /// [`RuntimeError::NoReceipt`] if the order printed no receipt, and [`RuntimeError::Store`]
+    /// if the store can't be read or written.
+    pub fn reprint(&mut self, order: Id<Order>) -> Result<Id<Job>, RuntimeError> {
+        let mut original = None;
+        for queued in self.store.effects()? {
+            if !matches!(print::job_of(&queued), Some((_, JobKind::Receipt))) {
+                continue;
+            }
+            let Some(cause) = queued.effect.cause else { continue };
+            let Some(event) = self.store.event(cause)? else { continue };
+            if event.body().stream.id != order.cast() {
+                continue;
+            }
+            let doc = Doc::decode(&queued.effect.payload)?;
+            if !self.is_reprint(&doc) {
+                original = Some((doc, cause));
+            }
+        }
+        let (doc, cause) = original.ok_or(RuntimeError::NoReceipt(order))?;
+        let doc = self.as_reprint(&doc)?;
+        let now = self.clock.now();
+        let job: Id<Job> = self.ids.generate(now)?;
+        let effect = print::effect(job, JobKind::Receipt, &doc, Some(cause))?;
+        self.store.write(|w| w.enqueue(&effect, now))?;
+        Ok(job)
+    }
+
+    fn is_reprint(&self, doc: &Doc) -> bool {
+        doc.blocks().first() == Some(&receipt::reprint_banner(self.locale))
+    }
+
+    /// `doc` marked as a reprint above and below, unless it is already.
+    fn as_reprint(&self, doc: &Doc) -> Result<Doc, RuntimeError> {
+        if self.is_reprint(doc) {
+            return Ok(doc.clone());
+        }
+        let banner = receipt::reprint_banner(self.locale);
+        let mut after = doc.blocks().to_vec();
+        // The banner goes above the feed and cut that end a receipt.
+        let tail: Vec<Block> =
+            match after.iter().rposition(|block| !matches!(block, Block::Feed(_) | Block::Cut)) {
+                Some(last) => after.split_off(last.saturating_add(1)),
+                None => Vec::new(),
+            };
+        let mut blocks = vec![banner.clone()];
+        blocks.extend(after);
+        blocks.push(banner);
+        blocks.extend(tail);
+        Ok(Doc::new(blocks)?)
+    }
+}
+
 /// Fails unless `order` was created.
 fn known(order: &Order) -> Result<(), RuntimeError> {
     order.info().map(|_| ()).ok_or(RuntimeError::UnknownOrder(order.id()))
@@ -474,13 +703,13 @@ fn view<S: Signer, E: Entropy>(
 }
 
 /// Appends `event` to the stream `stream` of its kind, with what every event of the intent
-/// records.
+/// records, and answers with its identifier.
 fn append<D: DomainEvent, S: Signer, E: Entropy>(
     w: &mut Writing<'_, S, E>,
     stream: Id<AggregateMarker>,
     event: &D,
     meta: &Meta,
-) -> Result<(), RuntimeError> {
+) -> Result<Id<keel_events::envelope::Event>, RuntimeError> {
     let (schema, payload) = event.encode()?;
     let kind = StreamKind::new(D::STREAM)?;
     let draft = EventDraft {
@@ -493,5 +722,5 @@ fn append<D: DomainEvent, S: Signer, E: Entropy>(
         correlation: Some(meta.correlation),
         payload,
     };
-    w.append(draft, meta.now).map(|_| ()).map_err(RuntimeError::from)
+    Ok(w.append(draft, meta.now)?.body().event_id)
 }

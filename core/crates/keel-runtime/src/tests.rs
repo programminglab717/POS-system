@@ -19,13 +19,13 @@ use keel_types::{
 
 use super::*;
 
-type TestRuntime = Runtime<SoftwareSigner, SeededEntropy, ManualClock, SeededEntropy>;
+pub(crate) type TestRuntime = Runtime<SoftwareSigner, SeededEntropy, ManualClock, SeededEntropy>;
 
 /// A directory of its own for a store, removed when dropped.
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(PathBuf);
 
 impl Scratch {
-    fn new() -> Scratch {
+    pub(crate) fn new() -> Scratch {
         static COUNT: AtomicU64 = AtomicU64::new(0);
         let n = COUNT.fetch_add(1, Ordering::Relaxed);
         let shm = std::path::Path::new("/dev/shm");
@@ -36,7 +36,7 @@ impl Scratch {
         Scratch(dir)
     }
 
-    fn db(&self) -> PathBuf {
+    pub(crate) fn db(&self) -> PathBuf {
         self.0.join("store.db")
     }
 }
@@ -47,11 +47,11 @@ impl Drop for Scratch {
     }
 }
 
-fn id<T>(n: u64) -> Id<T> {
+pub(crate) fn id<T>(n: u64) -> Id<T> {
     Id::parse(&format!("0192f0c1-0000-7000-8000-{n:012x}")).unwrap()
 }
 
-fn usd(cents: i64) -> Money {
+pub(crate) fn usd(cents: i64) -> Money {
     Money::from_minor(cents, Currency::USD)
 }
 
@@ -60,12 +60,21 @@ fn one() -> NonZeroU32 {
 }
 
 /// A runtime of the demo café's register, at 9 am in New York on 2 October 2026.
-fn register(scratch: &Scratch, profile: Profile) -> TestRuntime {
+pub(crate) fn register(scratch: &Scratch, profile: Profile) -> TestRuntime {
     register_at(scratch, profile, "2026-10-02T13:00:00Z")
 }
 
+/// A runtime of the demo café's register, at 9 am, showing amounts as `locale` does.
+pub(crate) fn register_with_locale(scratch: &Scratch, locale: Locale) -> TestRuntime {
+    open_register(scratch, demo().unwrap(), "2026-10-02T13:00:00Z", locale)
+}
+
 /// A runtime of the demo café's register, with its clock reading `now`.
-fn register_at(scratch: &Scratch, profile: Profile, now: &str) -> TestRuntime {
+pub(crate) fn register_at(scratch: &Scratch, profile: Profile, now: &str) -> TestRuntime {
+    open_register(scratch, profile, now, Locale::EN_US)
+}
+
+fn open_register(scratch: &Scratch, profile: Profile, now: &str, locale: Locale) -> TestRuntime {
     let identity = Identity {
         device: id::<Device>(0xd1),
         signer: SoftwareSigner::from_secret(SignatureAlgorithm::EdDsa, &[7; 32]).unwrap(),
@@ -79,20 +88,20 @@ fn register_at(scratch: &Scratch, profile: Profile, now: &str) -> TestRuntime {
         clock,
         SeededEntropy::new(1),
         SeededEntropy::new(2),
-        Locale::EN_US,
+        locale,
     )
     .unwrap()
 }
 
 /// The demo café's profile, changed by `change`.
-fn demo_with(change: impl FnOnce(&mut ProfileData)) -> Profile {
+pub(crate) fn demo_with(change: impl FnOnce(&mut ProfileData)) -> Profile {
     let mut data = demo().unwrap().data().clone();
     change(&mut data);
     Profile::new(data).unwrap()
 }
 
 /// The variant `n` of `data`'s catalog.
-fn variant(data: &mut ProfileData, n: u64) -> &mut CatalogVariant {
+pub(crate) fn variant(data: &mut ProfileData, n: u64) -> &mut CatalogVariant {
     data.catalog
         .items
         .iter_mut()
@@ -101,14 +110,14 @@ fn variant(data: &mut ProfileData, n: u64) -> &mut CatalogVariant {
         .unwrap()
 }
 
-fn signed_in(scratch: &Scratch) -> TestRuntime {
+pub(crate) fn signed_in(scratch: &Scratch) -> TestRuntime {
     let mut runtime = register(scratch, demo().unwrap());
     runtime.sign_in(id(0x501)).unwrap();
     runtime
 }
 
 /// A large latte with oat milk, two extra shots, vanilla and caramel: one syrup is free.
-fn big_latte() -> Vec<Choice> {
+pub(crate) fn big_latte() -> Vec<Choice> {
     vec![
         Choice::of(id(0x202)),
         Choice { modifier: id(0x205), quantity: NonZeroU8::new(2).unwrap(), choices: vec![] },
