@@ -2395,8 +2395,8 @@ BUGS = [
     (
         "profile: a modifier may be chosen twice at one level",
         "src/profile/catalog.rs",
-        "if placed.iter().any(|earlier| earlier.choice.modifier == choice.modifier) {",
-        "if placed.iter().any(|earlier| earlier.choice.modifier == choice.modifier && choices.is_empty()) {",
+        "if !seen.insert(choice.modifier) {",
+        "if !seen.insert(choice.modifier) && choices.is_empty() {",
     ),
     (
         "profile: a modifier applies twice where each applies once",
@@ -2476,8 +2476,6 @@ BUGS = [
         "src/profile/rules.rs",
         "Dining::OnPremises => 0_u64,",
         "Dining::OnPremises => 1_u64,",
-        # The random catalogs keep the demo's pricing rules, whose tax applies to both.
-        "unit",
     ),
     (
         "profile: two modifier groups may share an identifier",
@@ -2509,6 +2507,103 @@ BUGS = [
         "if price.currency() != currency {",
         "if price.currency() != currency && price.is_zero() {",
         # The random catalogs price in the location's currency.
+        "unit",
+    ),
+    # The slice's review: ringing.
+    (
+        "profile: free applications go to modifiers that cost nothing",
+        "src/profile/catalog.rs",
+        ".filter(|(_, placed)| placed.modifier.price.is_positive())",
+        ".filter(|(_, placed)| !placed.modifier.price.is_negative())",
+    ),
+    (
+        "profile: a line takes the first item's tax category",
+        "src/profile/catalog.rs",
+        "                tax_category: item.tax_category,",
+        "                tax_category: self.items.first().map_or(item.tax_category, |first| first.tax_category),",
+    ),
+    # The slice's review: the profile's encoding and checks.
+    (
+        "profile: modifier groups may be in any order",
+        "src/profile/mod.rs",
+        "if ascending.is_some_and(|before| before.id.to_bytes() > group.id.to_bytes()) {",
+        "if ascending.is_some_and(|before| before.id.to_bytes() > group.id.to_bytes()) && catalog.items.is_empty() {",
+    ),
+    (
+        "profile: a tax's categories may be in any order",
+        "src/profile/rules.rs",
+        "[left, right] => left.to_bytes() < right.to_bytes(),",
+        "[left, right] => left.to_bytes() != right.to_bytes(),",
+    ),
+    (
+        "profile: rates are written with trailing zeros",
+        "src/profile/rules.rs",
+        """if fraction.is_zero() { "0".to_owned() } else { fraction.normalize().to_string() }""",
+        """if fraction.is_zero() { "0".to_owned() } else { fraction.to_string() }""",
+    ),
+    (
+        "profile: the tax rounding scope is written as per line",
+        "src/profile/rules.rs",
+        "        TaxScope::Document => 1,",
+        "        TaxScope::Document => 0,",
+    ),
+    (
+        "profile: a group's free applications are written as its minimum",
+        "src/profile/mod.rs",
+        ".optional(catalog_key::GROUP_FREE, NonZeroU8::new(self.free).as_ref())",
+        ".optional(catalog_key::GROUP_FREE, NonZeroU8::new(self.min).as_ref())",
+    ),
+    (
+        "profile: a variant's name isn't written",
+        "src/profile/mod.rs",
+        ".optional(catalog_key::NAME, self.name.as_ref())",
+        ".optional(catalog_key::NAME, None::<&Name>)",
+    ),
+    (
+        "profile: cash rounding isn't written",
+        "src/profile/mod.rs",
+        ".optional(key::CASH_ROUNDING, data.cash_rounding.map(RoundingRuleField).as_ref())",
+        ".optional(key::CASH_ROUNDING, None::<&RoundingRuleField>)",
+    ),
+    (
+        "profile: the placeholder time zone is accepted",
+        "src/profile/mod.rs",
+        """if business_day.time_zone() == "Factory" {""",
+        """if business_day.time_zone() == "Factory" && data.address.len() > MAX_ADDRESS {""",
+        # No property draws a placeholder zone.
+        "unit",
+    ),
+    (
+        "profile: a time zone may be named in any case",
+        "src/profile/mod.rs",
+        "if business_day.time_zone() != data.business_day.time_zone {",
+        "if !business_day.time_zone().eq_ignore_ascii_case(&data.business_day.time_zone) {",
+        # A name in another case is kept as it is written, and encodes as it decoded.
+        "unit",
+    ),
+    (
+        "profile: cash rounding to the minor unit is accepted",
+        "src/profile/mod.rs",
+        "if data.cash_rounding.is_some_and(|rule| rule.increment().get() == 1) {",
+        "if data.cash_rounding.is_some_and(|rule| rule.increment().get() == 0) {",
+        # As above: it encodes as it decoded, a second way to say none that only a known answer
+        # can name.
+        "unit",
+    ),
+    (
+        "profile: the count of variants of an item isn't limited",
+        "src/profile/mod.rs",
+        "if item.variants.len() > MAX_VARIANTS {",
+        "if item.variants.len() > MAX_VARIANTS.saturating_add(1) {",
+        # The random catalogs are small.
+        "unit",
+    ),
+    (
+        "profile: the count of team members isn't limited",
+        "src/profile/mod.rs",
+        "if team.len() > MAX_TEAM {",
+        "if team.len() > MAX_TEAM.saturating_add(1) {",
+        # As above.
         "unit",
     ),
 ]

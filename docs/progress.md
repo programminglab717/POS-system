@@ -2,13 +2,14 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-10-06.
+> Last updated: 2026-11-09.
 
 ## Where we are
 
-**Phase 0 (Foundations), step 7 of 8:** the Android register shell, slice 1 of 5, the device
-runtime and the location profile, built and verified; its review is next. The step's design is
-[ADR-0023](./adr/0023-register-shell.md), proposed. Step 6, `keel-sim` and `keel-sync` v0, the
+**Phase 0 (Foundations), step 7 of 8:** the Android register shell. Slice 1 of 5, the device
+runtime and the location profile, is built and reviewed, and the step's design,
+[ADR-0023](./adr/0023-register-shell.md), accepted. Slice 2, receipts and printing, is designed
+([ADR-0024](./adr/0024-receipts-and-printing.md), proposed) and being built. Step 6, `keel-sim` and `keel-sync` v0, the
 deterministic simulator and the sync engine, is done: built in four slices, each reviewed, the
 last, hub election and failover ([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted
 after a review that found and fixed two bugs.
@@ -25,7 +26,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
-| 7 | Android register shell | In progress: slice 1 of 5 built, its review next | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
+| 7 | Android register shell | In progress: slice 1 of 5 built and reviewed; slice 2 being built | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
 | 8 | Cloud cell v0 | Not started | |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
@@ -78,25 +79,38 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
-Step 7, the Android register shell ([ADR-0023](./adr/0023-register-shell.md), proposed), comes in
-five slices, each ending with a review, each designed in detail in an ADR of its own when it
-begins:
+Step 7, the Android register shell ([ADR-0023](./adr/0023-register-shell.md), accepted after
+slice 1's review), comes in five slices, each ending with a review, each designed in detail in an
+ADR of its own when it begins:
 
-1. **The device runtime and the location profile** (built 2026-10-06, review next):
+1. **The device runtime and the location profile** (built 2026-10-06, reviewed 2026-11-09):
    `keel-runtime`, which turns a cashier's intents into the kernel's commands, one write each,
    and the store into views; the location profile, with its catalog and the rules for ringing an
    item with modifiers; and `Locale` v0, the kernel's display text for amounts.
-2. **Receipts and printing**: KeelDoc v0, an ESC/POS renderer, and raw TCP to port 9100, with
-   unconfirmed jobs never printed twice by themselves.
+2. **Receipts and printing** (designed 2026-11-09, [ADR-0024](./adr/0024-receipts-and-printing.md),
+   proposed; building): KeelDoc v0 in `keel-doc`, an ESC/POS renderer, the print driver and raw
+   TCP to port 9100 in `keel-print`, and print jobs in the outbox, never sent twice by themselves.
 3. **The bindings**: `keel-ffi` with UniFFI, and a Kotlin/JVM library tested on the host.
 4. **The Android app**: the register's screens, keys in the Android Keystore, the build for
    Android, CI on an emulator, and the performance harness on a reference device.
 5. **The local hub**: `keel-net`, WebSocket over TLS 1.3 with mutual TLS, the hub role in the
    app and in a Linux daemon, and a provisioning tool standing in for the Device CA.
 
-The design drew on four research tracks, on the current state of UniFFI and the Android
-toolchain, ESC/POS printing over TCP, and networking in Rust on Android; ADR-0023 cites their
-sources.
+Slice 2's design settles what ADR-0023's decision 6 left open: a job is unconfirmed while it is
+running and not with the driver, so the outbox holds every state a job has without a new store
+schema; staff resolve an unconfirmed job (it printed, print it again marked "REPRINT", or dismiss
+it); the printer's profile and address are the device's until routes; and the receipt is built in
+the write that closes the order, so it shows the order as it closed. Its research had two of
+Epson's and a printer maker's manual hosts outside this environment's network policy: the
+status bits follow Epson's reference as widely implemented, and the tests' fake printer pins them.
+
+## Completed
+
+### The device runtime and the location profile: step 7, slice 1 (2026-10-06, reviewed 2026-11-09)
+
+Commits `cf064f5` (the step's design and the slice), `a3901e7` and `484cba6` (the review's first
+fixes), and REVIEW_COMMIT, which finishes the review and accepts
+[ADR-0023](./adr/0023-register-shell.md).
 
 Built in slice 1, each verified as it landed:
 
@@ -163,7 +177,7 @@ Built in slice 1, each verified as it landed:
   with all features and none, the documentation, the wasm build, every planted bug's text, and
   both generated tables pass, as CI runs them.
 
-- **Review** (in progress, 2026-10-06). Found and fixed so far, in `keel-runtime`:
+- **Review** (2026-10-06 to 2026-11-09). Found and fixed, in `keel-runtime`:
   - An intent wrote, then made its ticket. An order the domain accepts can still overflow when
     priced, as a line of a huge price can, so such an intent was done but answered with an error,
     and its order could no longer be shown. Each intent now makes its ticket inside its write: it
@@ -194,13 +208,51 @@ Built in slice 1, each verified as it landed:
     second way to say none. Each is refused or fixed, and catalogs have limits on their variants
     and modifiers in all.
 
-Next, still to do in the review: the profile's remaining fixes and tests (placeholder time zones,
-every count limit, round-trip and decoding properties over every field, a second golden profile
-from Python); ringing's (free applications not given to modifiers that cost nothing, a test of
-the line's tax category, a wider generator); then re-verifying everything, ADR-0023's as-built
-details and its acceptance.
+  Found and fixed in the review's last part, each with a known answer and a planted bug:
+  - Free applications went to modifiers that cost nothing, so a free "no whip" could take a
+    group's free syrup. They go to the lowest-priced applications that cost something
+    (ADR-0023, as built).
+  - The catalog's modifier groups were a list, so one catalog had many encodings and versions:
+    they are written in the ascending order of their identifiers, as tax categories are.
+  - `BusinessDayPolicy` took `jiff`'s `Etc/Unknown`, which isn't the database's, against its
+    documentation; and the profile took `Factory`, the database's zone for a device not yet set
+    up. Both are refused.
+  - Choosing a modifier twice was found by comparing each choice with every one before it: a
+    shell sending tens of thousands of choices would have held the register for seconds. It is
+    a set now.
+- **Verified in the review's last part:**
+  - Known answers: every count's limit, at it and past it; a catalog at every limit at once
+    (200,000 items, 1,000,000 variants and modifiers, 100,000 groups), checked, encoded and
+    decoded (48 s in a debug build, a sweep CI runs); a second golden profile, a Toronto
+    bakery's, pinned byte for byte against Python's `cbor2` like the demo, writing every field
+    the demo leaves out (cash rounding, taxes by dining, a group's minimum and free applications
+    together, every prefix, a modifier chosen under a modifier in a group that repeats); its
+    tarts rung; free applications skipping what costs nothing; a line's tax category; placeholder
+    time zones.
+  - Property tests, rewritten: ringing over catalogs of up to eight groups of six modifiers,
+    prices that tie, from nothing to $9,999,999.99, every prefix, groups as wide as a group
+    allows, quantities to 255 and items of three tax categories, against the model, which now
+    checks each line's variant, name and tax category; whole profiles with every field drawn
+    (five currencies, seven zones, cash rounding in every mode, up to four taxes with rates of
+    up to 28 decimals, menus, teams, addresses) round-tripping, and refused when a tax's
+    categories are out of order; and every change to any node of a profile's encoding (a value
+    replaced, a key added or taken away, elements swapped, repeated or removed) either refused
+    or decoding to a profile whose encoding is exactly the changed one, with an unknown key, a
+    required key gone and a set out of order or repeated always refused. 20,000 cases of each
+    pass.
+  - A probe of 2,000 cases: 80% of choices ring; 9% choose a modifier that costs nothing in a
+    group with free applications; 4% offer a group of the widest bounds, 1% ring a quantity of
+    100 or more, and 13% ring modifiers under modifiers. The first version of the encoding
+    property picked its node among all of a profile's, and missed both planted set-order bugs:
+    it now picks a kind of node first, leaves a quarter of the time, and reaches every kind.
+  - Planted bugs: 33 in the profile's list, the 23 the property tests can reach caught by them
+    and the other 10 by unit tests; and one more in `keel-types`', caught by a unit test. Running
+    the unit-only ones found that the earlier refusal of cash rounding to the minor unit had no
+    test: it has a known answer now.
+  - The workspace's tests, with the exhaustive sweeps (573 tests, 3 minutes 10 seconds), and
+    without default features (567); clippy with all features and none; the documentation; the
+    wasm build; and every planted bug's text, as CI runs them.
 
-## Completed
 
 ### Hub election and failover: step 6, slice 4 (2026-10-01)
 

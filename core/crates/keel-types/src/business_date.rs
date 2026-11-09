@@ -140,9 +140,11 @@ impl BusinessDayPolicy {
         let hour = i8::try_from(cutoff_hour).map_err(|_| invalid_cutoff())?;
         let minute = i8::try_from(cutoff_minute).map_err(|_| invalid_cutoff())?;
         let cutoff = Time::new(hour, minute, 0, 0).map_err(|_| invalid_cutoff())?;
-        let zone = TimeZone::get(time_zone)
-            .map_err(|_| BusinessDateError::UnknownTimeZone(time_zone.to_owned()))?;
-        let time_zone_name = zone.iana_name().unwrap_or(time_zone).to_owned();
+        let unknown = || BusinessDateError::UnknownTimeZone(time_zone.to_owned());
+        let zone = TimeZone::get(time_zone).map_err(|_| unknown())?;
+        // `jiff` also gives `Etc/Unknown`, in any case, a zone of its own that isn't the
+        // database's and has no IANA name.
+        let time_zone_name = zone.iana_name().ok_or_else(unknown)?.to_owned();
         Ok(BusinessDayPolicy {
             time_zone_name,
             time_zone: zone,
@@ -373,6 +375,15 @@ mod tests {
             BusinessDayPolicy::new("Mars/Olympus_Mons", 4, 0),
             Err(BusinessDateError::UnknownTimeZone("Mars/Olympus_Mons".to_owned()))
         );
+        // `jiff`'s placeholder for a zone it doesn't know isn't in the database.
+        for unknown in ["Etc/Unknown", "etc/unknown", "ETC/UNKNOWN"] {
+            assert_eq!(
+                BusinessDayPolicy::new(unknown, 4, 0),
+                Err(BusinessDateError::UnknownTimeZone(unknown.to_owned()))
+            );
+        }
+        // A zone is found whatever the case of its name, and named as the database names it.
+        assert_eq!(policy("america/new_york", 4, 0).time_zone(), "America/New_York");
         for (hour, minute) in [(24, 0), (12, 60), (255, 0)] {
             assert_eq!(
                 BusinessDayPolicy::new("UTC", hour, minute),

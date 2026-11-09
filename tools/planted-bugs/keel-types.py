@@ -190,4 +190,12 @@ BUGS = [
         # Only shells look a locale up by its tag; no property test has a tag to look up.
         "unit",
     ),
+    (
+        "business days: jiff's placeholder for an unknown zone is accepted",
+        "src/business_date.rs",
+        "let time_zone_name = zone.iana_name().ok_or_else(unknown)?.to_owned();",
+        "let time_zone_name = zone.iana_name().unwrap_or(time_zone).to_owned();",
+        # No property draws a zone the database doesn't have.
+        "unit",
+    ),
 ]

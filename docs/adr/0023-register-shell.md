@@ -1,6 +1,8 @@
 # ADR-0023: The register shell: a device runtime the shell drives through generated bindings, a location profile to ring from, and the step in five slices
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-09) after the review of slice 1, with the details settled in
+  building and reviewing it, under "As built"; slices 2 to 5 are designed in ADRs of their own,
+  from [ADR-0024](./0024-receipts-and-printing.md)
 - **Date:** 2026-10-02
 
 ## Context
@@ -158,7 +160,8 @@ And the step has constraints of its own:
 
    The line's snapshot is the variant's price and name ("Latte (Large)"), the item's tax
    category and the catalog's version; its modifiers are those chosen, with their prefixes and
-   prices, in the catalog's order. A group's free applications go to its lowest-priced ones,
+   prices, in the catalog's order. A group's free applications go to its lowest-priced ones
+   (that cost something, as built),
    ties to the modifier listed first, so the same choices always cost the same, whatever order
    they were tapped in; a modifier whose applications are part charged and part free appears
    twice, charged first. Placement (halves of a pizza), per-variant modifier prices and defaults
@@ -301,6 +304,46 @@ And the step has constraints of its own:
     does: the Android SDK and NDK, the Android Gradle Plugin, AndroidX and Compose. Unless this
     environment's network policy lets it reach `dl.google.com`, the Android build is verified in
     CI alone, each round a CI run.
+
+## As built
+
+Slice 1's details, settled in building it and in reviewing it:
+
+- **The runtime's intents** (decision 2): `change_line` is `change_quantity`. Each intent makes
+  its answer, its order's ticket, inside its write: an order the domain accepts can still
+  overflow when priced, as a line of a huge price can, and an intent that wrote and then failed
+  to answer would have happened while saying it hadn't. Tenders are refused when negative
+  (`NegativeTender`) or in another currency (`WrongCurrency`), and a sale that cash rounds to
+  nothing closes with nothing tendered. `Runtime::open` takes the locale amounts are shown in,
+  and the runtime's own entropy apart from the store's. Tickets list lines in the order they
+  were rung and taxes in the location's order, whether the order is open or closed.
+- **The profile's encoding** (decision 3), where one profile could have had several:
+  - a tax rate is the text of its decimal fraction, with no sign, no needless zeros, and no more
+    digits than a rate holds, so each rate has one text and each text one rate;
+  - a tax's categories are a set, written in the ascending order of their identifiers' bytes,
+    and so are the catalog's modifier groups: where a group is offered, and in what order, is up
+    to the items and modifiers that offer it;
+  - rounding modes have codes of their own, not their positions in a list;
+  - cash rounding to the minor unit is refused: no rounding is written as none;
+  - a time zone is written as the database names it, in its case; `Factory`, the database's
+    zone for a device not yet set up, and `Etc/Unknown`, `jiff`'s zone for one it doesn't know,
+    are refused (`BusinessDayPolicy` refuses the second for every caller).
+- **The profile's limits**: 200,000 items; 1,000,000 variants and 1,000,000 modifiers in all;
+  100,000 modifier groups; 100 variants of an item; 255 modifiers in a group, and 255 groups
+  offered in one place; four levels of groups; four address lines; 100 menu pages of 500 buttons;
+  10,000 team members; 64 taxes of 1,000 categories each. A catalog at every limit at once is
+  checked, encoded and decoded in a test CI runs.
+- **Ringing** (amends decision 4): a group's free applications go to its lowest-priced
+  applications **that cost something**, ties to the modifier listed first. An application that
+  costs nothing gains nothing by being free, so it doesn't use one up: a free "no whip" no
+  longer takes the free syrup.
+- **Text** (decision 5): `Locale` v0's 104,976 strings, every currency in both locales as
+  amounts and as quantities, are identical to ICU 78.2's (CLDR 48); the comparison is a
+  committed tool that CI runs with Node.js. The table's generator checks CLDR's currency spacing
+  before the digits, where `Locale` puts a symbol, the decimal pattern, and currencies' own
+  separators.
+- **The CBOR decoder** reserves room for at most 1,024 elements of an array or map before
+  reading them, so a deeply nested header can't make it reserve far more than its input.
 
 ## Consequences
 

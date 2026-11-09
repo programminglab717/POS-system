@@ -40,7 +40,9 @@
 //! even, 2 half toward zero, 3 away from zero, 4 toward zero, 5 ceiling and 6 floor; tax rounding
 //! scopes 0 per line and 1 per document.
 //!
-//! The catalog: `{1: items, 2: modifier groups}`.
+//! The catalog: `{1: items, 2: modifier groups}`, its groups in the ascending order of their
+//! identifiers' bytes, since where each is offered, and in what order, is up to the items and
+//! modifiers that offer it.
 //!
 //! | Record | Keys |
 //! |---|---|
@@ -219,6 +221,10 @@ impl Profile {
         if business_day.time_zone() != data.business_day.time_zone {
             return Err(ProfileError::Invalid("a time zone not named as the database names it"));
         }
+        // The database's zone for a device not yet set up, whose local time is no place's.
+        if business_day.time_zone() == "Factory" {
+            return Err(ProfileError::Invalid("a placeholder time zone"));
+        }
         // Absent, cash isn't rounded: rounding to the minor unit would be a second way to say so.
         if data.cash_rounding.is_some_and(|rule| rule.increment().get() == 1) {
             return Err(ProfileError::Invalid("cash rounded to the minor unit, which rounds none"));
@@ -373,6 +379,14 @@ fn check_catalog(catalog: &Catalog, currency: Currency) -> Result<Index, Profile
     for (position, group) in catalog.groups.iter().enumerate() {
         if index.groups.insert(group.id, position).is_some() {
             return Err(ProfileError::Duplicate("modifier groups"));
+        }
+        // Items and modifiers say where groups are offered, and in what order; the catalog's
+        // own order of them means nothing, so one catalog has one encoding and one version.
+        let ascending = position.checked_sub(1).and_then(|before| catalog.groups.get(before));
+        if ascending.is_some_and(|before| before.id.to_bytes() > group.id.to_bytes()) {
+            return Err(ProfileError::Invalid(
+                "modifier groups not in the ascending order of their identifiers",
+            ));
         }
         if group.modifiers.is_empty() {
             return Err(ProfileError::Invalid("a modifier group with no modifiers"));

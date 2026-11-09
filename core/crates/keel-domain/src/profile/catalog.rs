@@ -2,7 +2,7 @@
 //! ring as a line.
 
 use core::num::NonZeroU8;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use keel_types::{Id, Money};
 
@@ -16,7 +16,8 @@ use crate::refs::{Item, Modifier, ModifierGroup, TaxCategory, Variant};
 pub struct Catalog {
     /// The items, in the order the catalog lists them.
     pub items: Vec<CatalogItem>,
-    /// Every modifier group, offered by items or by modifiers.
+    /// Every modifier group, offered by items or by modifiers, in the ascending order of their
+    /// identifiers' bytes.
     pub groups: Vec<CatalogGroup>,
 }
 
@@ -107,7 +108,8 @@ pub struct Rung {
     pub item: ItemSnapshot,
     /// The modifiers chosen, in the catalog's order: by group as offered, then by modifier in
     /// the group. A modifier whose applications are part charged and part free appears twice,
-    /// charged first.
+    /// charged first. A group's free applications go to its lowest-priced applications that cost
+    /// something, ties to the modifier listed first.
     pub modifiers: Vec<ChosenModifier>,
 }
 
@@ -209,13 +211,14 @@ impl Catalog {
         choices: &[Choice],
     ) -> Result<Vec<ChosenModifier>, RingError> {
         let mut placed: Vec<Placed<'_>> = Vec::with_capacity(choices.len());
+        let mut seen = BTreeSet::new();
         for choice in choices {
             let not_offered = RingError::NotOffered(choice.modifier);
             let &(group_index, position) =
                 index.modifiers.get(&choice.modifier).ok_or(not_offered)?;
             let group = self.groups.get(group_index).ok_or(not_offered)?;
             let offered_at = offered.iter().position(|id| *id == group.id).ok_or(not_offered)?;
-            if placed.iter().any(|earlier| earlier.choice.modifier == choice.modifier) {
+            if !seen.insert(choice.modifier) {
                 return Err(RingError::ChosenTwice(choice.modifier));
             }
             if choice.quantity.get() > 1 && !group.repeat {
@@ -276,12 +279,16 @@ impl Catalog {
 }
 
 /// How many of each choice's applications in one group are free, given the group's `free`
-/// count: they go to the lowest-priced applications, ties to the modifier listed first.
+/// count: they go to the lowest-priced applications that cost something, ties to the modifier
+/// listed first. An application that costs nothing gains nothing by being free, so it doesn't
+/// use one up.
 fn free_applications(in_group: &[Placed<'_>], free: u8) -> Vec<u8> {
-    // Each application: its price, its modifier's position in the group, and its choice.
+    // Each application that costs something: its price, its modifier's position in the group,
+    // and its choice.
     let mut applications: Vec<(i64, usize, usize)> = in_group
         .iter()
         .enumerate()
+        .filter(|(_, placed)| placed.modifier.price.is_positive())
         .flat_map(|(choice, placed)| {
             let application = (placed.modifier.price.minor(), placed.position, choice);
             core::iter::repeat_n(application, usize::from(placed.choice.quantity.get()))
