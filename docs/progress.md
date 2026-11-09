@@ -104,7 +104,7 @@ Slice 3's design comes first, in an ADR of its own, as each slice's has.
 ### Receipts and printing: step 7, slice 2 (2026-11-09)
 
 Commits `7b7fa3d` (the documents and the driver), `e93703c` (print jobs in the runtime), and
-REVIEW2_COMMIT, which fixes what the review found and accepts
+`86e1f75`, which fixes what the review found and accepts
 [ADR-0024](./adr/0024-receipts-and-printing.md).
 
 Slice 2's design settles what ADR-0023's decision 6 left open: a job is unconfirmed while it is
