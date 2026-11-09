@@ -134,10 +134,10 @@ impl Location {
             self.register.clock().advance(step).unwrap();
             for n in [HUB, REGISTER] {
                 let runtime = if n == HUB { &mut self.hub } else { &mut self.register };
-                if runtime.tick_due() {
-                    if let Ok(frames) = runtime.on_tick() {
-                        self.send(n, frames);
-                    }
+                if runtime.tick_due()
+                    && let Ok(frames) = runtime.on_tick()
+                {
+                    self.send(n, frames);
                 }
             }
             self.deliver();
@@ -267,7 +267,10 @@ fn a_register_that_hears_no_one_sells_as_an_island() {
     let mut register = open(&register_dir, REGISTER, 2);
     register.sign_in(id(0x501)).unwrap();
     let _ = register.start_sync(roster()).unwrap();
-    register.clock().advance(keel_runtime::ISLAND_AFTER - Duration::from_millis(1)).unwrap();
+    register
+        .clock()
+        .advance(keel_runtime::ISLAND_AFTER.checked_sub(Duration::from_millis(1)).unwrap())
+        .unwrap();
     assert!(matches!(register.start_order(Mode::Takeout), Err(RuntimeError::NotSettled)));
     register.clock().advance(Duration::from_millis(1)).unwrap();
     let status = register.sync_status().unwrap();
@@ -329,8 +332,10 @@ fn a_hub_the_roster_demotes_stops_serving() {
     let hub = open(&hub_dir, HUB, 1);
     hub.clock().set(now);
     let mut location = Location { hub, register, wire: VecDeque::new() };
+    // The role moves to the register, as a roster must give it to some device.
     let mut data = roster().data().clone();
     data.devices[0].hub = None;
+    data.devices[1].hub = NonZeroU8::new(1);
     let frames = location.hub.start_sync(Roster::new(data).unwrap()).unwrap();
     location.send(HUB, frames);
     location.deliver();

@@ -8,10 +8,17 @@
 //! [`provision`] makes them in memory, which the tests use; [`Kit::write`] writes a device's to a
 //! directory, which `keel-hub` and the shells read with [`Kit::read`].
 //!
-//! It draws the operating system's randomness for keys and identifiers: it is a tool, never part
-//! of what a device runs.
+//! It draws the operating system's randomness for keys and identifiers, and reads the system's
+//! clock for the certificates' validity: it is a tool, never part of what a device runs.
+//!
+//! The CA may issue only devices' certificates (its path length is 0) and is valid for 5 years; a
+//! device's certificate is for client authentication, and the hub's for server authentication
+//! too, valid for 397 days from a day before it was made. The Device CA's certificates will live
+//! 24 to 72 hours and be renewed (security §2); until a device can renew, a pilot's kits are
+//! provisioned again within the year. Secret files are written readable by their owner alone.
 
 use core::num::{NonZeroU8, NonZeroU16};
+use core::time::Duration;
 use std::path::Path;
 
 use keel_domain::codec::Name;
@@ -21,7 +28,10 @@ use keel_events::envelope::Device;
 use keel_events::keys::{SignatureAlgorithm, Signer, SoftwareSigner};
 use keel_net::{Credentials, device_name};
 use keel_types::{Clock, Entropy, Id, IdGenerator, OsEntropy, SystemClock};
-use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
+use rcgen::{
+    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+    KeyUsagePurpose,
+};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 /// A device to provision.
@@ -108,6 +118,36 @@ pub enum ProvisionError {
     /// A file isn't what it should be.
     #[error("{0} is malformed")]
     Malformed(&'static str),
+    /// The system's clock is before 1970, or too far ahead to add a certificate's life to.
+    #[error("the system's clock can't date a certificate")]
+    Clock,
+}
+
+/// How long the CA's certificate is valid.
+const CA_LIFE: Duration = Duration::from_secs(5 * 365 * 86_400);
+
+/// How long a device's certificate is valid: the longest a public CA issues.
+const DEVICE_LIFE: Duration = Duration::from_secs(397 * 86_400);
+
+/// How long before it was made a certificate is valid from, for a device whose clock is behind.
+const SKEW: Duration = Duration::from_secs(86_400);
+
+/// `params` made valid from [`SKEW`] before `now` for `life`.
+fn valid(
+    mut params: CertificateParams,
+    now: time::OffsetDateTime,
+    life: Duration,
+) -> Result<CertificateParams, ProvisionError> {
+    let offset = |by: Duration| time::Duration::try_from(by).map_err(|_| ProvisionError::Clock);
+    params.not_before = now.checked_sub(offset(SKEW)?).ok_or(ProvisionError::Clock)?;
+    params.not_after = now.checked_add(offset(life)?).ok_or(ProvisionError::Clock)?;
+    Ok(params)
+}
+
+/// The system's clock, as a certificate dates.
+fn now() -> Result<time::OffsetDateTime, ProvisionError> {
+    let seconds = SystemClock.now().as_millis().div_euclid(1000);
+    time::OffsetDateTime::from_unix_timestamp(seconds).map_err(|_| ProvisionError::Clock)
 }
 
 fn random<const N: usize>(entropy: &mut OsEntropy) -> Result<[u8; N], ProvisionError> {
@@ -133,12 +173,15 @@ pub fn provision(spec: &Spec) -> Result<Provisioned, ProvisionError> {
         .map_err(|error| ProvisionError::Profile(error.to_string()))?;
     let mut entropy = OsEntropy;
     let mut ids = IdGenerator::new(OsEntropy);
+    let now = now()?;
     let ca_key = KeyPair::generate()?;
-    let mut ca_params = CertificateParams::new(Vec::<String>::new())?;
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let mut ca_params = valid(CertificateParams::new(Vec::<String>::new())?, now, CA_LIFE)?;
+    // It issues devices' certificates, and no CA below it.
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     ca_params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, format!("Keel location {}", profile.data().location));
+        .push(DnType::CommonName, format!("Keel location {}", profile.data().location));
     let ca = ca_params.self_signed(&ca_key)?.der().to_vec();
     let ca_key_der = ca_key.serialize_der();
     let issuer = Issuer::new(ca_params, ca_key);
@@ -174,11 +217,18 @@ pub fn provision(spec: &Spec) -> Result<Provisioned, ProvisionError> {
     let mut kits = Vec::new();
     for (id, device, signing_key) in secrets {
         let mut names = vec![device_name(id)];
+        let mut usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
         if device.hub.is_some() {
             names.push(spec.hub_name.clone());
+            usages.push(ExtendedKeyUsagePurpose::ServerAuth);
         }
         let key = KeyPair::generate()?;
-        let certificate = CertificateParams::new(names)?.signed_by(&key, &issuer)?.der().to_vec();
+        let mut params = valid(CertificateParams::new(names)?, now, DEVICE_LIFE)?;
+        params.distinguished_name.push(DnType::CommonName, device.name.clone());
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = usages;
+        params.use_authority_key_identifier_extension = true;
+        let certificate = params.signed_by(&key, &issuer)?.der().to_vec();
         kits.push(Kit {
             device: id,
             name: device.name.clone(),
@@ -198,6 +248,48 @@ pub fn provision(spec: &Spec) -> Result<Provisioned, ProvisionError> {
 const FILES: [&str; 8] =
     ["device", "signing.key", "store.key", "tls.key", "tls.crt", "ca.crt", "roster", "profile"];
 
+/// The files of a kit that hold its secrets.
+const SECRETS: [&str; 3] = ["signing.key", "store.key", "tls.key"];
+
+/// Writes `bytes` to `path`, readable and writable by its owner alone where the system has
+/// owners, whatever the file was before.
+///
+/// # Errors
+/// [`ProvisionError::Io`] if the file can't be written.
+pub fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), ProvisionError> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        options.mode(0o600);
+        // A file there already keeps its mode when opened: narrow it before writing.
+        if path.exists() {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Makes `dir` and its parents, `dir` itself entered by its owner alone where the system has
+/// owners.
+///
+/// # Errors
+/// [`ProvisionError::Io`] if it can't be made.
+pub fn private_dir(dir: &Path) -> Result<(), ProvisionError> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 impl Kit {
     /// The device's credentials for `keel-net`.
     pub fn credentials(&self) -> Credentials {
@@ -208,13 +300,14 @@ impl Kit {
         }
     }
 
-    /// Writes the kit's files into `dir`, which it makes: `device` (the identifier's text),
-    /// `signing.key`, `store.key`, `tls.key`, `tls.crt`, `ca.crt`, `roster` and `profile`.
+    /// Writes the kit's files into `dir`, which it makes, entered by its owner alone: `device`
+    /// (the identifier's text), `signing.key`, `store.key`, `tls.key` (each readable by its owner
+    /// alone), `tls.crt`, `ca.crt`, `roster` and `profile`.
     ///
     /// # Errors
     /// [`ProvisionError::Io`] if a file can't be written.
     pub fn write(&self, dir: &Path) -> Result<(), ProvisionError> {
-        std::fs::create_dir_all(dir)?;
+        private_dir(dir)?;
         let device = self.device.to_string();
         let contents: [&[u8]; 8] = [
             device.as_bytes(),
@@ -227,7 +320,11 @@ impl Kit {
             &self.profile,
         ];
         for (file, bytes) in FILES.iter().zip(contents) {
-            std::fs::write(dir.join(file), bytes)?;
+            if SECRETS.contains(file) {
+                write_secret(&dir.join(file), bytes)?;
+            } else {
+                std::fs::write(dir.join(file), bytes)?;
+            }
         }
         std::fs::write(dir.join("name"), &self.name)?;
         Ok(())

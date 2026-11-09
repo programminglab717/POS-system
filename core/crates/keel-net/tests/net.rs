@@ -1,7 +1,9 @@
 //! The network over real TLS on the host (ADR-0026, decision 6): a hub and a device exchange
 //! frames; a certificate from another CA, a device not in the roster, and a hub whose
-//! certificate lacks the roster's name are each refused; a frame larger than a frame may be
-//! closes the connection; and a device reconnects after the hub restarts.
+//! certificate lacks the roster's name are each refused, as are a certificate naming two devices
+//! or a wildcard, and a hub that names a device the roster doesn't let host it; a frame larger
+//! than a frame may be closes the connection; both sides writing at once never stall each other;
+//! a quiet connection stays up; and a device reconnects after the hub restarts.
 
 #![allow(
     clippy::unwrap_used,
@@ -200,4 +202,92 @@ fn a_device_connects_again_after_its_hub_restarts() {
     let frame =
         wait_for(&hub, Duration::from_secs(5), |event| matches!(event, Event::Frame { .. }));
     assert_eq!(frame, Some(Event::Frame { from: id(REGISTER), frame: b"again".to_vec() }));
+}
+
+#[test]
+fn a_name_that_could_be_two_devices_is_refused() {
+    let ca = ca();
+    let (listener, port) = bound();
+    let hub = Net::hub(listener, roster(port), credentials(&ca, &ca, hub_names())).unwrap();
+    let quiet = |net: &Net| {
+        wait_for(net, Duration::from_secs(2), |event| matches!(event, Event::Connected(_)))
+            .is_none()
+    };
+    // Two devices' names.
+    let names = vec![device_name(id(REGISTER)), device_name(id(HUB))];
+    let both = Net::device(roster(port), credentials(&ca, &ca, names)).unwrap();
+    assert!(quiet(&hub) && quiet(&both));
+    drop(both);
+    // A device's name beside a wildcard that stands for every device.
+    let names = vec![device_name(id(REGISTER)), "*.devices.keel".into()];
+    let wild = Net::device(roster(port), credentials(&ca, &ca, names)).unwrap();
+    assert!(quiet(&hub) && quiet(&wild));
+    drop((wild, hub));
+    // A hub whose certificate names a device the roster doesn't let host it.
+    let (listener, port) = bound();
+    let names = vec![HUB_NAME.into(), device_name(id(REGISTER))];
+    let usurper = Net::hub(listener, roster(port), credentials(&ca, &ca, names)).unwrap();
+    let device =
+        Net::device(roster(port), credentials(&ca, &ca, vec![device_name(id(REGISTER))])).unwrap();
+    assert!(quiet(&device), "the device refuses a hub that may not host");
+    drop(usurper);
+}
+
+#[test]
+fn both_sides_writing_at_once_never_stall() {
+    const FRAMES: u8 = 40;
+    let ca = ca();
+    let (listener, port) = bound();
+    let hub = Net::hub(listener, roster(port), credentials(&ca, &ca, hub_names())).unwrap();
+    let device =
+        Net::device(roster(port), credentials(&ca, &ca, vec![device_name(id(REGISTER))])).unwrap();
+    assert!(
+        wait_for(&device, Duration::from_secs(5), |event| *event == Event::Connected(id(HUB)))
+            .is_some()
+    );
+    assert!(
+        wait_for(&hub, Duration::from_secs(5), |event| *event == Event::Connected(id(REGISTER)))
+            .is_some()
+    );
+    // Far more than the sockets' buffers hold, each way at once.
+    for n in 0..FRAMES {
+        hub.send(id(REGISTER), vec![n; keel_sync::MAX_FRAME]);
+        device.send(id(HUB), vec![n; keel_sync::MAX_FRAME]);
+    }
+    let (mut to_device, mut to_hub) = (0_u8, 0_u8);
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    while (to_device < FRAMES || to_hub < FRAMES) && std::time::Instant::now() < until {
+        for (net, count) in [(&device, &mut to_device), (&hub, &mut to_hub)] {
+            match net.recv_timeout(Duration::from_millis(10)) {
+                Some(Event::Frame { frame, .. }) => {
+                    assert_eq!(frame, vec![*count; keel_sync::MAX_FRAME], "in order, whole");
+                    *count += 1;
+                }
+                Some(other) => panic!("the connection dropped: {other:?}"),
+                None => {}
+            }
+        }
+    }
+    assert_eq!((to_device, to_hub), (FRAMES, FRAMES), "every frame crossed both ways");
+}
+
+#[test]
+fn a_quiet_connection_stays_up() {
+    let ca = ca();
+    let (listener, port) = bound();
+    let hub = Net::hub(listener, roster(port), credentials(&ca, &ca, hub_names())).unwrap();
+    let device =
+        Net::device(roster(port), credentials(&ca, &ca, vec![device_name(id(REGISTER))])).unwrap();
+    assert!(
+        wait_for(&device, Duration::from_secs(5), |event| *event == Event::Connected(id(HUB)))
+            .is_some()
+    );
+    // Longer than a connection may stay silent: the pings keep it up.
+    let dropped =
+        wait_for(&device, Duration::from_secs(20), |event| matches!(event, Event::Disconnected(_)));
+    assert_eq!(dropped, None, "the pings keep a quiet connection up");
+    device.send(id(HUB), b"still".to_vec());
+    let frame =
+        wait_for(&hub, Duration::from_secs(5), |event| matches!(event, Event::Frame { .. }));
+    assert_eq!(frame, Some(Event::Frame { from: id(REGISTER), frame: b"still".to_vec() }));
 }

@@ -55,6 +55,7 @@ webpki = { package = "rustls-webpki", version = "0.103", default-features = fals
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+time = { version = "0.3.47", default-features = false }
 keel-net = { path = "core/crates/keel-net" }
 keel-provision = { path = "core/crates/keel-provision" }
 

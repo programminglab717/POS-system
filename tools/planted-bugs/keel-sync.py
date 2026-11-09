@@ -434,11 +434,11 @@ BUGS = [
         """        if !self.serving() {
             return Ok(Vec::new());
         }
-        let mut written""",
+        // Owed""",
         """        if !self.is_hub() {
             return Ok(Vec::new());
         }
-        let mut written""",
+        // Owed""",
     ),
     (
         "sequencing: the hub doesn't number what it receives",
@@ -458,7 +458,7 @@ BUGS = [
     (
         "sequencing: the hub doesn't number as it begins to serve at a tick",
         "src/replicator.rs",
-        """            if self.serving() && !was_serving {
+        """            if self.serving() && (!was_serving || self.owed) {
                 outgoing.extend(self.sequence(replica, now)?);
             }
             outgoing.extend(self.elect(replica, now)?);""",

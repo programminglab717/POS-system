@@ -30,14 +30,26 @@ fn main() -> ExitCode {
         let Some(value) = args.next() else { return usage() };
         match flag.as_str() {
             "--hub" => {
-                hub = value.rsplit_once(':').and_then(|(host, port)| {
+                let Some(address) = value.rsplit_once(':').and_then(|(host, port)| {
+                    // An IPv6 address is written in brackets, as in a URL.
+                    let host = host
+                        .strip_prefix('[')
+                        .and_then(|host| host.strip_suffix(']'))
+                        .unwrap_or(host);
                     Some((host.to_owned(), port.parse::<NonZeroU16>().ok()?))
-                });
+                }) else {
+                    return usage();
+                };
+                hub = Some(address);
             }
             "--hub-name" => hub_name = Some(value),
             "--device" => {
                 let (name, priority) = match value.split_once('=') {
-                    Some((name, priority)) => (name.to_owned(), priority.parse::<NonZeroU8>().ok()),
+                    // A priority that isn't one is a mistake, not a register.
+                    Some((name, priority)) => match priority.parse::<NonZeroU8>() {
+                        Ok(priority) => (name.to_owned(), Some(priority)),
+                        Err(_) => return usage(),
+                    },
                     None => (value, None),
                 };
                 devices.push(DeviceSpec { name, hub: priority });
@@ -51,9 +63,9 @@ fn main() -> ExitCode {
     };
     let spec = Spec { profile, hub_host, hub_port, hub_name, devices };
     let result = provision(&spec).and_then(|provisioned| {
-        std::fs::create_dir_all(&out)?;
+        keel_provision::private_dir(&out)?;
         std::fs::write(out.join("ca.crt"), &provisioned.ca)?;
-        std::fs::write(out.join("ca.key"), &provisioned.ca_key)?;
+        keel_provision::write_secret(&out.join("ca.key"), &provisioned.ca_key)?;
         for kit in &provisioned.kits {
             kit.write(&out.join(kit.device.to_string()))?;
             println!("{}  {}", kit.device, kit.name);

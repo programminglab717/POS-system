@@ -6,22 +6,27 @@
 //! and takes the frames that arrive, so the store keeps its one writer.
 //!
 //! - **The hub** ([`Net::hub`]) listens on one port; **a device** ([`Net::device`]) connects to
-//!   the roster's address, and again after a backoff from 1 s doubling to 30 s when the connection
-//!   drops.
+//!   the roster's address, trying each address the host resolves to, and again after a backoff
+//!   from 1 s doubling to 30 s, jittered, when the connection drops.
 //! - **Identity**: each side presents its certificate and verifies the other's against the
 //!   location's CA alone, with `rustls` and its `ring` provider, TLS 1.3 only. A device is the one
-//!   whose name its certificate carries, `<uuid>.devices.keel` ([`device_name`]), and must be in
-//!   the roster, or the connection closes; the hub's certificate also carries the roster's hub
-//!   name, which a device checks instead of an address, so a new address doesn't break it.
+//!   whose name its certificate carries, `<uuid>.devices.keel` ([`device_name`]): exactly one
+//!   such name, and no wildcard. It must be in the roster, or the connection closes; the hub's
+//!   certificate also carries the roster's hub name, which a device checks instead of an
+//!   address, so a new address doesn't break it, and must name a device the roster lets host
+//!   the hub.
 //! - **Frames**: each binary WebSocket message is one frame of at most `keel-sync`'s
-//!   [`MAX_FRAME`] bytes; anything else closes the connection.
+//!   [`MAX_FRAME`] bytes; anything else closes the connection. Each side pings every 5 s, and a
+//!   connection silent for 15 s, or whose writes stall for as long, closes.
+//! - **Bounded**: every queue has a bound, and a frame that finds its queue full is dropped, as
+//!   the replicator sends again what a peer lacks; at most 32 handshakes run at once.
 //!
 //! It runs its own `tokio` runtime on a thread of its own, and talks to the caller through
 //! channels: [`Net::send`] and [`Net::recv_timeout`].
 
 use core::time::Duration;
 use std::collections::BTreeMap;
-use std::net::{SocketAddr, TcpListener as StdListener, ToSocketAddrs};
+use std::net::{SocketAddr, TcpListener as StdListener};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread::JoinHandle;
 
@@ -34,14 +39,17 @@ use rustls::server::WebPkiClientVerifier;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc as tokio_mpsc, watch};
+use tokio::sync::{Semaphore, mpsc as tokio_mpsc, watch};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
+/// What every device's name ends with.
+const DEVICES: &str = ".devices.keel";
+
 /// The name a device's certificate carries: `<uuid>.devices.keel`.
 pub fn device_name(device: Id<Device>) -> String {
-    format!("{device}.devices.keel")
+    format!("{device}{DEVICES}")
 }
 
 /// What a device presents, and trusts.
@@ -83,22 +91,9 @@ pub enum NetError {
     /// A socket or the runtime couldn't be set up.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// The roster's hub name isn't a name a certificate can carry.
+    /// The roster's hub name isn't a DNS name a certificate can carry.
     #[error("the hub's name isn't a DNS name")]
     HubName,
-}
-
-/// The connections open now, each with the channel to its writer, and a number telling a newer
-/// connection of a peer from the one it replaced.
-type Connections = Arc<Mutex<BTreeMap<Id<Device>, (u64, tokio_mpsc::UnboundedSender<Vec<u8>>)>>>;
-
-/// A device's or the hub's network.
-pub struct Net {
-    outgoing: tokio_mpsc::UnboundedSender<(Id<Device>, Vec<u8>)>,
-    events: mpsc::Receiver<Event>,
-    local: Option<SocketAddr>,
-    shutdown: watch::Sender<bool>,
-    thread: Option<JoinHandle<()>>,
 }
 
 /// The longest a device waits before connecting again.
@@ -106,6 +101,34 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// How long a TLS and WebSocket handshake may take.
 const HANDSHAKE: Duration = Duration::from_secs(10);
+
+/// How often each side of a connection pings the other.
+const PING: Duration = Duration::from_secs(5);
+
+/// How long a connection may go without a message, or a write may stall, before it closes.
+const SILENCE: Duration = Duration::from_secs(15);
+
+/// How many handshakes the hub runs at once; a connection beyond them is closed at once.
+const MAX_HANDSHAKES: usize = 32;
+
+/// How many frames wait for one connection's writer; a frame beyond them is dropped.
+const MAX_QUEUED: usize = 256;
+
+/// How many events, and frames to route, wait for the caller; one beyond them is dropped.
+const MAX_EVENTS: usize = 1024;
+
+/// The connections open now, each with the channel to its writer, and a number telling a newer
+/// connection of a peer from the one it replaced.
+type Connections = Arc<Mutex<BTreeMap<Id<Device>, (u64, tokio_mpsc::Sender<Vec<u8>>)>>>;
+
+/// A device's or the hub's network.
+pub struct Net {
+    outgoing: tokio_mpsc::Sender<(Id<Device>, Vec<u8>)>,
+    events: mpsc::Receiver<Event>,
+    local: Option<SocketAddr>,
+    shutdown: watch::Sender<bool>,
+    thread: Option<JoinHandle<()>>,
+}
 
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
@@ -122,13 +145,46 @@ fn websocket() -> WebSocketConfig {
     WebSocketConfig::default().max_message_size(Some(most)).max_frame_size(Some(most))
 }
 
-/// The roster's device whose name `certificate` carries, if any.
+/// The roster's device that `certificate` names: the one device's name it carries, with no
+/// other device's name, and no wildcard that could stand for one.
 fn identify(certificate: &CertificateDer<'_>, roster: &Roster) -> Option<Id<Device>> {
     let parsed = webpki::EndEntityCert::try_from(certificate).ok()?;
-    roster.data().devices.iter().map(|device| device.id).find(|&device| {
-        ServerName::try_from(device_name(device))
-            .is_ok_and(|name| parsed.verify_is_valid_for_subject_name(&name).is_ok())
+    let mut names = parsed
+        .valid_dns_names()
+        .filter(|name| name.contains('*') || name.to_ascii_lowercase().ends_with(DEVICES));
+    let name = names.next()?;
+    if names.next().is_some() || name.contains('*') {
+        return None;
+    }
+    let device = Id::parse(name.strip_suffix(DEVICES)?).ok()?;
+    if device_name(device) != name {
+        return None;
+    }
+    roster.device(device)?;
+    let subject = ServerName::try_from(name).ok()?;
+    parsed.verify_is_valid_for_subject_name(&subject).ok()?;
+    Some(device)
+}
+
+/// The 64-bit FNV-1a hash of `bytes`.
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
     })
+}
+
+/// A number from 0 up to `most`, the next of a sequence `seed` carries.
+fn jitter(seed: &mut u64, most: u64) -> u64 {
+    // Knuth's MMIX constants: an LCG is enough to spread reconnections apart.
+    *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+    (*seed >> 33).checked_rem(most.saturating_add(1)).unwrap_or(0)
+}
+
+/// How long to wait before connecting again: from half of `backoff` up to all of it.
+fn waited(backoff: Duration, seed: &mut u64) -> Duration {
+    let millis = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX);
+    let half = millis / 2;
+    Duration::from_millis(half.saturating_add(jitter(seed, millis.saturating_sub(half))))
 }
 
 impl Net {
@@ -155,12 +211,20 @@ impl Net {
         Net::spawn(Some(local), move |shared| async move {
             let Ok(listener) = TcpListener::from_std(listener) else { return };
             let roster = Arc::new(roster);
+            let handshakes = Arc::new(Semaphore::new(MAX_HANDSHAKES));
             loop {
-                let Ok((stream, _)) = listener.accept().await else { continue };
+                let Ok((stream, _)) = listener.accept().await else {
+                    // Out of descriptors, say: wait, rather than spin.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                };
+                // Too many handshakes at once: this one closes, and the device tries again.
+                let Ok(permit) = Arc::clone(&handshakes).try_acquire_owned() else { continue };
                 let (acceptor, roster, shared) =
                     (acceptor.clone(), Arc::clone(&roster), shared.clone());
-                tokio::spawn(async move {
+                tokio::task::spawn_local(async move {
                     let accepted = tokio::time::timeout(HANDSHAKE, async {
+                        stream.set_nodelay(true).ok()?;
                         let tls = acceptor.accept(stream).await.ok()?;
                         let peer = tls.get_ref().1.peer_certificates()?.first()?.clone();
                         let device = identify(&peer, &roster)?;
@@ -171,6 +235,7 @@ impl Net {
                         Some((device, ws))
                     })
                     .await;
+                    drop(permit);
                     if let Ok(Some((device, ws))) = accepted {
                         shared.serve(device, ws).await;
                     }
@@ -186,27 +251,33 @@ impl Net {
     /// [`NetError`] if the credentials aren't usable, the hub's name isn't a DNS name, or the
     /// runtime can't start.
     pub fn device(roster: Roster, credentials: Credentials) -> Result<Net, NetError> {
+        // Each device's own sequence, drawn from its certificate, so devices that lose the hub
+        // together come back apart.
+        let mut seed = credentials.chain.first().map_or(0, |certificate| fnv(certificate));
         let config = ClientConfig::builder_with_provider(provider())
             .with_protocol_versions(&[&rustls::version::TLS13])?
             .with_root_certificates(roots(&credentials.ca)?)
             .with_client_auth_cert(credentials.chain, credentials.key)?;
         let connector = TlsConnector::from(Arc::new(config));
-        let hub_name =
-            ServerName::try_from(roster.data().hub.name.clone()).map_err(|_| NetError::HubName)?;
+        // A DNS name, not an address: the name is what stays when the address changes.
+        let Ok(hub_name @ ServerName::DnsName(_)) =
+            ServerName::try_from(roster.data().hub.name.clone())
+        else {
+            return Err(NetError::HubName);
+        };
         Net::spawn(None, move |shared| async move {
             let hub = &roster.data().hub;
-            let address = format!("{}:{}", hub.host, hub.port);
             let url = format!("wss://{}/sync", hub.name);
             let mut backoff = Duration::from_secs(1);
             loop {
-                let target =
-                    address.to_socket_addrs().ok().and_then(|mut addresses| addresses.next());
                 let connected = tokio::time::timeout(HANDSHAKE, async {
-                    let stream = TcpStream::connect(target?).await.ok()?;
+                    let stream = connect(&hub.host, hub.port.get()).await?;
                     stream.set_nodelay(true).ok()?;
                     let tls = connector.connect(hub_name.clone(), stream).await.ok()?;
                     let peer = tls.get_ref().1.peer_certificates()?.first()?.clone();
                     let device = identify(&peer, &roster)?;
+                    // The hub is a device the roster lets host it.
+                    roster.device(device)?.hub?;
                     let (ws, _) = tokio_tungstenite::client_async_with_config(
                         url.as_str(),
                         tls,
@@ -221,7 +292,7 @@ impl Net {
                     backoff = Duration::from_secs(1);
                     shared.clone().serve(device, ws).await;
                 }
-                tokio::time::sleep(backoff).await;
+                tokio::time::sleep(waited(backoff, &mut seed)).await;
                 backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
             }
         })
@@ -236,8 +307,8 @@ impl Net {
     {
         let runtime =
             tokio::runtime::Builder::new_current_thread().enable_io().enable_time().build()?;
-        let (outgoing, mut routed) = tokio_mpsc::unbounded_channel::<(Id<Device>, Vec<u8>)>();
-        let (events_tx, events) = mpsc::channel();
+        let (outgoing, mut routed) = tokio_mpsc::channel::<(Id<Device>, Vec<u8>)>(MAX_EVENTS);
+        let (events_tx, events) = mpsc::sync_channel(MAX_EVENTS);
         let (shutdown, mut stopped) = watch::channel(false);
         let shared =
             Shared { connections: Arc::default(), events: events_tx, next: Arc::default() };
@@ -251,10 +322,10 @@ impl Net {
                         routed = routed.recv() => {
                             let Some((to, frame)) = routed else { return };
                             let connections = connections.lock().unwrap_or_else(PoisonError::into_inner);
-                            // A frame for a peer not connected now is dropped: the replicator
-                            // sends again what a peer lacks.
+                            // A frame for a peer not connected now, or whose writer is that far
+                            // behind, is dropped: the replicator sends again what a peer lacks.
                             if let Some((_, writer)) = connections.get(&to) {
-                                let _ = writer.send(frame);
+                                let _ = writer.try_send(frame);
                             }
                         }
                         _ = stopped.changed() => return,
@@ -265,9 +336,9 @@ impl Net {
         Ok(Net { outgoing, events, local, shutdown, thread: Some(thread) })
     }
 
-    /// Sends `frame` to `to`, if it is connected now.
+    /// Sends `frame` to `to`, if it is connected now and its queue has room.
     pub fn send(&self, to: Id<Device>, frame: Vec<u8>) {
-        let _ = self.outgoing.send((to, frame));
+        let _ = self.outgoing.try_send((to, frame));
     }
 
     /// The next thing that happens on the network, waiting at most `wait`.
@@ -290,57 +361,89 @@ impl Drop for Net {
     }
 }
 
+/// A connection to `host` and `port`, trying each address the host resolves to in turn.
+async fn connect(host: &str, port: u16) -> Option<TcpStream> {
+    for address in tokio::net::lookup_host((host, port)).await.ok()? {
+        if let Ok(stream) = TcpStream::connect(address).await {
+            return Some(stream);
+        }
+    }
+    None
+}
+
 /// What every connection's task shares.
 #[derive(Clone)]
 struct Shared {
     connections: Connections,
-    events: mpsc::Sender<Event>,
+    events: mpsc::SyncSender<Event>,
     next: Arc<Mutex<u64>>,
 }
 
 impl Shared {
-    /// Carries frames between `device` and the caller over `ws` until either side ends it.
+    /// Tells the caller `event`, or drops it if the caller is that far behind: nothing here
+    /// waits for the caller, so the network never stalls on it.
+    fn tell(&self, event: Event) {
+        let _ = self.events.try_send(event);
+    }
+
+    /// Carries frames between `device` and the caller over `ws` until either side ends it, or it
+    /// falls silent. Reading and writing run side by side, so a peer that writes as much as it
+    /// is sent never stalls the two.
     async fn serve<S>(self, device: Id<Device>, ws: tokio_tungstenite::WebSocketStream<S>)
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
+        let (tx, mut rx) = tokio_mpsc::channel::<Vec<u8>>(MAX_QUEUED);
         let generation = {
             let mut next = self.next.lock().unwrap_or_else(PoisonError::into_inner);
             *next = next.saturating_add(1);
             *next
         };
-        // A newer connection of the peer replaces an older one.
+        // A newer connection of the peer replaces an older one, whose writer then ends.
         self.connections
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(device, (generation, tx));
-        let _ = self.events.send(Event::Connected(device));
+        self.tell(Event::Connected(device));
         let (mut sink, mut stream) = ws.split();
-        loop {
-            tokio::select! {
-                frame = rx.recv() => {
-                    let Some(frame) = frame else { break };
-                    if sink.send(Message::binary(frame)).await.is_err() {
-                        break;
-                    }
-                }
-                message = stream.next() => match message {
-                    Some(Ok(Message::Binary(frame))) if frame.len() <= MAX_FRAME => {
-                        let _ = self.events.send(Event::Frame { from: device, frame: frame.to_vec() });
+        let reader = async {
+            loop {
+                match tokio::time::timeout(SILENCE, stream.next()).await {
+                    Ok(Some(Ok(Message::Binary(frame)))) if frame.len() <= MAX_FRAME => {
+                        self.tell(Event::Frame { from: device, frame: frame.to_vec() });
                     }
                     // Pings are answered by the WebSocket itself.
-                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                    Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
                     _ => break,
-                },
+                }
             }
+        };
+        let writer = async {
+            let mut ping = tokio::time::interval(PING);
+            ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                let message = tokio::select! {
+                    frame = rx.recv() => match frame {
+                        Some(frame) => Message::binary(frame),
+                        None => break,
+                    },
+                    _ = ping.tick() => Message::Ping(Vec::new().into()),
+                };
+                if !matches!(tokio::time::timeout(SILENCE, sink.send(message)).await, Ok(Ok(()))) {
+                    break;
+                }
+            }
+        };
+        tokio::select! {
+            () = reader => {}
+            () = writer => {}
         }
-        let _ = sink.close().await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), sink.close()).await;
         let mut connections = self.connections.lock().unwrap_or_else(PoisonError::into_inner);
         if connections.get(&device).is_some_and(|(current, _)| *current == generation) {
             connections.remove(&device);
             drop(connections);
-            let _ = self.events.send(Event::Disconnected(device));
+            self.tell(Event::Disconnected(device));
         }
     }
 }

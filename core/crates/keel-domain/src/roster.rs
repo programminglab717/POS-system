@@ -99,7 +99,8 @@ pub enum RosterError {
 
 impl Roster {
     /// `data`, checked: between one and [`MAX_DEVICES`] devices, in the ascending order of their
-    /// identifiers' bytes, no two sharing a key; and the hub's host and name valid.
+    /// identifiers' bytes, no two sharing a key, and at least one that may host the hub; and the
+    /// hub's host and name valid.
     ///
     /// # Errors
     /// [`RosterError::Invalid`] for the first rule `data` breaks.
@@ -124,6 +125,9 @@ impl Roster {
         if keys.len() != data.devices.len() {
             return Err(RosterError::Invalid("two devices sharing a key"));
         }
+        if data.devices.iter().all(|device| device.hub.is_none()) {
+            return Err(RosterError::Invalid("no device that may host the hub"));
+        }
         let host = &data.hub.host;
         if host.is_empty()
             || host.len() > MAX_HOST
@@ -132,9 +136,7 @@ impl Roster {
             return Err(RosterError::Invalid("a hub host that isn't a name or an address"));
         }
         if !is_hub_name(&data.hub.name) {
-            return Err(RosterError::Invalid(
-                "a hub name that isn't lowercase letters, digits, dots and hyphens",
-            ));
+            return Err(RosterError::Invalid("a hub name that isn't a DNS name a hub may carry"));
         }
         Ok(Roster { data })
     }
@@ -192,16 +194,27 @@ impl Roster {
     }
 }
 
-/// Whether `name` is a hub's name: 1 to [`MAX_HOST`] bytes of lowercase letters, digits, dots and
-/// hyphens, neither starting nor ending with a dot or a hyphen.
+/// What every device's name in its certificate ends with, which no hub's name may.
+const DEVICE_NAMES: &str = ".devices.keel";
+
+/// Whether `name` is a hub's name, a DNS name a certificate can carry: 1 to [`MAX_HOST`] bytes of
+/// labels joined by dots, each 1 to 63 lowercase letters, digits and hyphens, neither starting
+/// nor ending with a hyphen; the last not all digits, so no address is taken for a name; and not
+/// a device's name.
 fn is_hub_name(name: &str) -> bool {
-    let allowed = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-';
-    let edge = |c: Option<char>| c.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let label_char = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+    let label = |label: &str| {
+        (1..=63).contains(&label.len())
+            && label.chars().all(label_char)
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    };
+    let last = name.rsplit('.').next().unwrap_or_default();
     !name.is_empty()
         && name.len() <= MAX_HOST
-        && name.chars().all(allowed)
-        && edge(name.chars().next())
-        && edge(name.chars().last())
+        && name.split('.').all(label)
+        && !last.chars().all(|c| c.is_ascii_digit())
+        && !name.ends_with(DEVICE_NAMES)
 }
 
 /// COSE's identifier of `algorithm`.

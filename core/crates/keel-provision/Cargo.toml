@@ -14,7 +14,12 @@ keel-domain.workspace = true
 keel-net.workspace = true
 thiserror.workspace = true
 rcgen.workspace = true
+time.workspace = true
 rustls-pki-types.workspace = true
+
+[dev-dependencies]
+webpki.workspace = true
+rustls.workspace = true
 
 [lints]
 workspace = true

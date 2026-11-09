@@ -91,6 +91,7 @@ fn the_demo_roster_is_pinned_byte_for_byte() {
 #[test]
 fn a_roster_that_breaks_a_rule_is_refused() {
     type Change = fn(&mut RosterData);
+    const NAME: &str = "a hub name that isn't a DNS name a hub may carry";
     let cases: Vec<(Change, &str)> = vec![
         (|d| d.devices.clear(), "a roster with no devices"),
         (
@@ -102,29 +103,28 @@ fn a_roster_that_breaks_a_rule_is_refused() {
             "devices not each once, in the ascending order of their identifiers",
         ),
         (|d| d.devices[2].key = d.devices[0].key.clone(), "two devices sharing a key"),
+        (
+            |d| d.devices.iter_mut().for_each(|device| device.hub = None),
+            "no device that may host the hub",
+        ),
         (|d| d.hub.host = String::new(), "a hub host that isn't a name or an address"),
         (|d| d.hub.host = "hub .local".to_owned(), "a hub host that isn't a name or an address"),
         (|d| d.hub.host = "h".repeat(254), "a hub host that isn't a name or an address"),
-        (
-            |d| d.hub.name = "Hub.local".to_owned(),
-            "a hub name that isn't lowercase letters, digits, dots and hyphens",
-        ),
-        (
-            |d| d.hub.name = "-hub".to_owned(),
-            "a hub name that isn't lowercase letters, digits, dots and hyphens",
-        ),
-        (
-            |d| d.hub.name = "hub.".to_owned(),
-            "a hub name that isn't lowercase letters, digits, dots and hyphens",
-        ),
-        (
-            |d| d.hub.name = String::new(),
-            "a hub name that isn't lowercase letters, digits, dots and hyphens",
-        ),
-        (
-            |d| d.hub.name = "h".repeat(254),
-            "a hub name that isn't lowercase letters, digits, dots and hyphens",
-        ),
+        (|d| d.hub.name = "Hub.local".to_owned(), NAME),
+        (|d| d.hub.name = "-hub".to_owned(), NAME),
+        (|d| d.hub.name = "hub.".to_owned(), NAME),
+        (|d| d.hub.name = String::new(), NAME),
+        (|d| d.hub.name = "h".repeat(254), NAME),
+        // What `keel-net` couldn't check a certificate for: an empty label, a label too long, a
+        // label's edge a hyphen, an address, and a device's name.
+        (|d| d.hub.name = "hub..local".to_owned(), NAME),
+        (|d| d.hub.name = format!("{}.local", "h".repeat(64)), NAME),
+        (|d| d.hub.name = "hub-.local".to_owned(), NAME),
+        (|d| d.hub.name = "hub.-local".to_owned(), NAME),
+        (|d| d.hub.name = "192.168.1.20".to_owned(), NAME),
+        (|d| d.hub.name = "hub.local.2".to_owned(), NAME),
+        (|d| d.hub.name = "hub.devices.keel".to_owned(), NAME),
+        (|d| d.hub.name = "hub_1.local".to_owned(), NAME),
     ];
     for (index, (change, why)) in cases.into_iter().enumerate() {
         let mut data = demo();
@@ -133,9 +133,17 @@ fn a_roster_that_breaks_a_rule_is_refused() {
     }
     // At the limits.
     let mut data = demo();
-    data.hub.name = "a".repeat(MAX_HOST);
+    data.hub.name = format!("{0}.{0}.{0}.{1}", "a".repeat(63), "b".repeat(61));
+    assert_eq!(data.hub.name.len(), MAX_HOST);
     data.hub.host = "b".repeat(MAX_HOST);
     assert!(Roster::new(data).is_ok());
+    // A name of one label, digits inside a name, and an IPv6 address for a host.
+    for (name, host) in [("hub", "::1"), ("hub-1.10.local", "fe80::1%eth0"), ("1hub.keel", "h")] {
+        let mut data = demo();
+        data.hub.name = name.to_owned();
+        data.hub.host = host.to_owned();
+        assert!(Roster::new(data).is_ok(), "{name} at {host}");
+    }
     let mut data = demo();
     let template = data.devices[2].clone();
     data.devices = (0..MAX_DEVICES)
@@ -148,6 +156,7 @@ fn a_roster_that_breaks_a_rule_is_refused() {
             ..template.clone()
         })
         .collect();
+    data.devices[0].hub = NonZeroU8::new(1);
     assert!(Roster::new(data.clone()).is_ok());
     data.devices.push(RosterDevice {
         id: id(0x20_0000),

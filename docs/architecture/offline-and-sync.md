@@ -208,6 +208,15 @@ sequenceDiagram
   - Private keys live in secure hardware where available.
   - A device can only sync the scopes its certificate grants.
   - Revocation lists propagate through the same channel.
+- **As built: the local hub v0** (`keel-net`, `keel-hub`, `keel-provision`,
+  [ADR-0026](../adr/0026-local-hub.md)). Frames go over WebSocket on TLS 1.3 with mutual TLS,
+  `rustls` with `ring`, one connection per device to the hub, each pinging every 5 s. A
+  provisioned roster, trusted as provisioned until the cloud signs it, lists the location's
+  devices with their signing keys and hub priorities, and the hub's one address and the name its
+  certificate carries. A device's certificate carries `<uuid>.devices.keel`, and must name a
+  device of the roster; the hub's carries the roster's hub name too. Certificates come from a
+  development CA the provisioning tool makes, valid for a year, until the Device CA. Not yet:
+  discovery, the standby's address, scopes and revocation.
 - **Scopes**:
   - `location/{id}` covers operational events.
   - Large venues can partition it as `location/{id}/rc/{rc}`, so 300 stadium devices don't all

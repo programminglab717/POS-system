@@ -10,13 +10,14 @@
 runtime and the location profile, and slice 2, receipts and printing, are built and reviewed;
 the step's design, [ADR-0023](./adr/0023-register-shell.md), slice 2's,
 [ADR-0024](./adr/0024-receipts-and-printing.md), and slice 3's, the bindings,
-[ADR-0025](./adr/0025-bindings.md), are accepted. Slice 5, the local hub, comes next, before
-slice 4 ([ADR-0026](./adr/0026-local-hub.md), proposed): the Android app can only be built in
-CI from here, and the hub can be built and verified here, for the app to host. It is built; its
-review is next. Step 6, `keel-sim` and `keel-sync` v0, the
-deterministic simulator and the sync engine, is done: built in four slices, each reviewed, the
-last, hub election and failover ([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted
-after a review that found and fixed two bugs.
+[ADR-0025](./adr/0025-bindings.md), are accepted. Slice 5, the local hub, came before slice 4,
+since the Android app can only be built in CI from here, and the hub can be built and verified
+here, for the app to host: it is built and reviewed, and its design,
+[ADR-0026](./adr/0026-local-hub.md), accepted. Slice 4, the Android app, is next. Step 6,
+`keel-sim` and `keel-sync` v0, the deterministic simulator and the sync engine, is done: built in
+four slices, each reviewed, the last, hub election and failover
+([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted after a review that found and
+fixed two bugs.
 
 ## Phase 0 milestones
 
@@ -30,7 +31,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
-| 7 | Android register shell | In progress: slices 1 to 3 of 5 built and reviewed; slice 5 built, its review next; then 4 | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
+| 7 | Android register shell | In progress: slices 1 to 3 and 5 of 5 built and reviewed; slice 4 next | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
 | 8 | Cloud cell v0 | Not started | |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
@@ -99,55 +100,82 @@ ADR of its own when it begins:
    `keel-ffi` with UniFFI, and a Kotlin/JVM library tested on the host.
 4. **The Android app**: the register's screens, keys in the Android Keystore, the build for
    Android, CI on an emulator, and the performance harness on a reference device.
-5. **The local hub** (designed 2026-11-09, [ADR-0026](./adr/0026-local-hub.md), proposed; built
+5. **The local hub** (built and reviewed 2026-11-09, [ADR-0026](./adr/0026-local-hub.md); built
    before slice 4): `keel-net`, WebSocket over TLS 1.3 with mutual TLS, the hub role in the
    app and in a Linux daemon, and a provisioning tool standing in for the Device CA.
 
-Built in slice 5 so far, each verified as it landed:
+Built in slice 5, each verified as it landed, then reviewed:
 
 - **The roster v0** (`keel_domain::roster`): a location's devices, each with its signing key
   (by its COSE algorithm, -7 or -8) and its priority as the hub, and where the hub listens and
   the name its certificate carries; canonical CBOR, checked whole (one to 1,000 devices, in
-  order, no key twice, a valid host and hub name), giving the `DeviceRegistry` a store verifies
-  received events with. Known answers (4 tests): the demo café's roster round-tripping and its
-  registry; pinned byte for byte against Python's `cbor2`, its Ed25519 keys derived from the same
-  seeds by Python's `cryptography`; every rule, at its limits; and every encoding refused,
-  a P-256 key written compressed included. All 5 planted bugs caught.
+  order, no key twice, at least one that may host the hub, a valid host, and a hub name that is a
+  DNS name a certificate can carry, and not a device's), giving the `DeviceRegistry` a store
+  verifies received events with. Known answers (4 tests): the demo café's roster round-tripping
+  and its registry; pinned byte for byte against Python's `cbor2`, its Ed25519 keys derived from
+  the same seeds by Python's `cryptography`; every rule, at its limits; and every encoding
+  refused, a P-256 key written compressed included. All 10 planted bugs caught.
 - **Replication in the runtime** (`keel_runtime::sync`): `start_sync(roster)`, `on_frame`,
   `on_tick`, `next_tick`, and `take_frames`, which pushes what the device wrote since it last
   did, so a sale reaches the hub at once; `sync_status`. Intents are refused until the device's
   log is settled (`NotSettled`), and a roster that isn't this device's location's, or doesn't
-  have it, or names another key for it, is refused (`RosterMismatch`). Known answers (2 tests,
-  `tests/sync.rs`): a hub and a register, runtimes over their own stores passing frames in memory,
-  the register refusing to write until settled, then ringing and paying a sale that reaches the
-  hub, closed, and is confirmed back; and every roster that isn't the device's refused. All 3
-  planted bugs caught.
+  have it, or names another key for it, is refused (`RosterMismatch`); a device that hears no one
+  writes as an island after 3 s. Known answers (7 tests, `tests/sync.rs`): a hub and a register,
+  runtimes over their own stores passing frames in memory, the register refusing to write until
+  settled, then ringing and paying a sale that reaches the hub, closed, and is confirmed back;
+  every roster that isn't the device's refused; a clock set back, which stopped the heartbeats;
+  a register alone, writing as an island; the hub's numbering failing, and retried; a hub demoted
+  by its roster, which stops serving; and a hub restarted. All 7 planted bugs caught, in the
+  runtime and in `keel-sync`.
 - **`keel-net`**: `keel-sync`'s frames over WebSocket on TLS 1.3 with mutual TLS, `rustls` with
   `ring`, on a `tokio` runtime of its own that talks to the caller's thread through channels. The
   hub listens; a device connects to the roster's address and again after a backoff, 1 s doubling
   to 30 s. A peer is the roster's device whose name its certificate carries,
-  `<uuid>.devices.keel`, a DNS name rather than ADR-0026's URI, since `rustls`'s verifier checks
-  names without another parser; the hub's certificate also carries the roster's hub name, which
-  the device checks. Known answers (3 tests, over real TLS on the host): a hub and a device
-  exchanging frames, the largest a frame may be included; a frame one byte larger closing the
-  connection, and the device coming back; a certificate from another CA, a device the roster
-  doesn't have, a certificate with no device's name, and a hub without the roster's name, each
-  refused; a device reconnecting after its hub restarts. All 3 planted bugs caught.
+  `<uuid>.devices.keel`, exactly one, with no wildcard: a DNS name rather than ADR-0026's URI,
+  since `rustls`'s verifier checks names without another parser; the hub's certificate also
+  carries the roster's hub name, which the device checks, and names a device that may host the
+  hub. Reading and writing run side by side, each side pings every 5 s, a connection silent for
+  15 s closes, every queue is bounded, and at most 32 handshakes run at once. Known answers (6
+  tests, over real TLS on the host): a hub and a device exchanging frames, the largest a frame
+  may be included; a frame one byte larger closing the connection, and the device coming back; a
+  certificate from another CA, a device the roster doesn't have, a certificate with no device's
+  name, and a hub without the roster's name, each refused; a certificate naming two devices, or
+  a wildcard, and a hub naming a device that may not host, each refused; 40 frames of a megabyte
+  each way at once, which stalled the first version for good; a quiet connection kept up past
+  the silence by the pings; a device reconnecting after its hub restarts. All 8 planted bugs
+  caught.
 - **`keel-provision`** and **`keel-hub`**: the provisioning tool, which makes a development CA,
   and for each device its identifier, signing key, store key, TLS key and certificate, with the
-  roster and the profile, in memory and as a kit of files; and the hub's daemon, a runtime over
+  roster and the profile, in memory and as a kit of files, its keys readable by their owner
+  alone, and its certificates for what each device does (client authentication, and server
+  authentication for the hub), valid for 397 days from a day before, under a CA of path length
+  0; and the hub's daemon, a runtime over
   its own store listening at the roster's port, with `step`, the loop that joins a runtime to the
   network. Known answers (2 tests, `tests/location.rs`): a location provisioned in memory, a hub
   and a register as runtimes on the system's clock, each on its own thread, joined over real TLS:
   the register settles, rings and pays a sale, which is confirmed by the hub within 2 s of being
   paid (3 s for the whole test), and the hub holds it closed; and the kits written and read back,
-  every key drawn on its own, a short key and a missing file refused. All 4 planted bugs caught;
+  every key drawn on its own, a short key and a missing file refused. Known answers (4 tests,
+  `keel-provision`'s `tests/kit.rs`), its certificates read back with `rustls-webpki`, the
+  verifier `keel-net` uses: a register's certificate refused for serving, the hub's taken; each
+  valid half a day before it was made and refused two days before, and taken at 396 days and
+  refused at 398; the CA's constraints and the devices' key usage in their encoding; and the
+  kit's secret files 0600 in a directory of 0700, a file there before narrowed. All 11 planted
+  bugs caught;
   a fifth, the loop's own push left out, changes nothing a test can see, since `on_frame` and
   `on_tick` push first. The binaries run: `keel-provision` writes a location, and `keel-hub`
   listens on it, waiting, as `keel-sync` requires, for its first device to settle.
-- The workspace's tests, with the exhaustive sweeps (650 tests, 5 minutes 4 seconds), and without
-  default features (646); clippy with all features and none; the documentation; and every
-  planted bug's text.
+- **The review**, an independent one of each part, found and these fix, each with a test or a
+  planted bug (ADR-0026, as built): a connection that read and wrote in turn stalled for good
+  when both sides wrote more than the sockets held; unbounded queues, and connections silent
+  without closing that stayed open; a certificate naming two devices, or a wildcard, taken, and
+  any device of the roster taken for the hub; hub names the roster took and `keel-net` refused;
+  secrets written readable by anyone, and certificates with `rcgen`'s defaults, valid from 1975
+  to 4096 for any purpose; a failed numbering never retried; a demoted hub serving on; a clock
+  set back stopping the heartbeats; and the hub's step skipping its tick after a bad frame.
+- The workspace's tests, with the exhaustive sweeps (662 tests), and without default
+  features (658); clippy with all features and none; the documentation; the build
+  for WebAssembly; and every planted bug's text.
 
 Built in slice 3, each verified as it landed:
 
@@ -1872,7 +1900,15 @@ Work deliberately left for later, so it isn't forgotten:
     need each device's confirmed start kept as records arrive.
 - **`keel-sync`:**
   - A hub alone never settles its log, since `keel-sync` settles only once a peer has answered: a
-    location of one device can't write yet (ADR-0026, as built).
+    location of one device writes as an island after 3 s, and confirms nothing (ADR-0026, as
+    built).
+- **`keel-net` and `keel-provision`:**
+  - Certificates from a development CA, valid for a year, renewed only by provisioning again,
+    where the Device CA's will live 24 to 72 hours (step 8); no revocation.
+  - `rustls-webpki` doesn't enforce a trust anchor's path length: the CA's key, kept off the
+    devices, is what keeps every certificate the location's.
+  - Frames that find a queue full are dropped, which the replicator's rounds recover, 5 s later.
+    A device catching up after a long time away may lose some that way, and take longer.
   - One hub address, provisioned: devices don't follow a standby that takes over, until
     discovery.
   - Every pair of candidates for the hub must be within two hops of each other, or two of them
