@@ -102,6 +102,26 @@ ADR of its own when it begins:
    before slice 4): `keel-net`, WebSocket over TLS 1.3 with mutual TLS, the hub role in the
    app and in a Linux daemon, and a provisioning tool standing in for the Device CA.
 
+Built in slice 5 so far, each verified as it landed:
+
+- **The roster v0** (`keel_domain::roster`): a location's devices, each with its signing key
+  (by its COSE algorithm, -7 or -8) and its priority as the hub, and where the hub listens and
+  the name its certificate carries; canonical CBOR, checked whole (one to 1,000 devices, in
+  order, no key twice, a valid host and hub name), giving the `DeviceRegistry` a store verifies
+  received events with. Known answers (4 tests): the demo café's roster round-tripping and its
+  registry; pinned byte for byte against Python's `cbor2`, its Ed25519 keys derived from the same
+  seeds by Python's `cryptography`; every rule, at its limits; and every encoding refused,
+  a P-256 key written compressed included. All 5 planted bugs caught.
+- **Replication in the runtime** (`keel_runtime::sync`): `start_sync(roster)`, `on_frame`,
+  `on_tick`, `next_tick`, and `take_frames`, which pushes what the device wrote since it last
+  did, so a sale reaches the hub at once; `sync_status`. Intents are refused until the device's
+  log is settled (`NotSettled`), and a roster that isn't this device's location's, or doesn't
+  have it, or names another key for it, is refused (`RosterMismatch`). Known answers (2 tests,
+  `tests/sync.rs`): a hub and a register, runtimes over their own stores passing frames in memory,
+  the register refusing to write until settled, then ringing and paying a sale that reaches the
+  hub, closed, and is confirmed back; and every roster that isn't the device's refused. All 3
+  planted bugs caught.
+
 Built in slice 3, each verified as it landed:
 
 - **`keel-ffi`**, the bindings, on UniFFI 0.32.2 pinned exactly, its bindgen behind a feature:

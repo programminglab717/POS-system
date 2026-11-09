@@ -26,6 +26,7 @@ mod error;
 mod print;
 mod receipt;
 mod runtime;
+mod sync;
 mod ticket;
 mod views;
 
@@ -37,6 +38,7 @@ mod tests;
 pub use error::RuntimeError;
 pub use print::{DRAWER, Job, JobKind, JobState, JobView, PrintJob, RECEIPT, Resolution};
 pub use runtime::{Identity, Runtime};
+pub use sync::SyncStatus;
 pub use views::{
     Amount, CashPaid, GroupView, ItemView, MenuButton, MenuPage, MenuView, ModifierView, Ticket,
     TicketLine, TicketModifier, TicketState, TicketTax,

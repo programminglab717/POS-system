@@ -1,7 +1,7 @@
 """Planted bugs for keel-runtime: see run.py."""
 
 # Integration tests of known answers, which --props leaves out.
-KNOWN_ANSWERS = ["end_to_end"]
+KNOWN_ANSWERS = ["end_to_end", "sync"]
 
 BUGS = [
     # Signing in, and what every event records.
@@ -327,6 +327,28 @@ BUGS = [
         "src/print.rs",
         "    u64::from_be_bytes(tail).wrapping_add(u64::from(attempts))",
         "    u64::from(attempts).wrapping_add(u64::from(tail.len() > 99))",
+        "unit",
+    ),
+    # Replication (ADR-0026).
+    (
+        "sync: a device writes before its log is settled",
+        "src/runtime.rs",
+        "        if self.sync.as_ref().is_some_and(|sync| !sync.settled()) {",
+        "        if self.sync.as_ref().is_some_and(|sync| !sync.settled() && sync.settled()) {",
+        "unit",
+    ),
+    (
+        "sync: an intent's events wait for the next round",
+        "src/sync.rs",
+        "            let events = self.store.log(device, pushed, PUSH)?;",
+        "            let events = self.store.log(device, u64::MAX, PUSH)?;",
+        "unit",
+    ),
+    (
+        "sync: a roster naming another key for the device is taken",
+        "src/sync.rs",
+        "        if roster.data().location != self.profile.data().location || me.key != self.key {",
+        "        if roster.data().location != self.profile.data().location {",
         "unit",
     ),
 ]

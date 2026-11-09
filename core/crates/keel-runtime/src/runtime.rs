@@ -54,17 +54,21 @@ pub struct Identity<S> {
 /// clock and draws no randomness but through its `Clock` and its `Entropy`, and does no I/O but
 /// the store's.
 pub struct Runtime<S, E, C, I> {
-    store: Store<S, E>,
-    profile: Profile,
-    clock: C,
-    ids: IdGenerator<I>,
-    device: Id<Device>,
+    pub(crate) store: Store<S, E>,
+    pub(crate) profile: Profile,
+    pub(crate) clock: C,
+    pub(crate) ids: IdGenerator<I>,
+    pub(crate) device: Id<Device>,
+    /// The key the device signs with, which its roster must name.
+    pub(crate) key: keel_events::keys::PublicKey,
     locale: Locale,
     member: Option<Id<TeamMember>>,
     /// The printer jobs go to, once the shell sets one.
     printer: Option<PrinterProfile>,
     /// The job with the driver, if one is.
     sending: Option<Id<Job>>,
+    /// Its replication, once started.
+    pub(crate) sync: Option<crate::sync::Sync>,
 }
 
 /// What every event of one intent records besides its payload.
@@ -118,6 +122,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             location: profile.data().location,
             max_forward_drift: MAX_FORWARD_DRIFT,
         };
+        let public_key = identity.signer.public_key().clone();
         let store =
             Store::open_with_faults(path, key, config, identity.signer, entropy, Box::new(faults))?;
         Ok(Runtime {
@@ -130,6 +135,8 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             member: None,
             printer: None,
             sending: None,
+            key: public_key,
+            sync: None,
         })
     }
 
@@ -177,6 +184,10 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// in, and a correlation of their own.
     fn meta(&mut self) -> Result<Meta, RuntimeError> {
         let member = self.member.ok_or(RuntimeError::NotSignedIn)?;
+        // A device writes only once its log is settled, or it could fork it (ADR-0019).
+        if self.sync.as_ref().is_some_and(|sync| !sync.settled()) {
+            return Err(RuntimeError::NotSettled);
+        }
         let now = self.clock.now();
         Ok(Meta {
             now,

@@ -838,6 +838,7 @@ dependencies = [
  "keel-pricing",
  "keel-print",
  "keel-store",
+ "keel-sync",
  "keel-types",
  "proptest",
  "thiserror",

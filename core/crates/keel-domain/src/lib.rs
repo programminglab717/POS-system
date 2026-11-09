@@ -37,5 +37,6 @@ pub mod order;
 pub mod payment;
 pub mod profile;
 pub mod refs;
+pub mod roster;
 pub mod schema;
 pub mod sequence;

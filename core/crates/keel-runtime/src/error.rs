@@ -61,6 +61,17 @@ pub enum RuntimeError {
     /// The order isn't closed, or has no receipt to print again.
     #[error("order {0} has no receipt to print again")]
     NoReceipt(Id<Order>),
+    /// The device's log isn't settled yet: it waits to hear from its peers before it writes,
+    /// so it never forks its log.
+    #[error("the device is catching up with its peers")]
+    NotSettled,
+    /// The roster is another location's, or doesn't have this device, or names another key for
+    /// it.
+    #[error("the roster isn't this device's location's")]
+    RosterMismatch,
+    /// The runtime isn't replicating: start it first.
+    #[error("the runtime isn't replicating")]
+    NotSyncing,
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),

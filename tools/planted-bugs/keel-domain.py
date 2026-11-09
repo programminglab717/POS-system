@@ -2606,4 +2606,41 @@ BUGS = [
         # As above.
         "unit",
     ),
+    # The roster (ADR-0026).
+    (
+        "roster: devices may be in any order",
+        "src/roster.rs",
+        "            [left, right] => left.id.to_bytes() < right.id.to_bytes(),",
+        "            [left, right] => left.id.to_bytes() != right.id.to_bytes(),",
+        # No property draws rosters; the known answers check every rule.
+        "unit",
+    ),
+    (
+        "roster: two devices may share a key",
+        "src/roster.rs",
+        "        if keys.len() != data.devices.len() {",
+        "        if keys.len() > data.devices.len() {",
+        "unit",
+    ),
+    (
+        "roster: a hub's name may end in a hyphen",
+        "src/roster.rs",
+        "        && edge(name.chars().last())",
+        "        && name.chars().last().is_some()",
+        "unit",
+    ),
+    (
+        "roster: a key may be written in another encoding",
+        "src/roster.rs",
+        "        (key.to_bytes() == bytes).then_some(RosterDevice { id, name, key, hub })",
+        "        Some(RosterDevice { id, name, key, hub })",
+        "unit",
+    ),
+    (
+        "roster: an Ed25519 key is read as P-256's",
+        "src/roster.rs",
+        "            -8 => PublicKey::ed25519_from_bytes(bytes).ok()?,",
+        "            -9 => PublicKey::ed25519_from_bytes(bytes).ok()?,",
+        "unit",
+    ),
 ]
