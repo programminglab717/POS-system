@@ -18,7 +18,7 @@ use std::thread;
 use keel_doc::escpos;
 use keel_domain::profile as domain;
 
-use crate::register::choices;
+use crate::register::{choices, preferred_hub};
 use crate::*;
 
 /// A directory of its own for a store, removed when dropped.
@@ -683,4 +683,118 @@ fn cash_offers_and_amounts_cross_the_boundary() {
         register.cash_offers("nope".to_owned()),
         Err(KeelError::InvalidArgument { .. })
     ));
+}
+
+/// A register for `kit`'s device, in `scratch`.
+fn kit_register(kit: &keel_provision::Kit, scratch: &Scratch) -> Arc<Register> {
+    Register::open(RegisterConfig {
+        path: scratch.0.join("store.db").to_string_lossy().into_owned(),
+        store_key: kit.store_key.to_vec(),
+        device: kit.device.to_string(),
+        signing_key: kit.signing_key.to_vec(),
+        profile: kit.profile.clone(),
+        locale: "en-US".to_owned(),
+    })
+    .unwrap()
+}
+
+fn sync_kit(kit: &keel_provision::Kit) -> SyncKit {
+    SyncKit {
+        roster: kit.roster.clone(),
+        ca: kit.ca.clone(),
+        certificate: kit.certificate.clone(),
+        tls_key: kit.tls_key.clone(),
+    }
+}
+
+#[test]
+fn a_hub_and_a_register_sync_through_the_bindings() {
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let provisioned = keel_provision::provision(&keel_provision::Spec {
+        profile: demo_profile(),
+        hub_host: "127.0.0.1".to_owned(),
+        hub_port: core::num::NonZeroU16::new(port).unwrap(),
+        hub_name: "hub.keel-cafe.local".to_owned(),
+        devices: vec![
+            keel_provision::DeviceSpec {
+                name: "Back office".to_owned(),
+                hub: core::num::NonZeroU8::new(1),
+            },
+            keel_provision::DeviceSpec { name: "Front counter".to_owned(), hub: None },
+        ],
+    })
+    .unwrap();
+    let kit = |name: &str| provisioned.kits.iter().find(|kit| kit.name == name).unwrap();
+    let (hub_scratch, register_scratch) = (Scratch::new(), Scratch::new());
+    let hub = kit_register(kit("Back office"), &hub_scratch);
+    let register = kit_register(kit("Front counter"), &register_scratch);
+    assert_eq!(register.sync_status().unwrap(), None, "not joined yet");
+    assert!(matches!(register.sync_step(0), Err(KeelError::InvalidArgument { .. })));
+    hub.start_sync(sync_kit(kit("Back office"))).unwrap();
+    register.start_sync(sync_kit(kit("Front counter"))).unwrap();
+    assert!(matches!(
+        register.start_sync(sync_kit(kit("Front counter"))),
+        Err(KeelError::InvalidArgument { .. })
+    ));
+    // The roster's hub listens; the register connects.
+    assert!(hub.sync_status().unwrap().unwrap().listening);
+    assert!(!register.sync_status().unwrap().unwrap().listening);
+    let turn = |until: &dyn Fn() -> bool| {
+        let started = std::time::Instant::now();
+        while !until() {
+            assert!(started.elapsed() < core::time::Duration::from_secs(30), "within 30 s");
+            hub.sync_step(10).unwrap();
+            register.sync_step(10).unwrap();
+        }
+    };
+    turn(&|| {
+        let status = register.sync_status().unwrap().unwrap();
+        status.settled && status.hub_reachable
+    });
+    register.sign_in(demo_id(0x501)).unwrap();
+    let order = register.start_order(Mode::Takeout).unwrap().order;
+    register.add_item(order.clone(), demo_id(0x409), vec![], 1).unwrap();
+    register.pay_cash(order.clone(), 1_000).unwrap();
+    // The hub holds the sale, closed.
+    turn(&|| {
+        hub.orders_today()
+            .unwrap()
+            .iter()
+            .any(|ticket| ticket.order == order && ticket.state == TicketState::Closed)
+    });
+    assert!(hub.sync_status().unwrap().unwrap().serving);
+}
+
+#[test]
+fn a_register_that_hasnt_settled_says_so() {
+    let error = KeelError::from(keel_runtime::RuntimeError::NotSettled);
+    assert_eq!(error, KeelError::NotSettled);
+}
+
+#[test]
+fn the_roster_s_most_preferred_hub_listens() {
+    let provisioned = keel_provision::provision(&keel_provision::Spec {
+        profile: demo_profile(),
+        hub_host: "127.0.0.1".to_owned(),
+        hub_port: core::num::NonZeroU16::new(7443).unwrap(),
+        hub_name: "hub.keel-cafe.local".to_owned(),
+        devices: [("A", Some(2)), ("B", Some(5)), ("C", Some(5)), ("D", None)]
+            .map(|(name, hub)| keel_provision::DeviceSpec {
+                name: name.to_owned(),
+                hub: hub.and_then(core::num::NonZeroU8::new),
+            })
+            .to_vec(),
+    })
+    .unwrap();
+    // The highest priority, and of the two at 5 the lower identifier: the roster lists its devices
+    // in the ascending order of their identifiers.
+    let expected = provisioned
+        .roster
+        .data()
+        .devices
+        .iter()
+        .find(|device| device.hub.map(core::num::NonZeroU8::get) == Some(5))
+        .unwrap()
+        .id;
+    assert_eq!(preferred_hub(&provisioned.roster), Some(expected));
 }

@@ -27,8 +27,14 @@ keel-store.workspace = true
 keel-runtime.workspace = true
 keel-doc.workspace = true
 keel-print.workspace = true
+keel-net.workspace = true
+keel-hub.workspace = true
+rustls-pki-types.workspace = true
 thiserror.workspace = true
 uniffi.workspace = true
+
+[dev-dependencies]
+keel-provision.workspace = true
 
 [lints]
 workspace = true

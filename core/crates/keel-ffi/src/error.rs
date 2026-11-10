@@ -83,6 +83,10 @@ pub enum KeelError {
     /// The store is damaged: it needs restoring from its peers.
     #[error("the store is damaged")]
     Damaged,
+    /// The register waits for its location's hub before it writes, so as never to fork its log:
+    /// a few seconds after it joins its network, or once a hub answers.
+    #[error("the register is waiting for its hub")]
+    NotSettled,
     /// An argument the shell passed isn't valid: an identifier that doesn't parse, a key of the
     /// wrong length, a profile that doesn't decode.
     #[error("{reason}")]
@@ -123,6 +127,10 @@ impl From<RuntimeError> for KeelError {
         let reason = error.to_string();
         match error {
             RuntimeError::NotSignedIn => KeelError::NotSignedIn,
+            RuntimeError::NotSettled => KeelError::NotSettled,
+            RuntimeError::RosterMismatch | RuntimeError::NotSyncing => {
+                KeelError::InvalidArgument { reason }
+            }
             RuntimeError::UnknownMember(member) => {
                 KeelError::UnknownMember { member: member.to_string() }
             }

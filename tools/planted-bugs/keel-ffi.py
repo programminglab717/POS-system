@@ -227,4 +227,33 @@ BUGS = [
         "                .team()\n                .iter()\n                .rev()\n",
         "unit",
     ),
+    (
+        "ffi: the least preferred hub listens",
+        "src/register.rs",
+        ".max_by(|(left, left_id), (right, right_id)| {",
+        ".min_by(|(left, left_id), (right, right_id)| {",
+        "unit",
+    ),
+    (
+        "ffi: of two hubs alike, the higher identifier listens",
+        "src/register.rs",
+        "left.cmp(right).then_with(|| right_id.to_bytes().cmp(&left_id.to_bytes()))",
+        "left.cmp(right).then_with(|| left_id.to_bytes().cmp(&right_id.to_bytes()))",
+        "unit",
+    ),
+    (
+        "ffi: every device listens",
+        "src/register.rs",
+        "let listens = preferred_hub(&roster) == Some(self.device);",
+        "let listens = preferred_hub(&roster).is_some();",
+        "unit",
+    ),
+    (
+        "ffi: a register joins its network twice",
+        "src/register.rs",
+        "        if net.is_some() {\n            return Err(KeelError::invalid(\"the register is joined to its network already\"));",
+        "        if false {\n            return Err(KeelError::invalid(\"the register is joined to its network already\"));",
+        "unit",
+    ),
 ]
+

@@ -143,6 +143,7 @@ private fun <T> call(body: () -> T): T = try {
 /** What the cashier is told for [refused]. */
 internal fun words(refused: KeelException): String = when (refused) {
     is KeelException.NotSignedIn -> "No one is signed in."
+    is KeelException.NotSettled -> "Waiting for the store's hub: try again in a moment."
     is KeelException.UnknownMember -> "That team member isn't on this register."
     is KeelException.UnknownOrder -> "This register has no such order."
     is KeelException.NoReceipt -> "That order printed no receipt to print again."

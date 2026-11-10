@@ -15,6 +15,20 @@ keel-store.workspace = true
 keel-runtime.workspace = true
 keel-net.workspace = true
 keel-sync.workspace = true
+keel-provision = { workspace = true, optional = true }
+
+[features]
+default = ["daemon"]
+# The daemon, which reads a provisioned kit: off for the shells, which take `step` alone and never
+# ship the provisioning tool.
+daemon = ["dep:keel-provision"]
+
+[[bin]]
+name = "keel-hub"
+path = "src/main.rs"
+required-features = ["daemon"]
+
+[dev-dependencies]
 keel-provision.workspace = true
 
 [lints]

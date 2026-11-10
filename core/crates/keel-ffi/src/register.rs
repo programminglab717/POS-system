@@ -8,21 +8,24 @@
 
 use core::num::{NonZeroU8, NonZeroU32};
 use core::time::Duration;
-use std::net::ToSocketAddrs;
+use std::net::{TcpListener, ToSocketAddrs};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use keel_doc::{Columns, PrinterProfile};
 use keel_domain::profile::{self, Profile};
+use keel_domain::roster::Roster;
 use keel_events::envelope::Device;
 use keel_events::keys::{SignatureAlgorithm, SoftwareSigner};
+use keel_net::{Credentials, Net, NetError};
 use keel_runtime::{Identity, Runtime, RuntimeError};
 use keel_store::StoreKey;
 use keel_types::{Clock, Entropy, Id, IdGenerator, Locale, Money, OsEntropy, SystemClock};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use crate::error::KeelError;
 use crate::records::{
     Amount, CashPaid, Choice, Item, Job, Member, Menu, Mode, NewDevice, Outcome, PrintJob, Printer,
-    RegisterConfig, Resolution, Ticket, Waits,
+    RegisterConfig, Resolution, SyncKit, SyncState, Ticket, Waits,
 };
 
 /// The runtime as a device runs it: the system's clock and the operating system's randomness,
@@ -38,6 +41,10 @@ type DeviceRuntime = Runtime<SoftwareSigner, OsEntropy, SystemClock, OsEntropy>;
 pub struct Register {
     runtime: Mutex<DeviceRuntime>,
     locale: Locale,
+    /// The device the register is.
+    device: Id<Device>,
+    /// The location's network, once the register joins it. Taken before `runtime` when both are.
+    net: Mutex<Option<Net>>,
 }
 
 /// `text`, an identifier in its canonical form: lowercase, as every identifier the register gives
@@ -46,6 +53,20 @@ pub(crate) fn id<T>(text: &str) -> Result<Id<T>, KeelError> {
     Id::parse(text).ok().filter(|id: &Id<T>| id.to_string() == text).ok_or_else(|| {
         KeelError::invalid(format!("{text:?} isn't an identifier in its canonical form"))
     })
+}
+
+/// The device `roster` most prefers as the hub: the highest priority, then the lowest identifier,
+/// as the election prefers them.
+pub(crate) fn preferred_hub(roster: &Roster) -> Option<Id<Device>> {
+    roster
+        .data()
+        .devices
+        .iter()
+        .filter_map(|device| device.hub.map(|priority| (priority, device.id)))
+        .max_by(|(left, left_id), (right, right_id)| {
+            left.cmp(right).then_with(|| right_id.to_bytes().cmp(&left_id.to_bytes()))
+        })
+        .map(|(_, id)| id)
 }
 
 /// `bytes`, 32 of them.
@@ -116,7 +137,12 @@ impl Register {
             RuntimeError::Store(store) => KeelError::from(store),
             other => KeelError::Device { reason: other.to_string() },
         })?;
-        Ok(Arc::new(Register { runtime: Mutex::new(runtime), locale }))
+        Ok(Arc::new(Register {
+            runtime: Mutex::new(runtime),
+            locale,
+            device,
+            net: Mutex::new(None),
+        }))
     }
 
     /// Signs `member` in: every event from now on records them.
@@ -230,6 +256,83 @@ impl Register {
     pub fn open_orders(&self) -> Result<Vec<Ticket>, KeelError> {
         self.with(|runtime| runtime.open_orders())
             .map(|tickets| tickets.iter().map(Ticket::from).collect())
+    }
+
+    /// Joins the location's network with `kit` (ADR-0026): replicates the store with the
+    /// roster's devices, over `keel-net`. The device the roster most prefers as the hub (the
+    /// highest priority, then the lowest identifier) listens at the roster's port; every other
+    /// device connects to the roster's address. Call [`Register::sync_step`] often after.
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] if the roster doesn't decode, isn't this device's location's
+    /// or doesn't have it, the register syncs already, or the credentials aren't usable;
+    /// [`KeelError::Device`] if the store can't be read or the network can't start.
+    pub fn start_sync(&self, kit: SyncKit) -> Result<(), KeelError> {
+        let roster = Roster::decode(&kit.roster).map_err(KeelError::invalid)?;
+        let mut net = self.net.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if net.is_some() {
+            return Err(KeelError::invalid("the register is joined to its network already"));
+        }
+        let credentials = Credentials {
+            ca: CertificateDer::from(kit.ca),
+            chain: vec![CertificateDer::from(kit.certificate)],
+            key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(kit.tls_key)),
+        };
+        let frames = self.with(|runtime| runtime.start_sync(roster.clone()))?;
+        let listens = preferred_hub(&roster) == Some(self.device);
+        let started = if listens {
+            let listener = TcpListener::bind(("0.0.0.0", roster.data().hub.port.get()))
+                .map_err(|error| KeelError::Device { reason: error.to_string() })?;
+            Net::hub(listener, roster, credentials)
+        } else {
+            Net::device(roster, credentials)
+        }
+        .map_err(|error| match error {
+            NetError::Io(io) => KeelError::Device { reason: io.to_string() },
+            other => KeelError::invalid(other),
+        })?;
+        for frame in frames {
+            started.send(frame.to, frame.frame);
+        }
+        *net = Some(started);
+        Ok(())
+    }
+
+    /// One turn of the loop that joins the register to its network: takes in what arrived,
+    /// waiting at most `wait_ms` for it, ticks replication when it asks, and sends what it
+    /// answers. The register's other calls wait while it does: keep `wait_ms` short, or 0.
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] if the register hasn't joined its network;
+    /// [`KeelError::Device`] if the store can't be read or written. Nothing a frame held was
+    /// stored, and its peer sends it again: carry on.
+    pub fn sync_step(&self, wait_ms: u32) -> Result<(), KeelError> {
+        let net = self.net.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(net) = net.as_ref() else {
+            return Err(KeelError::invalid("the register hasn't joined its network"));
+        };
+        self.with(|runtime| keel_hub::step(runtime, net, Duration::from_millis(u64::from(wait_ms))))
+    }
+
+    /// How replication stands, once the register has joined its network.
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read.
+    pub fn sync_status(&self) -> Result<Option<SyncState>, KeelError> {
+        let listening = self
+            .net
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|net| net.local_addr().is_some());
+        let status = self.with(|runtime| Ok(runtime.sync_status()))?;
+        Ok(status.map(|status| SyncState {
+            listening,
+            settled: status.settled,
+            hub_reachable: status.hub_reachable,
+            is_hub: status.is_hub,
+            serving: status.serving,
+        }))
     }
 
     /// The tickets of the orders begun on today's business date, whatever became of them, oldest

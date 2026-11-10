@@ -672,3 +672,35 @@ pub struct Member {
     /// The name the register shows for them.
     pub name: String,
 }
+
+/// What a device joins its location's network with: its kit's roster and TLS credentials.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SyncKit {
+    /// The roster's encoding.
+    pub roster: Vec<u8>,
+    /// The location's CA's certificate, DER: the only one trusted.
+    pub ca: Vec<u8>,
+    /// The device's certificate, DER.
+    pub certificate: Vec<u8>,
+    /// The device's TLS key, PKCS #8 DER.
+    pub tls_key: Vec<u8>,
+}
+
+/// How replication stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a fact of its own about replication, as the runtime reports them"
+)]
+pub struct SyncState {
+    /// The register listens for its location's devices, as the hub's address.
+    pub listening: bool,
+    /// The device's own log is settled: until it is, intents are refused, `NotSettled`.
+    pub settled: bool,
+    /// A hub is reachable: when it isn't, the device is an island.
+    pub hub_reachable: bool,
+    /// This device holds the hub's role.
+    pub is_hub: bool,
+    /// This device serves as the hub now.
+    pub serving: bool,
+}
