@@ -217,8 +217,11 @@ sequenceDiagram
   device of the roster; the hub's carries the roster's hub name too. Certificates come from a
   development CA the provisioning tool makes, valid for a year, until the Device CA. Only the
   device that listens at the roster's address may take the hub's role, as no other can be
-  reached ([ADR-0027](../adr/0027-android-app.md), as built). Not yet: discovery, the standby's
-  address and its takeover, scopes and revocation.
+  reached ([ADR-0027](../adr/0027-android-app.md), as built). A roster of format 2 also names
+  the location's cloud, a device of the roster that never hosts the hub, with its address and the
+  name its certificate carries; the hub dials it beside its listener and names it its durable
+  peer ([ADR-0028](../adr/0028-cloud-cell-v0.md)). Not yet: discovery, the standby's address and
+  its takeover, scopes and revocation.
 - **Scopes**:
   - `location/{id}` covers operational events.
   - Large venues can partition it as `location/{id}/rc/{rc}`, so 300 stadium devices don't all

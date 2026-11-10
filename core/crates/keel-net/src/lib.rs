@@ -8,6 +8,11 @@
 //! - **The hub** ([`Net::hub`]) listens on one port; **a device** ([`Net::device`]) connects to
 //!   the roster's address, trying each address the host resolves to, and again after a backoff
 //!   from 1 s doubling to 30 s, jittered, when the connection drops.
+//! - **The cloud** ([ADR-0028](../../../../docs/adr/0028-cloud-cell-v0.md)): a roster that names
+//!   one has the hub dial it beside its listener, on the one network, as a device dials the hub;
+//!   the cloud's certificate must name the roster's cloud device and carry the cloud's name. The
+//!   cell listens for each location with [`Net::cell`], which admits the devices that may host
+//!   the hub alone.
 //! - **Identity**: each side presents its certificate and verifies the other's against the
 //!   location's CA alone, with `rustls` and its `ring` provider, TLS 1.3 only. A device is the one
 //!   whose name its certificate carries, `<uuid>.devices.keel` ([`device_name`]): exactly one
@@ -44,6 +49,26 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
+/// What a device dials: where, the name the peer's certificate must carry, and which device it
+/// must be.
+struct Target {
+    host: String,
+    port: u16,
+    name: String,
+    peer: Peer,
+}
+
+/// Which device a dialed peer must be.
+#[derive(Clone, Copy)]
+enum Peer {
+    /// Any the roster lets host the hub.
+    Hub,
+    /// This one.
+    Device(Id<Device>),
+    /// Any of the roster's.
+    Any,
+}
+
 /// What every device's name ends with.
 const DEVICES: &str = ".devices.keel";
 
@@ -60,6 +85,12 @@ pub struct Credentials {
     pub chain: Vec<CertificateDer<'static>>,
     /// The device's TLS key.
     pub key: PrivateKeyDer<'static>,
+}
+
+impl Clone for Credentials {
+    fn clone(&self) -> Credentials {
+        Credentials { ca: self.ca.clone(), chain: self.chain.clone(), key: self.key.clone_key() }
+    }
 }
 
 /// What happens on the network.
@@ -91,9 +122,12 @@ pub enum NetError {
     /// A socket or the runtime couldn't be set up.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// The roster's hub name isn't a DNS name a certificate can carry.
-    #[error("the hub's name isn't a DNS name")]
+    /// The roster's hub name, or its cloud's, isn't a DNS name a certificate can carry.
+    #[error("the peer's name isn't a DNS name")]
     HubName,
+    /// The roster names no cloud to dial.
+    #[error("the roster names no cloud")]
+    NoCloud,
 }
 
 /// The longest a device waits before connecting again.
@@ -187,60 +221,194 @@ fn waited(backoff: Duration, seed: &mut u64) -> Duration {
     Duration::from_millis(half.saturating_add(jitter(seed, millis.saturating_sub(half))))
 }
 
+/// The server's half of TLS: `credentials`, verifying each client against the CA alone.
+fn acceptor(credentials: Credentials) -> Result<TlsAcceptor, NetError> {
+    let verifier = WebPkiClientVerifier::builder_with_provider(roots(&credentials.ca)?, provider())
+        .build()
+        .map_err(|error| NetError::Ca(error.to_string()))?;
+    let config = ServerConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(credentials.chain, credentials.key)?;
+    Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
+/// The client's half of TLS: `credentials`, verifying each server against the CA alone.
+fn connector(credentials: Credentials) -> Result<TlsConnector, NetError> {
+    let config = ClientConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .with_root_certificates(roots(&credentials.ca)?)
+        .with_client_auth_cert(credentials.chain, credentials.key)?;
+    Ok(TlsConnector::from(Arc::new(config)))
+}
+
+/// Whether `device`, which the roster holds, is the peer `peer` asks for.
+fn admits(roster: &Roster, peer: Peer, device: Id<Device>) -> bool {
+    match peer {
+        // A device the roster lets host the hub.
+        Peer::Hub => roster.device(device).is_some_and(|device| device.hub.is_some()),
+        Peer::Device(expected) => device == expected,
+        Peer::Any => true,
+    }
+}
+
+/// What a listener takes: the devices it admits, as they prove who they are.
+async fn accept(
+    listener: StdListener,
+    acceptor: TlsAcceptor,
+    roster: Arc<Roster>,
+    peer: Peer,
+    shared: Shared,
+) {
+    let Ok(listener) = TcpListener::from_std(listener) else { return };
+    let handshakes = Arc::new(Semaphore::new(MAX_HANDSHAKES));
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            // Out of descriptors, say: wait, rather than spin.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        // Too many handshakes at once: this one closes, and the device tries again.
+        let Ok(permit) = Arc::clone(&handshakes).try_acquire_owned() else { continue };
+        let (acceptor, roster, shared) = (acceptor.clone(), Arc::clone(&roster), shared.clone());
+        tokio::task::spawn_local(async move {
+            let accepted = tokio::time::timeout(HANDSHAKE, async {
+                stream.set_nodelay(true).ok()?;
+                let tls = acceptor.accept(stream).await.ok()?;
+                let peer_certificate = tls.get_ref().1.peer_certificates()?.first()?.clone();
+                let device = identify(&peer_certificate, &roster)?;
+                if !admits(&roster, peer, device) {
+                    return None;
+                }
+                let ws = tokio_tungstenite::accept_async_with_config(tls, Some(websocket()))
+                    .await
+                    .ok()?;
+                Some((device, ws))
+            })
+            .await;
+            drop(permit);
+            if let Ok(Some((device, ws))) = accepted {
+                shared.serve(device, ws).await;
+            }
+        });
+    }
+}
+
+/// A peer to dial: where, and how.
+struct Dialer {
+    target: Target,
+    connector: TlsConnector,
+    server_name: ServerName<'static>,
+    /// Each device's own sequence, drawn from its certificate, so devices that lose a peer
+    /// together come back apart.
+    seed: u64,
+}
+
+impl Dialer {
+    fn new(credentials: Credentials, target: Target) -> Result<Dialer, NetError> {
+        // A DNS name, not an address: the name is what stays when the address changes.
+        let Ok(server_name @ ServerName::DnsName(_)) = ServerName::try_from(target.name.clone())
+        else {
+            return Err(NetError::HubName);
+        };
+        let seed = credentials.chain.first().map_or(0, |certificate| fnv(certificate));
+        Ok(Dialer { connector: connector(credentials)?, server_name, seed, target })
+    }
+
+    /// Dials the target, and again after a backoff whenever the connection drops.
+    async fn run(mut self, roster: Arc<Roster>, shared: Shared) {
+        let url = format!("wss://{}/sync", self.target.name);
+        let mut backoff = Duration::from_secs(1);
+        loop {
+            let connected = tokio::time::timeout(HANDSHAKE, async {
+                let stream = connect(&self.target.host, self.target.port).await?;
+                stream.set_nodelay(true).ok()?;
+                let tls = self.connector.connect(self.server_name.clone(), stream).await.ok()?;
+                let peer = tls.get_ref().1.peer_certificates()?.first()?.clone();
+                let device = identify(&peer, &roster)?;
+                if !admits(&roster, self.target.peer, device) {
+                    return None;
+                }
+                let (ws, _) = tokio_tungstenite::client_async_with_config(
+                    url.as_str(),
+                    tls,
+                    Some(websocket()),
+                )
+                .await
+                .ok()?;
+                Some((device, ws))
+            })
+            .await;
+            if let Ok(Some((device, ws))) = connected {
+                backoff = Duration::from_secs(1);
+                shared.clone().serve(device, ws).await;
+            }
+            tokio::time::sleep(waited(backoff, &mut self.seed)).await;
+            backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
+        }
+    }
+}
+
+/// The cloud `roster` names, to dial.
+fn cloud_target(roster: &Roster) -> Option<Target> {
+    roster.cloud().map(|cloud| Target {
+        host: cloud.host.clone(),
+        port: cloud.port.get(),
+        name: cloud.name.clone(),
+        peer: Peer::Device(cloud.device),
+    })
+}
+
 impl Net {
-    /// The hub's network, listening on `listener`, for the devices of `roster`.
+    /// The hub's network, listening on `listener` for the devices of `roster`, and dialing the
+    /// cloud the roster names, if it names one (ADR-0028): the hub carries its location's log
+    /// to the cloud, which can't dial a hub behind the store's router.
     ///
     /// # Errors
-    /// [`NetError`] if the credentials aren't usable, or the runtime can't start.
+    /// [`NetError`] if the credentials aren't usable, the cloud's name isn't a DNS name, or the
+    /// runtime can't start.
     pub fn hub(
         listener: StdListener,
         roster: Roster,
         credentials: Credentials,
     ) -> Result<Net, NetError> {
-        let verifier =
-            WebPkiClientVerifier::builder_with_provider(roots(&credentials.ca)?, provider())
-                .build()
-                .map_err(|error| NetError::Ca(error.to_string()))?;
-        let config = ServerConfig::builder_with_provider(provider())
-            .with_protocol_versions(&[&rustls::version::TLS13])?
-            .with_client_cert_verifier(verifier)
-            .with_single_cert(credentials.chain, credentials.key)?;
-        let acceptor = TlsAcceptor::from(Arc::new(config));
+        let dialer = cloud_target(&roster)
+            .map(|target| Dialer::new(credentials.clone(), target))
+            .transpose()?;
+        let acceptor = acceptor(credentials)?;
+        Net::listen(listener, roster, acceptor, Peer::Any, dialer)
+    }
+
+    /// The cloud's network for one location (ADR-0028), listening on `listener` for the devices
+    /// of `roster` that may host its hub, which dial it.
+    ///
+    /// # Errors
+    /// [`NetError`] if the credentials aren't usable, or the runtime can't start.
+    pub fn cell(
+        listener: StdListener,
+        roster: Roster,
+        credentials: Credentials,
+    ) -> Result<Net, NetError> {
+        let acceptor = acceptor(credentials)?;
+        Net::listen(listener, roster, acceptor, Peer::Hub, None)
+    }
+
+    /// A network listening on `listener` for the devices `peer` admits, and dialing `dialer`.
+    fn listen(
+        listener: StdListener,
+        roster: Roster,
+        acceptor: TlsAcceptor,
+        peer: Peer,
+        dialer: Option<Dialer>,
+    ) -> Result<Net, NetError> {
         listener.set_nonblocking(true)?;
         let local = listener.local_addr()?;
         Net::spawn(Some(local), move |shared| async move {
-            let Ok(listener) = TcpListener::from_std(listener) else { return };
             let roster = Arc::new(roster);
-            let handshakes = Arc::new(Semaphore::new(MAX_HANDSHAKES));
-            loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    // Out of descriptors, say: wait, rather than spin.
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                };
-                // Too many handshakes at once: this one closes, and the device tries again.
-                let Ok(permit) = Arc::clone(&handshakes).try_acquire_owned() else { continue };
-                let (acceptor, roster, shared) =
-                    (acceptor.clone(), Arc::clone(&roster), shared.clone());
-                tokio::task::spawn_local(async move {
-                    let accepted = tokio::time::timeout(HANDSHAKE, async {
-                        stream.set_nodelay(true).ok()?;
-                        let tls = acceptor.accept(stream).await.ok()?;
-                        let peer = tls.get_ref().1.peer_certificates()?.first()?.clone();
-                        let device = identify(&peer, &roster)?;
-                        let ws =
-                            tokio_tungstenite::accept_async_with_config(tls, Some(websocket()))
-                                .await
-                                .ok()?;
-                        Some((device, ws))
-                    })
-                    .await;
-                    drop(permit);
-                    if let Ok(Some((device, ws))) = accepted {
-                        shared.serve(device, ws).await;
-                    }
-                });
+            if let Some(dialer) = dialer {
+                tokio::task::spawn_local(dialer.run(Arc::clone(&roster), shared.clone()));
             }
+            accept(listener, acceptor, roster, peer, shared).await;
         })
     }
 
@@ -251,51 +419,32 @@ impl Net {
     /// [`NetError`] if the credentials aren't usable, the hub's name isn't a DNS name, or the
     /// runtime can't start.
     pub fn device(roster: Roster, credentials: Credentials) -> Result<Net, NetError> {
-        // Each device's own sequence, drawn from its certificate, so devices that lose the hub
-        // together come back apart.
-        let mut seed = credentials.chain.first().map_or(0, |certificate| fnv(certificate));
-        let config = ClientConfig::builder_with_provider(provider())
-            .with_protocol_versions(&[&rustls::version::TLS13])?
-            .with_root_certificates(roots(&credentials.ca)?)
-            .with_client_auth_cert(credentials.chain, credentials.key)?;
-        let connector = TlsConnector::from(Arc::new(config));
-        // A DNS name, not an address: the name is what stays when the address changes.
-        let Ok(hub_name @ ServerName::DnsName(_)) =
-            ServerName::try_from(roster.data().hub.name.clone())
-        else {
-            return Err(NetError::HubName);
+        let hub = &roster.data().hub;
+        let target = Target {
+            host: hub.host.clone(),
+            port: hub.port.get(),
+            name: hub.name.clone(),
+            peer: Peer::Hub,
         };
-        Net::spawn(None, move |shared| async move {
-            let hub = &roster.data().hub;
-            let url = format!("wss://{}/sync", hub.name);
-            let mut backoff = Duration::from_secs(1);
-            loop {
-                let connected = tokio::time::timeout(HANDSHAKE, async {
-                    let stream = connect(&hub.host, hub.port.get()).await?;
-                    stream.set_nodelay(true).ok()?;
-                    let tls = connector.connect(hub_name.clone(), stream).await.ok()?;
-                    let peer = tls.get_ref().1.peer_certificates()?.first()?.clone();
-                    let device = identify(&peer, &roster)?;
-                    // The hub is a device the roster lets host it.
-                    roster.device(device)?.hub?;
-                    let (ws, _) = tokio_tungstenite::client_async_with_config(
-                        url.as_str(),
-                        tls,
-                        Some(websocket()),
-                    )
-                    .await
-                    .ok()?;
-                    Some((device, ws))
-                })
-                .await;
-                if let Ok(Some((device, ws))) = connected {
-                    backoff = Duration::from_secs(1);
-                    shared.clone().serve(device, ws).await;
-                }
-                tokio::time::sleep(waited(backoff, &mut seed)).await;
-                backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
-            }
-        })
+        Net::dial(roster, credentials, target)
+    }
+
+    /// A device's network to its location's cloud alone (ADR-0028): connecting to the cloud
+    /// `roster` names, whose certificate must name the roster's cloud device and carry the
+    /// cloud's name, and again whenever the connection drops. [`Net::hub`] dials it beside its
+    /// listener.
+    ///
+    /// # Errors
+    /// [`NetError::NoCloud`] if the roster names no cloud; otherwise as [`Net::device`].
+    pub fn cloud(roster: Roster, credentials: Credentials) -> Result<Net, NetError> {
+        let target = cloud_target(&roster).ok_or(NetError::NoCloud)?;
+        Net::dial(roster, credentials, target)
+    }
+
+    /// A network dialing `target`, and again whenever the connection drops.
+    fn dial(roster: Roster, credentials: Credentials, target: Target) -> Result<Net, NetError> {
+        let dialer = Dialer::new(credentials, target)?;
+        Net::spawn(None, move |shared| dialer.run(Arc::new(roster), shared))
     }
 
     /// Starts the runtime's thread, running `main` and the router of outgoing frames until the

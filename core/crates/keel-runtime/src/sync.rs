@@ -60,6 +60,12 @@ pub struct SyncStatus {
     pub is_hub: bool,
     /// This device serves as the hub now.
     pub serving: bool,
+    /// How far into this device's own log the location's cloud is known to hold, its durable-ack
+    /// watermark (ADR-0020): 0 if it holds none of it, or the location has no cloud.
+    pub backed_up: u64,
+    /// How far this device's own log goes: what is past [`SyncStatus::backed_up`] isn't backed up
+    /// yet.
+    pub head: u64,
 }
 
 impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
@@ -91,7 +97,15 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         if roster.data().location != self.profile.data().location || me.key != self.key {
             return Err(RuntimeError::RosterMismatch);
         }
-        let roles = Roles { hub: if may_host { me.hub } else { None }, durable: None };
+        let hub = if may_host { me.hub } else { None };
+        // A device that may host the hub names the location's cloud its durable peer, as the
+        // simulator's hub and standby do (ADR-0020, ADR-0028); the others learn the watermark
+        // from the hub. The cloud itself names none: it is the durable copy.
+        let durable = roster
+            .cloud()
+            .map(|cloud| cloud.device)
+            .filter(|cloud| hub.is_some() && *cloud != device);
+        let roles = Roles { hub, durable };
         let peers: Vec<Id<Device>> =
             roster.data().devices.iter().map(|d| d.id).filter(|d| *d != device).collect();
         let registry = roster.registry();
@@ -206,13 +220,19 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     }
 
     /// What the register shows of its replication, if it is replicating.
-    pub fn sync_status(&self) -> Option<SyncStatus> {
-        self.sync.as_ref().map(|sync| SyncStatus {
+    ///
+    /// # Errors
+    /// [`RuntimeError::Store`] if the store can't be read.
+    pub fn sync_status(&self) -> Result<Option<SyncStatus>, RuntimeError> {
+        let Some(sync) = self.sync.as_ref() else { return Ok(None) };
+        Ok(Some(SyncStatus {
             settled: sync.replicator.settled(),
             hub_reachable: sync.replicator.hub_reachable(),
             is_hub: sync.replicator.is_hub(),
             serving: sync.replicator.serving(),
-        })
+            backed_up: sync.replicator.durable().get(&self.device).copied().unwrap_or(0),
+            head: self.store.head(self.device)?.seq(),
+        }))
     }
 
     /// The roster the runtime replicates with, if it does.

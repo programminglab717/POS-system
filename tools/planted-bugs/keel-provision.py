@@ -76,4 +76,16 @@ BUGS = [
         "            store_key: signing_key,",
         "unit",
     ),
+    (
+        "provision: the cloud's certificate doesn't carry the cloud's name",
+        "src/lib.rs",
+        "            Some(kit(address.device, CLOUD_NAME, Some(&address.name), signing_key)?)",
+        "            Some(kit(address.device, CLOUD_NAME, None, signing_key)?)",
+    ),
+    (
+        "provision: the roster names no cloud though the location has one",
+        "src/lib.rs",
+        "        cloud: cloud.as_ref().map(|(address, _)| address.clone()),",
+        "        cloud: None,",
+    ),
 ]

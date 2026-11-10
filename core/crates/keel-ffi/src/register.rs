@@ -364,7 +364,7 @@ impl Register {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .is_some_and(|net| net.local_addr().is_some());
-        let status = self.with(|runtime| Ok(runtime.sync_status()))?;
+        let status = self.with(|runtime| runtime.sync_status())?;
         Ok(status.map(|status| SyncState {
             listening,
             settled: status.settled,

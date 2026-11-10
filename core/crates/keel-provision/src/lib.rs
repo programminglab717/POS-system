@@ -23,7 +23,9 @@ use std::path::Path;
 
 use keel_domain::codec::Name;
 use keel_domain::profile::Profile;
-use keel_domain::roster::{HubAddress, Roster, RosterData, RosterDevice, RosterError};
+use keel_domain::roster::{
+    CloudAddress, HubAddress, Roster, RosterData, RosterDevice, RosterError,
+};
 use keel_events::envelope::Device;
 use keel_events::keys::{SignatureAlgorithm, Signer, SoftwareSigner};
 use keel_net::{Credentials, device_name};
@@ -56,7 +58,23 @@ pub struct Spec {
     pub hub_name: String,
     /// The devices.
     pub devices: Vec<DeviceSpec>,
+    /// The location's cloud, if it has one (ADR-0028).
+    pub cloud: Option<CloudSpec>,
 }
+
+/// Where a location's cloud listens, and the name its certificate carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloudSpec {
+    /// Its host: a DNS name or an address.
+    pub host: String,
+    /// Its port.
+    pub port: NonZeroU16,
+    /// The name its certificate carries.
+    pub name: String,
+}
+
+/// The name a location's cloud is known by in its roster.
+pub const CLOUD_NAME: &str = "Cloud";
 
 /// One device's files.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,8 +107,10 @@ pub struct Provisioned {
     pub ca_key: Vec<u8>,
     /// The roster.
     pub roster: Roster,
-    /// Each device's kit, in the roster's order.
+    /// Each device's kit, in the roster's order, but for the cloud's.
     pub kits: Vec<Kit>,
+    /// The cloud's kit, for the cell (ADR-0028), if the location has a cloud.
+    pub cloud: Option<Kit>,
 }
 
 /// Why provisioning failed.
@@ -162,6 +182,29 @@ fn random<const N: usize>(entropy: &mut OsEntropy) -> Result<[u8; N], ProvisionE
     Ok(bytes)
 }
 
+/// A device of the roster named `name`, with `hub` its priority as the hub, its identifier and
+/// signing key drawn: the roster's entry, and the key's secret.
+fn draw(
+    ids: &mut IdGenerator<OsEntropy>,
+    entropy: &mut OsEntropy,
+    name: &str,
+    hub: Option<NonZeroU8>,
+) -> Result<(RosterDevice, [u8; 32]), ProvisionError> {
+    let id: Id<Device> = ids
+        .generate(SystemClock.now())
+        .map_err(|error| ProvisionError::Entropy(error.to_string()))?;
+    let signing_key: [u8; 32] = random(entropy)?;
+    let signer = SoftwareSigner::from_secret(SignatureAlgorithm::EdDsa, &signing_key)
+        .map_err(|error| ProvisionError::Entropy(error.to_string()))?;
+    let entry = RosterDevice {
+        id,
+        name: Name::new(name).map_err(|_| ProvisionError::Name(name.to_owned()))?,
+        key: signer.public_key().clone(),
+        hub,
+    };
+    Ok((entry, signing_key))
+}
+
 /// Provisions the location `spec` describes: a CA, and each device's identifier, keys,
 /// certificate, the roster and the profile.
 ///
@@ -188,23 +231,26 @@ pub fn provision(spec: &Spec) -> Result<Provisioned, ProvisionError> {
     let mut devices = Vec::new();
     let mut secrets = Vec::new();
     for device in &spec.devices {
-        let id: Id<Device> = ids
-            .generate(SystemClock.now())
-            .map_err(|error| ProvisionError::Entropy(error.to_string()))?;
-        let signing_key: [u8; 32] = random(&mut entropy)?;
-        let signer = SoftwareSigner::from_secret(SignatureAlgorithm::EdDsa, &signing_key)
-            .map_err(|error| ProvisionError::Entropy(error.to_string()))?;
-        devices.push(RosterDevice {
-            id,
-            name: Name::new(&device.name).map_err(|_| ProvisionError::Name(device.name.clone()))?,
-            key: signer.public_key().clone(),
-            hub: device.hub,
-        });
-        secrets.push((id, device, signing_key));
+        let (entry, signing_key) = draw(&mut ids, &mut entropy, &device.name, device.hub)?;
+        secrets.push((entry.id, device.name.clone(), device.hub.is_some(), signing_key));
+        devices.push(entry);
+    }
+    // The cloud is a device of the roster that never hosts the hub.
+    let mut cloud = None;
+    if let Some(spec_cloud) = &spec.cloud {
+        let (entry, signing_key) = draw(&mut ids, &mut entropy, CLOUD_NAME, None)?;
+        let address = CloudAddress {
+            device: entry.id,
+            host: spec_cloud.host.clone(),
+            port: spec_cloud.port,
+            name: spec_cloud.name.clone(),
+        };
+        devices.push(entry);
+        cloud = Some((address, signing_key));
     }
     // A roster lists its devices in the ascending order of their identifiers.
     devices.sort_by_key(|device| device.id.to_bytes());
-    secrets.sort_by_key(|(id, _, _)| id.to_bytes());
+    secrets.sort_by_key(|(id, _, _, _)| id.to_bytes());
     let roster = Roster::new(RosterData {
         location: profile.data().location,
         devices,
@@ -213,25 +259,27 @@ pub fn provision(spec: &Spec) -> Result<Provisioned, ProvisionError> {
             port: spec.hub_port,
             name: spec.hub_name.clone(),
         },
+        cloud: cloud.as_ref().map(|(address, _)| address.clone()),
     })?;
-    let mut kits = Vec::new();
-    for (id, device, signing_key) in secrets {
+    // Each device's certificate names it, and the hub's name for one that may host the hub, or
+    // the cloud's for the cloud: each serves what it names.
+    let mut kit = |id: Id<Device>, name: &str, serves: Option<&str>, signing_key: [u8; 32]| {
         let mut names = vec![device_name(id)];
         let mut usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-        if device.hub.is_some() {
-            names.push(spec.hub_name.clone());
+        if let Some(served) = serves {
+            names.push(served.to_owned());
             usages.push(ExtendedKeyUsagePurpose::ServerAuth);
         }
         let key = KeyPair::generate()?;
         let mut params = valid(CertificateParams::new(names)?, now, DEVICE_LIFE)?;
-        params.distinguished_name.push(DnType::CommonName, device.name.clone());
+        params.distinguished_name.push(DnType::CommonName, name);
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = usages;
         params.use_authority_key_identifier_extension = true;
         let certificate = params.signed_by(&key, &issuer)?.der().to_vec();
-        kits.push(Kit {
+        Ok::<_, ProvisionError>(Kit {
             device: id,
-            name: device.name.clone(),
+            name: name.to_owned(),
             signing_key,
             store_key: random(&mut entropy)?,
             tls_key: key.serialize_der(),
@@ -239,9 +287,19 @@ pub fn provision(spec: &Spec) -> Result<Provisioned, ProvisionError> {
             ca: ca.clone(),
             roster: roster.encode(),
             profile: spec.profile.clone(),
-        });
+        })
+    };
+    let mut kits = Vec::new();
+    for (id, name, hub, signing_key) in secrets {
+        kits.push(kit(id, &name, hub.then_some(spec.hub_name.as_str()), signing_key)?);
     }
-    Ok(Provisioned { ca, ca_key: ca_key_der, roster, kits })
+    let cloud = match cloud {
+        Some((address, signing_key)) => {
+            Some(kit(address.device, CLOUD_NAME, Some(&address.name), signing_key)?)
+        }
+        None => None,
+    };
+    Ok(Provisioned { ca, ca_key: ca_key_der, roster, kits, cloud })
 }
 
 /// The files of a kit, by name.

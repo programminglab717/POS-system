@@ -1,7 +1,9 @@
-//! `keel-provision <out> --hub <host>:<port> --hub-name <name> --device <name>[=<hub priority>]...`
+//! `keel-provision <out> --hub <host>:<port> --hub-name <name> --device <name>[=<hub priority>]...
+//! [--cloud <host>:<port> --cloud-name <name>]`
 //!
 //! Provisions a location with the demo café's profile: writes its CA's certificate and key into
-//! `<out>`, and each device's kit into a directory of its own there, named by its identifier.
+//! `<out>`, and each device's kit into a directory of its own there, named by its identifier; and
+//! with a cloud (ADR-0028), the cloud's kit into `<out>/cloud`, for the cell.
 
 #![allow(
     clippy::print_stdout,
@@ -13,36 +15,40 @@ use core::num::{NonZeroU8, NonZeroU16};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use keel_provision::{DeviceSpec, Spec, provision};
+use keel_provision::{CloudSpec, DeviceSpec, Spec, provision};
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: keel-provision <out> --hub <host>:<port> --hub-name <name> --device <name>[=<priority>]..."
+        "usage: keel-provision <out> --hub <host>:<port> --hub-name <name> --device <name>[=<priority>]... [--cloud <host>:<port> --cloud-name <name>]"
     );
     ExitCode::FAILURE
+}
+
+/// `<host>:<port>`, an IPv6 address written in brackets, as in a URL.
+fn address(value: &str) -> Option<(String, NonZeroU16)> {
+    let (host, port) = value.rsplit_once(':')?;
+    let host = host.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(host);
+    Some((host.to_owned(), port.parse::<NonZeroU16>().ok()?))
 }
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let Some(out) = args.next().map(PathBuf::from) else { return usage() };
     let (mut hub, mut hub_name, mut devices) = (None, None, Vec::new());
+    let (mut cloud, mut cloud_name) = (None, None);
     while let Some(flag) = args.next() {
         let Some(value) = args.next() else { return usage() };
         match flag.as_str() {
             "--hub" => {
-                let Some(address) = value.rsplit_once(':').and_then(|(host, port)| {
-                    // An IPv6 address is written in brackets, as in a URL.
-                    let host = host
-                        .strip_prefix('[')
-                        .and_then(|host| host.strip_suffix(']'))
-                        .unwrap_or(host);
-                    Some((host.to_owned(), port.parse::<NonZeroU16>().ok()?))
-                }) else {
-                    return usage();
-                };
+                let Some(address) = address(&value) else { return usage() };
                 hub = Some(address);
             }
             "--hub-name" => hub_name = Some(value),
+            "--cloud" => {
+                let Some(address) = address(&value) else { return usage() };
+                cloud = Some(address);
+            }
+            "--cloud-name" => cloud_name = Some(value),
             "--device" => {
                 let (name, priority) = match value.split_once('=') {
                     // A priority that isn't one is a mistake, not a register.
@@ -61,7 +67,12 @@ fn main() -> ExitCode {
     let Ok(profile) = keel_domain::profile::demo().map(|demo| demo.encode()) else {
         return ExitCode::FAILURE;
     };
-    let spec = Spec { profile, hub_host, hub_port, hub_name, devices };
+    let cloud = match (cloud, cloud_name) {
+        (Some((host, port)), Some(name)) => Some(CloudSpec { host, port, name }),
+        (None, None) => None,
+        _ => return usage(),
+    };
+    let spec = Spec { profile, hub_host, hub_port, hub_name, devices, cloud };
     let result = provision(&spec).and_then(|provisioned| {
         keel_provision::private_dir(&out)?;
         std::fs::write(out.join("ca.crt"), &provisioned.ca)?;
@@ -69,6 +80,10 @@ fn main() -> ExitCode {
         for kit in &provisioned.kits {
             kit.write(&out.join(kit.device.to_string()))?;
             println!("{}  {}", kit.device, kit.name);
+        }
+        if let Some(kit) = &provisioned.cloud {
+            kit.write(&out.join("cloud"))?;
+            println!("{}  {} (in cloud)", kit.device, kit.name);
         }
         Ok(())
     });

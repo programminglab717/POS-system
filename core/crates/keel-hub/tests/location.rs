@@ -72,6 +72,7 @@ fn spec(port: u16) -> Spec {
         hub_host: "127.0.0.1".into(),
         hub_port: NonZeroU16::new(port).unwrap(),
         hub_name: "hub.keel-cafe.local".into(),
+        cloud: None,
         devices: vec![
             DeviceSpec { name: "Back office".into(), hub: NonZeroU8::new(1) },
             DeviceSpec { name: "Front counter".into(), hub: None },
@@ -125,7 +126,7 @@ fn a_sale_on_a_register_reaches_the_hub_over_the_network() {
     let mut paid = None;
     while started.elapsed() < Duration::from_secs(30) {
         keel_hub::step(&mut register, &net, Duration::from_millis(50)).unwrap();
-        let status = register.sync_status().unwrap();
+        let status = register.sync_status().unwrap().unwrap();
         if status.settled && status.hub_reachable && order.is_none() {
             let id = register.start_order(Mode::Takeout).unwrap().order;
             register.add_item(id, demo_variant(), &[], NonZeroU32::MIN).unwrap();
@@ -155,7 +156,7 @@ fn a_sale_on_a_register_reaches_the_hub_over_the_network() {
     stop.store(true, Ordering::Relaxed);
     let hub = hub.join().unwrap();
     assert_eq!(hub.store().order(order).unwrap().unwrap().state, keel_store::OrderState::Closed);
-    assert!(hub.sync_status().unwrap().serving);
+    assert!(hub.sync_status().unwrap().unwrap().serving);
 }
 
 fn demo_variant() -> Id<keel_domain::refs::Variant> {

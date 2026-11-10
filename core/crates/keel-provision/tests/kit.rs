@@ -16,7 +16,7 @@ use core::num::{NonZeroU8, NonZeroU16};
 use core::time::Duration;
 use std::path::PathBuf;
 
-use keel_provision::{DeviceSpec, Kit, Provisioned, Spec, provision};
+use keel_provision::{CloudSpec, DeviceSpec, Kit, Provisioned, Spec, provision};
 use rustls_pki_types::{CertificateDer, UnixTime};
 use webpki::{EndEntityCert, KeyUsage};
 
@@ -26,6 +26,7 @@ fn spec() -> Spec {
         hub_host: "127.0.0.1".into(),
         hub_port: NonZeroU16::new(7443).unwrap(),
         hub_name: "hub.keel-cafe.local".into(),
+        cloud: None,
         devices: vec![
             DeviceSpec { name: "Back office".into(), hub: NonZeroU8::new(1) },
             DeviceSpec { name: "Front counter".into(), hub: None },
@@ -84,6 +85,43 @@ fn a_device_s_certificate_is_for_what_it_does() {
         ),
         "a register's certificate can't serve as the hub's"
     );
+}
+
+#[test]
+fn a_location_with_a_cloud_has_the_cloud_s_kit_beside_its_devices() {
+    let without = spec();
+    let spec = Spec {
+        cloud: Some(CloudSpec {
+            host: "203.0.113.10".into(),
+            port: NonZeroU16::new(8443).unwrap(),
+            name: "cell.keel-cafe.example".into(),
+        }),
+        ..spec()
+    };
+    let provisioned = provision(&spec).unwrap();
+    let cloud = provisioned.cloud.as_ref().unwrap();
+    // The roster names the cloud: a device of its own that never hosts the hub, and not among
+    // the kits a location's devices are given.
+    let named = provisioned.roster.cloud().unwrap();
+    assert_eq!(named.device, cloud.device);
+    assert_eq!((named.host.as_str(), named.port.get()), ("203.0.113.10", 8443));
+    assert_eq!(provisioned.roster.device(cloud.device).unwrap().hub, None);
+    assert!(provisioned.kits.iter().all(|kit| kit.device != cloud.device));
+    assert_eq!(provisioned.kits.len(), 2);
+    for kit in provisioned.kits.iter().chain([cloud]) {
+        assert_eq!(kit.roster, provisioned.roster.encode(), "{}", kit.name);
+    }
+    // Its certificate serves the cloud's name, and the device's, and nothing of the hub's.
+    let now = now();
+    for usage in [KeyUsage::client_auth(), KeyUsage::server_auth()] {
+        assert_eq!(verifies(&cloud.certificate, &provisioned.ca, &[], usage, now), Ok(()));
+    }
+    let certificate = CertificateDer::from(cloud.certificate.as_slice());
+    let parsed = EndEntityCert::try_from(&certificate).unwrap();
+    let names: Vec<_> = parsed.valid_dns_names().collect();
+    assert_eq!(names, [keel_net::device_name(cloud.device).as_str(), "cell.keel-cafe.example"]);
+    // A location without a cloud has no cloud's kit.
+    assert!(provision(&without).unwrap().cloud.is_none());
 }
 
 #[test]

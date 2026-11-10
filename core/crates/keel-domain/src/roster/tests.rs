@@ -44,6 +44,7 @@ fn demo() -> RosterData {
             port: NonZeroU16::new(7443).unwrap(),
             name: "hub.keel-cafe.local".to_owned(),
         },
+        cloud: None,
     }
 }
 
@@ -187,9 +188,14 @@ fn with_key(entries: &mut [(Value, Value)], key: Value) {
 #[test]
 fn encodings_other_than_a_rosters_own_are_refused() {
     assert_eq!(
-        decode_changed(|e| e[0].1 = Value::Unsigned(2)).map(|_| ()),
-        Err(RosterError::Format(2))
+        decode_changed(|e| e[0].1 = Value::Unsigned(3)).map(|_| ()),
+        Err(RosterError::Format(3))
     );
+    // Format 2 needs its cloud, and format 1 can't have one.
+    assert!(matches!(
+        decode_changed(|e| e[0].1 = Value::Unsigned(2)),
+        Err(RosterError::Payload(_))
+    ));
     assert!(matches!(
         decode_changed(|e| e.push((Value::Unsigned(5), Value::Null))),
         Err(RosterError::Payload(_))
@@ -219,4 +225,82 @@ fn encodings_other_than_a_rosters_own_are_refused() {
     let mut bytes = Roster::new(demo()).unwrap().encode();
     bytes.push(0);
     assert!(matches!(Roster::decode(&bytes), Err(RosterError::Cbor(_))));
+}
+
+/// The demo café's roster naming its cloud, a device of its own that never hosts the hub.
+fn with_cloud() -> RosterData {
+    let mut data = demo();
+    data.devices.insert(0, device(0xcc, "Cloud", 4, None));
+    data.cloud = Some(CloudAddress {
+        device: id(0xcc),
+        host: "203.0.113.10".to_owned(),
+        port: NonZeroU16::new(8443).unwrap(),
+        name: "cell.keel-cafe.example".to_owned(),
+    });
+    data
+}
+
+/// Pinned from `tests/golden/roster.py`, which builds it with Python's `cbor2` in format 2.
+#[test]
+fn a_roster_naming_its_cloud_is_pinned_in_format_2() {
+    let roster = Roster::new(with_cloud()).unwrap();
+    assert_eq!(
+        hex(&roster.data().devices[0].key.to_bytes()),
+        "ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+    );
+    let bytes = roster.encode();
+    assert_eq!(bytes.len(), 429);
+    assert_eq!(
+        hex(&sha256(&bytes)),
+        "7e0cf766e817877300927808285818835efdad15d3614c5dfc13f71ce5365e61"
+    );
+    assert_eq!(Roster::decode(&bytes).unwrap(), roster);
+    assert_eq!(roster.cloud().unwrap().device, id(0xcc));
+    // Without a cloud, the roster is format 1, as before format 2.
+    let plain = cbor::decode(&Roster::new(demo()).unwrap().encode()).unwrap();
+    assert_eq!(plain.as_map().unwrap().get(&Value::Unsigned(1)), Some(&Value::Unsigned(1)));
+}
+
+#[test]
+fn a_cloud_that_breaks_a_rule_is_refused() {
+    type Change = fn(&mut RosterData);
+    let cases: Vec<(Change, &str)> = vec![
+        (|d| d.cloud.as_mut().unwrap().device = id(0xee), "a cloud that isn't one of the devices"),
+        (|d| d.devices[0].hub = NonZeroU8::new(9), "a cloud that may host the hub"),
+        (
+            |d| d.cloud.as_mut().unwrap().host = String::new(),
+            "a cloud host that isn't a name or an address",
+        ),
+        (
+            |d| d.cloud.as_mut().unwrap().host = "a b".to_owned(),
+            "a cloud host that isn't a name or an address",
+        ),
+        (
+            |d| d.cloud.as_mut().unwrap().name = "hub.keel-cafe.local".to_owned(),
+            "a cloud name that isn't a DNS name a cloud may carry, or is the hub's",
+        ),
+        (
+            |d| d.cloud.as_mut().unwrap().name = "10.0.0.1".to_owned(),
+            "a cloud name that isn't a DNS name a cloud may carry, or is the hub's",
+        ),
+        (
+            |d| d.cloud.as_mut().unwrap().name = "cell.devices.keel".to_owned(),
+            "a cloud name that isn't a DNS name a cloud may carry, or is the hub's",
+        ),
+    ];
+    for (index, (change, why)) in cases.into_iter().enumerate() {
+        let mut data = with_cloud();
+        change(&mut data);
+        assert_eq!(Roster::new(data), Err(RosterError::Invalid(why)), "case {index}");
+    }
+    // Format 1 with a cloud's field is refused, as a field it doesn't have.
+    assert!(matches!(
+        decode_changed(|e| e.push((
+            Value::Unsigned(5),
+            Value::Map(
+                Map::from_entries(vec![(Value::Unsigned(1), Value::Bytes(vec![0; 16]))]).unwrap()
+            )
+        ))),
+        Err(RosterError::Payload(_))
+    ));
 }

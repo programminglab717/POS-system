@@ -1,0 +1,27 @@
+[package]
+name = "keel-cloud"
+version = "0.1.0"
+description = "Keel's cloud cell (ADR-0007, ADR-0028): each location's durable replica, catalog publishing and the back office's API; the keel-cell binary."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+keel-types = { workspace = true, features = ["os"] }
+keel-events.workspace = true
+keel-domain.workspace = true
+keel-store.workspace = true
+keel-runtime.workspace = true
+keel-net.workspace = true
+keel-sync.workspace = true
+keel-hub.workspace = true
+keel-provision.workspace = true
+thiserror.workspace = true
+
+[[bin]]
+name = "keel-cell"
+path = "src/main.rs"
+
+[lints]
+workspace = true

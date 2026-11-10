@@ -884,6 +884,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-cloud"
+version = "0.1.0"
+dependencies = [
+ "keel-domain",
+ "keel-events",
+ "keel-hub",
+ "keel-net",
+ "keel-provision",
+ "keel-runtime",
+ "keel-store",
+ "keel-sync",
+ "keel-types",
+ "thiserror",
+]
+
+[[package]]
 name = "keel-doc"
 version = "0.1.0"
 dependencies = [

@@ -260,11 +260,16 @@ Keel, and **never lose a sale to Keel**.
    ([ADR-0021](./adr/0021-ownership-leases.md)); and hub election and failover
    ([ADR-0022](./adr/0022-hub-election-and-failover.md)). See [progress](./progress.md).*
 7. **Android register shell**: ring an order with modifiers, pay cash, print a receipt (ESC/POS over
-   TCP), running on a reference all-in-one against a local hub. *Status: designed in
-   [ADR-0023](./adr/0023-register-shell.md) (proposed), in five slices; slice 1, the device
-   runtime and the location profile, built 2026-10-06, its review next. See
-   [progress](./progress.md).*
+   TCP), running on a reference all-in-one against a local hub. *Status: built, in five slices,
+   each reviewed: the device runtime and the location profile
+   ([ADR-0023](./adr/0023-register-shell.md)); receipts and printing
+   ([ADR-0024](./adr/0024-receipts-and-printing.md)); the bindings
+   ([ADR-0025](./adr/0025-bindings.md)); the local hub ([ADR-0026](./adr/0026-local-hub.md)); and
+   the Android app ([ADR-0027](./adr/0027-android-app.md)). The reference device's numbers wait
+   for the device. See [progress](./progress.md).*
 8. **Cloud cell v0**: sync ingest, catalog publishing, a minimal back office (catalog editor, reports).
+   *Status: designed in [ADR-0028](./adr/0028-cloud-cell-v0.md) (proposed), in four slices; slice
+   1, sync ingest, built 2026-11-10. See [progress](./progress.md).*
 
 ## 9. Decision gates
 

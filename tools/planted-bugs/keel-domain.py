@@ -2678,4 +2678,33 @@ BUGS = [
         "            -9 => PublicKey::ed25519_from_bytes(bytes).ok()?,",
         "unit",
     ),
+    (
+        "roster: the cloud may host the hub",
+        "src/roster.rs",
+        "                Some(device) if device.hub.is_some() => {",
+        "                Some(device) if device.hub.is_some() && false => {",
+        "unit",
+    ),
+    (
+        "roster: the cloud may carry the hub's name",
+        "src/roster.rs",
+        "            if !is_hub_name(&cloud.name) || cloud.name == data.hub.name {",
+        "            if !is_hub_name(&cloud.name) {",
+        "unit",
+    ),
+    (
+        "roster: the cloud needn't be one of the devices",
+        "src/roster.rs",
+        "                None => return Err(RosterError::Invalid(\"a cloud that isn't one of the devices\")),",
+        "                None => {}",
+        "unit",
+    ),
+    (
+        "roster: format 1 may name a cloud",
+        "src/roster.rs",
+        "        let cloud = if format == FORMAT_CLOUD { Some(fields.required(5, \"cloud\")?) } else { None };",
+        "        let cloud = fields.optional(5, \"cloud\")?;",
+        "unit",
+    ),
 ]
+

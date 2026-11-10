@@ -62,6 +62,7 @@ fn roster() -> Roster {
             port: NonZeroU16::new(7443).unwrap(),
             name: "hub.keel-cafe.local".into(),
         },
+        cloud: None,
     })
     .unwrap()
 }
@@ -161,9 +162,9 @@ fn a_sale_on_the_register_reaches_the_hub() {
     location.deliver();
     // The hub claims its term after three periods of silence from any other.
     location.run(Duration::from_millis(250), 40);
-    let status = location.register.sync_status().unwrap();
+    let status = location.register.sync_status().unwrap().unwrap();
     assert!(status.settled && status.hub_reachable && !status.is_hub, "{status:?}");
-    let hub_status = location.hub.sync_status().unwrap();
+    let hub_status = location.hub.sync_status().unwrap().unwrap();
     assert!(hub_status.is_hub && hub_status.serving, "{hub_status:?}");
 
     let order = location.register.start_order(Mode::Takeout).unwrap().order;
@@ -222,7 +223,7 @@ fn settled(hub: TestRuntime, register: TestRuntime) -> Location {
     location.send(REGISTER, frames);
     location.deliver();
     location.run(Duration::from_millis(250), 40);
-    assert!(location.hub.sync_status().unwrap().serving);
+    assert!(location.hub.sync_status().unwrap().unwrap().serving);
     location.register.sign_in(id(0x501)).unwrap();
     location
 }
@@ -253,7 +254,10 @@ fn a_clock_set_back_doesnt_silence_the_hub() {
     let back: keel_types::Timestamp = "2026-10-02T12:00:00Z".parse().unwrap();
     location.hub.clock().set(back);
     location.run(Duration::from_millis(250), 40);
-    assert!(location.register.sync_status().unwrap().hub_reachable, "the register hears its hub");
+    assert!(
+        location.register.sync_status().unwrap().unwrap().hub_reachable,
+        "the register hears its hub"
+    );
     sale(&mut location);
     location.run(Duration::from_millis(250), 8);
     assert!(confirmed(&location));
@@ -273,7 +277,7 @@ fn a_register_that_hears_no_one_sells_as_an_island() {
         .unwrap();
     assert!(matches!(register.start_order(Mode::Takeout), Err(RuntimeError::NotSettled)));
     register.clock().advance(Duration::from_millis(1)).unwrap();
-    let status = register.sync_status().unwrap();
+    let status = register.sync_status().unwrap().unwrap();
     assert!(!status.settled && !status.hub_reachable, "{status:?}");
     assert!(register.start_order(Mode::Takeout).is_ok(), "an island sells");
 }
@@ -340,7 +344,7 @@ fn a_hub_the_roster_demotes_stops_serving() {
     location.send(HUB, frames);
     location.deliver();
     location.run(Duration::from_millis(250), 40);
-    let status = location.hub.sync_status().unwrap();
+    let status = location.hub.sync_status().unwrap().unwrap();
     assert!(status.settled && status.is_hub && !status.serving, "{status:?}");
 }
 

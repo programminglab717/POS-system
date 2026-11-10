@@ -198,6 +198,15 @@ next eligible device ([offline-and-sync §4, §5, §7](./offline-and-sync.md)).
 - **Warm standby in a paired region** within the same residency zone: RPO ≤ 1 min, RTO ≤ 15 min,
   quarterly failover drills.
 
+**As built: the cell v0** (`keel-cloud`, [ADR-0028](../adr/0028-cloud-cell-v0.md)). The cloud is a
+device of each location's roster, with a certificate from the location's CA, and never hosts the
+hub. The hub dials it, as the cloud can't reach a hub behind the store's router, and names it its
+durable peer, so its watermark reaches every device. The cell holds each location's durable copy
+in a `keel-store` of its own, opened as the cloud's device, which verifies and folds every event
+as a device does. PostgreSQL arrives with the cell's first cross-location work, NATS and object
+storage with integrations and archives. Not yet: catalog publishing, the back office's API and
+the back office (ADR-0028's slices 2 to 4).
+
 **Regional shared services**:
 - **Analytics**: CDC → ClickHouse → semantic layer.
 - **AI gateway** and model routing.
@@ -234,9 +243,13 @@ workspace, compiled for iOS, Android, Windows, macOS, Linux, the browser (WASM) 
 | `keel-ext` | WASM Functions host, fuel metering, hook contracts; sandboxed JS runtime (QuickJS-class) for UI extensions |
 | `keel-sim` | Deterministic simulator: virtual network, clocks and disks; fault injection; invariant checkers (built so far: devices, the hub and the cloud with real stores in one thread and virtual time; lost, duplicated and reordered frames, partitions, crashes mid-write, rollbacks and clock jumps; a workload of real sales; the protocol's rules checked as runs go, and convergence, no loss, causality, forks and store checks after; the hub's numbering, confirmation, feeds, watermarks and store durability; requests for orders, overrides from devices that hear no hub, and the hubs' answers; the hub and its standby, splits of the store's network, failover, and one hub agreed on at the end. For tests only: [ADR-0019](../adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](../adr/0020-hub-sequencing.md), [ADR-0021](../adr/0021-ownership-leases.md), [ADR-0022](../adr/0022-hub-election-and-failover.md)) |
 | `keel-runtime` | The device runtime a shell drives: a cashier's intents as the kernel's commands, one write each, and views of the store with their display text; drivers for printers and the network beside it. A platform crate; its intents and views built ([ADR-0023](../adr/0023-register-shell.md), slice 1), its drivers to come |
-| `keel-doc` | KeelDoc, the document model receipts are laid out in, and its renderers, ESC/POS first (planned: [ADR-0023](../adr/0023-register-shell.md), slice 2) |
-| `keel-net` | The LAN transport: WebSocket over TLS 1.3 with mutual TLS, carrying `keel-sync`'s frames (planned: [ADR-0023](../adr/0023-register-shell.md), slice 5) |
-| `keel-ffi` | UniFFI (Kotlin for Android and JVM desktop, Swift for Apple), C ABI, wasm-bindgen (web) bindings (Kotlin first: [ADR-0023](../adr/0023-register-shell.md), slice 3) |
+| `keel-doc` | KeelDoc, the document model receipts are laid out in, and its renderers, ESC/POS first (v0 built: [ADR-0024](../adr/0024-receipts-and-printing.md)) |
+| `keel-print` | The print driver: raw TCP to a printer's port 9100, with the printer's status read before and after (built: [ADR-0024](../adr/0024-receipts-and-printing.md)). A platform crate |
+| `keel-net` | The network: WebSocket over TLS 1.3 with mutual TLS, carrying `keel-sync`'s frames between a location's devices and its hub, and between the hub and its cloud (built: [ADR-0026](../adr/0026-local-hub.md), [ADR-0028](../adr/0028-cloud-cell-v0.md)). A platform crate |
+| `keel-hub` | The Store Hub's daemon for Linux, and the loop that joins any runtime to the network (built: [ADR-0026](../adr/0026-local-hub.md)) |
+| `keel-provision` | The provisioning tool: a location's development CA, its devices' and its cloud's keys, certificates and roster, until the Device CA (built: [ADR-0026](../adr/0026-local-hub.md), [ADR-0028](../adr/0028-cloud-cell-v0.md)). A tool, never in what a device runs |
+| `keel-cloud` | The cloud cell, and its binary `keel-cell`: each location's durable replica, catalog publishing and the back office's API (v0 in progress: [ADR-0028](../adr/0028-cloud-cell-v0.md)) |
+| `keel-ffi` | UniFFI (Kotlin for Android and JVM desktop, Swift for Apple), C ABI, wasm-bindgen (web) bindings (Kotlin built: [ADR-0025](../adr/0025-bindings.md)) |
 
 **Command pipeline** (identical on device, hub and cloud):
 
@@ -410,10 +423,10 @@ cell, well within one Postgres primary with batching.
 
 ```text
 /Cargo.toml            Rust workspace root: one lockfile for every Rust component
-/core/crates/          Kernel crates, keel-* (see §5); keel-types, keel-events, keel-domain,
-                       keel-pricing, keel-store, keel-sync and keel-sim are built, in part
-/hub/                  Store Hub daemon and appliance image definitions
-/cloud/                Cloud services (Rust): core modular monolith, workers, sync ingest, gateway
+/core/crates/          Rust crates, keel-* (see §5): the kernel's, and for now the Store Hub's
+                       daemon (keel-hub) and the cloud cell (keel-cloud), which link them
+/hub/                  Store Hub appliance image definitions
+/cloud/                Cloud services beyond the cell's monolith: workers, gateway
 /connectors/           Integration runtime and connectors (TypeScript)
 /apps/android/         Android app (Kotlin, Jetpack Compose, KMP modules): register, handheld, KDS,
                        kiosk, CFD and hub modes; desktop target for Windows/Linux lanes (v3)

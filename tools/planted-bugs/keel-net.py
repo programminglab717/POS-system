@@ -31,8 +31,8 @@ BUGS = [
     (
         "net: a device takes any device of the roster for its hub",
         "src/lib.rs",
-        "                    roster.device(device)?.hub?;\n",
-        "",
+        "        Peer::Hub => roster.device(device).is_some_and(|device| device.hub.is_some()),",
+        "        Peer::Hub => roster.device(device).is_some(),",
         "unit",
     ),
     (
@@ -45,8 +45,8 @@ BUGS = [
     (
         "net: a device gives up once its hub has gone",
         "src/lib.rs",
-        "                backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);",
-        "                backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);\n                if backoff > Duration::from_secs(1) { return; }",
+        "            backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);",
+        "            backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);\n            if backoff > Duration::from_secs(1) { return; }",
         "unit",
     ),
     (
@@ -61,6 +61,27 @@ BUGS = [
         "src/lib.rs",
         "        tokio::select! {\n            () = reader => {}\n            () = writer => {}\n        }",
         "        writer.await;\n        reader.await;",
+        "unit",
+    ),
+    (
+        "net: any device of the roster passes for the cloud",
+        "src/lib.rs",
+        "        Peer::Device(expected) => device == expected,",
+        "        Peer::Device(_) => true,",
+        "unit",
+    ),
+    (
+        "net: the cell admits any device of the roster, not those that may host the hub alone",
+        "src/lib.rs",
+        "        Net::listen(listener, roster, acceptor, Peer::Hub, None)",
+        "        Net::listen(listener, roster, acceptor, Peer::Any, None)",
+        "unit",
+    ),
+    (
+        "net: the hub never dials its cloud",
+        "src/lib.rs",
+        "            if let Some(dialer) = dialer {",
+        "            if let Some(dialer) = dialer.filter(|_| false) {",
         "unit",
     ),
 ]

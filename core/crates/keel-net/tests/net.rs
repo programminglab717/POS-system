@@ -78,6 +78,7 @@ fn roster(port: u16) -> Roster {
             port: NonZeroU16::new(port).unwrap(),
             name: HUB_NAME.into(),
         },
+        cloud: None,
     })
     .unwrap()
 }
@@ -290,4 +291,97 @@ fn a_quiet_connection_stays_up() {
     let frame =
         wait_for(&hub, Duration::from_secs(5), |event| matches!(event, Event::Frame { .. }));
     assert_eq!(frame, Some(Event::Frame { from: id(REGISTER), frame: b"still".to_vec() }));
+}
+
+const CLOUD: u64 = 0xcc;
+const CLOUD_NAME: &str = "cell.keel-cafe.example";
+
+/// [`roster`] naming its cloud, listening at `cloud_port`.
+fn cloud_roster(port: u16, cloud_port: u16) -> Roster {
+    let mut data = roster(port).data().clone();
+    data.devices.insert(
+        0,
+        RosterDevice {
+            id: id(CLOUD),
+            name: Name::new("Cloud").unwrap(),
+            key: SoftwareSigner::from_secret(SignatureAlgorithm::EdDsa, &[4; 32])
+                .unwrap()
+                .public_key()
+                .clone(),
+            hub: None,
+        },
+    );
+    data.cloud = Some(keel_domain::roster::CloudAddress {
+        device: id(CLOUD),
+        host: "127.0.0.1".into(),
+        port: NonZeroU16::new(cloud_port).unwrap(),
+        name: CLOUD_NAME.into(),
+    });
+    Roster::new(data).unwrap()
+}
+
+#[test]
+fn a_hub_dials_its_cloud_and_only_its_cloud() {
+    let ca = ca();
+    let (listener, cloud_port) = bound();
+    let (hub_listener, hub_port) = bound();
+    let located = cloud_roster(hub_port, cloud_port);
+    // The cell listens for the location, its certificate carrying the cloud's name; the hub
+    // listens for the location's devices and dials the cloud beside.
+    let cloud_names = vec![CLOUD_NAME.into(), device_name(id(CLOUD))];
+    let cloud = Net::cell(listener, located.clone(), credentials(&ca, &ca, cloud_names)).unwrap();
+    let hub = Net::hub(hub_listener, located.clone(), credentials(&ca, &ca, hub_names())).unwrap();
+    assert!(
+        wait_for(&hub, Duration::from_secs(5), |event| *event == Event::Connected(id(CLOUD)))
+            .is_some(),
+        "the hub reaches its cloud"
+    );
+    assert!(
+        wait_for(&cloud, Duration::from_secs(5), |event| *event == Event::Connected(id(HUB)))
+            .is_some()
+    );
+    hub.send(id(CLOUD), b"have".to_vec());
+    let frame =
+        wait_for(&cloud, Duration::from_secs(5), |event| matches!(event, Event::Frame { .. }));
+    assert_eq!(frame, Some(Event::Frame { from: id(HUB), frame: b"have".to_vec() }));
+    // The hub still serves its devices: a register reaches it, and the cloud's frames and the
+    // register's arrive on the one network.
+    let register =
+        Net::device(located.clone(), credentials(&ca, &ca, vec![device_name(id(REGISTER))]))
+            .unwrap();
+    assert!(
+        wait_for(&hub, Duration::from_secs(5), |event| *event == Event::Connected(id(REGISTER)))
+            .is_some()
+    );
+    cloud.send(id(HUB), b"durable".to_vec());
+    let frame =
+        wait_for(&hub, Duration::from_secs(5), |event| matches!(event, Event::Frame { .. }));
+    assert_eq!(frame, Some(Event::Frame { from: id(CLOUD), frame: b"durable".to_vec() }));
+    // A device the roster doesn't let host the hub is no peer of the cloud's.
+    let stray = Net::cloud(located.clone(), credentials(&ca, &ca, vec![device_name(id(REGISTER))]))
+        .unwrap();
+    let quiet = |net: &Net| {
+        wait_for(net, Duration::from_secs(2), |event| matches!(event, Event::Connected(_)))
+            .is_none()
+    };
+    assert!(quiet(&stray), "the cell admits the devices that may host the hub alone");
+    drop((stray, register, hub, cloud));
+    // A listener at the cloud's address with the cloud's name, but another device's certificate:
+    // the register's. It isn't the cloud.
+    let (listener, cloud_port) = bound();
+    let located = cloud_roster(7443, cloud_port);
+    let impostor = Net::cell(
+        listener,
+        located.clone(),
+        credentials(&ca, &ca, vec![CLOUD_NAME.into(), device_name(id(REGISTER))]),
+    )
+    .unwrap();
+    let hub = Net::cloud(located, credentials(&ca, &ca, hub_names())).unwrap();
+    assert!(quiet(&hub), "a peer that isn't the roster's cloud is refused");
+    drop((hub, impostor));
+    // A roster that names no cloud has none to dial.
+    assert!(matches!(
+        Net::cloud(roster(7443), credentials(&ca, &ca, hub_names())),
+        Err(keel_net::NetError::NoCloud)
+    ));
 }

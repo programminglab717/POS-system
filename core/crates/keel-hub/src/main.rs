@@ -80,7 +80,7 @@ fn run(dir: &std::path::Path) -> Result<(), String> {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
-        let status = runtime.sync_status();
+        let status = runtime.sync_status().ok().flatten();
         if status != shown {
             println!("keel-hub: {status:?}");
             shown = status;

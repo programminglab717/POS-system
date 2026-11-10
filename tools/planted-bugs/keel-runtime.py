@@ -3,6 +3,10 @@
 # Integration tests of known answers, which --props leaves out.
 KNOWN_ANSWERS = ["end_to_end", "sync"]
 
+# The cell's ingest test runs a location with its cloud end to end, through the runtime: the
+# durable peer's naming is seen there alone.
+ALSO = ["keel-cloud"]
+
 BUGS = [
     # Signing in, and what every event records.
     (
@@ -433,5 +437,17 @@ BUGS = [
         "    let major = if minor_units == 0 {\n        1\n    } else {",
         "unit",
     ),
+    # The cloud (ADR-0028).
+    (
+        "runtime: a hub names no durable peer, so no device hears it is backed up",
+        "src/sync.rs",
+        "            .filter(|cloud| hub.is_some() && *cloud != device);",
+        "            .filter(|_| false);",
+    ),
+    (
+        "runtime: a device's backed-up mark is its own head",
+        "src/sync.rs",
+        "            backed_up: sync.replicator.durable().get(&self.device).copied().unwrap_or(0),",
+        "            backed_up: self.store.head(self.device)?.seq(),",
+    ),
 ]
-

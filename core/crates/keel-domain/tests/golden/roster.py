@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The demo café's roster, built independently of Keel's codec with Python's cbor2, from the same
-public keys: its encoding's SHA-256 and length, which keel-domain's known answers pin.
+public keys: its encoding's SHA-256 and length, which keel-domain's known answers pin; and the
+same roster naming its cloud, in format 2 (ADR-0028).
 
 Run from anywhere:  python3 core/crates/keel-domain/tests/golden/roster.py
 """
@@ -25,6 +26,8 @@ FRONT_COUNTER = bytes.fromhex(
     "24136093d7012e509a73715cbd0b00a3cc0ff4b5c01b3ffa196ab1fb327036b8e6"
 )
 PATIO = bytes.fromhex("ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1")
+# The cloud's, from the secret [4; 32] (Ed25519).
+CLOUD = bytes.fromhex("ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c")
 
 
 def device(n, name, algorithm, key, hub=None):
@@ -48,3 +51,12 @@ roster = {
 encoded = cbor2.dumps(roster, canonical=True)
 print("roster SHA-256 ", hashlib.sha256(encoded).hexdigest())
 print("roster length  ", len(encoded))
+
+# Format 2: the cloud is a device, first in order of identifiers, and the roster names where it is.
+cloud = dict(roster)
+cloud[1] = 2
+cloud[3] = [device(0xCC, "Cloud", EDDSA, CLOUD)] + roster[3]
+cloud[5] = {1: ident(0xCC), 2: "203.0.113.10", 3: 8443, 4: "cell.keel-cafe.example"}
+encoded = cbor2.dumps(cloud, canonical=True)
+print("cloud roster SHA-256 ", hashlib.sha256(encoded).hexdigest())
+print("cloud roster length  ", len(encoded))

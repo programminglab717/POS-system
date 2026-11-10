@@ -6,21 +6,14 @@
 
 ## Where we are
 
-**Phase 0 (Foundations), step 7 of 8:** the Android register shell. Slice 1 of 5, the device
-runtime and the location profile, and slice 2, receipts and printing, are built and reviewed;
-the step's design, [ADR-0023](./adr/0023-register-shell.md), slice 2's,
-[ADR-0024](./adr/0024-receipts-and-printing.md), and slice 3's, the bindings,
-[ADR-0025](./adr/0025-bindings.md), are accepted. Slice 5, the local hub, came before slice 4,
-since the Android app can only be built in CI from here, and the hub can be built and verified
-here, for the app to host: it is built and reviewed, and its design,
-[ADR-0026](./adr/0026-local-hub.md), accepted. Slice 4, the Android app, is built and reviewed,
-and its design, [ADR-0027](./adr/0027-android-app.md), accepted: the register's screens, printing,
-the hub on Android, and the performance harness, built here and run on CI's emulators. Every
-slice of the step is built; what remains of it waits for the reference device. Step 6,
-`keel-sim` and `keel-sync` v0, the deterministic simulator and the sync engine, is done: built in
-four slices, each reviewed, the last, hub election and failover
-([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted after a review that found and
-fixed two bugs.
+**Phase 0 (Foundations), step 8 of 8:** the cloud cell v0, designed in
+[ADR-0028](./adr/0028-cloud-cell-v0.md) (proposed), in four slices: sync ingest, catalog
+publishing, the back office's API, and the back office. Slice 1, sync ingest, is built: the
+cloud is a device of each location's roster, the hub dials it, and the cell holds each location's
+durable copy in a store of its own, so a sale rung on a register reaches the hub and the cloud,
+and the durable-ack watermark comes back to the register. Step 7, the Android register shell, is
+built in five slices, each reviewed, and its designs, ADR-0023 to ADR-0027, accepted; what remains
+of it waits for the reference device.
 
 ## Phase 0 milestones
 
@@ -34,8 +27,8 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
-| 7 | Android register shell | All 5 slices built and reviewed; the reference device's numbers wait for the device | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
-| 8 | Cloud cell v0 | Not started | |
+| 7 | Android register shell | Done, 2026-11-10: built in five slices, each reviewed; the reference device's numbers wait for the device | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [`apps/android`](../apps/android/), [ADR-0023](./adr/0023-register-shell.md) to [ADR-0027](./adr/0027-android-app.md) |
+| 8 | Cloud cell v0 | Slice 1 of 4 built | [`core/crates/keel-cloud`](../core/crates/keel-cloud/), [ADR-0028](./adr/0028-cloud-cell-v0.md) |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
 checks and payments, was split in two, so that the payment design was reviewed before it was
@@ -86,6 +79,65 @@ Step 6 was built in four slices, each ending with a review
    epochs and fencing, and a split brain healing.
 
 ## Current slice
+
+Step 8, the cloud cell v0 ([ADR-0028](./adr/0028-cloud-cell-v0.md), proposed), comes in four
+slices, each verified as it lands, then reviewed:
+
+1. **Sync ingest** (built 2026-11-10): roster v1, `keel-net`'s named peers, the cloud's kit, the
+   durable peer named, and `keel-cell`'s replication for each location.
+2. **Catalog publishing**: `profile.chunk` and `profile.published`, the runtime taking
+   publications, and the cell publishing.
+3. **The back office's API**: an Axum service in the cell's process.
+4. **The back office**: `apps/web`, React and Vite, tested end to end in a browser.
+
+Built in slice 1:
+
+- **Roster v1** (`keel-domain`), format 2: the cloud, `{1: device, 2: host, 3: port, 4: name}`,
+  under key 5. The cloud must be one of the roster's devices and never host the hub; its host a
+  DNS name or an address; its name a DNS name, not the hub's. A roster naming no cloud is still
+  written in format 1, byte for byte as before, and a format-1 roster can't name one. Pinned by a
+  second golden roster (429 bytes) beside the first, unchanged.
+  - Known answers: the format-2 roster pinned; each of the four rules refused; format 2 without
+    a cloud refused.
+  - Planted bugs: 4 new, all caught (373 in all).
+- **`keel-net`'s named peers**: `Net::hub` now dials the roster's cloud beside its listener, on
+  the one network, so the hub's loop is unchanged and sends to the cloud as to any peer; the
+  cloud's certificate must name the roster's cloud device and carry its name. `Net::cell`, the
+  cell's listener for a location, admits the devices that may host the hub alone. `Net::cloud`
+  dials the cloud alone. The listener and the dialer are now one each, shared.
+  - Known answers: a hub reaching its cloud, a frame each way, and a register still served on the
+    same network; a register refused by the cell; an impostor at the cloud's address, with its
+    name but another device's certificate, refused; a roster without a cloud has none to dial.
+  - Planted bugs: 3 updated to the refactored code, 2 new, all 11 caught.
+- **The cloud's kit** (`keel-provision`): `Spec.cloud` and `--cloud <host>:<port> --cloud-name
+  <name>` add a device named `Cloud` to the roster, never a hub, whose certificate serves the
+  cloud's name and its own; its kit is `Provisioned::cloud`, written to `<out>/cloud`, apart from
+  the location's devices'.
+  - Known answers: the roster naming the cloud, the kit apart, the certificate's names and its
+    client and server use; a location without a cloud has no cloud's kit.
+  - Planted bugs: 2 new, both caught.
+- **The durable peer named** (`keel-runtime`): a device that listens as the hub names the
+  roster's cloud its durable peer; `SyncStatus` gains `backed_up`, how far the cloud holds the
+  device's own log, and `head`, how far the log goes. `sync_status()` now reports a store error
+  instead of hiding it. The Android hub dials the cloud through `Net::hub`, unchanged.
+  - Planted bugs: 2 new, caught by the cell's ingest test, which keel-runtime's list now runs.
+- **`keel-cloud`** and its binary, `keel-cell <cloud kit>...`: for each location, a `Location`,
+  the cloud device's runtime over a store of its own, opened with no one signed in and
+  replicating through `Net::cell` on a thread of its own, stepped by `keel-hub`'s loop. Anything
+  else that reads or writes the store hands the thread a job (`Location::with`), run between two
+  turns, so the store keeps one writer. PostgreSQL, NATS and object storage wait (ADR-0028
+  amends ADR-0007).
+  - Known answers: a location end to end over real TLS on the host, provisioned with its cloud:
+    a register rings and pays a sale, the hub dials the cloud, and within seconds the cloud's
+    store holds the order closed and the register hears its whole log is backed up, though not
+    before it has left; a kit that isn't its location's cloud's refused; a job's answer coming
+    back, and the store reopened as it was.
+  - Planted bugs: 3, all caught.
+- The workspace's tests, clippy with all features and none, and every planted bug's text.
+
+## Completed
+
+### The Android register shell: step 7 (2026-10-06 to 2026-11-10)
 
 Step 7, the Android register shell ([ADR-0023](./adr/0023-register-shell.md), accepted after
 slice 1's review), comes in five slices, each ending with a review, each designed in detail in an
@@ -360,8 +412,6 @@ Built in slice 3, each verified as it landed:
   and none; the documentation; every planted bug's text, and all 28 of `keel-ffi`'s caught.
 - The disk this environment allows filled twice: the many planted-bug runs leave 13 GB of
   incremental build caches. Local runs now set `CARGO_INCREMENTAL=0`, as CI does.
-
-## Completed
 
 ### Receipts and printing: step 7, slice 2 (2026-11-09)
 

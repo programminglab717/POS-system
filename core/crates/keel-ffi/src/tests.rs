@@ -715,6 +715,7 @@ fn a_hub_and_a_register_sync_through_the_bindings() {
         hub_host: "127.0.0.1".to_owned(),
         hub_port: core::num::NonZeroU16::new(port).unwrap(),
         hub_name: "hub.keel-cafe.local".to_owned(),
+        cloud: None,
         devices: vec![
             keel_provision::DeviceSpec {
                 name: "Back office".to_owned(),
@@ -778,6 +779,7 @@ fn the_roster_s_most_preferred_hub_listens() {
         hub_host: "127.0.0.1".to_owned(),
         hub_port: core::num::NonZeroU16::new(7443).unwrap(),
         hub_name: "hub.keel-cafe.local".to_owned(),
+        cloud: None,
         devices: [("A", Some(2)), ("B", Some(5)), ("C", Some(5)), ("D", None)]
             .map(|(name, hub)| keel_provision::DeviceSpec {
                 name: name.to_owned(),
@@ -809,6 +811,7 @@ fn a_standby_that_isnt_listening_never_takes_the_hubs_role() {
         hub_host: "127.0.0.1".to_owned(),
         hub_port: core::num::NonZeroU16::new(port).unwrap(),
         hub_name: "hub.keel-cafe.local".to_owned(),
+        cloud: None,
         devices: [("Hub", Some(5)), ("Standby", Some(2)), ("Register", None)]
             .map(|(name, hub)| keel_provision::DeviceSpec {
                 name: name.to_owned(),
