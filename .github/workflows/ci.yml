@@ -210,6 +210,20 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # The sync test's location: provisioned on the host, its hub running there, where the
+      # emulator reaches the host as 10.0.2.2; the register's kit among the test's assets.
+      - name: Provision a location, and run its hub on the host
+        run: |
+          cargo build --release -p keel-provision -p keel-hub
+          location="$RUNNER_TEMP/location"
+          target/release/keel-provision "$location" --hub 10.0.2.2:7443 --hub-name hub.keel-cafe.local \
+            --device "Back office=1" --device "Front counter" | tee "$RUNNER_TEMP/devices"
+          hub=$(awk '/Back office/ { print $1 }' "$RUNNER_TEMP/devices")
+          register=$(awk '/Front counter/ { print $1 }' "$RUNNER_TEMP/devices")
+          mkdir -p apps/android/app/src/androidTest/assets/kit
+          cp "$location/$register"/* apps/android/app/src/androidTest/assets/kit/
+          nohup target/release/keel-hub "$location/$hub" > "$RUNNER_TEMP/hub.log" 2>&1 &
+
       # API 30 with 2 GB, like the reference device (ADR-0023).
       - name: Run the instrumented tests on an emulator
         uses: reactivecircus/android-emulator-runner@v2
@@ -221,6 +235,10 @@ jobs:
           working-directory: apps/android
           # On a failure, what the tests and the device said, for the log.
           script: ./gradlew --no-daemon -PkeelAbis=x86_64 :app:connectedDebugAndroidTest || (find app/build/outputs/androidTest-results -name '*.xml' -exec cat {} + ; adb logcat -d '*:E' | tail -300 ; exit 1)
+
+      - name: What the hub said
+        if: always()
+        run: cat "$RUNNER_TEMP/hub.log" || true
 
       - name: Keep the instrumented tests' reports
         if: failure()

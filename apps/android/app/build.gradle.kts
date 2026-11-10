@@ -17,6 +17,8 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Each test starts as a fresh install: the orchestrator clears the app's data before it.
+        testInstrumentationRunnerArguments["clearPackageData"] = "true"
         // The ABIs the kernel is built for, as `:kernel` builds them: JNA brings others, where
         // the app would install and then fail to load the kernel.
         ndk {
@@ -32,6 +34,9 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+    testOptions {
+        execution = "ANDROIDX_TEST_ORCHESTRATOR"
     }
     buildFeatures {
         compose = true
@@ -58,5 +63,6 @@ dependencies {
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.kotlin.test.junit)
+    androidTestUtil(libs.androidx.test.orchestrator)
     debugImplementation(libs.compose.ui.test.manifest)
 }

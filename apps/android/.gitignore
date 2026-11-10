@@ -4,3 +4,5 @@ local.properties
 .kotlin/
 *.iml
 .idea/
+# The kit CI provisions for the sync test.
+app/src/androidTest/assets/kit/
