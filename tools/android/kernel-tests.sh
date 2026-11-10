@@ -12,8 +12,9 @@ cd "$root"
 remote=/data/local/tmp/keel-tests
 adb shell "rm -rf $remote && mkdir -p $remote"
 
-# Builds the test `name` of the package cargo's arguments name, and runs it on the device.
-# cargo-ndk keeps cargo's messages to itself, so the binary is the newest of its name.
+# Builds the test `name` of the package cargo's arguments name, and runs it on the device with
+# TEST_ARGS too. cargo-ndk keeps cargo's messages to itself, so the binary is the newest of its
+# name.
 run() {
   local name="$1"
   shift
@@ -29,10 +30,12 @@ run() {
   adb push "$binary" "$remote/$name" > /dev/null
   echo "== $name, on the device"
   # One thread: an emulator's few cores, and stores in one temporary directory.
-  adb shell "cd $remote && TMPDIR=$remote ./$name --test-threads=1"
+  adb shell "cd $remote && TMPDIR=$remote ./$name --test-threads=1 ${TEST_ARGS:-}"
 }
 
 run golden_baskets -p keel-pricing --test golden_baskets
 run keel_store -p keel-store --lib
 run keel_runtime -p keel-runtime --lib
 run keel_ffi -p keel-ffi --lib
+# The latency harness, with 100,000 more items: what it measures goes to the log.
+TEST_ARGS="--ignored --nocapture" run latency -p keel-runtime --test latency

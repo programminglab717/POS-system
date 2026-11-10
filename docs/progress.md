@@ -192,6 +192,20 @@ Built in slice 4 so far, each verified as it landed:
   test). And `tools/android/kernel-tests.sh` runs the golden baskets and the store's, the
   runtime's and the bindings' unit tests on the emulator, cross-built with `cargo-ndk`, where the
   store's lock failed before.
+- **The performance harness** (part 5): `keel-runtime`'s `tests/latency.rs`, ignored but for
+  `--ignored`, adds `KEEL_SKUS` items (100,000 by default) to the demo café's profile, checks,
+  encodes and decodes it as a device receives it, opens a runtime over it, and rings and pays 500
+  sales, eleven open at a time; it prints each step's time and each intent's median and 99th
+  percentile, and fails only far beyond a register's budget. On the development machine, in
+  release: the profile 8.1 MB encoded, built and checked in 0.30 s and decoded in 0.44 s, the
+  runtime opened in 7 ms; an intent 0.50 ms at the median and 1.1 ms at the 99th percentile
+  (1,500 intents), paying cash 1.2 and 2.8 ms, a ticket 57 and 130 µs, an item 4.8 and 8.8 µs:
+  a catalog of 100,000 items costs the intents nothing beyond slice 1's baseline, and its
+  decoding half a second at startup. CI runs it on the emulator too, through
+  `tools/android/kernel-tests.sh`. `TapToFrameTest` times 100 taps on the emulator, each from the
+  tap until the order's total on screen changes, and logs the median and 99th percentile; the
+  reference device, with the large catalog in the app, gives the numbers that count, and waits
+  for the device to be chosen.
 
 Built in slice 5, each verified as it landed, then reviewed:
 

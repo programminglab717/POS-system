@@ -132,6 +132,12 @@ The skeleton's details, settled in building it:
   on the host (`SyncTest`, the location provisioned by CI, the hub reached as 10.0.2.2), and the
   kernel's own tests, the golden baskets among them, cross-built and run through `adb`
   (`tools/android/kernel-tests.sh`).
+- **The performance harness** (part 5): the kernel's latency with 100,000 more items is a test
+  of `keel-runtime` (`tests/latency.rs`, run with `--ignored`), on the host and, through `adb`,
+  on the emulator; the tap to frame is an instrumented test that times each tap until the order's
+  total on screen changes. Both log their percentiles and fail only far beyond the budget, so
+  they run on CI's emulators; the reference device's numbers wait for it, with the large catalog
+  loaded into the app.
 - **The release build isn't shrunk** yet: JNA finds the bindings' classes by reflection, and the
   rules that keep them (`kernel/consumer-rules.pro`) are checked when the release build is.
 
