@@ -426,5 +426,12 @@ BUGS = [
         # The property test that catches it is a unit test, in src/tests.rs.
         "unit",
     ),
+    (
+        "runtime: a currency without decimals is offered single units",
+        "src/ticket.rs",
+        "    let major = if minor_units == 0 {\n        100\n    } else {",
+        "    let major = if minor_units == 0 {\n        1\n    } else {",
+        "unit",
+    ),
 ]
 

@@ -70,12 +70,28 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// [`RuntimeError::RosterMismatch`] if the roster is another location's, or doesn't have this
     /// device, or names another key for it; [`RuntimeError::Store`] if the store can't be read.
     pub fn start_sync(&mut self, roster: Roster) -> Result<Vec<Outgoing>, RuntimeError> {
+        self.start_sync_as(roster, true)
+    }
+
+    /// As [`Runtime::start_sync`], but a device that may not host the hub, whatever the roster
+    /// says, when `may_host` is false: one the location's devices can't reach, as they dial the
+    /// roster's one address and it isn't listening there. Found in review: a standby that didn't
+    /// listen took the role when the hub fell silent, and every register it held the term for
+    /// became an island.
+    ///
+    /// # Errors
+    /// As [`Runtime::start_sync`].
+    pub fn start_sync_as(
+        &mut self,
+        roster: Roster,
+        may_host: bool,
+    ) -> Result<Vec<Outgoing>, RuntimeError> {
         let device = self.device;
         let me = roster.device(device).ok_or(RuntimeError::RosterMismatch)?;
         if roster.data().location != self.profile.data().location || me.key != self.key {
             return Err(RuntimeError::RosterMismatch);
         }
-        let roles = Roles { hub: me.hub, durable: None };
+        let roles = Roles { hub: if may_host { me.hub } else { None }, durable: None };
         let peers: Vec<Id<Device>> =
             roster.data().devices.iter().map(|d| d.id).filter(|d| *d != device).collect();
         let registry = roster.registry();

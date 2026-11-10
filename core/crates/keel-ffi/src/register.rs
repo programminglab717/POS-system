@@ -55,6 +55,40 @@ pub(crate) fn id<T>(text: &str) -> Result<Id<T>, KeelError> {
     })
 }
 
+/// The longest [`Register::sync_step`] waits for the network.
+pub const MAX_SYNC_WAIT: Duration = Duration::from_millis(50);
+
+/// The most events one [`Register::sync_step`] takes in.
+const SYNC_TURNS: usize = 64;
+
+/// The longest one [`Register::sync_step`] spends taking in what is waiting.
+const SYNC_BUDGET: Duration = Duration::from_millis(10);
+
+/// Turns the sync loop with `turn`: first waiting at most `wait`, then, while each turn took in
+/// something, again without waiting, at most [`SYNC_TURNS`] turns in [`SYNC_BUDGET`]; how many it
+/// turned. Found in review: one event a turn fell behind a hub's devices.
+pub(crate) fn drain<E>(
+    mut turn: impl FnMut(Duration) -> Result<bool, E>,
+    wait: Duration,
+) -> Result<usize, E> {
+    let started = std::time::Instant::now();
+    let mut took = turn(wait)?;
+    let mut turns = 1_usize;
+    while took && turns < SYNC_TURNS && started.elapsed() < SYNC_BUDGET {
+        took = turn(Duration::ZERO)?;
+        turns = turns.saturating_add(1);
+    }
+    Ok(turns)
+}
+
+/// A listener at `port` on every address: IPv6 and IPv4 where the system has both, IPv4 alone
+/// where it has no IPv6.
+fn listen(port: u16) -> Result<TcpListener, KeelError> {
+    TcpListener::bind(("::", port))
+        .or_else(|_| TcpListener::bind(("0.0.0.0", port)))
+        .map_err(|error| KeelError::Device { reason: error.to_string() })
+}
+
 /// The device `roster` most prefers as the hub: the highest priority, then the lowest identifier,
 /// as the election prefers them.
 pub(crate) fn preferred_hub(roster: &Roster) -> Option<Id<Device>> {
@@ -278,19 +312,21 @@ impl Register {
             chain: vec![CertificateDer::from(kit.certificate)],
             key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(kit.tls_key)),
         };
-        let frames = self.with(|runtime| runtime.start_sync(roster.clone()))?;
         let listens = preferred_hub(&roster) == Some(self.device);
+        // The network first: if it can't start, as when the port is taken, the runtime isn't left
+        // replicating with nothing to replicate over, and a later call can try again.
         let started = if listens {
-            let listener = TcpListener::bind(("0.0.0.0", roster.data().hub.port.get()))
-                .map_err(|error| KeelError::Device { reason: error.to_string() })?;
-            Net::hub(listener, roster, credentials)
+            Net::hub(listen(roster.data().hub.port.get())?, roster.clone(), credentials)
         } else {
-            Net::device(roster, credentials)
+            Net::device(roster.clone(), credentials)
         }
         .map_err(|error| match error {
             NetError::Io(io) => KeelError::Device { reason: io.to_string() },
             other => KeelError::invalid(other),
         })?;
+        // Only the device that listens at the roster's address may take the hub's role: the
+        // others can't be reached there.
+        let frames = self.with(|runtime| runtime.start_sync_as(roster, listens))?;
         for frame in frames {
             started.send(frame.to, frame.frame);
         }
@@ -311,7 +347,10 @@ impl Register {
         let Some(net) = net.as_ref() else {
             return Err(KeelError::invalid("the register hasn't joined its network"));
         };
-        self.with(|runtime| keel_hub::step(runtime, net, Duration::from_millis(u64::from(wait_ms))))
+        // The wait is capped, as the register's other calls wait for it. Found in review: an
+        // uncapped wait held the register's lock for as long as it was asked to.
+        let wait = Duration::from_millis(u64::from(wait_ms)).min(MAX_SYNC_WAIT);
+        self.with(|runtime| drain(|wait| keel_hub::step(runtime, net, wait), wait).map(|_| ()))
     }
 
     /// How replication stands, once the register has joined its network.

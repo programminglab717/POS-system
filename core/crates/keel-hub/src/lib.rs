@@ -18,7 +18,9 @@ pub const MAX_WAIT: Duration = Duration::from_millis(500);
 /// One turn of the loop that joins `runtime` to `net`: waits for a frame until the runtime's
 /// next tick, at most `most`; takes in the frame; ticks the runtime when it asks; and sends what
 /// the runtime answers, with what it wrote since it last pushed. Connections coming and going
-/// change nothing: the replicator's rounds find out what each peer lacks.
+/// change nothing: the replicator's rounds find out what each peer lacks. Answers whether it
+/// took in something from the network, frame or not, so a caller can turn again at once while
+/// more is waiting.
 ///
 /// # Errors
 /// [`RuntimeError`] if the store can't be read or written. Nothing a frame held was stored, and
@@ -27,7 +29,7 @@ pub fn step<S: Signer, E: Entropy, C: Clock, I: Entropy>(
     runtime: &mut Runtime<S, E, C, I>,
     net: &Net,
     most: Duration,
-) -> Result<(), RuntimeError> {
+) -> Result<bool, RuntimeError> {
     let now = runtime.clock().now().as_millis();
     let wait = runtime.next_tick().map_or(most, |at| {
         let millis = u64::try_from(at.as_millis().saturating_sub(now)).unwrap_or(0);
@@ -39,7 +41,9 @@ pub fn step<S: Signer, E: Entropy, C: Clock, I: Entropy>(
     // Each part goes on whatever the one before it did, so a frame that fails never starves the
     // ticks; the first failure is the step's.
     let mut failed = None;
-    if let Some(Event::Frame { from, frame }) = net.recv_timeout(wait) {
+    let event = net.recv_timeout(wait);
+    let took = event.is_some();
+    if let Some(Event::Frame { from, frame }) = event {
         match runtime.on_frame(from, &frame) {
             Ok(frames) => send(net, frames),
             Err(error) => failed = Some(error),
@@ -55,7 +59,7 @@ pub fn step<S: Signer, E: Entropy, C: Clock, I: Entropy>(
         Ok(frames) => send(net, frames),
         Err(error) => failed = failed.or(Some(error)),
     }
-    failed.map_or(Ok(()), Err)
+    failed.map_or(Ok(took), Err)
 }
 
 fn send(net: &Net, frames: Vec<keel_sync::Outgoing>) {

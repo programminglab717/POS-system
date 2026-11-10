@@ -168,14 +168,21 @@ fn tax_name(rules: &Rules, tax: Id<Tax>) -> String {
 
 /// The amounts of cash a register offers for `due`, in minor units of a currency with
 /// `minor_units` decimals: `due`, then the smallest amounts above it in whole multiples of 1, 5,
-/// 10, 20, 50 and 100 major units, each once, at most [`crate::CASH_OFFERS`] in all; `due` alone if
-/// it is nothing or less, or an amount above it would overflow.
+/// 10, 20, 50 and 100 of a unit, each once, at most [`crate::CASH_OFFERS`] in all; `due` alone if
+/// it is nothing or less, or an amount above it would overflow. The unit is the currency's major
+/// unit, or 100 of it for a currency without decimals, whose smallest notes are hundreds or
+/// thousands: ¥1,234 is offered ¥1,300, ¥1,500, ¥2,000 and ¥5,000. Found in review: a currency
+/// without decimals was offered ¥1,235. The location's own denominations come with its profile.
 pub(crate) fn cash_offers(due: i64, minor_units: u8) -> Vec<i64> {
     let mut offers = vec![due];
     if due <= 0 {
         return offers;
     }
-    let major = 10_i64.checked_pow(u32::from(minor_units)).unwrap_or(1);
+    let major = if minor_units == 0 {
+        100
+    } else {
+        10_i64.checked_pow(u32::from(minor_units)).unwrap_or(1)
+    };
     for step in [1_i64, 5, 10, 20, 50, 100] {
         // The smallest multiple of the step above what is due.
         let above = major

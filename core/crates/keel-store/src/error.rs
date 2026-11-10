@@ -34,6 +34,10 @@ pub enum StoreError {
     /// its file. A store has one writer: open it once.
     #[error("the store is open already")]
     Busy,
+    /// The store's lock couldn't be taken for a reason other than another holding it: the file
+    /// system may not offer locks.
+    #[error("the store's lock: {0}")]
+    Lock(std::io::Error),
     /// SQLite won't run with a setting the store needs for durability.
     #[error("the database can't run with {0}")]
     Settings(&'static str),

@@ -142,6 +142,11 @@ fn a_register_with_a_large_catalog_answers_in_time() {
     let started = Instant::now();
     let menu = runtime.menu();
     let menu_time = started.elapsed();
+    // Today's orders read every order of each state: what a day of 500 sales costs.
+    let started = Instant::now();
+    let today = runtime.orders_today().unwrap();
+    let today_time = started.elapsed();
+    assert_eq!(today.len(), 500);
     assert!(
         menu.pages.iter().any(|page| page.buttons.len() == usize::try_from(skus.min(500)).unwrap())
     );
@@ -162,8 +167,11 @@ fn a_register_with_a_large_catalog_answers_in_time() {
     println!("paying cash: median {pay_50:?}, 99th percentile {pay_99:?}");
     println!("a ticket: median {ticket_50:?}, 99th percentile {ticket_99:?}");
     println!("an item: median {item_50:?}, 99th percentile {item_99:?}");
+    println!("today's orders, 500 of them: {today_time:?}");
     // Bounds far beyond a register's budget, which only something gone badly wrong crosses.
     assert!(intent_99 < Duration::from_millis(250), "an intent's 99th percentile, {intent_99:?}");
     assert!(pay_99 < Duration::from_millis(500), "paying's 99th percentile, {pay_99:?}");
     assert!(item_99 < Duration::from_millis(50), "an item's 99th percentile, {item_99:?}");
+    assert!(ticket_99 < Duration::from_millis(50), "a ticket's 99th percentile, {ticket_99:?}");
+    assert!(today_time < Duration::from_secs(5), "today's orders took {today_time:?}");
 }

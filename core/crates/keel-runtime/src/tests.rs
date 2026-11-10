@@ -594,7 +594,7 @@ proptest::proptest! {
         let offers = ticket::cash_offers(due, minor_units);
         let mut oracle: Vec<i128> = vec![i128::from(due)];
         if due > 0 {
-            let major = 10_i128.pow(u32::from(minor_units));
+            let major = if minor_units == 0 { 100 } else { 10_i128.pow(u32::from(minor_units)) };
             for step in [1_i128, 5, 10, 20, 50, 100] {
                 let unit = major * step;
                 let above = (i128::from(due) / unit + 1) * unit;
@@ -607,4 +607,16 @@ proptest::proptest! {
         let offers: Vec<i128> = offers.into_iter().map(i128::from).collect();
         proptest::prop_assert_eq!(offers, oracle);
     }
+}
+
+#[test]
+fn cash_offers_suit_a_currencys_decimals() {
+    // Yen and won, without decimals: hundreds and thousands.
+    assert_eq!(ticket::cash_offers(1_234, 0), [1_234, 1_300, 1_500, 2_000, 5_000]);
+    assert_eq!(ticket::cash_offers(12_341, 0), [12_341, 12_400, 12_500, 13_000, 14_000]);
+    // Dinars, with three: whole dinars.
+    assert_eq!(ticket::cash_offers(12_345, 3), [12_345, 13_000, 15_000, 20_000, 50_000]);
+    // Nothing due, or less: what is due alone.
+    assert_eq!(ticket::cash_offers(0, 2), [0]);
+    assert_eq!(ticket::cash_offers(-5, 2), [-5]);
 }

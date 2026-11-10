@@ -255,5 +255,19 @@ BUGS = [
         "        if false {\n            return Err(KeelError::invalid(\"the register is joined to its network already\"));",
         "unit",
     ),
+    (
+        "ffi: a standby that isn't listening may take the hub's role",
+        "src/register.rs",
+        "let frames = self.with(|runtime| runtime.start_sync_as(roster, listens))?;",
+        "let frames = self.with(|runtime| runtime.start_sync_as(roster, true))?;",
+        "unit",
+    ),
+    (
+        "ffi: a sync step takes in one event alone",
+        "src/register.rs",
+        "    while took && turns < SYNC_TURNS && started.elapsed() < SYNC_BUDGET {",
+        "    while false && took && turns < SYNC_TURNS && started.elapsed() < SYNC_BUDGET {",
+        "unit",
+    ),
 ]
 

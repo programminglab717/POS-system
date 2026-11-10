@@ -1558,11 +1558,9 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
     (
         "store: a store can be opened twice",
         "src/store.rs",
-        """    rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
-        .map_err(|_| StoreError::Busy)""",
-        """    let _ = rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive);
-    Ok(())""",
-        # Only a second open in the same test sees it.
+        "rustix::fs::FlockOperation::NonBlockingLockExclusive",
+        "rustix::fs::FlockOperation::NonBlockingLockShared",
+        # The encryption tests open a store twice; nothing else reaches the lock.
         "unit",
     ),
 ]

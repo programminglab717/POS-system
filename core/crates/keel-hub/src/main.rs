@@ -68,7 +68,7 @@ fn run(dir: &std::path::Path) -> Result<(), String> {
     let mut shown = None;
     loop {
         match keel_hub::step(&mut runtime, &net, keel_hub::MAX_WAIT) {
-            Ok(()) => {}
+            Ok(_) => {}
             // A store that refuses everything until it is opened again: stop, for whoever runs
             // the daemon to look at, rather than spin.
             Err(RuntimeError::Store(error @ (StoreError::Damaged | StoreError::Closed))) => {

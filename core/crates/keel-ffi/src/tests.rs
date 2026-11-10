@@ -18,7 +18,7 @@ use std::thread;
 use keel_doc::escpos;
 use keel_domain::profile as domain;
 
-use crate::register::{choices, preferred_hub};
+use crate::register::{choices, drain, preferred_hub};
 use crate::*;
 
 /// A directory of its own for a store, removed when dropped.
@@ -797,4 +797,87 @@ fn the_roster_s_most_preferred_hub_listens() {
         .unwrap()
         .id;
     assert_eq!(preferred_hub(&provisioned.roster), Some(expected));
+}
+
+/// Found in review: a standby the roster lets host the hub, but which doesn't listen at its
+/// address, took the role when the hub fell silent, though no device could reach it.
+#[test]
+fn a_standby_that_isnt_listening_never_takes_the_hubs_role() {
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let provisioned = keel_provision::provision(&keel_provision::Spec {
+        profile: demo_profile(),
+        hub_host: "127.0.0.1".to_owned(),
+        hub_port: core::num::NonZeroU16::new(port).unwrap(),
+        hub_name: "hub.keel-cafe.local".to_owned(),
+        devices: [("Hub", Some(5)), ("Standby", Some(2)), ("Register", None)]
+            .map(|(name, hub)| keel_provision::DeviceSpec {
+                name: name.to_owned(),
+                hub: hub.and_then(core::num::NonZeroU8::new),
+            })
+            .to_vec(),
+    })
+    .unwrap();
+    let kit = |name: &str| provisioned.kits.iter().find(|kit| kit.name == name).unwrap();
+    let scratches = [Scratch::new(), Scratch::new(), Scratch::new()];
+    let hub = kit_register(kit("Hub"), &scratches[0]);
+    let standby = kit_register(kit("Standby"), &scratches[1]);
+    let register = kit_register(kit("Register"), &scratches[2]);
+    hub.start_sync(sync_kit(kit("Hub"))).unwrap();
+    standby.start_sync(sync_kit(kit("Standby"))).unwrap();
+    register.start_sync(sync_kit(kit("Register"))).unwrap();
+    assert!(!standby.sync_status().unwrap().unwrap().listening);
+    let started = std::time::Instant::now();
+    loop {
+        for device in [&hub, &standby, &register] {
+            device.sync_step(5).unwrap();
+        }
+        let both = [&standby, &register].map(|device| device.sync_status().unwrap().unwrap());
+        if hub.sync_status().unwrap().unwrap().serving
+            && both.iter().all(|s| s.settled && s.hub_reachable)
+        {
+            break;
+        }
+        assert!(started.elapsed() < core::time::Duration::from_secs(30), "all three joined");
+    }
+    // The hub goes away. Long past three silent heartbeats, the standby still doesn't serve.
+    drop(hub);
+    let gone = std::time::Instant::now();
+    while gone.elapsed() < core::time::Duration::from_secs(8) {
+        standby.sync_step(5).unwrap();
+        register.sync_step(5).unwrap();
+    }
+    let status = standby.sync_status().unwrap().unwrap();
+    assert!(!status.serving && !status.is_hub, "{status:?}");
+}
+
+#[test]
+fn a_sync_step_takes_in_what_is_waiting_within_its_budget() {
+    // Ten events waiting: eleven turns, the last finding nothing; only the first waits.
+    let mut left = 10_u32;
+    let mut waits = Vec::new();
+    let turns = drain(
+        |wait| -> Result<bool, ()> {
+            waits.push(wait);
+            Ok(left.checked_sub(1).map(|rest| left = rest).is_some())
+        },
+        core::time::Duration::from_millis(20),
+    )
+    .unwrap();
+    assert_eq!(turns, 11);
+    assert_eq!(waits[0], core::time::Duration::from_millis(20));
+    assert!(waits[1..].iter().all(core::time::Duration::is_zero));
+    // Always more: no more than the budget's turns.
+    assert_eq!(
+        drain(|_| -> Result<bool, ()> { Ok(true) }, core::time::Duration::ZERO).unwrap(),
+        64
+    );
+    // Nothing: one turn. A failure ends it.
+    assert_eq!(
+        drain(|_| -> Result<bool, ()> { Ok(false) }, core::time::Duration::ZERO).unwrap(),
+        1
+    );
+    assert_eq!(
+        drain(|_| -> Result<bool, &str> { Err("damaged") }, core::time::Duration::ZERO),
+        Err("damaged")
+    );
 }
