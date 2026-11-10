@@ -3,7 +3,7 @@
 Its tests run a location with its cloud end to end over real TLS: known answers.
 """
 
-KNOWN_ANSWERS = ["ingest"]
+KNOWN_ANSWERS = ["ingest", "publishing"]
 
 BUGS = [
     (
@@ -21,7 +21,7 @@ BUGS = [
     (
         "cloud: a location's loop never replicates",
         "src/lib.rs",
-        "        match keel_hub::step(runtime, net, STEP_WAIT) {",
-        "        match Ok::<bool, RuntimeError>(std::thread::sleep(STEP_WAIT) == ()) {",
+        "        match keel_hub::step_seeing(runtime, net, STEP_WAIT, seen) {",
+        "        match Ok::<bool, RuntimeError>(std::thread::sleep(STEP_WAIT) == ()).inspect(|_| drop(seen)) {",
     ),
 ]

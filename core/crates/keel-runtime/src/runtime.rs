@@ -5,6 +5,7 @@ use core::time::Duration;
 use std::path::Path;
 
 use keel_domain::checkout::Checkout;
+use keel_domain::codec::ProfileVersion;
 use keel_domain::order::{
     Channel, Check, LineAdded, LineChanged, Mode, Order, OrderCommand, OrderCreated,
 };
@@ -58,13 +59,15 @@ pub struct Identity<S> {
 pub struct Runtime<S, E, C, I> {
     pub(crate) store: Store<S, E>,
     pub(crate) profile: Profile,
+    /// The profile's version: the SHA-256 of its encoding.
+    pub(crate) profile_version: ProfileVersion,
     pub(crate) clock: C,
     pub(crate) ids: IdGenerator<I>,
     pub(crate) device: Id<Device>,
     /// The key the device signs with, which its roster must name.
     pub(crate) key: keel_events::keys::PublicKey,
     locale: Locale,
-    member: Option<Id<TeamMember>>,
+    pub(crate) member: Option<Id<TeamMember>>,
     /// The printer jobs go to, once the shell sets one.
     printer: Option<PrinterProfile>,
     /// The job with the driver, if one is.
@@ -74,11 +77,11 @@ pub struct Runtime<S, E, C, I> {
 }
 
 /// What every event of one intent records besides its payload.
-struct Meta {
-    now: Timestamp,
-    business_date: BusinessDate,
-    actor: Actor,
-    correlation: Id<Correlation>,
+pub(crate) struct Meta {
+    pub(crate) now: Timestamp,
+    pub(crate) business_date: BusinessDate,
+    pub(crate) actor: Actor,
+    pub(crate) correlation: Id<Correlation>,
 }
 
 impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
@@ -129,6 +132,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             Store::open_with_faults(path, key, config, identity.signer, entropy, Box::new(faults))?;
         Ok(Runtime {
             store,
+            profile_version: keel_domain::publication::version(&profile),
             profile,
             clock,
             ids: IdGenerator::new(ids),
@@ -142,9 +146,16 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         })
     }
 
-    /// The location's profile.
+    /// The location's profile: the one provisioned, until the runtime takes one the cloud
+    /// publishes (ADR-0028).
     pub const fn profile(&self) -> &Profile {
         &self.profile
+    }
+
+    /// The profile's version: the SHA-256 of its encoding. A shell that shows the catalog reads
+    /// it again when this changes.
+    pub const fn profile_version(&self) -> ProfileVersion {
+        self.profile_version
     }
 
     /// The clock the runtime reads.
@@ -790,7 +801,7 @@ fn view<S: Signer, E: Entropy>(
 
 /// Appends `event` to the stream `stream` of its kind, with what every event of the intent
 /// records, and answers with its identifier.
-fn append<D: DomainEvent, S: Signer, E: Entropy>(
+pub(crate) fn append<D: DomainEvent, S: Signer, E: Entropy>(
     w: &mut Writing<'_, S, E>,
     stream: Id<AggregateMarker>,
     event: &D,

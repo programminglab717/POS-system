@@ -56,6 +56,8 @@ data class RegisterState(
     val jobs: List<PrintJob> = emptyList(),
     /** How replication stands, as last read, for a register joined to its network. */
     val sync: SyncInfo? = null,
+    /** The version of the profile the team and the menu were read from, once it is known. */
+    val profileVersion: String? = null,
     /** The last refusal or failure, until the next intent. */
     val error: String? = null,
 )
@@ -89,8 +91,21 @@ class RegisterModel(
     /** Signs [member] in, and shows the menu. */
     fun signIn(member: Member) = perform {
         till.signIn(member.id)
+        // The version the menu is read at, so a publication taken after it reads it again.
+        val version = try {
+            till.syncState()?.profileVersion
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
         val pages = till.menu()
-        mutable.update { it.copy(screen = Screen.REGISTER, member = member, pages = pages, page = 0) }
+        mutable.update {
+            it.copy(
+                screen = Screen.REGISTER, member = member, pages = pages, page = 0,
+                profileVersion = version ?: it.profileVersion,
+            )
+        }
     }
 
     /**
@@ -101,7 +116,10 @@ class RegisterModel(
     fun signOut() = perform {
         till.signOut()
         mutable.update {
-            RegisterState(loading = false, team = it.team, printer = it.printer, ticket = it.ticket, sync = it.sync)
+            RegisterState(
+                loading = false, team = it.team, printer = it.printer, ticket = it.ticket, sync = it.sync,
+                profileVersion = it.profileVersion,
+            )
         }
     }
 
@@ -273,7 +291,36 @@ class RegisterModel(
         } catch (_: Exception) {
             null
         }
-        mutable.update { it.copy(sync = sync) }
+        val shown = current.profileVersion
+        mutable.update { it.copy(sync = sync, profileVersion = shown ?: sync?.profileVersion) }
+        val version = sync?.profileVersion
+        if (version != null && shown != null && version != shown) catalogChanged(version)
+    }
+
+    /**
+     * The cloud published a profile, which the kernel took between two intents: the team and the
+     * menu are read again. A cashier the new team doesn't have was signed out by the kernel, and
+     * the register goes back to signing in.
+     */
+    private fun catalogChanged(version: String) = perform {
+        val team = till.team()
+        val member = current.member
+        if (member != null && team.none { it.id == member.id }) {
+            mutable.update {
+                RegisterState(
+                    loading = false, team = team, printer = it.printer, ticket = it.ticket,
+                    sync = it.sync, profileVersion = version,
+                )
+            }
+            return@perform
+        }
+        val pages = if (member != null) till.menu() else current.pages
+        mutable.update {
+            it.copy(
+                team = team, pages = pages, page = it.page.coerceIn(0, (pages.size - 1).coerceAtLeast(0)),
+                profileVersion = version,
+            )
+        }
     }
 
     /** Back to the register from today's orders or the printer. */

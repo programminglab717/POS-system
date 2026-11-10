@@ -158,7 +158,7 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
     }
 
     override fun syncState(): SyncInfo? = call {
-        register.syncStatus()?.let { SyncInfo(it.listening, it.settled, it.hubReachable, it.serving) }
+        register.syncStatus()?.let { SyncInfo(it.listening, it.settled, it.hubReachable, it.serving, it.profileVersion) }
     }
 
     /** The print driver's loop for this till's register, sending to the printer [address] gives. */

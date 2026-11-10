@@ -687,7 +687,7 @@ pub struct SyncKit {
 }
 
 /// How replication stands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each is a fact of its own about replication, as the runtime reports them"
@@ -703,4 +703,12 @@ pub struct SyncState {
     pub is_hub: bool,
     /// This device serves as the hub now.
     pub serving: bool,
+    /// How far into this device's own log the location's cloud is known to hold (ADR-0028): 0
+    /// if it holds none of it, or the location has no cloud.
+    pub backed_up: u64,
+    /// How far this device's own log goes: what is past `backed_up` isn't backed up yet.
+    pub head: u64,
+    /// The version of the profile the register rings from, 64 hexadecimal digits: the one
+    /// provisioned until the cloud publishes another. When it changes, the menu is read again.
+    pub profile_version: String,
 }

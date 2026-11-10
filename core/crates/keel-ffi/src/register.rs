@@ -364,13 +364,18 @@ impl Register {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .is_some_and(|net| net.local_addr().is_some());
-        let status = self.with(|runtime| runtime.sync_status())?;
+        let (status, version) =
+            self.with(|runtime| Ok((runtime.sync_status()?, runtime.profile_version())))?;
+        let profile_version = version.to_hex();
         Ok(status.map(|status| SyncState {
             listening,
             settled: status.settled,
             hub_reachable: status.hub_reachable,
             is_hub: status.is_hub,
             serving: status.serving,
+            backed_up: status.backed_up,
+            head: status.head,
+            profile_version,
         }))
     }
 

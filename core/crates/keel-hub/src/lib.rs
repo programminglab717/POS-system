@@ -30,6 +30,20 @@ pub fn step<S: Signer, E: Entropy, C: Clock, I: Entropy>(
     net: &Net,
     most: Duration,
 ) -> Result<bool, RuntimeError> {
+    step_seeing(runtime, net, most, |_| {})
+}
+
+/// As [`step`], telling `seen` what the network brought first, a frame or a peer connecting or
+/// leaving: for a caller that shows who is connected, such as the cell.
+///
+/// # Errors
+/// As [`step`].
+pub fn step_seeing<S: Signer, E: Entropy, C: Clock, I: Entropy>(
+    runtime: &mut Runtime<S, E, C, I>,
+    net: &Net,
+    most: Duration,
+    seen: impl FnOnce(&Event),
+) -> Result<bool, RuntimeError> {
     let now = runtime.clock().now().as_millis();
     let wait = runtime.next_tick().map_or(most, |at| {
         let millis = u64::try_from(at.as_millis().saturating_sub(now)).unwrap_or(0);
@@ -43,6 +57,9 @@ pub fn step<S: Signer, E: Entropy, C: Clock, I: Entropy>(
     let mut failed = None;
     let event = net.recv_timeout(wait);
     let took = event.is_some();
+    if let Some(event) = &event {
+        seen(event);
+    }
     if let Some(Event::Frame { from, frame }) = event {
         match runtime.on_frame(from, &frame) {
             Ok(frames) => send(net, frames),

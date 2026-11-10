@@ -11,7 +11,9 @@
 publishing, the back office's API, and the back office. Slice 1, sync ingest, is built: the
 cloud is a device of each location's roster, the hub dials it, and the cell holds each location's
 durable copy in a store of its own, so a sale rung on a register reaches the hub and the cloud,
-and the durable-ack watermark comes back to the register. Step 7, the Android register shell, is
+and the durable-ack watermark comes back to the register. Slice 2, catalog publishing, is built:
+the cell publishes a location's profile as events in the cloud's log, and every device takes it
+whole between two intents, within about a second on the host. Step 7, the Android register shell, is
 built in five slices, each reviewed, and its designs, ADR-0023 to ADR-0027, accepted; what remains
 of it waits for the reference device.
 
@@ -28,7 +30,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
 | 7 | Android register shell | Done, 2026-11-10: built in five slices, each reviewed; the reference device's numbers wait for the device | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [`apps/android`](../apps/android/), [ADR-0023](./adr/0023-register-shell.md) to [ADR-0027](./adr/0027-android-app.md) |
-| 8 | Cloud cell v0 | Slice 1 of 4 built | [`core/crates/keel-cloud`](../core/crates/keel-cloud/), [ADR-0028](./adr/0028-cloud-cell-v0.md) |
+| 8 | Cloud cell v0 | Slices 1 and 2 of 4 built | [`core/crates/keel-cloud`](../core/crates/keel-cloud/), [ADR-0028](./adr/0028-cloud-cell-v0.md) |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
 checks and payments, was split in two, so that the payment design was reviewed before it was
@@ -85,8 +87,8 @@ slices, each verified as it lands, then reviewed:
 
 1. **Sync ingest** (built 2026-11-10): roster v1, `keel-net`'s named peers, the cloud's kit, the
    durable peer named, and `keel-cell`'s replication for each location.
-2. **Catalog publishing**: `profile.chunk` and `profile.published`, the runtime taking
-   publications, and the cell publishing.
+2. **Catalog publishing** (built 2026-11-10): `profile.chunk` and `profile.published`, the
+   runtime taking publications, and the cell publishing.
 3. **The back office's API**: an Axum service in the cell's process.
 4. **The back office**: `apps/web`, React and Vite, tested end to end in a browser.
 
@@ -134,6 +136,53 @@ Built in slice 1:
     back, and the store reopened as it was.
   - Planted bugs: 3, all caught.
 - The workspace's tests, clippy with all features and none, and every planted bug's text.
+
+Built in slice 2:
+
+- **`keel-domain`'s `publication`**: `profile.chunk` v1, `{1: version, 2: index, 3: bytes}`, and
+  `profile.published` v1, `{1: version, 2: size, 3: chunks}`, in a stream of kind `profile`;
+  `ProfileVersion`, the SHA-256 of a profile's encoding. A chunk holds 1 byte to 192 KiB, a
+  publication 1 byte to 64 MiB in exactly as many chunks as its size takes, each full but the
+  last. `publish` cuts a profile into its events; `assemble` joins a publication's chunks, held
+  in any order and any number of times, checking each one's length, that no two of an index
+  differ, the hash, and that they decode to a profile.
+  - Known answers: three payloads pinned as Python's `cbor2` encodes them; the registry; each
+    rule at its bounds; a payload that breaks one refused; the demo café's profile in one chunk
+    and one of 6,000 more items in three, joined again; a chunk missing, another version's, two
+    that differ, one changed, one of the wrong length, and chunks that aren't a profile.
+  - Planted bugs: 6, all caught.
+- **The runtime taking publications** (`keel-runtime`): `publish_profile`, the cloud's alone,
+  writes a profile's chunks and its publication in one write, in a stream of their own. Each
+  runtime looks, when replication starts and after each frame, in the part of the cloud's log it
+  hasn't looked at, and takes the latest publication that passes every check, replacing the
+  profile between two intents; a cashier the new team doesn't have is signed out.
+  `profile_version()` answers which it rings from. A device restarted takes again, as
+  replication starts, the latest its store holds.
+  - Known answers, a cloud, a hub and a register in memory: a publication reaching the hub and
+    the register through the hub, the next line priced by it and the line rung before keeping its
+    price; a later publication replacing an earlier, and the provisioned profile published again
+    taking it back; a register restarted opening with what it took; only the cloud publishing,
+    and only its location's profile; a publication in a device's own log, written under a roster
+    that named it the cloud, never taken under the location's. In the crate: a publication of
+    another location, one missing a chunk, and a team without the cashier signed in.
+  - Planted bugs: 7, all caught.
+- **The cell publishing** (`keel-cloud`): `Location::publish`, a job on the location's thread,
+  and `Location::profile_version`.
+  - Known answers, over real TLS on the host: a catalog published reaches the register in about a
+    second, well within the 60 s budget, and the next sale is priced by it; the hub takes it too;
+    the cell, restarted, opens with what it published.
+- **The shells**: `keel-ffi`'s `SyncState` gains `backed_up`, `head` and `profile_version`, in
+  hexadecimal; the Android register reads its team and menu again when the version changes, and
+  goes back to signing in when the new team doesn't have the cashier.
+  - Known answers: `keel-ffi`'s sync test checks the provisioned version and the marks; a
+    `RegisterModel` test checks a new menu, nothing read again when nothing changed, and a
+    cashier the new team doesn't have.
+- The version types gain `to_hex()`, 64 lowercase hexadecimal digits.
+- The workspace's tests, clippy with all features and none, the kernel crates for `wasm32`, the
+  documentation, every planted bug's text (one of `keel-provision`'s, left stale by slice 1's
+  refactoring, aimed again and caught), the register module's 22 JVM tests, the Android kernel
+  module's 6, and the app built.
+- The disk filled again, with 21 GB of debug builds from the planted-bug runs: cleared.
 
 ## Completed
 

@@ -24,6 +24,7 @@
 
 mod error;
 mod print;
+mod publication;
 mod receipt;
 mod runtime;
 mod sync;
@@ -32,6 +33,8 @@ mod views;
 
 #[cfg(test)]
 mod print_tests;
+#[cfg(test)]
+mod publication_tests;
 #[cfg(test)]
 mod tests;
 

@@ -394,6 +394,14 @@ macro_rules! version_type {
             pub const fn as_bytes(&self) -> &[u8; 32] {
                 &self.0
             }
+
+            /// The hash in 64 lowercase hexadecimal digits, as APIs and screens show it.
+            pub fn to_hex(&self) -> String {
+                self.0.iter().fold(String::with_capacity(64), |mut text, byte| {
+                    let _ = fmt::Write::write_fmt(&mut text, format_args!("{byte:02x}"));
+                    text
+                })
+            }
         }
 
         impl fmt::Debug for $name {
@@ -427,6 +435,13 @@ version_type!(
     /// hash that identifies it. A check's snapshot records the version it was priced with.
     RulesVersion,
     "rules version"
+);
+
+version_type!(
+    /// A published version of a location's whole profile (ADR-0028): the SHA-256 of its
+    /// encoding.
+    ProfileVersion,
+    "profile version"
 );
 
 /// A non-empty set of identifiers, kept in ascending order, so it has one encoding.

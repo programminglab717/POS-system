@@ -31,10 +31,12 @@ const LONGEST_WAIT: core::time::Duration = core::time::Duration::from_secs(10);
 pub(crate) struct Sync {
     replicator: Replicator,
     registry: DeviceRegistry,
-    roster: Roster,
+    pub(crate) roster: Roster,
     pushed: u64,
     /// When replication started, by the runtime's clock.
     started: Timestamp,
+    /// How far into the cloud's log the runtime has looked for publications.
+    pub(crate) looked: u64,
 }
 
 impl Sync {
@@ -125,7 +127,9 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             now,
         )?;
         let pushed = self.store.head(device)?.seq();
-        self.sync = Some(Sync { replicator, registry, roster, pushed, started: now });
+        self.sync = Some(Sync { replicator, registry, roster, pushed, started: now, looked: 0 });
+        // The latest publication the store holds, which a device restarted took before.
+        self.take_publications()?;
         Ok(outgoing)
     }
 
@@ -147,6 +151,10 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             self.with_sync(|replicator, replica| replicator.on_frame(replica, from, frame, now))?;
         outgoing.extend(more);
         self.caught_up()?;
+        // Between two intents: a publication that came is taken whole, or not at all. A store
+        // that can't be read now leaves it for the next frame, which looks again from where this
+        // look began; the frame itself is stored, and its answers go out.
+        let _ = self.take_publications();
         Ok(outgoing)
     }
 

@@ -2706,5 +2706,41 @@ BUGS = [
         "        let cloud = fields.optional(5, \"cloud\")?;",
         "unit",
     ),
+    # Publications (ADR-0028).
+    (
+        "publication: a chunk may hold one byte more than a chunk may",
+        "src/publication.rs",
+        "        if bytes.is_empty() || bytes.len() > MAX_CHUNK {",
+        "        if bytes.is_empty() || bytes.len() > MAX_CHUNK + 1 {",
+    ),
+    (
+        "publication: a publication may name any number of chunks",
+        "src/publication.rs",
+        "        if chunks != size.div_ceil(CHUNK_SIZE) {",
+        "        if chunks == 0 {",
+    ),
+    (
+        "publication: another version's chunks are joined into it",
+        "src/publication.rs",
+        "        if chunk.version != published.version || chunk.index >= published.chunks {",
+        "        if chunk.index >= published.chunks {",
+    ),
+    (
+        "publication: of two differing chunks of one index, the last is taken",
+        "src/publication.rs",
+        "            return Err(PublicationError::Conflicting(chunk.index));",
+        "            pieces.insert(chunk.index, held);",
+    ),
+    (
+        "publication: a chunk's length isn't checked",
+        "src/publication.rs",
+        "        if u64::try_from(piece.len()).ok() != Some(length) {",
+        "        if u64::try_from(piece.len()).ok() == Some(0).filter(|_| length == 0) {",
+    ),
+    (
+        "publication: the chunks needn't hash to the version",
+        "src/publication.rs",
+        "    if sha256(&bytes) != *published.version.as_bytes() {",
+        "    if bytes.is_empty() {",
+    ),
 ]
-

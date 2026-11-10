@@ -433,6 +433,18 @@ also means a ransomware or cloud outage (see the NCR 2023 incident in
   - Availability changes (86s) reach every in-store device in **≤ 1 s** and every channel,
     marketplace and agent catalog in **≤ 10 s**.
   - Rule packs (§ domain model 15) reach devices in **≤ 5 min**.
+- **As built: publishing v0** (`keel-domain`'s `publication`, `keel-runtime`, `keel-cloud`,
+  [ADR-0028](../adr/0028-cloud-cell-v0.md)). A version is a whole location profile, named by the
+  SHA-256 of its encoding. The cloud writes it to its own log as events, in a stream of kind
+  `profile` of its own: `profile.chunk` v1 pieces of at most 192 KiB, then `profile.published`
+  v1, naming the version, its size and its chunks. Replication carries them, so a device that was
+  off takes a publication when it reconnects, with no second channel to trust or catch up on. A
+  runtime looks in the part of the cloud's log it hasn't looked at, when replication starts and
+  after each frame, and takes the latest publication that is the roster's cloud's, holds every
+  chunk, joins to the size and hash it names and decodes to a profile of its location; it
+  switches between two intents. A cashier the new team doesn't have is signed out, and the
+  Android register reads its team and menu again. On the host, over TLS, a publication reaches a
+  register in about a second. Not yet: deltas, scheduled versions and local overrides.
 
 ### 6.6 Degraded-service detection (not just link loss)
 

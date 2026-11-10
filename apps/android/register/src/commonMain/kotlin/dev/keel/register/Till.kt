@@ -79,6 +79,11 @@ data class SyncInfo(
     val hubReachable: Boolean,
     /** This register serves as the hub now. */
     val serving: Boolean,
+    /**
+     * The version of the profile the register rings from: when the cloud publishes another, it
+     * changes, and the team and the menu are read again.
+     */
+    val profileVersion: String = "",
 )
 
 /** What a print job prints. */

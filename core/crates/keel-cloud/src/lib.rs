@@ -9,19 +9,23 @@
 //!
 //! Anything else that reads or writes a location's store, such as the back office's API, hands
 //! the location's thread a job ([`Location::with`]), which it runs between two turns of its
-//! loop: the store keeps its one writer.
+//! loop: the store keeps its one writer. Publishing a catalog ([`Location::publish`]) is one
+//! such job: the profile's chunks and its publication, written to the cloud's log, which
+//! replication carries to the hub and on to every device.
 
 use core::time::Duration;
+use std::collections::BTreeSet;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread::JoinHandle;
 
+use keel_domain::codec::ProfileVersion;
 use keel_domain::profile::Profile;
 use keel_domain::roster::Roster;
-use keel_events::envelope::Location as LocationRef;
+use keel_events::envelope::{Device, Location as LocationRef};
 use keel_events::keys::{SignatureAlgorithm, SoftwareSigner};
-use keel_net::Net;
+use keel_net::{Event, Net};
 use keel_provision::Kit;
 use keel_runtime::{Identity, Runtime, RuntimeError};
 use keel_store::{StoreError, StoreKey};
@@ -65,6 +69,8 @@ pub struct Location {
     id: Id<LocationRef>,
     name: String,
     roster: Roster,
+    /// The devices connected now.
+    connected: Arc<Mutex<BTreeSet<Id<Device>>>>,
     jobs: Option<mpsc::Sender<Job>>,
     thread: Option<JoinHandle<Result<(), String>>>,
 }
@@ -119,6 +125,8 @@ impl Location {
         let store = kit.join("store.db");
         let (started_tx, started) = mpsc::sync_channel(1);
         let (jobs, queue) = mpsc::channel::<Job>();
+        let connected: Arc<Mutex<BTreeSet<Id<Device>>>> = Arc::default();
+        let seen = Arc::clone(&connected);
         let thread =
             std::thread::Builder::new().name(format!("keel-cell-{location}")).spawn(move || {
                 let mut runtime = match open(&opened, store).and_then(|mut runtime| {
@@ -138,10 +146,17 @@ impl Location {
                     }
                 };
                 let _ = started_tx.send(Ok(()));
-                serve(&mut runtime, &net, &queue)
+                serve(&mut runtime, &net, &queue, &seen)
             })?;
         started.recv().map_err(|_| CellError::Stopped("it didn't start".into()))??;
-        Ok(Location { id: location, name, roster, jobs: Some(jobs), thread: Some(thread) })
+        Ok(Location {
+            id: location,
+            name,
+            roster,
+            connected,
+            jobs: Some(jobs),
+            thread: Some(thread),
+        })
     }
 
     /// The location's identifier.
@@ -157,6 +172,11 @@ impl Location {
     /// The location's roster.
     pub const fn roster(&self) -> &Roster {
         &self.roster
+    }
+
+    /// The location's devices connected to the cell now.
+    pub fn connected(&self) -> BTreeSet<Id<Device>> {
+        self.connected.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// Runs `job` on the location's thread, between two turns of its loop, and gives back what
@@ -181,6 +201,28 @@ impl Location {
     }
 }
 
+impl Location {
+    /// Publishes `profile` for the location's devices (ADR-0028, decision 3): its chunks and its
+    /// publication in the cloud's log, which the next turn of the location's loop pushes to the
+    /// hub. Answers with its version.
+    ///
+    /// # Errors
+    /// [`CellError::Runtime`] if it is another location's, too large, or the store can't be
+    /// written; [`CellError::Stopped`] if the location's loop has stopped.
+    pub fn publish(&self, profile: Profile) -> Result<ProfileVersion, CellError> {
+        Ok(self.with(move |runtime| runtime.publish_profile(&profile))??)
+    }
+
+    /// The version of the profile the location's devices are to ring from: the latest the cell
+    /// published, or the one provisioned.
+    ///
+    /// # Errors
+    /// [`CellError::Stopped`] if the location's loop has stopped.
+    pub fn profile_version(&self) -> Result<ProfileVersion, CellError> {
+        self.with(|runtime| runtime.profile_version())
+    }
+}
+
 impl Drop for Location {
     fn drop(&mut self) {
         // The loop ends when its queue does.
@@ -193,7 +235,24 @@ impl Drop for Location {
 
 /// The location's loop: each job waiting, then a turn of replication, until the queue ends or
 /// the store refuses everything until it is opened again.
-fn serve(runtime: &mut CloudRuntime, net: &Net, queue: &mpsc::Receiver<Job>) -> Result<(), String> {
+fn serve(
+    runtime: &mut CloudRuntime,
+    net: &Net,
+    queue: &mpsc::Receiver<Job>,
+    connected: &Mutex<BTreeSet<Id<Device>>>,
+) -> Result<(), String> {
+    let seen = |event: &Event| {
+        let mut connected = connected.lock().unwrap_or_else(PoisonError::into_inner);
+        match event {
+            Event::Connected(device) => {
+                connected.insert(*device);
+            }
+            Event::Disconnected(device) => {
+                connected.remove(device);
+            }
+            Event::Frame { .. } => {}
+        }
+    };
     loop {
         loop {
             match queue.try_recv() {
@@ -202,7 +261,7 @@ fn serve(runtime: &mut CloudRuntime, net: &Net, queue: &mpsc::Receiver<Job>) -> 
                 Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             }
         }
-        match keel_hub::step(runtime, net, STEP_WAIT) {
+        match keel_hub::step_seeing(runtime, net, STEP_WAIT, seen) {
             Ok(_) => {}
             // A store that refuses everything until it is opened again: stop, rather than spin.
             Err(RuntimeError::Store(error @ (StoreError::Damaged | StoreError::Closed))) => {

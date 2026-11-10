@@ -204,8 +204,9 @@ hub. The hub dials it, as the cloud can't reach a hub behind the store's router,
 durable peer, so its watermark reaches every device. The cell holds each location's durable copy
 in a `keel-store` of its own, opened as the cloud's device, which verifies and folds every event
 as a device does. PostgreSQL arrives with the cell's first cross-location work, NATS and object
-storage with integrations and archives. Not yet: catalog publishing, the back office's API and
-the back office (ADR-0028's slices 2 to 4).
+storage with integrations and archives. The cell publishes a location's profile as events in the
+cloud's own log, which every device takes whole between two intents (offline-and-sync §6.5).
+Not yet: the back office's API and the back office (ADR-0028's slices 3 and 4).
 
 **Regional shared services**:
 - **Analytics**: CDC → ClickHouse → semantic layer.
@@ -232,7 +233,7 @@ workspace, compiled for iOS, Android, Windows, macOS, Linux, the browser (WASM) 
 |---|---|
 | `keel-types` | Money and ISO 4217 currencies, rounding, Rate, Decimal, Quantity and units, Timestamp and clocks, HLC, typed IDs (UUIDv7), BusinessDate, and Locale (v0 built: amounts and quantities as `en-US` and `es-US` show them, from CLDR 48: [ADR-0023](../adr/0023-register-shell.md)) |
 | `keel-events` | Event envelope, canonical CBOR, COSE signatures, hash chaining, log writing and chain verification, device registry and revocation |
-| `keel-domain` | Event payload schemas and the schema registry; aggregates, their total fold functions and command checks: order (built so far: creation, attributes, lines, their split among checks, closing checks and orders, and its owning device under a lease, with the hub's answers to requests for it), payment (built so far: cash and card), and checkout across them; kitchen ticket, stock, drawer session, booking, custody job, stored value, loyalty, membership, time entry. Also the location profile (v0 built: a location's settings, pricing rules, catalog, menu and team, content-addressed, and ringing a variant with its modifiers: [ADR-0023](../adr/0023-register-shell.md)) |
+| `keel-domain` | Event payload schemas and the schema registry; aggregates, their total fold functions and command checks: order (built so far: creation, attributes, lines, their split among checks, closing checks and orders, and its owning device under a lease, with the hub's answers to requests for it), payment (built so far: cash and card), and checkout across them; kitchen ticket, stock, drawer session, booking, custody job, stored value, loyalty, membership, time entry. Also the location profile (v0 built: a location's settings, pricing rules, catalog, menu and team, content-addressed, and ringing a variant with its modifiers: [ADR-0023](../adr/0023-register-shell.md)); and publishing a profile as chunked events ([ADR-0028](../adr/0028-cloud-cell-v0.md)) |
 | `keel-pricing` | Price resolution, promotions optimizer, tax engine, allocation, rounding, trace (v0 built: line amounts, shares of split lines, discounts and their allocation, US sales tax, rounding, trace) |
 | `keel-policy` | ABAC permissions, approvals, rule-pack evaluation with explanations |
 | `keel-store` | SQLite event store, projections, snapshots, outbox, retention (built so far: the event log, with the device's own and received events, the quarantine and the version vector; projections of orders and payments; the effect outbox; all in crash-tested transactions, encrypted at rest with SQLCipher, with integrity checks; the hub's sequencing records, and confirmation by hash; each order's owner, lease and waiting requests, and answering requests as the hub; the hub's claims and the chain of terms they make, which records count, and claiming the role. A platform crate, not built for `wasm32`: [ADR-0016](../adr/0016-device-store.md), [ADR-0017](../adr/0017-projections-and-outbox.md), [ADR-0018](../adr/0018-encryption-at-rest-and-integrity-checks.md), [ADR-0020](../adr/0020-hub-sequencing.md), [ADR-0021](../adr/0021-ownership-leases.md), [ADR-0022](../adr/0022-hub-election-and-failover.md)) |

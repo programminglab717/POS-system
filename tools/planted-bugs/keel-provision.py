@@ -9,8 +9,8 @@ BUGS = [
     (
         "provision: the hub's certificate lacks the roster's hub name",
         "src/lib.rs",
-        "        if device.hub.is_some() {\n            names.push(spec.hub_name.clone());",
-        "        if device.hub.is_none() {\n            names.push(spec.hub_name.clone());",
+        "        kits.push(kit(id, &name, hub.then_some(spec.hub_name.as_str()), signing_key)?);",
+        "        kits.push(kit(id, &name, (!hub).then_some(spec.hub_name.as_str()), signing_key)?);",
         "unit",
     ),
     (

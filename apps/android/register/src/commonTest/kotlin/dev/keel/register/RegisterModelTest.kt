@@ -12,7 +12,7 @@ class RegisterModelTest {
     private fun TestScope.model(till: Till) = RegisterModel(till, this, StandardTestDispatcher(testScheduler))
 
     /** [model], started and signed in as Alex. */
-    private fun TestScope.signedIn(till: FakeTill = FakeTill()): RegisterModel {
+    private fun TestScope.signedIn(till: Till = FakeTill()): RegisterModel {
         val model = model(till)
         model.start()
         testScheduler.advanceUntilIdle()
@@ -259,6 +259,47 @@ class RegisterModelTest {
         testScheduler.advanceUntilIdle()
         assertNull(model.state.value.sync)
         assertNull(model.state.value.error, "no error for the cashier")
+    }
+
+    @Test
+    fun a_profile_the_cloud_publishes_brings_the_new_menu_and_team() = runTest {
+        var version = "v1"
+        var pages = listOf("Drinks", "Food")
+        var team = listOf(Member("alex", "Alex"), Member("sam", "Sam"))
+        val fake = FakeTill()
+        val till = object : Till by fake {
+            override fun syncState() = SyncInfo(false, true, true, false, profileVersion = version)
+            override fun menu() = fake.menu().take(pages.size).mapIndexed { n, page -> page.copy(name = pages[n]) }
+            override fun team() = team
+        }
+        val model = signedIn(till)
+        assertEquals(listOf("Drinks", "Food"), model.state.value.pages.map { it.name })
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals("v1", model.state.value.profileVersion)
+        // Published: the menu is read again, and the cashier stays signed in.
+        version = "v2"
+        pages = listOf("Coffee")
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("Coffee"), model.state.value.pages.map { it.name })
+        assertEquals("v2", model.state.value.profileVersion)
+        assertEquals(Screen.REGISTER, model.state.value.screen)
+        assertEquals(0, model.state.value.page)
+        // Nothing new: nothing read again.
+        pages = listOf("Never")
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("Coffee"), model.state.value.pages.map { it.name })
+        // A team without Alex: the kernel signed them out, and the register asks who is working.
+        version = "v3"
+        team = listOf(Member("sam", "Sam"))
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.SIGN_IN, model.state.value.screen)
+        assertNull(model.state.value.member)
+        assertEquals(listOf("Sam"), model.state.value.team.map { it.name })
+        assertEquals("v3", model.state.value.profileVersion)
     }
 
     /** Found in review: two taps before the screen showed the first counted from the same line. */

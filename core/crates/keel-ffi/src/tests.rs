@@ -740,6 +740,14 @@ fn a_hub_and_a_register_sync_through_the_bindings() {
     // The roster's hub listens; the register connects.
     assert!(hub.sync_status().unwrap().unwrap().listening);
     assert!(!register.sync_status().unwrap().unwrap().listening);
+    // The profile's version, the provisioned one's, in hexadecimal; nothing written, nothing
+    // backed up.
+    let status = register.sync_status().unwrap().unwrap();
+    let demo = keel_domain::profile::demo().unwrap();
+    let version = keel_domain::publication::version(&demo);
+    assert_eq!(status.profile_version, version.to_hex());
+    assert_eq!(status.profile_version.len(), 64);
+    assert_eq!((status.backed_up, status.head), (0, 0));
     let turn = |until: &dyn Fn() -> bool| {
         let started = std::time::Instant::now();
         while !until() {

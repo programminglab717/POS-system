@@ -1,7 +1,7 @@
 """Planted bugs for keel-runtime: see run.py."""
 
 # Integration tests of known answers, which --props leaves out.
-KNOWN_ANSWERS = ["end_to_end", "sync"]
+KNOWN_ANSWERS = ["end_to_end", "publication", "sync"]
 
 # The cell's ingest test runs a location with its cloud end to end, through the runtime: the
 # durable peer's naming is seen there alone.
@@ -449,5 +449,48 @@ BUGS = [
         "src/sync.rs",
         "            backed_up: sync.replicator.durable().get(&self.device).copied().unwrap_or(0),",
         "            backed_up: self.store.head(self.device)?.seq(),",
+    ),
+    # Catalog publishing (ADR-0028).
+    (
+        "runtime: any device publishes",
+        "src/publication.rs",
+        "        if sync.roster.cloud().is_none_or(|cloud| cloud.device != self.device) {\n            return Err(RuntimeError::NotCloud);",
+        "        if sync.roster.cloud().is_none() {\n            return Err(RuntimeError::NotCloud);",
+    ),
+    (
+        "runtime: a publication of another location is taken",
+        "src/publication.rs",
+        "            .filter(|profile| profile.data().location == self.profile.data().location))",
+        "            )",
+    ),
+    (
+        "runtime: the earliest publication is taken, not the latest",
+        "src/publication.rs",
+        "        for (stream, published) in found.iter().rev() {",
+        "        for (stream, published) in found.iter() {",
+    ),
+    (
+        "runtime: a member the new team doesn't have stays signed in",
+        "src/publication.rs",
+        "            self.member = None;\n",
+        "",
+    ),
+    (
+        "runtime: a publication is looked for at no frame",
+        "src/sync.rs",
+        "        let _ = self.take_publications();",
+        "",
+    ),
+    (
+        "runtime: a device restarted opens with the provisioned profile",
+        "src/sync.rs",
+        "        // The latest publication the store holds, which a device restarted took before.\n        self.take_publications()?;",
+        "",
+    ),
+    (
+        "runtime: a device that publishes doesn't take its own",
+        "src/publication.rs",
+        "        })?;\n        self.take_publications()?;",
+        "        })?;",
     ),
 ]

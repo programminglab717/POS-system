@@ -72,6 +72,12 @@ pub enum RuntimeError {
     /// The runtime isn't replicating: start it first.
     #[error("the runtime isn't replicating")]
     NotSyncing,
+    /// Only the location's cloud publishes its profile (ADR-0028).
+    #[error("this device isn't its location's cloud")]
+    NotCloud,
+    /// The profile can't be published: it is too large.
+    #[error("the profile can't be published: {0}")]
+    Publication(String),
     /// The store failed.
     #[error(transparent)]
     Store(#[from] StoreError),
