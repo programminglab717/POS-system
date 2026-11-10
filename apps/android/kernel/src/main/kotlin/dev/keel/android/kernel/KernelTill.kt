@@ -77,6 +77,7 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
                     group.free.toInt(),
                     group.repeat,
                     group.modifiers.map { Modifier(it.modifier, it.name, it.price.text) },
+                    group.depth.toInt(),
                 )
             },
         )

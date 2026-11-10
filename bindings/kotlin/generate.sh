@@ -13,7 +13,8 @@ out="$here/build/generated/uniffi"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --release) profile=release; release=--release; shift ;;
-    --out) out="$2"; shift 2 ;;
+    # Never empty: it is removed before it is written.
+    --out) [[ -n "${2:-}" ]] || { echo "--out needs a directory" >&2; exit 2; }; out="$2"; shift 2 ;;
     *) echo "usage: $0 [--release] [--out <dir>]" >&2; exit 2 ;;
   esac
 done

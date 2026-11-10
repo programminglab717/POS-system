@@ -93,10 +93,16 @@ class RegisterModel(
         mutable.update { it.copy(screen = Screen.REGISTER, member = member, pages = pages, page = 0) }
     }
 
-    /** Signs out: the next cashier signs in. An order being rung stays open, for them. */
+    /**
+     * Signs out: the next cashier signs in. An order being rung stays open and on the screen, for
+     * them to go on with; the sheet and the tender close. Found in review: it left the screen, and
+     * the next tap began another order.
+     */
     fun signOut() = perform {
         till.signOut()
-        mutable.update { RegisterState(loading = false, team = it.team, printer = it.printer) }
+        mutable.update {
+            RegisterState(loading = false, team = it.team, printer = it.printer, ticket = it.ticket, sync = it.sync)
+        }
     }
 
     /** Shows the menu's page [index]. */
@@ -114,14 +120,14 @@ class RegisterModel(
         }
     }
 
-    /** Taps [modifier] in [group] on the open sheet. */
-    fun choose(group: Group, modifier: Modifier) = mutable.update { state ->
+    /** Taps [modifier] in group [group], its place in the item's groups, on the open sheet. */
+    fun choose(group: Int, modifier: String) = mutable.update { state ->
         state.copy(sheet = state.sheet?.tap(group, modifier), error = null)
     }
 
     /** Sets how many of the sheet's item to ring. */
     fun sheetQuantity(quantity: Int) = mutable.update { state ->
-        state.copy(sheet = state.sheet?.withQuantity(quantity))
+        state.copy(sheet = state.sheet?.withQuantity(quantity.coerceAtMost(MAX_QUANTITY)))
     }
 
     /** Closes the sheet without ringing anything. */
@@ -136,24 +142,32 @@ class RegisterModel(
 
     /** One more of [line]. */
     fun more(line: TicketLine) = perform {
-        val ticket = current.ticket ?: return@perform
-        val count = line.count ?: return@perform
-        show(till.changeQuantity(ticket.order, line.line, count + 1))
+        val (order, now) = current(line) ?: return@perform
+        val count = now.count ?: return@perform
+        show(till.changeQuantity(order, now.line, count + 1))
     }
 
     /** One fewer of [line]: the last one takes the line off. */
     fun fewer(line: TicketLine) = perform {
-        val ticket = current.ticket ?: return@perform
-        val count = line.count ?: return@perform
-        show(
-            if (count > 1) till.changeQuantity(ticket.order, line.line, count - 1) else till.removeLine(ticket.order, line.line),
-        )
+        val (order, now) = current(line) ?: return@perform
+        val count = now.count ?: return@perform
+        show(if (count > 1) till.changeQuantity(order, now.line, count - 1) else till.removeLine(order, now.line))
     }
 
     /** Takes [line] off the order. */
     fun remove(line: TicketLine) = perform {
-        val ticket = current.ticket ?: return@perform
-        show(till.removeLine(ticket.order, line.line))
+        val (order, now) = current(line) ?: return@perform
+        show(till.removeLine(order, now.line))
+    }
+
+    /**
+     * [line] as the order being rung has it now, on the worker, after every intent queued before:
+     * a second tap counts from the first's answer, not from the screen it was made on. Found in
+     * review: two quick taps of + made the line 2, not 3. None if it is gone.
+     */
+    private fun current(line: TicketLine): Pair<String, TicketLine>? {
+        val ticket = current.ticket ?: return null
+        return ticket.lines.firstOrNull { it.line == line.line }?.let { ticket.order to it }
     }
 
     /** Drops the order being rung. */
@@ -252,7 +266,13 @@ class RegisterModel(
     /** Reads how replication stands again; the shell calls it every few seconds. */
     fun refreshSync() = scope.launch {
         // A status that can't be read is no reason to show the cashier an error.
-        val sync = runCatching { withContext(worker) { till.syncState() } }.getOrNull()
+        val sync = try {
+            withContext(worker) { till.syncState() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
         mutable.update { it.copy(sync = sync) }
     }
 
@@ -292,5 +312,8 @@ class RegisterModel(
     private companion object {
         /** The most a cashier may type, in minor units: ten digits. */
         const val MAX_TYPED = 9_999_999_999L
+
+        /** The most of an item the sheet rings at once. */
+        const val MAX_QUANTITY = 999
     }
 }

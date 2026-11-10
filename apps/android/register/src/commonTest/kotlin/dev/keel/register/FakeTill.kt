@@ -27,6 +27,25 @@ class FakeTill : Till {
         ),
     )
 
+    /**
+     * A breakfast whose side must be chosen, fries or a hash brown, each offering the same sauce
+     * group under it; toast, optional, whose butter must be chosen once toast is; and fries
+     * again, as an extra, with a sauce of their own: one modifier in two groups.
+     */
+    val breakfast = Item(
+        "breakfast", "Breakfast", "$6.95",
+        listOf(
+            Group("side", null, "Side", 1, 1, 0, false, listOf(Modifier("fries", "Fries", "$0.00"), Modifier("hash", "Hash brown", "$0.00"))),
+            Group("sauce", "fries", "Sauce", 0, 1, 0, false, listOf(Modifier("ketchup", "Ketchup", "$0.00"), Modifier("mayo", "Mayo", "$0.25")), depth = 2),
+            Group("sauce", "hash", "Sauce", 0, 1, 0, false, listOf(Modifier("ketchup", "Ketchup", "$0.00"), Modifier("mayo", "Mayo", "$0.25")), depth = 2),
+            Group("toast", null, "Toast", 0, 1, 0, false, listOf(Modifier("rye", "Rye", "$0.50"))),
+            Group("butter", "rye", "Butter", 1, 1, 0, false, listOf(Modifier("salted", "Salted", "$0.00"), Modifier("none", "No butter", "$0.00")), depth = 2),
+            // Fries again, as an extra, with a sauce of their own.
+            Group("extra", null, "Extra", 0, 1, 0, false, listOf(Modifier("fries", "Fries", "$2.50"))),
+            Group("sauce", "fries", "Sauce", 0, 1, 0, false, listOf(Modifier("ketchup", "Ketchup", "$0.00"), Modifier("mayo", "Mayo", "$0.25")), depth = 2),
+        ),
+    )
+
     override fun team() = listOf(Member("alex", "Alex"), Member("sam", "Sam"))
 
     override fun signIn(member: String) {

@@ -237,6 +237,7 @@ jobs:
           # tests, the golden baskets among them, run on the emulator.
           script: |
             ./gradlew --no-daemon -PkeelAbis=x86_64 :app:connectedDebugAndroidTest || (find app/build/outputs/androidTest-results -name '*.xml' -exec cat {} + ; adb logcat -d '*:E' | tail -300 ; exit 1)
+            adb logcat -d -s keel-perf:I | tail -n 5
             ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION" ABI=x86_64 ../../tools/android/kernel-tests.sh
 
       - name: What the hub said

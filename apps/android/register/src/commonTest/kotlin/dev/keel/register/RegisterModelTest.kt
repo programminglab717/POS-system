@@ -52,9 +52,9 @@ class RegisterModelTest {
         val sheet = assertNotNull(model.state.value.sheet)
         assertEquals(false, sheet.complete, "a milk must be chosen first")
         val (milk, shots) = sheet.shown
-        model.choose(milk, milk.modifiers[1])
-        model.choose(shots, shots.modifiers[0])
-        model.choose(shots, shots.modifiers[0])
+        model.choose(milk.index, "oat")
+        model.choose(shots.index, "shot")
+        model.choose(shots.index, "shot")
         model.sheetQuantity(2)
         model.addFromSheet()
         testScheduler.advanceUntilIdle()
@@ -259,5 +259,40 @@ class RegisterModelTest {
         testScheduler.advanceUntilIdle()
         assertNull(model.state.value.sync)
         assertNull(model.state.value.error, "no error for the cashier")
+    }
+
+    /** Found in review: two taps before the screen showed the first counted from the same line. */
+    @Test
+    fun taps_queued_together_each_count_from_the_one_before() = runTest {
+        val model = signedIn()
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        val tea = model.state.value.ticket!!.lines.single()
+        // Three taps of + from the same screen, then two of −, before any answer is shown.
+        repeat(3) { model.more(tea) }
+        testScheduler.advanceUntilIdle()
+        assertEquals("4", model.state.value.ticket!!.lines.single().quantity)
+        val four = model.state.value.ticket!!.lines.single()
+        repeat(4) { model.fewer(four) }
+        testScheduler.advanceUntilIdle()
+        assertEquals(emptyList(), model.state.value.ticket!!.lines, "the fourth took the line off")
+        assertNull(model.state.value.error, "nothing refused")
+    }
+
+    @Test
+    fun signing_out_keeps_the_open_order_for_the_next_cashier() = runTest {
+        val model = signedIn()
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        val order = model.state.value.ticket!!.order
+        model.signOut()
+        testScheduler.advanceUntilIdle()
+        assertEquals(order, model.state.value.ticket?.order)
+        model.signIn(Member("sam", "Sam"))
+        testScheduler.advanceUntilIdle()
+        model.tap(model.button("Scone"))
+        testScheduler.advanceUntilIdle()
+        assertEquals(order, model.state.value.ticket!!.order, "rung on the same order")
+        assertEquals(2, model.state.value.ticket!!.lines.size)
     }
 }

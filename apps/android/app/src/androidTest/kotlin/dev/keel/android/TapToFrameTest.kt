@@ -11,10 +11,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * The register's tap to frame (ADR-0023, decision 8; ADR-0027, part 5): 100 taps of a button,
+ * The register's tap to frame (ADR-0023, decision 8; ADR-0027, part 5): 200 taps of a button,
  * each timed from the tap until the order on screen shows its line, through the kernel on its
- * thread and back. The median and the 99th percentile go to the log, tagged `keel-perf`; the
- * test fails only past a bound far beyond the register's budget, so it runs on slow emulators.
+ * thread and back. The median and the 95th and 99th percentiles go to the log, tagged
+ * `keel-perf`; the test fails only if the 95th passes a bound far beyond the register's budget,
+ * so it runs on slow emulators.
  * The reference device, with a 100,000-SKU catalog, gives the numbers that count.
  */
 @RunWith(AndroidJUnit4::class)
@@ -44,13 +45,16 @@ class TapToFrameTest {
             times[tap] = System.nanoTime() - started
         }
         times.sort()
-        val median = times[TAPS / 2] / 1_000_000.0
-        val p99 = times[TAPS * 99 / 100] / 1_000_000.0
-        Log.i("keel-perf", "tap to frame over $TAPS taps: median %.1f ms, 99th percentile %.1f ms".format(median, p99))
-        check(p99 < 1_000) { "a tap's 99th percentile was $p99 ms" }
+        // The sample at or above which the given share of the taps fall.
+        fun at(share: Int) = times[(TAPS * share + 99) / 100 - 1] / 1_000_000.0
+        val (median, p95, p99) = Triple(at(50), at(95), at(99))
+        Log.i("keel-perf", "tap to frame over $TAPS taps: median %.1f ms, 95th %.1f ms, 99th %.1f ms".format(median, p95, p99))
+        // The 95th, not the slowest: one stall of an emulator isn't the register's. Found in
+        // review: with 100 taps, the 99th percentile was the slowest tap.
+        check(p95 < 1_000) { "a tap's 95th percentile was $p95 ms" }
     }
 
     private companion object {
-        const val TAPS = 100
+        const val TAPS = 200
     }
 }

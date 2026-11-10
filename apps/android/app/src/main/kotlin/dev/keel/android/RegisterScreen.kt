@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -110,10 +110,12 @@ private fun Register(state: RegisterState, model: RegisterModel) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(state.member?.name.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 state.sync?.let { sync ->
+                    // Settled first: until it is, the register refuses every sale, whatever it hears.
+                    // Found in review: "Synced" showed while sales were refused.
                     val words = when {
+                        !sync.settled -> "Joining…"
                         sync.serving -> "Store hub"
                         sync.hubReachable -> "Synced"
-                        !sync.settled -> "Joining…"
                         else -> "Offline"
                     }
                     Text(words, style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("sync"))
@@ -135,7 +137,9 @@ private fun Register(state: RegisterState, model: RegisterModel) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(state.pages.getOrNull(state.page)?.buttons.orEmpty(), key = { it.variant }) { button ->
+                // Keyed by place: a page may hold a variant twice. Found in review: keyed by the
+                // variant, such a page crashed the register.
+                itemsIndexed(state.pages.getOrNull(state.page)?.buttons.orEmpty(), key = { index, _ -> index }) { _, button ->
                     Button(
                         onClick = { model.tap(button) },
                         modifier = Modifier.height(88.dp).testTag("button:${button.variant}"),
@@ -201,7 +205,7 @@ private fun SheetDialog(sheet: ModifierSheet, model: RegisterModel) {
         title = { Text("${sheet.item.name} ${sheet.item.price}") },
         text = {
             Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
-                for (group in sheet.shown) {
+                for ((index, group) in sheet.shown) {
                     val bounds = when {
                         group.min == group.max -> "choose ${group.min}"
                         group.min > 0 -> "choose ${group.min} to ${group.max}"
@@ -210,15 +214,15 @@ private fun SheetDialog(sheet: ModifierSheet, model: RegisterModel) {
                     Text(
                         "${group.name} ($bounds)",
                         style = MaterialTheme.typography.titleSmall,
-                        color = if (sheet.satisfied(group)) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
+                        color = if (sheet.satisfied(index)) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(top = 8.dp),
                     )
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         for (option in group.modifiers) {
-                            val count = sheet.count(option.modifier)
+                            val count = sheet.count(index, option.modifier)
                             FilterChip(
                                 selected = count > 0,
-                                onClick = { model.choose(group, option) },
+                                onClick = { model.choose(index, option.modifier) },
                                 label = { Text(option.name + (if (count > 1) " ×$count" else "") + " " + option.price) },
                                 modifier = Modifier.testTag("modifier:${option.modifier}"),
                             )

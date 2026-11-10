@@ -148,6 +148,8 @@ data class Group(
     val free: Int,
     val repeat: Boolean,
     val modifiers: List<Modifier>,
+    /** How deep it is: 1 for a group the item offers, 2 for one under its modifiers, and so on. */
+    val depth: Int = if (under == null) 1 else 2,
 )
 
 /** A modifier a group offers, and the price of one application. */
