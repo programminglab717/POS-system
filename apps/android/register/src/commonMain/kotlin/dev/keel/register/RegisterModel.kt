@@ -83,27 +83,32 @@ class RegisterModel(
 
     /** Loads the team, for whoever signs in, and where the printer is. */
     fun start() = perform {
+        val version = version()
         val team = till.team()
         val printer = settings?.load()
-        mutable.update { it.copy(loading = false, team = team, printer = printer) }
+        mutable.update { it.copy(loading = false, team = team, printer = printer, profileVersion = version) }
+    }
+
+    /** The version of the profile the till rings from, or null if it can't say. */
+    private fun version(): String? = try {
+        till.profileVersion()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        null
     }
 
     /** Signs [member] in, and shows the menu. */
     fun signIn(member: Member) = perform {
         till.signIn(member.id)
-        // The version the menu is read at, so a publication taken after it reads it again.
-        val version = try {
-            till.syncState()?.profileVersion
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            null
-        }
+        // The version the menu is read at, read before it, so a publication taken after it reads
+        // it again.
+        val version = version()
         val pages = till.menu()
         mutable.update {
             it.copy(
                 screen = Screen.REGISTER, member = member, pages = pages, page = 0,
-                profileVersion = version ?: it.profileVersion,
+                profileVersion = version,
             )
         }
     }
@@ -291,10 +296,12 @@ class RegisterModel(
         } catch (_: Exception) {
             null
         }
-        val shown = current.profileVersion
-        mutable.update { it.copy(sync = sync, profileVersion = shown ?: sync?.profileVersion) }
-        val version = sync?.profileVersion
-        if (version != null && shown != null && version != shown) catalogChanged(version)
+        mutable.update { it.copy(sync = sync) }
+        // The till's own version, joined or not: the team and the menu are read again whenever it
+        // isn't the one they were read at, an unknown one included. Found in review: a register
+        // that took a publication as it joined, after its cashier signed in, kept the old menu.
+        val version = withContext(worker) { version() }
+        if (version != null && version != current.profileVersion) catalogChanged(version)
     }
 
     /**

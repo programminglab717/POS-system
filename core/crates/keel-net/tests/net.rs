@@ -365,7 +365,15 @@ fn a_hub_dials_its_cloud_and_only_its_cloud() {
             .is_none()
     };
     assert!(quiet(&stray), "the cell admits the devices that may host the hub alone");
-    drop((stray, register, hub, cloud));
+    // The cloud's certificate dialing the hub is refused: the hub dials its cloud itself, and an
+    // inbound connection would replace that one. Found in review.
+    let inbound = Net::device(
+        located.clone(),
+        credentials(&ca, &ca, vec![CLOUD_NAME.into(), device_name(id(CLOUD))]),
+    )
+    .unwrap();
+    assert!(quiet(&inbound), "the hub admits every device of the roster but its cloud");
+    drop((inbound, stray, register, hub, cloud));
     // A listener at the cloud's address with the cloud's name, but another device's certificate:
     // the register's. It isn't the cloud.
     let (listener, cloud_port) = bound();

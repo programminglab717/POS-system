@@ -478,19 +478,38 @@ BUGS = [
     (
         "runtime: a publication is looked for at no frame",
         "src/sync.rs",
-        "        let _ = self.take_publications();",
-        "",
+        "        // look began; the frame itself is stored, and its answers go out.\n        let _ = self.take_publications();",
+        "        // look began; the frame itself is stored, and its answers go out.",
     ),
     (
         "runtime: a device restarted opens with the provisioned profile",
         "src/sync.rs",
-        "        // The latest publication the store holds, which a device restarted took before.\n        self.take_publications()?;",
-        "",
+        "        // first frames go out.\n        let _ = self.take_publications();",
+        "        // first frames go out.",
     ),
     (
         "runtime: a device that publishes doesn't take its own",
         "src/publication.rs",
         "        })?;\n        self.take_publications()?;",
         "        })?;",
+    ),
+    # Found in step 8's review.
+    (
+        "runtime: the cloud publishes before its log is settled",
+        "src/publication.rs",
+        "        if !sync.may_write(self.clock.now()) {",
+        "        if !sync.may_write(self.clock.now()) && false {",
+    ),
+    (
+        "runtime: a device takes no publication before it joins its network",
+        "src/publication.rs",
+        "        self.watch_cloud(roster.cloud().map(|cloud| cloud.device));\n        self.take_publications()",
+        "        self.watch_cloud(roster.cloud().map(|cloud| cloud.device));\n        Ok(false)",
+    ),
+    (
+        "runtime: another cloud's log is looked at from where the last one's was",
+        "src/publication.rs",
+        "            self.published = Watch { cloud, looked: 0 };",
+        "            self.published = Watch { cloud, looked: self.published.looked };",
     ),
 ]

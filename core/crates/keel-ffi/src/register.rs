@@ -312,6 +312,9 @@ impl Register {
             chain: vec![CertificateDer::from(kit.certificate)],
             key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(kit.tls_key)),
         };
+        // The latest publication the store holds, before anything that can fail to start: a
+        // register that can't join yet rings from what it took. Found in review.
+        self.with(|runtime| runtime.take_published(&roster))?;
         let listens = preferred_hub(&roster) == Some(self.device);
         // The network first: if it can't start, as when the port is taken, the runtime isn't left
         // replicating with nothing to replicate over, and a later call can try again.
@@ -351,6 +354,17 @@ impl Register {
         // uncapped wait held the register's lock for as long as it was asked to.
         let wait = Duration::from_millis(u64::from(wait_ms)).min(MAX_SYNC_WAIT);
         self.with(|runtime| drain(|wait| keel_hub::step(runtime, net, wait), wait).map(|_| ()))
+    }
+
+    /// The version of the profile the register rings from, 64 hexadecimal digits: the one
+    /// provisioned until it takes one the cloud publishes. When it changes, the menu and the team
+    /// are read again.
+    pub fn profile_version(&self) -> String {
+        self.runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .profile_version()
+            .to_hex()
     }
 
     /// How replication stands, once the register has joined its network.

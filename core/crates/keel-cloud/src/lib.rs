@@ -38,6 +38,9 @@ pub mod reports;
 /// A location's durable replica's runtime: the cloud device's.
 pub type CloudRuntime = Runtime<SoftwareSigner, OsEntropy, SystemClock, OsEntropy>;
 
+/// The most jobs a location's loop runs between two turns of replication.
+const JOBS_PER_TURN: usize = 8;
+
 /// The longest a location's loop waits for the network, so a job waits no longer to run.
 pub const STEP_WAIT: Duration = Duration::from_millis(50);
 
@@ -258,7 +261,9 @@ fn serve(
         }
     };
     loop {
-        loop {
+        // At most a few jobs between two turns of replication, so a burst of requests never
+        // holds it up for long. Found in review.
+        for _ in 0..JOBS_PER_TURN {
             match queue.try_recv() {
                 Ok(job) => job(runtime),
                 Err(mpsc::TryRecvError::Empty) => break,

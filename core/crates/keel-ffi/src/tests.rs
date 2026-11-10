@@ -746,6 +746,7 @@ fn a_hub_and_a_register_sync_through_the_bindings() {
     let demo = keel_domain::profile::demo().unwrap();
     let version = keel_domain::publication::version(&demo);
     assert_eq!(status.profile_version, version.to_hex());
+    assert_eq!(register.profile_version(), version.to_hex());
     assert_eq!(status.profile_version.len(), 64);
     assert_eq!((status.backed_up, status.head), (0, 0));
     let turn = |until: &dyn Fn() -> bool| {

@@ -72,19 +72,33 @@ test("a price changed in the editor is checked, published, and taken by the regi
   const espresso = page.getByRole("article", { name: "Item Espresso" });
   const price = espresso.getByLabel("Price of Espresso");
   await expect(price).toHaveValue("3.25");
-  // A price that isn't one isn't taken.
-  await price.fill("3.2.5");
-  await expect(price).toHaveAttribute("aria-invalid", "true");
-  await price.fill("3.40");
+  // Typed key by key, as an operator types it, it stays as typed. Found in review: each key
+  // reformatted it, so "3.4" became "3.40" under the cursor and the next key made "3.400".
+  await price.clear();
+  await price.pressSequentially("3.4");
+  await expect(price).toHaveValue("3.4");
+  await price.pressSequentially("0");
+  await expect(price).toHaveValue("3.40");
   await expect(page.getByText("Unpublished changes")).toBeVisible();
+  // A price that isn't one holds back checking and publishing: what would go isn't what it shows.
+  await price.pressSequentially(".5");
+  await expect(price).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByRole("button", { name: "Publish" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Check" })).toBeDisabled();
+  await price.press("Backspace");
+  await price.press("Backspace");
+  await expect(price).toHaveValue("3.40");
+  await expect(page.getByRole("button", { name: "Publish" })).toBeEnabled();
   // A group that allows fewer than it requires fails the kernel's check, and says why.
   const group = page.getByRole("article", { name: /^Group / }).first();
   const fewest = group.getByLabel("Fewest");
-  const original = await fewest.inputValue();
-  await group.getByLabel("Most").fill("1");
-  await fewest.fill("2");
+  const most = group.getByLabel("Most");
+  const [original, originalMost] = [await fewest.inputValue(), await most.inputValue()];
+  await most.fill(String(Math.max(Number(original) - 1, 0)));
+  await fewest.fill(String(Number(original) + 1));
   await page.getByRole("button", { name: "Check" }).click();
   await expect(page.getByRole("status")).toHaveClass(/error/);
+  await most.fill(originalMost);
   await fewest.fill(original);
   await page.getByRole("button", { name: "Check" }).click();
   await expect(page.getByRole("status")).toHaveText("The catalog passes every check.");
@@ -100,12 +114,32 @@ test("a price changed in the editor is checked, published, and taken by the regi
   expect(registerVersion()).not.toBe(before);
 });
 
+test("a variant removed takes its buttons with it", async ({ page }) => {
+  await signIn(page);
+  const latte = page.getByRole("article", { name: "Item Latte" });
+  const pages = page.getByRole("article", { name: /^Page / });
+  await expect(pages.getByRole("listitem").filter({ hasText: "Latte, Large" })).not.toHaveCount(0);
+  await latte.getByRole("button", { name: "Remove variant" }).last().click();
+  await expect(pages.getByRole("listitem").filter({ hasText: "Latte, Large" })).toHaveCount(0);
+  await expect(pages.getByText("(removed)")).toHaveCount(0);
+  await page.getByRole("button", { name: "Check" }).click();
+  await expect(page.getByRole("status")).toHaveText("The catalog passes every check.");
+  await page.getByRole("button", { name: "Discard" }).click();
+  await expect(latte.getByLabel("Variant name")).toHaveCount(2);
+});
+
 test("a catalog read before another was published is refused", async ({ page, request }) => {
   await signIn(page);
   const headers = { Authorization: `Bearer ${token()}` };
   const [location] = await (await request.get("/api/locations", { headers })).json();
   const read = await (await request.get(`/api/locations/${location.id}/catalog`, { headers })).json();
   const edit = { base: "0".repeat(64), items: read.items, groups: read.groups, pages: read.pages };
+  // With no base at all, it is refused too: it would overwrite what it never read.
+  const blind = await request.put(`/api/locations/${location.id}/catalog`, {
+    headers,
+    data: { items: read.items, groups: read.groups, pages: read.pages },
+  });
+  expect(blind.status()).toBe(422);
   const stale = await request.put(`/api/locations/${location.id}/catalog`, { headers, data: edit });
   expect(stale.status()).toBe(409);
   expect((await stale.json()).version).toBe(read.version);

@@ -74,6 +74,8 @@ pub struct Runtime<S, E, C, I> {
     sending: Option<Id<Job>>,
     /// Its replication, once started.
     pub(crate) sync: Option<crate::sync::Sync>,
+    /// Whose publications the runtime takes, and how far into their log it has looked.
+    pub(crate) published: crate::publication::Watch,
 }
 
 /// What every event of one intent records besides its payload.
@@ -143,6 +145,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             sending: None,
             key: public_key,
             sync: None,
+            published: crate::publication::Watch::default(),
         })
     }
 

@@ -34,4 +34,6 @@ class OpeningTill(open: () -> Till) : Till {
     override fun resolve(job: String, printed: Boolean) = till.resolve(job, printed)
     override fun reprint(order: String) = till.reprint(order)
     override fun syncState() = openedTill?.syncState()
+
+    override fun profileVersion() = openedTill?.profileVersion()
 }

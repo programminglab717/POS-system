@@ -242,6 +242,28 @@ fn a_profile_published_reaches_the_register_and_prices_its_next_line() {
     assert_eq!(register.profile_version(), provisioned, "the provisioned profile, until then");
     register.start_sync(roster(CLOUD)).unwrap();
     assert_eq!(register.profile_version(), version);
+    // Or before, as soon as the shell gives it the roster, while it can't join its network.
+    // Found in review: a register that couldn't join rang from the provisioned profile.
+    drop(register);
+    let mut register = open(&register_dir, REGISTER);
+    assert!(register.take_published(&roster(CLOUD)).unwrap());
+    assert_eq!(register.profile_version(), version);
+    assert!(!register.take_published(&roster(CLOUD)).unwrap(), "nothing more to take");
+    // Under a roster that names another cloud, the publications are looked for in its log.
+    drop(register);
+    let mut register = open(&register_dir, REGISTER);
+    assert!(!register.take_published(&roster(REGISTER)).unwrap());
+    assert_eq!(register.profile_version(), provisioned);
+    // And back under the location's: its cloud's log is looked at from the start, wherever the
+    // look at the other's ended.
+    assert!(register.take_published(&roster(CLOUD)).unwrap());
+    assert_eq!(register.profile_version(), version);
+    let mut data = roster(CLOUD).data().clone();
+    data.location = id(0xbad);
+    assert!(matches!(
+        register.take_published(&Roster::new(data).unwrap()),
+        Err(RuntimeError::RosterMismatch)
+    ));
 }
 
 #[test]
@@ -285,6 +307,14 @@ fn only_the_roster_s_cloud_publishes() {
         location.node(CLOUD).publish_profile(&elsewhere),
         Err(RuntimeError::RosterMismatch)
     ));
+    // A cloud that hasn't settled its log doesn't write to it: it waits to hear the hub, or
+    // to be an island. Found in review: it published before it heard the hub.
+    let lonely = dir("only-lonely");
+    let mut cloud = open(&lonely, CLOUD);
+    cloud.start_sync(roster(CLOUD)).unwrap();
+    assert!(matches!(cloud.publish_profile(&espresso_at(410)), Err(RuntimeError::NotSettled)));
+    cloud.clock().advance(keel_runtime::ISLAND_AFTER).unwrap();
+    assert!(cloud.publish_profile(&espresso_at(410)).is_ok());
     // Before replication starts, the runtime doesn't know who the cloud is.
     let stray = dir("only-stray");
     assert!(matches!(
@@ -297,6 +327,7 @@ fn only_the_roster_s_cloud_publishes() {
     let impostor = dir("only-impostor");
     let mut register = open(&impostor, REGISTER);
     register.start_sync(roster(REGISTER)).unwrap();
+    register.clock().advance(keel_runtime::ISLAND_AFTER).unwrap();
     let forged = register.publish_profile(&espresso_at(1)).unwrap();
     assert_eq!(register.profile_version(), forged);
     drop(register);

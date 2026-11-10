@@ -268,7 +268,7 @@ class RegisterModelTest {
         var team = listOf(Member("alex", "Alex"), Member("sam", "Sam"))
         val fake = FakeTill()
         val till = object : Till by fake {
-            override fun syncState() = SyncInfo(false, true, true, false, profileVersion = version)
+            override fun profileVersion() = version
             override fun menu() = fake.menu().take(pages.size).mapIndexed { n, page -> page.copy(name = pages[n]) }
             override fun team() = team
         }
@@ -291,6 +291,14 @@ class RegisterModelTest {
         model.refreshSync()
         testScheduler.advanceUntilIdle()
         assertEquals(listOf("Coffee"), model.state.value.pages.map { it.name })
+        // A version taken while the register can't say how replication stands, as before it joins
+        // its network: read again all the same. Found in review.
+        version = "v2b"
+        pages = listOf("Coffee", "Tea")
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("Coffee", "Tea"), model.state.value.pages.map { it.name })
+        pages = listOf("Coffee")
         // A team without Alex: the kernel signed them out, and the register asks who is working.
         version = "v3"
         team = listOf(Member("sam", "Sam"))

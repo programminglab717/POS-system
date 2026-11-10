@@ -35,6 +35,9 @@ pub struct SalesReport {
     pub items: Vec<ItemSales>,
     /// What each tender took.
     pub tenders: Vec<TenderTotal>,
+    /// Orders closed over the range in another currency than the location's, left out of every
+    /// total: none, unless a profile in another currency was published.
+    pub other_currency: u64,
 }
 
 /// One business day's sales.
@@ -55,6 +58,8 @@ pub struct ItemSales {
     pub name: String,
     /// How many, as a decimal: `3`, or `1.5` of an item sold by weight.
     pub quantity: String,
+    /// The unit it is counted in: `each`, or `kg` for an item sold by weight.
+    pub unit: String,
     /// Its lines' amounts, before tax.
     pub amount: i64,
 }
@@ -117,15 +122,22 @@ pub fn sales(
     let currency = runtime.profile().data().currency;
     let zero = Money::zero(currency);
     let mut days: BTreeMap<BusinessDate, (u64, Money)> = BTreeMap::new();
-    let mut items: BTreeMap<String, (Quantity, Money)> = BTreeMap::new();
+    // An item by its name and its unit: two items of one name, one sold by weight, are two.
+    let mut items: BTreeMap<(String, &'static str), (Quantity, Money)> = BTreeMap::new();
     let mut tenders: BTreeMap<u8, (u64, Money)> = BTreeMap::new();
-    let (mut orders, mut total) = (0_u64, zero);
+    let (mut orders, mut total, mut other_currency) = (0_u64, zero, 0_u64);
     let closed = runtime.store().orders(OrderState::Closed).map_err(RuntimeError::from)?;
     for order in closed {
         let Some(date) = order.business_date.filter(|date| (from..=to).contains(date)) else {
             continue;
         };
         let ticket = runtime.ticket(order.id)?;
+        // An order in another currency can't be added to the location's: it is counted apart.
+        // Found in review: one failed the whole report.
+        if ticket.total.money.currency() != currency {
+            other_currency = other_currency.saturating_add(1);
+            continue;
+        }
         let day = days.entry(date).or_insert((0, zero));
         day.0 = day.0.saturating_add(1);
         day.1 = day.1.checked_add(ticket.total.money)?;
@@ -133,7 +145,7 @@ pub fn sales(
         total = total.checked_add(ticket.total.money)?;
         for line in &ticket.lines {
             let entry = items
-                .entry(line.name.to_string())
+                .entry((line.name.to_string(), line.quantity.unit().code()))
                 .or_insert((Quantity::zero(line.quantity.unit()), zero));
             entry.0 = entry.0.checked_add(line.quantity)?;
             entry.1 = entry.1.checked_add(line.amount.money)?;
@@ -155,9 +167,10 @@ pub fn sales(
     }
     let mut items: Vec<ItemSales> = items
         .into_iter()
-        .map(|(name, (quantity, amount))| ItemSales {
+        .map(|((name, unit), (quantity, amount))| ItemSales {
             name,
             quantity: decimal(quantity.micros()),
+            unit: unit.to_owned(),
             amount: amount.minor(),
         })
         .collect();
@@ -186,6 +199,7 @@ pub fn sales(
                 amount: amount.minor(),
             })
             .collect(),
+        other_currency,
     })
 }
 

@@ -35,8 +35,6 @@ pub(crate) struct Sync {
     pushed: u64,
     /// When replication started, by the runtime's clock.
     started: Timestamp,
-    /// How far into the cloud's log the runtime has looked for publications.
-    pub(crate) looked: u64,
 }
 
 impl Sync {
@@ -52,7 +50,7 @@ impl Sync {
 
 /// What a register shows of its replication.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(clippy::struct_excessive_bools, reason = "four independent facts a screen shows")]
+#[expect(clippy::struct_excessive_bools, reason = "independent facts a screen shows")]
 pub struct SyncStatus {
     /// The device's own log is settled: until it is, intents are refused.
     pub settled: bool,
@@ -127,9 +125,13 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             now,
         )?;
         let pushed = self.store.head(device)?.seq();
-        self.sync = Some(Sync { replicator, registry, roster, pushed, started: now, looked: 0 });
-        // The latest publication the store holds, which a device restarted took before.
-        self.take_publications()?;
+        // The cloud the roster names is the one whose publications count from now on.
+        self.watch_cloud(roster.cloud().map(|cloud| cloud.device));
+        self.sync = Some(Sync { replicator, registry, roster, pushed, started: now });
+        // The latest publication the store holds, which a device restarted took before. A store
+        // that can't be read now leaves it for the next frame: replication has started, and its
+        // first frames go out.
+        let _ = self.take_publications();
         Ok(outgoing)
     }
 

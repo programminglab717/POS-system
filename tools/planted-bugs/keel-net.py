@@ -84,4 +84,10 @@ BUGS = [
         "            if let Some(dialer) = dialer.filter(|_| false) {",
         "unit",
     ),
+    (
+        "net: the hub admits its cloud inbound, which replaces the connection it dialed",
+        "src/lib.rs",
+        "        Peer::NotCloud => roster.cloud().is_none_or(|cloud| cloud.device != device),",
+        "        Peer::NotCloud => true,",
+    ),
 ]

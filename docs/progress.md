@@ -6,19 +6,16 @@
 
 ## Where we are
 
-**Phase 0 (Foundations), step 8 of 8:** the cloud cell v0, designed in
-[ADR-0028](./adr/0028-cloud-cell-v0.md) (proposed), in four slices: sync ingest, catalog
-publishing, the back office's API, and the back office. Slice 1, sync ingest, is built: the
-cloud is a device of each location's roster, the hub dials it, and the cell holds each location's
-durable copy in a store of its own, so a sale rung on a register reaches the hub and the cloud,
-and the durable-ack watermark comes back to the register. Slice 2, catalog publishing, is built:
-the cell publishes a location's profile as events in the cloud's log, and every device takes it
-whole between two intents, within about a second on the host. Slices 3 and 4, the back office's
-API and the back office, are built: a catalog edited in the browser is checked by the kernel,
-published, and taken by a register; reports add up the durable copy's tickets. The step's
-review is next. Step 7, the Android register shell, is
-built in five slices, each reviewed, and its designs, ADR-0023 to ADR-0027, accepted; what remains
-of it waits for the reference device.
+**Phase 0 (Foundations) is built: all 8 steps.** Step 8, the cloud cell v0, designed in
+[ADR-0028](./adr/0028-cloud-cell-v0.md), is built in four slices and reviewed, and its design
+accepted: the cloud is a device of each location's roster, the hub dials it, and the cell holds
+each location's durable copy in a store of its own, so a sale rung on a register reaches the hub
+and the cloud, and the durable-ack watermark comes back to the register; the cell publishes a
+location's profile as events in the cloud's log, which every device takes whole between two
+intents, within about a second on the host; and the back office, a React app on the cell's API,
+edits the catalog, which the kernel checks whole, and reports the durable copy's sales. Step 7,
+the Android register shell, is built and reviewed; what remains of it waits for the reference
+device, as do the performance budgets that decision gate G1 weighs.
 
 ## Phase 0 milestones
 
@@ -33,7 +30,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
 | 7 | Android register shell | Done, 2026-11-10: built in five slices, each reviewed; the reference device's numbers wait for the device | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [`apps/android`](../apps/android/), [ADR-0023](./adr/0023-register-shell.md) to [ADR-0027](./adr/0027-android-app.md) |
-| 8 | Cloud cell v0 | All 4 slices built; the review next | [`core/crates/keel-cloud`](../core/crates/keel-cloud/), [ADR-0028](./adr/0028-cloud-cell-v0.md) |
+| 8 | Cloud cell v0 | Done, 2026-11-10: built in four slices, reviewed | [`core/crates/keel-cloud`](../core/crates/keel-cloud/), [ADR-0028](./adr/0028-cloud-cell-v0.md) |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
 checks and payments, was split in two, so that the payment design was reviewed before it was
@@ -85,8 +82,8 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
-Step 8, the cloud cell v0 ([ADR-0028](./adr/0028-cloud-cell-v0.md), proposed), comes in four
-slices, each verified as it lands, then reviewed:
+Step 8, the cloud cell v0 ([ADR-0028](./adr/0028-cloud-cell-v0.md), accepted after its
+review), came in four slices, each verified as it landed, then reviewed together:
 
 1. **Sync ingest** (built 2026-11-10): roster v1, `keel-net`'s named peers, the cloud's kit, the
    durable peer named, and `keel-cell`'s replication for each location.
@@ -229,6 +226,38 @@ Built in slices 3 and 4:
   tests in Chromium.
 - The dependency policy gains axum, serde and tower-http for the cell, tower and http-body-util
   for its tests, and the back office's packages.
+
+**Review** (2026-11-10), by an independent reviewer, which found, each now fixed with a test or a
+planted bug (ADR-0028, as built):
+
+- A register restarted rang from the provisioned profile until it joined its network, and the
+  Android register kept the menu it had read: the runtime takes what its store holds as soon as
+  it is given the roster (`take_published`, called by `keel-ffi` before anything that can fail),
+  the bindings answer `profile_version()` joined or not, and the register reads its team and menu
+  again whenever the till's version isn't the one they were read at.
+- The cloud could publish before its log was settled: it waits, and the API answers 503.
+- The editor reformatted a price at each key, and published the last valid amount behind an
+  invalid one: it keeps what is typed, and holds back Check and Publish while a price isn't an
+  amount; removing a variant or a group removes what refers to it.
+- A catalog with no `base` overwrote what it never read: `base` is required, compared without
+  regard to case.
+- Statuses: the JSON extractor's own (413, 415, 422), 404 for an unknown route under `/api`, 422
+  for a profile too large.
+- A report failed whole on items of one name in two units, or an order in another currency.
+- The hub admitted its cloud inbound, which would replace the connection it dialed.
+- A burst of requests could hold up replication: at most 8 jobs between two turns.
+- Nits: `SyncStatus`'s docs; `start_sync` failing after replication had started when the store
+  couldn't be read; the end-to-end test leaving a group changed.
+
+Its other points were checked and found sound: the trust in publications, the cursor of the
+cloud's log, nothing caching the profile, the catalog's round trip, the token's comparison, the
+cell's concurrency, and `keel-net`'s refactoring.
+
+- **After the review:** the workspace's tests, clippy with all features and none, the
+  documentation, every planted bug's text, and the new ones caught (10 more, all caught:
+  `keel-runtime` 64, `keel-net` 12, `keel-cloud` 19); the back office's 6 end-to-end tests, three
+  runs in a row; the register module's 22 JVM tests, the Android kernel module's 6, and the app
+  built.
 
 ## Completed
 

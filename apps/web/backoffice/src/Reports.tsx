@@ -63,6 +63,11 @@ export function Reports({ api, location }: { api: Api; location: string }) {
               <strong data-testid="total">{money(report.total)}</strong>
             </div>
           </div>
+          {report.otherCurrency > 0 && (
+            <p className="muted">
+              {report.otherCurrency} orders in another currency are left out of these totals.
+            </p>
+          )}
           <h3>By business day</h3>
           <table>
             <thead>
@@ -93,9 +98,12 @@ export function Reports({ api, location }: { api: Api; location: string }) {
             </thead>
             <tbody>
               {report.items.map((item) => (
-                <tr key={item.name}>
+                <tr key={`${item.name} ${item.unit}`}>
                   <td>{item.name}</td>
-                  <td className="number">{item.quantity}</td>
+                  <td className="number">
+                    {item.quantity}
+                    {item.unit === "each" ? "" : ` ${item.unit}`}
+                  </td>
                   <td className="number">{money(item.amount)}</td>
                 </tr>
               ))}

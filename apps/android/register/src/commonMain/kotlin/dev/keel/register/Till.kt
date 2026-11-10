@@ -67,6 +67,12 @@ interface Till {
 
     /** How replication with the location stands, for a register joined to its network. */
     fun syncState(): SyncInfo? = null
+
+    /**
+     * The version of the profile the till rings from, whether or not it has joined its network:
+     * when it changes, the team and the menu are read again. Null for a till that has none.
+     */
+    fun profileVersion(): String? = null
 }
 
 /** How replication with the location stands. */

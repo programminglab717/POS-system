@@ -6,21 +6,34 @@ const PREFIXES = ["plain", "no", "extra", "light", "side", "sub"];
 
 type Status = { kind: "info" | "error" | "ok"; text: string } | null;
 
-/** An amount typed as a decimal, kept as minor units once it is one. */
+/**
+ * An amount typed as a decimal, kept as minor units once it is one. What is typed stays as typed:
+ * the text follows the value only when the value changes otherwise, as when a catalog is loaded.
+ * Found in review: it reformatted at each key, so "4" became "4.00" under the cursor.
+ */
 function PriceInput({
   value,
   digits,
   label,
   onChange,
+  onValidity,
 }: {
   value: number;
   digits: number;
   label: string;
   onChange: (minor: number) => void;
+  onValidity: (valid: boolean) => void;
 }) {
   const [text, setText] = useState(format(value, digits));
-  useEffect(() => setText(format(value, digits)), [value, digits]);
+  useEffect(() => {
+    setText((typed) => (parse(typed, digits) === value ? typed : format(value, digits)));
+  }, [value, digits]);
   const valid = parse(text, digits) !== null;
+  useEffect(() => {
+    onValidity(valid);
+    // A field removed while invalid holds nothing back.
+    return () => onValidity(true);
+  }, [valid]);
   return (
     <input
       className={valid ? "price" : "price invalid"}
@@ -64,6 +77,17 @@ export function CatalogEditor({ api, location }: { api: Api; location: string })
   const [changed, setChanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  // The price fields whose text isn't an amount: while any is, nothing is checked or published,
+  // as what would go is the last amount they held, not what they show.
+  const [invalid, setInvalid] = useState<ReadonlySet<string>>(new Set());
+  const validity = (key: string) => (valid: boolean) =>
+    setInvalid((all) => {
+      if (valid === !all.has(key)) return all;
+      const next = new Set(all);
+      if (valid) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const load = () =>
     api
@@ -149,14 +173,17 @@ export function CatalogEditor({ api, location }: { api: Api; location: string })
           <button disabled={busy || !changed} onClick={() => void load().then(() => setStatus(null))}>
             Discard
           </button>
-          <button disabled={busy} onClick={() => void check()}>
+          <button disabled={busy || invalid.size > 0} onClick={() => void check()}>
             Check
           </button>
-          <button className="primary" disabled={busy || !changed} onClick={() => void publish()}>
+          <button className="primary" disabled={busy || !changed || invalid.size > 0} onClick={() => void publish()}>
             Publish
           </button>
         </div>
       </div>
+      {invalid.size > 0 && (
+        <p className="error banner">A price isn't an amount: correct it to check or publish.</p>
+      )}
       {status && (
         <p role="status" className={status.kind === "error" ? "error banner" : "ok banner"}>
           {status.text}
@@ -238,6 +265,7 @@ export function CatalogEditor({ api, location }: { api: Api; location: string })
                     </td>
                     <td>
                       <PriceInput
+                        onValidity={validity(variant.id)}
                         label={`Price of ${variant.name ? `${item.name}, ${variant.name}` : item.name}`}
                         value={variant.price}
                         digits={digits}
@@ -254,9 +282,13 @@ export function CatalogEditor({ api, location }: { api: Api; location: string })
                         <button
                           className="quiet"
                           aria-label="Remove variant"
-                          onClick={() =>
-                            updateItem(index, (it) => ({ ...it, variants: it.variants.filter((_, n) => n !== at) }))
-                          }
+                          onClick={() => {
+                            // Its buttons go with it. Found in review: they stayed, and the publish failed.
+                            updateItem(index, (it) => ({ ...it, variants: it.variants.filter((_, n) => n !== at) }));
+                            setPages((all) =>
+                              all.map((page) => ({ ...page, buttons: page.buttons.filter((id) => id !== variant.id) })),
+                            );
+                          }}
                         >
                           ×
                         </button>
@@ -340,7 +372,15 @@ export function CatalogEditor({ api, location }: { api: Api; location: string })
               <button
                 className="quiet"
                 onClick={() => {
-                  setGroups((all) => all.filter((_, at) => at !== index));
+                  // Every item and modifier that offers it stops offering it.
+                  setGroups((all) =>
+                    all
+                      .filter((_, at) => at !== index)
+                      .map((g) => ({
+                        ...g,
+                        modifiers: g.modifiers.map((m) => ({ ...m, groups: m.groups.filter((id) => id !== group.id) })),
+                      })),
+                  );
                   setItems((all) => all.map((item) => ({ ...item, groups: item.groups.filter((id) => id !== group.id) })));
                   touch();
                 }}
@@ -382,6 +422,7 @@ export function CatalogEditor({ api, location }: { api: Api; location: string })
                     </td>
                     <td>
                       <PriceInput
+                        onValidity={validity(modifier.id)}
                         label={`Price of ${modifier.name}`}
                         value={modifier.price}
                         digits={digits}

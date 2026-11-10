@@ -8,7 +8,7 @@
 //! | `GET /api/locations/{id}/replication` | Each device of the location: whether it is connected, and how far the durable copy holds its log. |
 //! | `GET /api/locations/{id}/catalog` | The catalog and menu ([`CatalogView`]). |
 //! | `POST /api/locations/{id}/catalog/check` | Checks a catalog ([`CatalogEdit`]) whole, publishing nothing: its version, or why not. |
-//! | `PUT /api/locations/{id}/catalog` | Publishes a catalog: 409 if another was published since the one it was read at. |
+//! | `PUT /api/locations/{id}/catalog` | Publishes a catalog, whose `base` names the version it was read at: 409 if another was published since, 503 while the cell catches up with the location. |
 //! | `GET /api/locations/{id}/reports/sales?from=&to=` | Sales over business days ([`SalesReport`](crate::reports::SalesReport)), today's by default. |
 //!
 //! Anything else is the back office's single-page app, from the directory the cell is given,
@@ -22,7 +22,7 @@ use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use keel_domain::publication;
 use keel_events::envelope::Location as LocationRef;
@@ -33,6 +33,8 @@ use serde_json::json;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::catalog::{self, CatalogEdit, CatalogView};
+use keel_runtime::RuntimeError;
+
 use crate::{CellError, CloudRuntime, Location, reports};
 
 /// The most a request's body may be: a catalog of the largest profile that may be published.
@@ -67,9 +69,15 @@ impl Cell {
 #[derive(Debug)]
 enum ApiError {
     NotFound,
+    NoRoute,
     Unauthorized,
     Invalid(String),
+    /// A request the JSON extractor refused, with its own status: 413 for one too large, 415
+    /// for one that isn't JSON, 422 for one that isn't what it must be.
+    Rejected(StatusCode, String),
     Conflict(String),
+    /// The location's cloud hasn't settled its log, and writes nothing until it has.
+    Unavailable,
     Failed(String),
 }
 
@@ -77,6 +85,12 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             ApiError::NotFound => (StatusCode::NOT_FOUND, "no such location".to_owned()),
+            ApiError::NoRoute => (StatusCode::NOT_FOUND, "no such route".to_owned()),
+            ApiError::Rejected(status, message) => (status, message),
+            ApiError::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the cell is catching up with the location: try again in a few seconds".to_owned(),
+            ),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "a bearer token is needed".into()),
             ApiError::Invalid(message) => (StatusCode::UNPROCESSABLE_ENTITY, message),
             ApiError::Conflict(version) => {
@@ -96,6 +110,15 @@ impl From<CellError> for ApiError {
     fn from(error: CellError) -> ApiError {
         ApiError::Failed(error.to_string())
     }
+}
+
+/// A request the JSON extractor refused, answered with its own status, as JSON.
+fn rejected(rejection: &JsonRejection) -> ApiError {
+    ApiError::Rejected(rejection.status(), rejection.body_text())
+}
+
+async fn no_route() -> ApiError {
+    ApiError::NoRoute
 }
 
 /// Whether `given` is the token, compared in constant time: their hashes are, every byte.
@@ -223,7 +246,7 @@ async fn check_catalog(
     edit: Result<Json<CatalogEdit>, JsonRejection>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let index = cell.location(&id)?;
-    let Json(edit) = edit.map_err(|rejection| ApiError::Invalid(rejection.body_text()))?;
+    let Json(edit) = edit.map_err(|rejection| rejected(&rejection))?;
     let checked = on(&cell, index, move |runtime| {
         catalog::apply(runtime.profile(), &edit).map(|profile| publication::version(&profile))
     })
@@ -238,17 +261,26 @@ async fn publish_catalog(
     edit: Result<Json<CatalogEdit>, JsonRejection>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let index = cell.location(&id)?;
-    let Json(edit) = edit.map_err(|rejection| ApiError::Invalid(rejection.body_text()))?;
+    let Json(edit) = edit.map_err(|rejection| rejected(&rejection))?;
     // Checked against the version it was read at, and published, in one job: nothing is
     // published between the two.
     let published = on(&cell, index, move |runtime| {
         let current = catalog::hex(runtime.profile_version());
-        if edit.base.as_ref().is_some_and(|base| *base != current) {
+        // The version it was read at is required: a write that names none would overwrite a
+        // newer publication unseen. Found in review.
+        let base = edit.base.as_ref().ok_or_else(|| {
+            ApiError::Invalid("base, the version the catalog was read at, is required".into())
+        })?;
+        if !base.eq_ignore_ascii_case(&current) {
             return Err(ApiError::Conflict(current));
         }
         let profile = catalog::apply(runtime.profile(), &edit)
             .map_err(|error| ApiError::Invalid(error.to_string()))?;
-        runtime.publish_profile(&profile).map_err(|error| ApiError::Failed(error.to_string()))
+        runtime.publish_profile(&profile).map_err(|error| match error {
+            RuntimeError::NotSettled => ApiError::Unavailable,
+            RuntimeError::Publication(_) => ApiError::Invalid(error.to_string()),
+            _ => ApiError::Failed(error.to_string()),
+        })
     })
     .await??;
     Ok(Json(json!({ "version": catalog::hex(published) })))
@@ -298,6 +330,9 @@ pub fn router(cell: Arc<Cell>) -> Router {
         .route("/api/locations/{id}/catalog", get(read_catalog).put(publish_catalog))
         .route("/api/locations/{id}/catalog/check", post(check_catalog))
         .route("/api/locations/{id}/reports/sales", get(sales))
+        // Anything else under /api is no route, not the single-page app.
+        .route("/api", any(no_route))
+        .route("/api/{*rest}", any(no_route))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .route_layer(middleware::from_fn_with_state(Arc::clone(&cell), authorized));
     let router = match &cell.web {

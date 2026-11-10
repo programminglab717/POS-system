@@ -189,8 +189,17 @@ async fn a_catalog_is_read_checked_and_published_and_refused_when_stale() {
     assert_ne!(checked["version"], read["version"]);
     // Nothing is published by a check.
     assert_eq!(get(&app, &base).await.1["version"], read["version"]);
-    let (status, published) = call(&app, Method::PUT, &base, Some(TOKEN), Some(edit(&items))).await;
-    assert_eq!(status, StatusCode::OK);
+    // Until the cell has heard its location's hub, or waited to be an island, it writes nothing
+    // to the cloud's log. Found in review: it published before it had settled.
+    let (status, waiting) = call(&app, Method::PUT, &base, Some(TOKEN), Some(edit(&items))).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{waiting}");
+    assert_eq!(get(&app, &base).await.1["version"], read["version"]);
+    tokio::time::sleep(keel_runtime::ISLAND_AFTER).await;
+    // A base in capitals is the same version.
+    let mut upper = edit(&items);
+    upper["base"] = json!(read["version"].as_str().unwrap().to_uppercase());
+    let (status, published) = call(&app, Method::PUT, &base, Some(TOKEN), Some(upper)).await;
+    assert_eq!(status, StatusCode::OK, "{published}");
     assert_eq!(published["version"], checked["version"]);
     let (_, again) = get(&app, &base).await;
     assert_eq!(again["version"], published["version"]);
@@ -224,6 +233,31 @@ async fn a_catalog_is_read_checked_and_published_and_refused_when_stale() {
     let body = json!({ "items": again["items"], "groups": again["groups"], "pages": pages });
     let (status, _) = call(&app, Method::PUT, &base, Some(TOKEN), Some(body)).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // A write that names no base would overwrite what it never read.
+    let body =
+        json!({ "items": again["items"], "groups": again["groups"], "pages": again["pages"] });
+    let (status, refused) = call(&app, Method::PUT, &base, Some(TOKEN), Some(body)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(refused["error"].as_str().unwrap().contains("base"), "{refused}");
+    // A body that isn't JSON says so, as JSON.
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("{base}/check"))
+        .header("Authorization", format!("Bearer {TOKEN}"))
+        .header("Content-Type", "text/plain")
+        .body(Body::from("{}"))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(serde_json::from_slice::<Value>(&bytes).unwrap()["error"].is_string());
+    // A route the API doesn't have is no route, not the back office's page.
+    let (status, none) = get(&app, "/api/nowhere").await;
+    assert_eq!((status, none["error"].clone()), (StatusCode::NOT_FOUND, json!("no such route")));
+    assert_eq!(
+        call(&app, Method::GET, "/api/nowhere", None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
     // An unknown field.
     let body = json!({ "items": [], "groups": [], "pages": [], "extra": 1 });
     let (status, _) =
@@ -344,6 +378,8 @@ async fn the_report_totals_are_the_register_s_tickets_and_replication_shows_who_
     assert_eq!(items.len(), 2);
     let quantities: Vec<&str> =
         items.iter().map(|item| item["quantity"].as_str().unwrap()).collect();
+    assert!(items.iter().all(|item| item["unit"] == "each"), "{items:?}");
+    assert_eq!(report["otherCurrency"], json!(0));
     assert!(quantities.contains(&"2") && quantities.contains(&"4"), "{quantities:?}");
     // A range with no sale in it.
     let (status, empty) =

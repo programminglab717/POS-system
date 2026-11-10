@@ -1,6 +1,7 @@
 # ADR-0028: The cloud cell v0: the cloud as each location's durable replica, catalogs published as chunked events, and a back office over the cell's API
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-10) after review, with the details settled in building and
+  reviewing it, under "As built"
 - **Date:** 2026-11-10
 
 ## Context
@@ -142,6 +143,32 @@ The details settled in building it:
 - **The end-to-end tests run against `keel-cloud`'s demo**: the cell, a hub and a register in
   one process over real TLS on loopback, the register's sales reaching the cell through the hub,
   and the register writing the version it rings from for the tests to read.
+
+Found in review, each fixed with a test or a planted bug:
+
+- **A register restarted rang from the provisioned profile until it joined its network**, which
+  can take minutes while the hub's port is taken, and the Android register then kept the menu it
+  had read. The runtime takes the latest publication its store holds as soon as the shell gives
+  it the roster (`take_published`, which `keel-ffi`'s `start_sync` calls before anything that can
+  fail), the bindings answer `profile_version()` whether joined or not, and the register reads
+  its team and menu again whenever the till's version isn't the one they were read at.
+- **The cloud could publish before its log was settled**, forking it after a restore from an
+  older copy: publishing waits as every write does, and the API answers 503 meanwhile.
+- **A price typed in the editor reformatted at each key**, and an invalid one left Publish
+  enabled with the last valid amount: the field keeps what is typed, and nothing is checked or
+  published while a price isn't an amount. Removing a variant or a group now removes what refers
+  to it.
+- **A catalog written with no `base` overwrote what it never read**: `base` is required, and
+  compared without regard to case.
+- **Statuses**: what the JSON extractor refuses keeps its own status (413, 415, 422); an unknown
+  route under `/api` is a 404, not the back office's page; a profile too large to publish is a
+  422.
+- **A report failed whole** on two items of one name in different units, or an order in another
+  currency: items are kept by name and unit, and such orders are counted apart.
+- **The hub admitted its cloud inbound**, which would replace the connection it dialed: its
+  listener admits every device of the roster but the cloud.
+- **A burst of requests could hold up replication**: the location's loop runs at most 8 jobs
+  between two turns.
 
 ## Consequences
 

@@ -157,6 +157,8 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
         }
     }
 
+    override fun profileVersion(): String = register.profileVersion()
+
     override fun syncState(): SyncInfo? = call {
         register.syncStatus()?.let { SyncInfo(it.listening, it.settled, it.hubReachable, it.serving, it.profileVersion) }
     }

@@ -4,7 +4,9 @@
 //! intent ever sees half a profile.
 //!
 //! A runtime looks for publications when replication starts and after each frame, in the part of
-//! the cloud's log it hasn't looked at yet. A publication is taken only from the roster's cloud,
+//! the cloud's log it hasn't looked at yet, and when the shell asks with the roster before it
+//! joins its network ([`Runtime::take_published`]), so a device restarted rings from what it
+//! took even while it can't join. A publication is taken only from the roster's cloud,
 //! only once it holds every chunk, and only if they join to the size and hash it names and decode
 //! to a profile of the device's location. One taken replaces the profile before it, the
 //! provisioned one first; a device restarted takes again, when replication starts, the latest
@@ -14,6 +16,7 @@
 use keel_domain::codec::ProfileVersion;
 use keel_domain::profile::Profile;
 use keel_domain::publication::{self, PublicationEvent, Published};
+use keel_domain::roster::Roster;
 use keel_domain::schema::DomainEvent;
 use keel_events::envelope::{Actor, Component, Device, StreamRef};
 use keel_events::keys::Signer;
@@ -21,6 +24,14 @@ use keel_types::{Clock, Entropy, Id};
 
 use crate::error::RuntimeError;
 use crate::runtime::{Meta, Runtime, append};
+
+/// Whose publications a runtime takes: the cloud its roster names, and how far into its log the
+/// runtime has looked.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Watch {
+    cloud: Option<Id<Device>>,
+    looked: u64,
+}
 
 /// How many of the cloud's events are read at once when looking for publications: chunks are up
 /// to 192 KiB each.
@@ -40,6 +51,11 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let sync = self.sync.as_ref().ok_or(RuntimeError::NotSyncing)?;
         if sync.roster.cloud().is_none_or(|cloud| cloud.device != self.device) {
             return Err(RuntimeError::NotCloud);
+        }
+        // As every write: only once the cloud's own log is settled, or it could fork it. Found in
+        // review: a cell restored from an older copy published before it heard the hub.
+        if !sync.may_write(self.clock.now()) {
+            return Err(RuntimeError::NotSettled);
         }
         if profile.data().location != self.profile.data().location {
             return Err(RuntimeError::RosterMismatch);
@@ -64,16 +80,38 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         Ok(publication::version(profile))
     }
 
-    /// Takes the latest publication of the roster's cloud that the part of its log not yet
-    /// looked at holds, and that passes every check; answers whether it took one.
+    /// Takes the latest publication of `roster`'s cloud that the store holds, before the runtime
+    /// joins its network: a device restarted rings from what it took, even while it can't join.
+    /// Answers whether it took one.
+    ///
+    /// # Errors
+    /// [`RuntimeError::RosterMismatch`] if the roster is another location's;
+    /// [`RuntimeError::Store`] if the store can't be read.
+    pub fn take_published(&mut self, roster: &Roster) -> Result<bool, RuntimeError> {
+        if roster.data().location != self.profile.data().location {
+            return Err(RuntimeError::RosterMismatch);
+        }
+        self.watch_cloud(roster.cloud().map(|cloud| cloud.device));
+        self.take_publications()
+    }
+
+    /// Takes publications from `cloud` from now on, looking at its log from the start if it is
+    /// another cloud than before.
+    pub(crate) fn watch_cloud(&mut self, cloud: Option<Id<Device>>) {
+        if self.published.cloud != cloud {
+            self.published = Watch { cloud, looked: 0 };
+        }
+    }
+
+    /// Takes the latest publication of the cloud the runtime watches that the part of its log
+    /// not yet looked at holds, and that passes every check; answers whether it took one.
     ///
     /// # Errors
     /// [`RuntimeError::Store`] if the store can't be read: nothing is taken, and the next look
     /// starts from where this one did.
     pub(crate) fn take_publications(&mut self) -> Result<bool, RuntimeError> {
-        let Some(sync) = self.sync.as_ref() else { return Ok(false) };
-        let Some(cloud) = sync.roster.cloud().map(|cloud| cloud.device) else { return Ok(false) };
-        let mut looked = sync.looked;
+        let Some(cloud) = self.published.cloud else { return Ok(false) };
+        let mut looked = self.published.looked;
         let head = self.store.head(cloud)?.seq();
         // The publications not yet looked at, oldest first.
         let mut found: Vec<(StreamRef, Published)> = Vec::new();
@@ -106,9 +144,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 break;
             }
         }
-        if let Some(sync) = self.sync.as_mut() {
-            sync.looked = looked;
-        }
+        self.published.looked = looked;
         let Some((profile, version)) = taken else { return Ok(false) };
         if version == self.profile_version {
             return Ok(false);

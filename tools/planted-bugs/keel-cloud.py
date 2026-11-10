@@ -40,8 +40,8 @@ BUGS = [
     (
         "api: a catalog read before another was published overwrites it",
         "src/api.rs",
-        "        if edit.base.as_ref().is_some_and(|base| *base != current) {",
-        "        if edit.base.as_ref().is_some_and(|base| base.is_empty()) {",
+        "        if !base.eq_ignore_ascii_case(&current) {\n            return Err(ApiError::Conflict(current));",
+        "        if base.is_empty() {\n            return Err(ApiError::Conflict(current));",
     ),
     (
         "api: a check publishes",
@@ -84,5 +84,41 @@ BUGS = [
         "src/reports.rs",
         "        total = total.checked_add(ticket.total.money)?;",
         "        total = total.checked_add(ticket.subtotal.money)?;",
+    ),
+    (
+        "api: a catalog that names no base overwrites what it never read",
+        "src/api.rs",
+        "        let base = edit.base.as_ref().ok_or_else(|| {\n            ApiError::Invalid(\"base, the version the catalog was read at, is required\".into())\n        })?;\n        if !base.eq_ignore_ascii_case(&current) {",
+        "        let base = edit.base.clone().unwrap_or_else(|| current.clone());\n        if !base.eq_ignore_ascii_case(&current) {",
+    ),
+    (
+        "api: a base in capitals is another version",
+        "src/api.rs",
+        "        if !base.eq_ignore_ascii_case(&current) {",
+        "        if *base != current {",
+    ),
+    (
+        "api: a cell that hasn't settled answers that it failed",
+        "src/api.rs",
+        "            RuntimeError::NotSettled => ApiError::Unavailable,",
+        "            RuntimeError::NotSettled => ApiError::Failed(error.to_string()),",
+    ),
+    (
+        "api: what the JSON extractor refuses is always 422",
+        "src/api.rs",
+        "    ApiError::Rejected(rejection.status(), rejection.body_text())",
+        "    ApiError::Rejected(StatusCode::UNPROCESSABLE_ENTITY, rejection.body_text())",
+    ),
+    (
+        "api: an unknown route under /api is the back office's page",
+        "src/api.rs",
+        "        .route(\"/api/{*rest}\", any(no_route))",
+        "",
+    ),
+    (
+        "reports: an item's unit is not its own",
+        "src/reports.rs",
+        "                .entry((line.name.to_string(), line.quantity.unit().code()))",
+        "                .entry((line.name.to_string(), \"ea\"))",
     ),
 ]

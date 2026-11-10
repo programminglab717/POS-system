@@ -268,8 +268,9 @@ Keel, and **never lose a sale to Keel**.
    the Android app ([ADR-0027](./adr/0027-android-app.md)). The reference device's numbers wait
    for the device. See [progress](./progress.md).*
 8. **Cloud cell v0**: sync ingest, catalog publishing, a minimal back office (catalog editor, reports).
-   *Status: designed in [ADR-0028](./adr/0028-cloud-cell-v0.md) (proposed), in four slices,
-   all built 2026-11-10, the review next. See [progress](./progress.md).*
+   *Status: done, in four slices, built and reviewed 2026-11-10
+   ([ADR-0028](./adr/0028-cloud-cell-v0.md)): sync ingest, catalog publishing, the back office's
+   API and the back office. See [progress](./progress.md).*
 
 ## 9. Decision gates
 

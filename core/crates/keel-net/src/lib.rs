@@ -65,8 +65,9 @@ enum Peer {
     Hub,
     /// This one.
     Device(Id<Device>),
-    /// Any of the roster's.
-    Any,
+    /// Any of the roster's but its cloud, which the hub dials itself: an inbound connection
+    /// with the cloud's certificate would replace the one it dialed.
+    NotCloud,
 }
 
 /// What every device's name ends with.
@@ -248,7 +249,7 @@ fn admits(roster: &Roster, peer: Peer, device: Id<Device>) -> bool {
         // A device the roster lets host the hub.
         Peer::Hub => roster.device(device).is_some_and(|device| device.hub.is_some()),
         Peer::Device(expected) => device == expected,
-        Peer::Any => true,
+        Peer::NotCloud => roster.cloud().is_none_or(|cloud| cloud.device != device),
     }
 }
 
@@ -376,7 +377,7 @@ impl Net {
             .map(|target| Dialer::new(credentials.clone(), target))
             .transpose()?;
         let acceptor = acceptor(credentials)?;
-        Net::listen(listener, roster, acceptor, Peer::Any, dialer)
+        Net::listen(listener, roster, acceptor, Peer::NotCloud, dialer)
     }
 
     /// The cloud's network for one location (ADR-0028), listening on `listener` for the devices

@@ -439,8 +439,8 @@ also means a ransomware or cloud outage (see the NCR 2023 incident in
   `profile` of its own: `profile.chunk` v1 pieces of at most 192 KiB, then `profile.published`
   v1, naming the version, its size and its chunks. Replication carries them, so a device that was
   off takes a publication when it reconnects, with no second channel to trust or catch up on. A
-  runtime looks in the part of the cloud's log it hasn't looked at, when replication starts and
-  after each frame, and takes the latest publication that is the roster's cloud's, holds every
+  runtime looks in the part of the cloud's log it hasn't looked at, when it is given the roster,
+  before it joins its network, when replication starts and after each frame, and takes the latest publication that is the roster's cloud's, holds every
   chunk, joins to the size and hash it names and decodes to a profile of its location; it
   switches between two intents. A cashier the new team doesn't have is signed out, and the
   Android register reads its team and menu again. On the host, over TLS, a publication reaches a

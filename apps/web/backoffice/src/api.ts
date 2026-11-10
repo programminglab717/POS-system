@@ -82,8 +82,9 @@ export interface SalesReport {
   orders: number;
   total: number;
   days: { date: string; orders: number; total: number }[];
-  items: { name: string; quantity: string; amount: number }[];
+  items: { name: string; quantity: string; unit: string; amount: number }[];
   tenders: { tender: string; payments: number; amount: number }[];
+  otherCurrency: number;
 }
 
 /** An answer the API refused, with its reason. */
