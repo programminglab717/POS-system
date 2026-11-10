@@ -231,11 +231,15 @@ bytes.
 | `rustix` (and `linux-raw-sys`, `bitflags`, `errno`, `libc`) | keel-store, on Unix | The store's lock, `flock`, through a safe API: std's `File::try_lock` has no implementation for Android, where it always fails. Features `std` and `fs` only. Apache-2.0, MIT or Apache-2.0 WITH LLVM-exception. |
 | `rcgen` | keel-net's tests, keel-provision | Certificates for a development CA and its devices, until the Device CA (step 8). With `pem`, `yasna`, `time` and `base64`. MIT or Apache-2.0. A tool's dependency, never in what a device runs. |
 | `time` | keel-provision | The dates a certificate is valid between, which `rcgen` takes as `time`'s; already `rcgen`'s own dependency, named directly with no features. MIT or Apache-2.0. A tool's dependency, never in what a device runs. |
+| `axum` (and `axum-core`, `hyper`, `hyper-util`, `http-body`, `http-body-util`, `tower`, `tower-layer`, `tower-service`, `matchit`, `mime`, `serde_urlencoded`, `serde_path_to_error`, `sync_wrapper`, `atomic-waker`, `httpdate`, `form_urlencoded`) | keel-cloud | The back office's API in the cell ([ADR-0028](../adr/0028-cloud-cell-v0.md), as ADR-0007 chose): HTTP/1 on tokio, JSON bodies and query strings. Features `http1`, `json`, `query`, `tokio` only. MIT; its dependencies MIT or Apache-2.0. In the cell alone, never on a device. |
+| `serde`, `serde_json` | keel-cloud | The API's JSON, derived from the structs that describe it, decoded strictly (`deny_unknown_fields`). The kernel's own encodings stay canonical CBOR. MIT or Apache-2.0. |
+| `tower-http` (and `tokio-util`, `http-range-header`, `mime_guess`, `unicase`) | keel-cloud | Serving the back office's built files from the cell, with `index.html` for the single-page app's paths. Feature `fs` only. MIT; its dependencies MIT or Apache-2.0. |
 
 Test-only dependencies must be permissively licensed, but need not build for `wasm32`:
 
 | Crate | Why |
 |---|---|
+| `tower` (`util`), `http-body-util` | Driving the cell's API router in the process, and reading its answers' bodies. |
 | `proptest` | Property testing. |
 | `num-bigint`, `num-integer` | The exact arithmetic oracle, and the scalar arithmetic that crafts invalid Ed25519 signatures. |
 | `ciborium` | An independent CBOR implementation, which the codec's property tests agree with. |
@@ -261,6 +265,17 @@ well maintained, minimal, and each version pinned in the shell's one catalog. Th
 | JNA (its Android archive) | `:kernel` | The bindings call the kernel through it (ADR-0025). Apache-2.0 or LGPL-2.1, used under Apache-2.0. |
 | AndroidX (`activity`, `lifecycle`) and Jetpack Compose (`ui`, `material3`), by Compose's BOM | `:app` | The activity, its view model, and the screens (ADR-0004). Apache-2.0. |
 | AndroidX Test, Compose's test library, `kotlin-test` | tests | The instrumented tests and the JVM tests; never shipped. Apache-2.0. |
+
+The back office's ([ADR-0028](../adr/0028-cloud-cell-v0.md), `apps/web/backoffice/package.json`,
+each version exact and locked in `package-lock.json`, and settled for some weeks before it is
+taken):
+
+| Dependency | Used by | Why |
+|---|---|---|
+| React, React DOM | the app | The single-page app's views (ADR-0004). MIT. |
+| Vite, its React plugin | the build | Building and serving the app in development; build tools, never shipped. MIT. |
+| TypeScript, `@types/react`, `@types/react-dom`, `@types/node` | the build | Type-checking the app and its tests, strict. Apache-2.0 and MIT. |
+| `@playwright/test` | tests | The end-to-end tests in Chromium, pinned to the version whose browser the build environment has. Apache-2.0. |
 
 ## 5. Reference data
 

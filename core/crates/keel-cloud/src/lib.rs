@@ -31,6 +31,10 @@ use keel_runtime::{Identity, Runtime, RuntimeError};
 use keel_store::{StoreError, StoreKey};
 use keel_types::{Id, Locale, OsEntropy, SystemClock};
 
+pub mod api;
+pub mod catalog;
+pub mod reports;
+
 /// A location's durable replica's runtime: the cloud device's.
 pub type CloudRuntime = Runtime<SoftwareSigner, OsEntropy, SystemClock, OsEntropy>;
 

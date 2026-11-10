@@ -13,7 +13,10 @@ cloud is a device of each location's roster, the hub dials it, and the cell hold
 durable copy in a store of its own, so a sale rung on a register reaches the hub and the cloud,
 and the durable-ack watermark comes back to the register. Slice 2, catalog publishing, is built:
 the cell publishes a location's profile as events in the cloud's log, and every device takes it
-whole between two intents, within about a second on the host. Step 7, the Android register shell, is
+whole between two intents, within about a second on the host. Slices 3 and 4, the back office's
+API and the back office, are built: a catalog edited in the browser is checked by the kernel,
+published, and taken by a register; reports add up the durable copy's tickets. The step's
+review is next. Step 7, the Android register shell, is
 built in five slices, each reviewed, and its designs, ADR-0023 to ADR-0027, accepted; what remains
 of it waits for the reference device.
 
@@ -30,7 +33,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
 | 7 | Android register shell | Done, 2026-11-10: built in five slices, each reviewed; the reference device's numbers wait for the device | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [`apps/android`](../apps/android/), [ADR-0023](./adr/0023-register-shell.md) to [ADR-0027](./adr/0027-android-app.md) |
-| 8 | Cloud cell v0 | Slices 1 and 2 of 4 built | [`core/crates/keel-cloud`](../core/crates/keel-cloud/), [ADR-0028](./adr/0028-cloud-cell-v0.md) |
+| 8 | Cloud cell v0 | All 4 slices built; the review next | [`core/crates/keel-cloud`](../core/crates/keel-cloud/), [ADR-0028](./adr/0028-cloud-cell-v0.md) |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
 checks and payments, was split in two, so that the payment design was reviewed before it was
@@ -89,8 +92,9 @@ slices, each verified as it lands, then reviewed:
    durable peer named, and `keel-cell`'s replication for each location.
 2. **Catalog publishing** (built 2026-11-10): `profile.chunk` and `profile.published`, the
    runtime taking publications, and the cell publishing.
-3. **The back office's API**: an Axum service in the cell's process.
-4. **The back office**: `apps/web`, React and Vite, tested end to end in a browser.
+3. **The back office's API** (built 2026-11-10): an Axum service in the cell's process.
+4. **The back office** (built 2026-11-10): `apps/web/backoffice`, React and Vite, tested end to
+   end in a browser.
 
 Built in slice 1:
 
@@ -183,6 +187,48 @@ Built in slice 2:
   refactoring, aimed again and caught), the register module's 22 JVM tests, the Android kernel
   module's 6, and the app built.
 - The disk filled again, with 21 GB of debug builds from the planted-bug runs: cleared.
+
+Built in slices 3 and 4:
+
+- **The API** (`keel-cloud`'s `api`, `catalog` and `reports`), served by `keel-cell --api
+  <address> --token-file <file> [--web <dir>] <cloud kit>...`: the locations, each device's
+  replication (connected to the cell, and how far the durable copy holds its log), the catalog
+  as JSON, checked or published whole, and sales over business days. The operator's bearer token
+  is compared by its SHA-256, every byte. JSON errors throughout, the JSON extractor's own
+  included; `409` for a stale catalog, `422` for one the kernel or the API refuses, with why.
+  Each request's work runs as a job on its location's thread; checking a stale catalog's base and
+  publishing are one job. `keel-hub::step_seeing` tells the cell who connects and leaves.
+  - Known answers, through the router in the process: only the operator's token, not one that
+    only begins as it; a location the cell doesn't serve; the catalog read, checked to its own
+    version, a price changed checked and published, nothing published by a check, a stale write
+    refused with the current version, and refusals by the API (an identifier that isn't one, an
+    unknown field) and by the kernel (a group's fewest above its most, a button for a variant the
+    catalog doesn't have); with a hub and a register over real TLS, two sales whose report totals
+    are the register's own tickets', by day, item and tender, today's by default, an empty range,
+    and bad ranges refused; the hub connected to the cell, the register not, its log held. In the
+    crate: the demo café's catalog read and written back to the same profile, groups in any
+    order, refusals saying why, and a price changed making a new version that keeps the rest.
+  - Planted bugs: 10, all caught (13 in `keel-cloud`'s list).
+- **The back office** (`apps/web/backoffice`): sign-in with the operator's token, kept for the
+  session; a location's catalog editor (items, variants and prices typed as decimals, tax
+  category, modifier groups and modifiers, menu pages and their buttons) with Check, Publish and
+  Discard; sales by day, item and tender over a range; and the devices, read again every 5 s.
+  React 19.3, TypeScript 5.9 (strict), Vite 8.3, each version pinned and settled for weeks; light
+  and dark; no horizontal scroll at a phone's width.
+- **`keel-cloud`'s demo** (`examples/demo.rs`): a location on the host in one process, the cell
+  serving the back office, a hub and a register over real TLS, the register's three sales and
+  one more for each publication it takes.
+- **End-to-end tests in Chromium** (Playwright 1.63, 5 tests, about 8 s): a token that isn't the
+  cell's refused, by the screen and the API; the hub connected and the register's log held; the
+  reports totalling the register's sales, and a bad range refused; a price changed in the editor,
+  a group that breaks the kernel's rule refused with why, checked, published, and taken by the
+  register within the 60 s budget; and a stale catalog refused. Run five times in a row, the
+  last four with no failure: the first found a report's late answer overwriting the dates typed
+  after it, now dropped.
+- **CI**: a job builds the demo, installs and builds the back office, and runs its end-to-end
+  tests in Chromium.
+- The dependency policy gains axum, serde and tower-http for the cell, tower and http-body-util
+  for its tests, and the back office's packages.
 
 ## Completed
 

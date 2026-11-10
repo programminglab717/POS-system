@@ -60,6 +60,12 @@ time = { version = "0.3.47", default-features = false }
 keel-net = { path = "core/crates/keel-net" }
 keel-provision = { path = "core/crates/keel-provision" }
 keel-hub = { path = "core/crates/keel-hub", default-features = false }
+keel-cloud = { path = "core/crates/keel-cloud" }
+# The cloud cell (ADR-0028): the back office's API in keel-cloud, with axum on tokio, serde for
+# its JSON, and tower-http serving the back office's files.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio"] }
+serde = { version = "1.0.228", default-features = false, features = ["derive", "std"] }
+tower-http = { version = "0.6", default-features = false, features = ["fs"] }
 
 # Test-only dependencies. num-bigint (with num-integer) is the exact-arithmetic oracle that
 # property tests check money and rounding against; ciborium is the independent CBOR implementation
@@ -70,6 +76,10 @@ num-bigint = "0.5"
 num-integer = "0.1"
 ciborium = "0.2"
 serde_json = "1.0"
+# The cell's API tests drive its router in the process: tower's `oneshot`, and http-body-util to
+# read the answers' bodies.
+tower = { version = "0.5", default-features = false, features = ["util"] }
+http-body-util = { version = "0.1", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

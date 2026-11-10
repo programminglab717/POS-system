@@ -114,6 +114,49 @@ jobs:
         working-directory: bindings/kotlin
         run: gradle test --no-daemon
 
+  backoffice:
+    name: Back office
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+          cache: npm
+          cache-dependency-path: apps/web/backoffice/package-lock.json
+
+      # The cell, its hub and a register in one process: the tests' location.
+      - name: Build the cell's demo
+        run: cargo build --locked -p keel-cloud --example demo
+
+      - name: Install, type-check and build the back office
+        working-directory: apps/web/backoffice
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Chromium for the pinned Playwright
+        working-directory: apps/web/backoffice
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the back office's end-to-end tests in Chromium
+        working-directory: apps/web/backoffice
+        run: npx playwright test
+
+      - name: Keep the end-to-end tests' results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backoffice-test-results
+          path: apps/web/backoffice/test-results
+
   android:
     name: Android app
     runs-on: ubuntu-latest

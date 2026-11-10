@@ -18,6 +18,16 @@ keel-sync.workspace = true
 keel-hub.workspace = true
 keel-provision.workspace = true
 thiserror.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+tower-http.workspace = true
+
+[dev-dependencies]
+tower.workspace = true
+http-body-util.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [[bin]]
 name = "keel-cell"

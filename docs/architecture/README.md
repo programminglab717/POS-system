@@ -206,7 +206,10 @@ in a `keel-store` of its own, opened as the cloud's device, which verifies and f
 as a device does. PostgreSQL arrives with the cell's first cross-location work, NATS and object
 storage with integrations and archives. The cell publishes a location's profile as events in the
 cloud's own log, which every device takes whole between two intents (offline-and-sync §6.5).
-Not yet: the back office's API and the back office (ADR-0028's slices 3 and 4).
+The back office's API, JSON over HTTP in the cell's process behind a TLS terminator, reads and
+publishes a location's catalog, checked whole by the kernel, shows each device's replication,
+and reports sales from the durable copy's tickets; the back office, a React single-page app in
+`apps/web/backoffice`, is served by the cell.
 
 **Regional shared services**:
 - **Analytics**: CDC → ClickHouse → semantic layer.
@@ -249,7 +252,7 @@ workspace, compiled for iOS, Android, Windows, macOS, Linux, the browser (WASM) 
 | `keel-net` | The network: WebSocket over TLS 1.3 with mutual TLS, carrying `keel-sync`'s frames between a location's devices and its hub, and between the hub and its cloud (built: [ADR-0026](../adr/0026-local-hub.md), [ADR-0028](../adr/0028-cloud-cell-v0.md)). A platform crate |
 | `keel-hub` | The Store Hub's daemon for Linux, and the loop that joins any runtime to the network (built: [ADR-0026](../adr/0026-local-hub.md)) |
 | `keel-provision` | The provisioning tool: a location's development CA, its devices' and its cloud's keys, certificates and roster, until the Device CA (built: [ADR-0026](../adr/0026-local-hub.md), [ADR-0028](../adr/0028-cloud-cell-v0.md)). A tool, never in what a device runs |
-| `keel-cloud` | The cloud cell, and its binary `keel-cell`: each location's durable replica, catalog publishing and the back office's API (v0 in progress: [ADR-0028](../adr/0028-cloud-cell-v0.md)) |
+| `keel-cloud` | The cloud cell, and its binary `keel-cell`: each location's durable replica, catalog publishing and the back office's API (v0 built: [ADR-0028](../adr/0028-cloud-cell-v0.md)) |
 | `keel-ffi` | UniFFI (Kotlin for Android and JVM desktop, Swift for Apple), C ABI, wasm-bindgen (web) bindings (Kotlin built: [ADR-0025](../adr/0025-bindings.md)) |
 
 **Command pipeline** (identical on device, hub and cloud):

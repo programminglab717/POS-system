@@ -104,6 +104,45 @@ What is built shapes the step:
    local overrides (86s); cross-location roll-ups; the warm standby; and the multi-tenant isolation
    PostgreSQL's row-level security will give.
 
+## As built
+
+The details settled in building it:
+
+- **The hub's one network dials the cloud.** `Net::hub` listens for the location's devices and
+  dials the roster's cloud beside, on the one network, so the hub's loop is unchanged; the cell
+  listens for each location with `Net::cell`, which admits the devices that may host the hub
+  alone. `Net::cloud` dials the cloud alone. The Android hub dials it with no change of its own.
+- **The cloud's device is named `Cloud`** in the roster, and its kit is provisioned apart from
+  the location's devices' (`--cloud`, `--cloud-name`; `Provisioned::cloud`).
+- **`SyncStatus` gains `backed_up` and `head`**, and the bindings' `SyncState` them and
+  `profile_version`, so a register can show what is backed up and read its menu again.
+- **A publication is a whole profile**, and its version the SHA-256 of the profile's encoding,
+  `ProfileVersion`. A publication holds 1 byte to 64 MiB, in exactly as many chunks as its size
+  takes, each full but the last. A runtime looks for publications only in the part of the
+  cloud's log it hasn't looked at, when replication starts and after each frame; with one
+  publisher, the cloud's log order is its HLC order. A cashier the new team doesn't have is
+  signed out.
+- **The API speaks HTTP; TLS is ended in front of the cell**, as a cloud's load balancer ends
+  it, rather than in the cell, which would take a second server stack for v0. Its routes:
+  `GET /api/locations`, `GET …/{id}/replication`, `GET` and `PUT …/{id}/catalog`,
+  `POST …/{id}/catalog/check`, and `GET …/{id}/reports/sales?from=&to=`. JSON errors, `401`
+  without the token, `404` for a location the cell doesn't serve, `409` for a catalog read
+  before another was published (its `base`), `422` for one the kernel refuses, with why.
+- **The catalog's JSON is its catalog and menu**: items, variants and prices in minor units,
+  modifier groups and their modifiers, and pages; the tax categories the location's rules know
+  come with it to choose from. Written, it replaces the profile's catalog and menu, keeping its
+  settings, rules and team, and the kernel checks the profile whole. Checking and publishing are
+  one job on the location's thread: nothing is published between the two.
+- **Reports add up each closed order's ticket**, priced by the kernel as every device prices it:
+  sales by business day and by item (by the name its lines show), and captured payments by
+  tender.
+- **The back office is `apps/web/backoffice`**, as the repository's layout has it: React 19,
+  TypeScript, Vite, served by the cell from its built files (`keel-cell --web`). The operator's
+  token is kept for the browser's session alone.
+- **The end-to-end tests run against `keel-cloud`'s demo**: the cell, a hub and a register in
+  one process over real TLS on loopback, the register's sales reaching the cell through the hub,
+  and the register writing the version it rings from for the tests to read.
+
 ## Consequences
 
 **Positive**
