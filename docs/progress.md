@@ -206,6 +206,15 @@ Built in slice 4 so far, each verified as it landed:
   tap until the order's total on screen changes, and logs the median and 99th percentile; the
   reference device, with the large catalog in the app, gives the numbers that count, and waits
   for the device to be chosen.
+- **All of slice 4's parts passed CI** (run 64, every job green, the Rust kernel's exhaustive
+  sweeps included). On the emulator (API 30, 2 GB): the instrumented tests (a latte rung through
+  its sheet, paid, and printed to a printer in the test's process; a provisioned register
+  importing its kit and syncing over TLS with a hub on the host, whose log shows it settle and
+  serve its peer; and the tap to frame); and the kernel's own tests, cross-built and run through
+  `adb`: the golden baskets (1), the store (79, its lock among them), the runtime (30) and the
+  bindings (18, a hub and a register syncing over TLS among them). The latency harness there,
+  with 100,000 more items: an intent 0.80 ms at the median and 1.5 ms at the 99th percentile,
+  paying cash 2.1 and 4.0 ms, the profile decoded in 0.50 s.
 
 Built in slice 5, each verified as it landed, then reviewed:
 
