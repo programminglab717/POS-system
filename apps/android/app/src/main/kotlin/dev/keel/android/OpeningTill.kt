@@ -11,6 +11,9 @@ class OpeningTill(open: () -> Till) : Till {
     /** The till, if it was opened. */
     val openedTill: Till? get() = if (opened.isInitialized()) opened.value else null
 
+    /** The till, opened now if it wasn't: call it on the kernel's thread. */
+    fun open(): Till = till
+
     override fun team() = till.team()
     override fun signIn(member: String) = till.signIn(member)
     override fun signOut() = till.signOut()
@@ -27,4 +30,7 @@ class OpeningTill(open: () -> Till) : Till {
     override fun payCash(order: String, tenderedMinor: Long) = till.payCash(order, tenderedMinor)
     override fun ticket(order: String) = till.ticket(order)
     override fun ordersToday() = till.ordersToday()
+    override fun printJobs() = till.printJobs()
+    override fun resolve(job: String, printed: Boolean) = till.resolve(job, printed)
+    override fun reprint(order: String) = till.reprint(order)
 }

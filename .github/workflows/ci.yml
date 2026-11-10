@@ -159,7 +159,7 @@ jobs:
 
       - name: Run the register's JVM tests, and build the app and its instrumented tests
         working-directory: apps/android
-        run: ./gradlew --no-daemon :register:jvmTest :app:assembleDebug :app:assembleDebugAndroidTest
+        run: ./gradlew --no-daemon :register:jvmTest :kernel:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
 
       - name: Check the kernel's libraries are aligned to 16 KB pages
         working-directory: apps/android

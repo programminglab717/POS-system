@@ -177,4 +177,65 @@ class RegisterModelTest {
         testScheduler.advanceUntilIdle()
         assertEquals("Something went wrong: StoreInUse", model.state.value.error)
     }
+
+    /** Printer settings kept in memory. */
+    private class Kept(var address: PrinterAddress? = null) : PrinterSettings {
+        override fun load() = address
+        override fun save(address: PrinterAddress) {
+            this.address = address
+        }
+    }
+
+    @Test
+    fun the_printers_address_is_kept_and_checked() = runTest {
+        val kept = Kept(PrinterAddress("10.0.0.5"))
+        val model = RegisterModel(FakeTill(), this, StandardTestDispatcher(testScheduler), kept)
+        model.start()
+        testScheduler.advanceUntilIdle()
+        assertEquals(PrinterAddress("10.0.0.5", 9100), model.state.value.printer, "loaded at the start")
+        model.setPrinter(" printer.local ", "9101")
+        testScheduler.advanceUntilIdle()
+        assertEquals(PrinterAddress("printer.local", 9101), kept.address)
+        for ((host, port) in listOf("" to "9100", "a b" to "9100", "printer" to "0", "printer" to "65536", "printer" to "x")) {
+            model.setPrinter(host, port)
+            testScheduler.advanceUntilIdle()
+            assertNotNull(model.state.value.error, "$host:$port refused")
+        }
+        assertEquals(PrinterAddress("printer.local", 9101), kept.address, "nothing refused was kept")
+    }
+
+    @Test
+    fun a_paid_order_is_reprinted_and_an_unconfirmed_job_resolved() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.openTender()
+        testScheduler.advanceUntilIdle()
+        model.pay(model.state.value.tender!!.offers[0])
+        testScheduler.advanceUntilIdle()
+        model.showOrders()
+        testScheduler.advanceUntilIdle()
+        val paid = model.state.value.orders.single()
+        model.reprint(paid)
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(JobKind.DRAWER, JobKind.RECEIPT, JobKind.RECEIPT), model.state.value.jobs.map { it.kind })
+        // A printer that took the receipt and fell silent: staff say whether it printed.
+        till.jobs[1] = till.jobs[1].copy(state = JobState.UNCONFIRMED)
+        model.showPrinter()
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.PRINTER, model.state.value.screen)
+        model.resolve(model.state.value.jobs[1], printed = false)
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(JobState.QUEUED, JobState.QUEUED, JobState.QUEUED), model.state.value.jobs.map { it.state })
+        model.resolve(model.state.value.jobs[0], printed = true)
+        testScheduler.advanceUntilIdle()
+        assertEquals("That job isn't waiting for a decision.", model.state.value.error)
+        // An order not paid has no receipt.
+        model.tap(model.button("Scone"))
+        testScheduler.advanceUntilIdle()
+        model.reprint(model.state.value.ticket!!)
+        testScheduler.advanceUntilIdle()
+        assertEquals("Only a paid order has a receipt.", model.state.value.error)
+    }
 }

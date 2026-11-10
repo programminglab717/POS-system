@@ -52,6 +52,48 @@ interface Till {
 
     /** The orders begun today, whatever became of them, oldest first. */
     fun ordersToday(): List<Ticket>
+
+    /** The print jobs queued, with the printer, and unconfirmed. */
+    fun printJobs(): List<PrintJob>
+
+    /**
+     * What staff decide about the unconfirmed [job]: that it [printed], or that it is printed
+     * again.
+     */
+    fun resolve(job: String, printed: Boolean)
+
+    /** Prints the receipt of the closed [order] again, marked as a reprint. */
+    fun reprint(order: String)
+}
+
+/** What a print job prints. */
+enum class JobKind { RECEIPT, DRAWER }
+
+/** Where a print job is. */
+enum class JobState {
+    /** Waiting for the printer, or to be tried again. */
+    QUEUED,
+
+    /** With the printer. */
+    SENDING,
+
+    /** Some of it may have been sent: staff decide whether it printed. */
+    UNCONFIRMED,
+}
+
+/** A print job, as the register shows it. */
+data class PrintJob(val job: String, val kind: JobKind, val state: JobState, val attempts: Int)
+
+/** Where the receipt printer listens on the store's network. */
+data class PrinterAddress(val host: String, val port: Int = 9100)
+
+/** Where the printer's address is kept, on the device. */
+interface PrinterSettings {
+    /** The address kept, if one is. */
+    fun load(): PrinterAddress?
+
+    /** Keeps [address]. */
+    fun save(address: PrinterAddress)
 }
 
 /** A team member who may sign in. */

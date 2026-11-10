@@ -12,6 +12,8 @@ class FakeTill : Till {
     private val orders = mutableMapOf<String, MutableList<Line>>()
     private val states = mutableMapOf<String, OrderState>()
     private var lines = 0
+    /** The print jobs, as a printer that never answers leaves them. */
+    val jobs = mutableListOf<PrintJob>()
 
     private class Line(val id: String, val variant: String, var count: Int)
 
@@ -89,6 +91,8 @@ class FakeTill : Till {
         val due = due(order)
         if (tenderedMinor < due) throw TillException("That's short: ${money(due)} is due.")
         states[order] = OrderState.CLOSED
+        jobs += PrintJob("drawer:$order", JobKind.DRAWER, JobState.QUEUED, 0)
+        jobs += PrintJob("receipt:$order", JobKind.RECEIPT, JobState.QUEUED, 0)
         return Paid(money(tenderedMinor - due), ticket(order))
     }
 
@@ -107,6 +111,20 @@ class FakeTill : Till {
     }
 
     override fun ordersToday() = orders.keys.map(::ticket)
+
+    override fun printJobs() = jobs.toList()
+
+    override fun resolve(job: String, printed: Boolean) {
+        val index = jobs.indexOfFirst { it.job == job && it.state == JobState.UNCONFIRMED }
+        if (index < 0) throw TillException("That job isn't waiting for a decision.")
+        val unconfirmed = jobs.removeAt(index)
+        if (!printed) jobs += unconfirmed.copy(job = "${unconfirmed.job}:again", state = JobState.QUEUED, attempts = 0)
+    }
+
+    override fun reprint(order: String) {
+        if (states[order] != OrderState.CLOSED) throw TillException("no receipt")
+        jobs += PrintJob("reprint:$order", JobKind.RECEIPT, JobState.QUEUED, 0)
+    }
 
     private fun open(order: String): MutableList<Line> {
         if (states[order] != OrderState.OPEN) throw TillException("That order isn't open.")

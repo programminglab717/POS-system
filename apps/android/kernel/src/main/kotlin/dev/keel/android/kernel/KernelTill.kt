@@ -6,11 +6,19 @@ import dev.keel.kernel.Mode
 import dev.keel.kernel.Prefix
 import dev.keel.kernel.Register
 import dev.keel.kernel.RegisterConfig
+import dev.keel.kernel.Resolution
+import dev.keel.kernel.JobKind as KernelJobKind
+import dev.keel.kernel.JobState as KernelJobState
 import dev.keel.kernel.TicketState
 import dev.keel.register.Amount
 import dev.keel.register.Chosen
 import dev.keel.register.Group
 import dev.keel.register.Item
+import dev.keel.register.JobKind
+import dev.keel.register.JobState
+import dev.keel.register.PrintJob
+import dev.keel.register.PrinterAddress
+import kotlinx.coroutines.CoroutineDispatcher
 import dev.keel.register.Member
 import dev.keel.register.MenuButton
 import dev.keel.register.MenuPage
@@ -95,6 +103,33 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
 
     override fun ordersToday(): List<Ticket> = call { register.ordersToday().map { it.toTicket() } }
 
+    override fun printJobs(): List<PrintJob> = call {
+        register.printJobs().map { job ->
+            PrintJob(
+                job.job,
+                when (job.kind) {
+                    KernelJobKind.RECEIPT -> JobKind.RECEIPT
+                    KernelJobKind.DRAWER -> JobKind.DRAWER
+                },
+                when (job.state) {
+                    KernelJobState.QUEUED -> JobState.QUEUED
+                    KernelJobState.SENDING -> JobState.SENDING
+                    KernelJobState.UNCONFIRMED -> JobState.UNCONFIRMED
+                },
+                job.attempts.toInt(),
+            )
+        }
+    }
+
+    override fun resolve(job: String, printed: Boolean) =
+        call { register.resolve(job, if (printed) Resolution.PRINTED else Resolution.AGAIN) }.let { }
+
+    override fun reprint(order: String) = call { register.reprint(order) }.let { }
+
+    /** The print driver's loop for this till's register, sending to the printer [address] gives. */
+    fun printLoop(kernel: CoroutineDispatcher, address: () -> PrinterAddress?): PrintLoop =
+        PrintLoop(register, kernel, address)
+
     override fun close() = register.close()
 }
 
@@ -110,6 +145,9 @@ internal fun words(refused: KeelException): String = when (refused) {
     is KeelException.NotSignedIn -> "No one is signed in."
     is KeelException.UnknownMember -> "That team member isn't on this register."
     is KeelException.UnknownOrder -> "This register has no such order."
+    is KeelException.NoReceipt -> "That order printed no receipt to print again."
+    is KeelException.NotUnconfirmed -> "That job isn't waiting for a decision."
+    is KeelException.UnknownJob -> "This register has no such print job."
     is KeelException.Catalog -> refused.reason
     is KeelException.Refused -> refused.reason
     is KeelException.TenderShort -> "That's short: ${refused.due.text} is due."
@@ -122,7 +160,6 @@ internal fun words(refused: KeelException): String = when (refused) {
     is KeelException.NotThisDevice -> "This register's store belongs to another device. Call support."
     is KeelException.InvalidArgument -> "Something went wrong: ${refused.reason}"
     is KeelException.Device -> "Something went wrong: ${refused.reason}"
-    else -> "Something went wrong: ${refused::class.simpleName}."
 }
 
 private fun KernelAmount.toAmount() = Amount(minor, text)

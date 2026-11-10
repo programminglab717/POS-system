@@ -107,6 +107,14 @@ The skeleton's details, settled in building it:
   above it in whole multiples of 1, 5, 10, 20, 50 and 100 of the currency's major unit) and a
   keypad whose amount the kernel formats; and today's orders, an open one taken up again. The
   kernel gains `team`, `orders_today`, `cash_offers` and `amount`.
+- **Printing** (part 3): `PrintLoop`, in `:kernel` as it knows the bindings' types, takes each
+  job due and records its outcome on the kernel's thread and sends it on a thread of its own,
+  outside the register's lock; it sets the default printer profile (48 columns, a cutter,
+  confirmed once printed) when it first has an address, as jobs wait for one. The address is kept
+  in the app's preferences (`StoredPrinter`); a printer page lists the jobs and asks staff
+  whether an unconfirmed one printed. `:kernel`'s unit tests run on the host, against the kernel
+  built for it, through JNA's host library; the instrumented test's fake printer runs in the
+  test's own process, on the device, rather than on the host.
 - **The release build isn't shrunk** yet: JNA finds the bindings' classes by reflection, and the
   rules that keep them (`kernel/consumer-rules.pro`) are checked when the release build is.
 

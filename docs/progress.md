@@ -147,7 +147,23 @@ Built in slice 4 so far, each verified as it landed:
     taken off, cash tendered from an offer and typed, short refused, today's orders and an open
     one resumed, refusals and failures shown); 4 bugs planted by hand in the sheet, each caught.
   - The instrumented test signs in, rings a small latte with oat milk through its sheet, pays
-    the exact cash offered, and finds it paid among today's orders: in CI's emulator job.
+    the exact cash offered, and finds it paid among today's orders: passed in CI's emulator job
+    (API 30), the first run with the lock fixed.
+- **Printing** (part 3): `PrintLoop` in `:kernel`, the print driver: each job due taken and its
+  outcome recorded on the kernel's thread, sent with `printTcp` on a thread of its own, outside
+  the register's lock, with the default printer profile (48 columns, a cutter, confirmed once
+  printed) set when it first has an address; a job it may have printed in part is left
+  unconfirmed for staff. The printer's address is kept in the app's preferences, set on a printer
+  page that lists the jobs and asks staff whether an unconfirmed one printed; a paid order is
+  reprinted from today's orders.
+  - `:kernel`'s unit tests run on the host against the kernel built for it, through JNA: a
+    sale's drawer kick and receipt reach a fake printer each once, in order; with no printer
+    set, the jobs wait. A loop that never sets the printer's profile, planted by hand, is caught.
+  - `:register`: 2 more JVM tests, 15 in all: the printer's address kept and checked (a blank
+    host, a space, ports 0, 65536 and a word refused, nothing refused kept); a paid order
+    reprinted, an unconfirmed job printed again, and an unpaid order refused a reprint.
+  - The instrumented test points the register at a printer in its own process before the sale,
+    and the drawer kick and the receipt reach it.
 
 Built in slice 5, each verified as it landed, then reviewed:
 

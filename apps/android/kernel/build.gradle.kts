@@ -3,6 +3,7 @@
 // adapter to them.
 
 import com.android.build.api.variant.LibraryAndroidComponentsExtension
+import java.io.File
 import javax.inject.Inject
 
 plugins {
@@ -56,6 +57,15 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    testOptions {
+        // The unit tests run on the host, against the kernel built for it by `bindings`.
+        unitTests.all { test ->
+            // Cargo's target directory, wherever CARGO_TARGET_DIR puts it, as generate.sh does.
+            val target = System.getenv("CARGO_TARGET_DIR")?.let(::File) ?: repositoryDir.dir("target").asFile
+            test.systemProperty("jna.library.path", target.resolve("release").path)
+            test.dependsOn("bindings")
+        }
+    }
 }
 
 val androidComponents = extensions.getByType<LibraryAndroidComponentsExtension>()
@@ -94,6 +104,12 @@ androidComponents.onVariants { variant ->
 
 dependencies {
     api(project(":register"))
+    implementation(libs.kotlinx.coroutines.core)
     // JNA's Android archive, with its native dispatch library for each ABI.
     implementation(libs.jna) { artifact { type = "aar" } }
+
+    // The host's JNA, for the unit tests against the kernel built for the host.
+    testImplementation(libs.jna)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test.junit)
 }

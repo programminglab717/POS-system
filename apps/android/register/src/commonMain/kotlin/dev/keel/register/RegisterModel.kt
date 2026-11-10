@@ -20,6 +20,9 @@ enum class Screen {
 
     /** Today's orders. */
     ORDERS,
+
+    /** The printer: its address, and its jobs. */
+    PRINTER,
 }
 
 /** Paying [order] in cash: what it owes, the amounts offered, and an amount the cashier types. */
@@ -47,6 +50,10 @@ data class RegisterState(
     /** The change handed back for the last order paid, until the next is begun. */
     val change: String? = null,
     val orders: List<Ticket> = emptyList(),
+    /** Where the printer listens, if it is set. */
+    val printer: PrinterAddress? = null,
+    /** The print jobs, as last read. */
+    val jobs: List<PrintJob> = emptyList(),
     /** The last refusal or failure, until the next intent. */
     val error: String? = null,
 )
@@ -61,6 +68,7 @@ class RegisterModel(
     private val till: Till,
     private val scope: CoroutineScope,
     private val worker: CoroutineDispatcher,
+    private val settings: PrinterSettings? = null,
 ) {
     private val mutable = MutableStateFlow(RegisterState())
 
@@ -69,10 +77,11 @@ class RegisterModel(
 
     private val current get() = mutable.value
 
-    /** Loads the team, for whoever signs in. */
+    /** Loads the team, for whoever signs in, and where the printer is. */
     fun start() = perform {
         val team = till.team()
-        mutable.update { it.copy(loading = false, team = team) }
+        val printer = settings?.load()
+        mutable.update { it.copy(loading = false, team = team, printer = printer) }
     }
 
     /** Signs [member] in, and shows the menu. */
@@ -85,7 +94,7 @@ class RegisterModel(
     /** Signs out: the next cashier signs in. An order being rung stays open, for them. */
     fun signOut() = perform {
         till.signOut()
-        mutable.update { RegisterState(loading = false, team = it.team) }
+        mutable.update { RegisterState(loading = false, team = it.team, printer = it.printer) }
     }
 
     /** Shows the menu's page [index]. */
@@ -200,7 +209,45 @@ class RegisterModel(
         mutable.update { it.copy(screen = Screen.REGISTER, ticket = ticket, change = null) }
     }
 
-    /** Back to the register from today's orders. */
+    /** Prints the closed [order]'s receipt again. */
+    fun reprint(order: Ticket) = perform {
+        if (order.state != OrderState.CLOSED) throw TillException("Only a paid order has a receipt.")
+        till.reprint(order.order)
+        val jobs = till.printJobs()
+        mutable.update { it.copy(jobs = jobs) }
+    }
+
+    /** Shows the printer: its address, and its jobs. */
+    fun showPrinter() = perform {
+        val jobs = till.printJobs()
+        mutable.update { it.copy(screen = Screen.PRINTER, jobs = jobs) }
+    }
+
+    /** Reads the print jobs again. */
+    fun refreshJobs() = perform {
+        val jobs = till.printJobs()
+        mutable.update { it.copy(jobs = jobs) }
+    }
+
+    /** Keeps where the printer listens: [host], and [port] if it is one. */
+    fun setPrinter(host: String, port: String) = perform {
+        val trimmed = host.trim()
+        val number = port.trim().toIntOrNull()
+        if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) throw TillException("A printer's address is a name or an IP address.")
+        if (number == null || number !in 1..65_535) throw TillException("A port is a number from 1 to 65535.")
+        val address = PrinterAddress(trimmed, number)
+        settings?.save(address)
+        mutable.update { it.copy(printer = address) }
+    }
+
+    /** What staff decide about the unconfirmed [job]: that it [printed], or to print it again. */
+    fun resolve(job: PrintJob, printed: Boolean) = perform {
+        till.resolve(job.job, printed)
+        val jobs = till.printJobs()
+        mutable.update { it.copy(jobs = jobs) }
+    }
+
+    /** Back to the register from today's orders or the printer. */
     fun showRegister() = mutable.update { it.copy(screen = Screen.REGISTER) }
 
     /** Rings [variant], on a new order if none is open. */

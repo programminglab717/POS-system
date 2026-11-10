@@ -27,6 +27,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Tab
@@ -34,11 +35,16 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.keel.register.JobKind
+import dev.keel.register.JobState
 import dev.keel.register.ModifierSheet
 import dev.keel.register.OrderState
 import dev.keel.register.RegisterModel
@@ -64,6 +70,7 @@ fun RegisterScreen(model: RegisterModel) {
                 state.loading && state.error == null -> Loading()
                 state.screen == Screen.SIGN_IN -> SignIn(state, model)
                 state.screen == Screen.ORDERS -> Orders(state, model)
+                state.screen == Screen.PRINTER -> PrinterPage(state, model)
                 else -> Register(state, model)
             }
         }
@@ -103,6 +110,7 @@ private fun Register(state: RegisterState, model: RegisterModel) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(state.member?.name.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                 TextButton(onClick = model::showOrders, modifier = Modifier.testTag("orders")) { Text("Today's orders") }
+                TextButton(onClick = model::showPrinter, modifier = Modifier.testTag("printer")) { Text("Printer") }
                 TextButton(onClick = model::signOut, modifier = Modifier.testTag("sign-out")) { Text("Sign out") }
             }
             if (state.pages.isNotEmpty()) {
@@ -280,13 +288,15 @@ private fun Orders(state: RegisterState, model: RegisterModel) {
         }
         if (state.orders.isEmpty()) Text("None yet today.")
         LazyColumn {
-            items(state.orders.reversed(), key = { it.order }) { order -> OrderRow(order) { model.resume(order) } }
+            items(state.orders.reversed(), key = { it.order }) { order ->
+                OrderRow(order, onOpen = { model.resume(order) }, onReprint = { model.reprint(order) })
+            }
         }
     }
 }
 
 @Composable
-private fun OrderRow(order: Ticket, onOpen: () -> Unit) {
+private fun OrderRow(order: Ticket, onOpen: () -> Unit, onReprint: () -> Unit) {
     val state = when (order.state) {
         OrderState.OPEN -> "Open"
         OrderState.CLOSED -> "Paid"
@@ -303,6 +313,52 @@ private fun OrderRow(order: Ticket, onOpen: () -> Unit) {
         Text(state, Modifier.width(96.dp))
         Text(order.lines.joinToString { "${it.quantity} × ${it.name}" }.ifEmpty { "Nothing on it" }, Modifier.weight(1f))
         Text(order.total)
+        if (order.state == OrderState.CLOSED) {
+            TextButton(onClick = onReprint, modifier = Modifier.testTag("reprint:${order.order}")) { Text("Reprint") }
+        }
     }
     HorizontalDivider()
+}
+
+@Composable
+private fun PrinterPage(state: RegisterState, model: RegisterModel) {
+    var host by rememberSaveable { mutableStateOf(state.printer?.host.orEmpty()) }
+    var port by rememberSaveable { mutableStateOf((state.printer?.port ?: 9100).toString()) }
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Printer", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            TextButton(onClick = model::refreshJobs, modifier = Modifier.testTag("refresh")) { Text("Refresh") }
+            TextButton(onClick = model::showRegister, modifier = Modifier.testTag("back")) { Text("Back") }
+        }
+        Text("Where the receipt printer listens on the store's network.")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(host, { host = it }, label = { Text("Address") }, singleLine = true, modifier = Modifier.weight(1f).testTag("printer:host"))
+            OutlinedTextField(port, { port = it }, label = { Text("Port") }, singleLine = true, modifier = Modifier.width(120.dp).testTag("printer:port"))
+            Button(onClick = { model.setPrinter(host, port) }, modifier = Modifier.testTag("printer:save")) { Text("Save") }
+        }
+        Spacer(Modifier.height(16.dp))
+        Text("Jobs", style = MaterialTheme.typography.titleMedium)
+        if (state.jobs.isEmpty()) Text("Nothing waiting to print.")
+        LazyColumn {
+            items(state.jobs, key = { it.job }) { job ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val kind = when (job.kind) {
+                        JobKind.RECEIPT -> "Receipt"
+                        JobKind.DRAWER -> "Cash drawer"
+                    }
+                    val where = when (job.state) {
+                        JobState.QUEUED -> if (job.attempts == 0) "Waiting" else "Waiting, tried ${job.attempts}×"
+                        JobState.SENDING -> "Printing"
+                        JobState.UNCONFIRMED -> "Did it print?"
+                    }
+                    Text("$kind: $where", Modifier.weight(1f))
+                    if (job.state == JobState.UNCONFIRMED) {
+                        TextButton(onClick = { model.resolve(job, printed = true) }) { Text("It printed") }
+                        TextButton(onClick = { model.resolve(job, printed = false) }) { Text("Print again") }
+                    }
+                }
+                HorizontalDivider()
+            }
+        }
+    }
 }

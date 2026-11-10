@@ -7,7 +7,10 @@ import dev.keel.android.kernel.KernelTill
 import dev.keel.kernel.RegisterConfig
 import dev.keel.kernel.demoProfile
 import dev.keel.register.RegisterModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -17,12 +20,23 @@ import java.util.concurrent.Executors
  */
 class RegisterViewModel(application: Application) : AndroidViewModel(application) {
     private val executor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "keel-kernel") }
+    private val kernel = executor.asCoroutineDispatcher()
     private val till = OpeningTill { open(application) }
+    private val printer = StoredPrinter(application)
 
-    val model = RegisterModel(till, viewModelScope, executor.asCoroutineDispatcher())
+    val model = RegisterModel(till, viewModelScope, kernel, printer)
 
     init {
         model.start()
+        // The print driver, once the kernel is open; if it can't open, the register says why.
+        viewModelScope.launch(Dispatchers.IO) {
+            val opened = try {
+                withContext(kernel) { till.open() } as? KernelTill
+            } catch (_: Exception) {
+                null
+            }
+            opened?.printLoop(kernel) { model.state.value.printer }?.run()
+        }
     }
 
     override fun onCleared() {
