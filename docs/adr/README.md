@@ -32,6 +32,6 @@ supersedes the old one.
 | [0024](./0024-receipts-and-printing.md) | Receipts and printing: KeelDoc v0, an ESC/POS renderer, a raw TCP driver, and print jobs in the outbox that are never sent twice by themselves | Accepted |
 | [0025](./0025-bindings.md) | The bindings: `keel-ffi` with UniFFI 0.32, a register object that answers with whole views, and a Kotlin/JVM library tested on the host | Accepted |
 | [0026](./0026-local-hub.md) | The local hub: a provisioned roster, replication in the runtime, WebSocket over mutual TLS in `keel-net`, a hub daemon and a provisioning tool | Accepted |
-| [0027](./0027-android-app.md) | The Android app: AGP 9.5 and Gradle 9.8, the kernel built with cargo-ndk, a register module in Kotlin alone, keys wrapped in the Keystore, built in parts | Proposed |
+| [0027](./0027-android-app.md) | The Android app: AGP 9.5 and Gradle 9.8, the kernel built with cargo-ndk, a register module in Kotlin alone, keys wrapped in the Keystore, built in parts | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

@@ -161,15 +161,22 @@ jobs:
         working-directory: apps/android
         run: ./gradlew --no-daemon :register:jvmTest :kernel:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
 
-      - name: Check the kernel's libraries are aligned to 16 KB pages
+      # Every native library, stored 16 KB-aligned in the APK, its segments aligned to 16 KB pages.
+      # Found in review: without pipefail, zipalign's failure was grep's success.
+      - name: Check the app's native libraries are aligned to 16 KB pages
         working-directory: apps/android
+        shell: bash
         run: |
+          set -euo pipefail
           apk=app/build/outputs/apk/debug/app-debug.apk
-          "$ANDROID_HOME/build-tools/36.1.0/zipalign" -c -P 16 -v 4 "$apk" | grep -E "lib/.*\.so"
+          "$ANDROID_HOME/build-tools/36.1.0/zipalign" -c -P 16 -v 4 "$apk" > /tmp/zipalign.txt
+          grep -E "lib/.*\.so" /tmp/zipalign.txt
           readelf="$ANDROID_HOME/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
-          for abi in arm64-v8a x86_64; do
-            unzip -o -q "$apk" "lib/$abi/libkeel_ffi.so" -d /tmp/apk
-            "$readelf" -lW "/tmp/apk/lib/$abi/libkeel_ffi.so" | awk '/LOAD/ && $NF != "0x4000" { bad = 1 } END { exit bad }'
+          rm -rf /tmp/apk
+          unzip -o -q "$apk" 'lib/*' -d /tmp/apk
+          for library in /tmp/apk/lib/*/*.so; do
+            echo "$library"
+            "$readelf" -lW "$library" | awk '/LOAD/ && $NF != "0x4000" { bad = 1 } END { exit bad }'
           done
 
   android-emulator:
@@ -213,8 +220,10 @@ jobs:
       # The sync test's location: provisioned on the host, its hub running there, where the
       # emulator reaches the host as 10.0.2.2; the register's kit among the test's assets.
       - name: Provision a location, and run its hub on the host
+        shell: bash
         run: |
-          cargo build --release -p keel-provision -p keel-hub
+          set -euo pipefail
+          cargo build --locked --release -p keel-provision -p keel-hub
           location="$RUNNER_TEMP/location"
           target/release/keel-provision "$location" --hub 10.0.2.2:7443 --hub-name hub.keel-cafe.local \
             --device "Back office=1" --device "Front counter" | tee "$RUNNER_TEMP/devices"
@@ -223,6 +232,12 @@ jobs:
           mkdir -p apps/android/app/src/androidTest/assets/kit
           cp "$location/$register"/* apps/android/app/src/androidTest/assets/kit/
           nohup target/release/keel-hub "$location/$hub" > "$RUNNER_TEMP/hub.log" 2>&1 &
+          # Listening before the tests begin: a hub that didn't start says so here.
+          for _ in $(seq 1 30); do
+            grep -q "listening" "$RUNNER_TEMP/hub.log" && break
+            sleep 1
+          done
+          grep "listening" "$RUNNER_TEMP/hub.log"
 
       # API 30 with 2 GB, like the reference device (ADR-0023).
       - name: Run the instrumented tests on an emulator

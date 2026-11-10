@@ -142,14 +142,18 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
      */
     suspend fun syncLoop(kernel: CoroutineDispatcher, every: Duration = 50.milliseconds) {
         while (true) {
-            withContext(kernel) {
+            val failed = withContext(kernel) {
                 try {
                     register.syncStep(0u)
+                    false
                 } catch (_: KeelException) {
                     // A frame that couldn't be stored: its peer sends it again.
+                    true
                 }
             }
-            delay(every)
+            // A store that fails, fails again: wait longer before the next turn. Found in review:
+            // a damaged store failed twenty times a second.
+            delay(if (failed) every * 20 else every)
         }
     }
 

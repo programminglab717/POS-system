@@ -2,7 +2,7 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-11-09.
+> Last updated: 2026-11-10.
 
 ## Where we are
 
@@ -13,10 +13,10 @@ the step's design, [ADR-0023](./adr/0023-register-shell.md), slice 2's,
 [ADR-0025](./adr/0025-bindings.md), are accepted. Slice 5, the local hub, came before slice 4,
 since the Android app can only be built in CI from here, and the hub can be built and verified
 here, for the app to host: it is built and reviewed, and its design,
-[ADR-0026](./adr/0026-local-hub.md), accepted. Slice 4, the Android app, is under way
-([ADR-0027](./adr/0027-android-app.md), proposed): this environment reaches Google's repositories
-now, so the app is built here, and only its emulator tests wait for CI. Its skeleton is built:
-the build, the kernel on Android, the keys, and a first screen. Step 6,
+[ADR-0026](./adr/0026-local-hub.md), accepted. Slice 4, the Android app, is built and reviewed,
+and its design, [ADR-0027](./adr/0027-android-app.md), accepted: the register's screens, printing,
+the hub on Android, and the performance harness, built here and run on CI's emulators. Every
+slice of the step is built; what remains of it waits for the reference device. Step 6,
 `keel-sim` and `keel-sync` v0, the deterministic simulator and the sync engine, is done: built in
 four slices, each reviewed, the last, hub election and failover
 ([ADR-0022](./adr/0022-hub-election-and-failover.md)), accepted after a review that found and
@@ -34,7 +34,7 @@ From the [roadmap](./roadmap.md#8-first-engineering-milestones-the-next-build-st
 | 4 | `keel-domain` (order, check, payment) and `keel-pricing` v0 | Done, 2026-09-29: built in four slices, each reviewed | [`core/crates/keel-domain`](../core/crates/keel-domain/), [`core/crates/keel-pricing`](../core/crates/keel-pricing/), [ADR-0013](./adr/0013-event-payloads-and-schema-evolution.md), [ADR-0014](./adr/0014-pricing-engine-v0.md), [ADR-0015](./adr/0015-checks-and-payments.md) |
 | 5 | `keel-store`: SQLite events, projections and outbox | Done, 2026-09-30: built in three slices, each reviewed | [`core/crates/keel-store`](../core/crates/keel-store/), [ADR-0016](./adr/0016-device-store.md), [ADR-0017](./adr/0017-projections-and-outbox.md), [ADR-0018](./adr/0018-encryption-at-rest-and-integrity-checks.md) |
 | 6 | `keel-sim` and `keel-sync` v0 | Done, 2026-10-02: built in four slices, each reviewed | [`core/crates/keel-sync`](../core/crates/keel-sync/), [`core/crates/keel-sim`](../core/crates/keel-sim/), [ADR-0019](./adr/0019-replication-and-deterministic-simulation.md), [ADR-0020](./adr/0020-hub-sequencing.md), [ADR-0021](./adr/0021-ownership-leases.md), [ADR-0022](./adr/0022-hub-election-and-failover.md) |
-| 7 | Android register shell | In progress: slices 1 to 3 and 5 of 5 built and reviewed; slice 4's skeleton built | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
+| 7 | Android register shell | All 5 slices built and reviewed; the reference device's numbers wait for the device | [`core/crates/keel-runtime`](../core/crates/keel-runtime/), [ADR-0023](./adr/0023-register-shell.md) |
 | 8 | Cloud cell v0 | Not started | |
 
 Step 4 was built in four slices, each ending with a review. It was planned as three; the third,
@@ -101,7 +101,7 @@ ADR of its own when it begins:
    outbox, never sent twice by themselves.
 3. **The bindings** (built and reviewed 2026-11-09, [ADR-0025](./adr/0025-bindings.md)):
    `keel-ffi` with UniFFI, and a Kotlin/JVM library tested on the host.
-4. **The Android app** (designed 2026-11-09, [ADR-0027](./adr/0027-android-app.md), proposed;
+4. **The Android app** (built and reviewed 2026-11-10, [ADR-0027](./adr/0027-android-app.md);
    built in five parts, the skeleton first): the register's screens, keys in the Android
    Keystore, the build for Android, CI on an emulator, and the performance harness on a
    reference device.
@@ -109,7 +109,7 @@ ADR of its own when it begins:
    before slice 4): `keel-net`, WebSocket over TLS 1.3 with mutual TLS, the hub role in the
    app and in a Linux daemon, and a provisioning tool standing in for the Device CA.
 
-Built in slice 4 so far, each verified as it landed:
+Built in slice 4, each verified as it landed, then reviewed:
 
 - **The skeleton** (`apps/android`): the Android Gradle Plugin 9.5.1 on Gradle 9.8.2, Kotlin
   2.4.21, Compose, `minSdk` 28, `targetSdk` 36, compiled against API 37 (Compose's BOM needs it),
@@ -215,6 +215,33 @@ Built in slice 4 so far, each verified as it landed:
   bindings (18, a hub and a register syncing over TLS among them). The latency harness there,
   with 100,000 more items: an intent 0.80 ms at the median and 1.5 ms at the 99th percentile,
   paying cash 2.1 and 4.0 ms, the profile decoded in 0.50 s.
+- **The review**, an independent one of the kernel's part, the platform's and the register's,
+  found and these fix, each with a test or a planted bug (ADR-0027, as built):
+  - A standby the roster lets host the hub, but which doesn't listen at its address, took the
+    role with the hub gone, and every register became an island: only the device that listens
+    may host. A test joins a hub, a standby and a register through the bindings, drops the hub,
+    and finds the standby not serving 8 s later; planted, the bug is caught.
+  - A sync step took in one network event: it takes in what is waiting, within a budget, and caps
+    its wait. Joining starts the network first; the hub listens on IPv6 and IPv4. Only another's
+    hold of a store's lock reads as busy. Cash for a currency without decimals is offered in
+    hundreds. The latency harness times today's orders: 32 ms for a day of 500.
+  - The modifier sheet kept choices by modifier, and a group offered in two places was charged
+    twice: they are kept by place. Quick taps of + and − counted from the screen. "Synced" showed
+    before the log settled. Sign-out dropped the open order. A page holding a variant twice
+    crashed the grid. 7 new JVM tests, 22 in `:register`; 4 bugs planted by hand, each caught,
+    one only once a modifier offered in two groups was among the fixture's.
+  - A failed join left the store locked, a first failed open stopped the loops for good, and a job
+    the driver refused stopped all printing: the kernel opens without its network and joins
+    after, the loops are supervised, and a refused job is unconfirmed, for staff (a test on the
+    host). The foreground service starts in the foreground and at boot, a refusal stops it
+    quietly, and it holds a wake lock. A kit's secrets left in the clear are removed whenever the
+    device's files load, and the files are written whole and synced. The Keystore losing its key
+    says so.
+  - CI checks every native library's alignment under `pipefail`, the hub on the host listening,
+    builds `--locked`, and runs this build's test binaries on the emulator.
+  - Left for later: a hub's sync loop turns every 50 ms whatever it has to do; the emulator test
+    doesn't yet check that its sale reached the hub; and a standby's takeover waits for
+    discovery.
 
 Built in slice 5, each verified as it landed, then reviewed:
 

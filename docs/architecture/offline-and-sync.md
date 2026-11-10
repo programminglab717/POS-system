@@ -215,8 +215,10 @@ sequenceDiagram
   devices with their signing keys and hub priorities, and the hub's one address and the name its
   certificate carries. A device's certificate carries `<uuid>.devices.keel`, and must name a
   device of the roster; the hub's carries the roster's hub name too. Certificates come from a
-  development CA the provisioning tool makes, valid for a year, until the Device CA. Not yet:
-  discovery, the standby's address, scopes and revocation.
+  development CA the provisioning tool makes, valid for a year, until the Device CA. Only the
+  device that listens at the roster's address may take the hub's role, as no other can be
+  reached ([ADR-0027](../adr/0027-android-app.md), as built). Not yet: discovery, the standby's
+  address and its takeover, scopes and revocation.
 - **Scopes**:
   - `location/{id}` covers operational events.
   - Large venues can partition it as `location/{id}/rc/{rc}`, so 300 stadium devices don't all

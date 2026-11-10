@@ -18,13 +18,16 @@ adb shell "rm -rf $remote && mkdir -p $remote"
 run() {
   local name="$1"
   shift
-  cargo ndk -t "$abi" -P 28 test --release "$@" --no-run
   local triple
   case "$abi" in
     x86_64) triple=x86_64-linux-android ;;
     arm64-v8a) triple=aarch64-linux-android ;;
     *) echo "unknown ABI $abi" >&2; exit 2 ;;
   esac
+  # Older binaries of the name go first, so the newest is this build's. Found in review: an
+  # older one, of another build, could be newer and run instead.
+  rm -f "${CARGO_TARGET_DIR:-$root/target}/$triple/release/deps/$name"-*
+  cargo ndk -t "$abi" -P 28 test --locked --release "$@" --no-run
   local binary
   binary=$(ls -t "${CARGO_TARGET_DIR:-$root/target}/$triple/release/deps/$name"-* | grep -v '\.d$' | head -n 1)
   adb push "$binary" "$remote/$name" > /dev/null

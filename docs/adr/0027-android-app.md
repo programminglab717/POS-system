@@ -1,6 +1,7 @@
 # ADR-0027: The Android app: AGP 9.5 and Gradle 9.8, the kernel built with cargo-ndk, a register module in Kotlin alone, keys wrapped in the Keystore, built in parts
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-10) after review, with the details settled in building and
+  reviewing it, under "As built"
 - **Date:** 2026-11-09
 
 ## Context
@@ -31,7 +32,7 @@ What is built shapes the rest:
 
 1. **Versions**, the newest released and tested together: the Android Gradle Plugin 9.5.1 on
    Gradle 9.8.2 (AGP 9.5 needs 9.6 or later), through the wrapper; Kotlin 2.4.21, the bindings';
-   Compose's BOM 2026.09.00; `compileSdk` and `targetSdk` 36, `minSdk` 28 (ADR-0023); build tools
+   Compose's BOM 2026.09.00; `targetSdk` 36, `minSdk` 28 (ADR-0023); build tools
    36.1.0; NDK r30 (30.0.16248370); JDK 21 for the build, Java 17 bytecode for the app. Every
    version sits in one catalog, `gradle/libs.versions.toml`. This amends ADR-0023's AGP 9.3 and
    Gradle 9.7, which newer releases have passed.
@@ -84,11 +85,12 @@ What is built shapes the rest:
 
 ## As built
 
-The skeleton's details, settled in building it:
+The details settled in building it, and reviewed with it:
 
-- **The wrapper's distribution checksum** isn't pinned yet: Gradle publishes it at
-  `downloads.gradle.org`, which this environment's network refuses. CI can reach it; the next
-  part pins it.
+- **`compileSdk` 37**, where decision 1 said 36: Compose's BOM 2026.09.00 needs it. `targetSdk`
+  stays 36, as ADR-0023 decided.
+- **The wrapper's distribution** is pinned by its checksum, which CI checks against Gradle's
+  published one, at `downloads.gradle.org`: this environment's network refuses that host.
 - **The skeleton signs in as the demo café's first team member** and rings items with no
   choices, which every item of the demo café allows: the sign-in screen and the modifier sheet
   come with part 2.
@@ -138,6 +140,51 @@ The skeleton's details, settled in building it:
   total on screen changes. Both log their percentiles and fail only far beyond the budget, so
   they run on CI's emulators; the reference device's numbers wait for it, with the large catalog
   loaded into the app.
+The review, an independent one of the kernel's part, the platform's and the register's, found
+and these fix, each with a test or a planted bug:
+
+- **A standby took a role no device could reach.** Only the roster's most preferred hub listens
+  at its address, but every device the roster lets host the hub stood in its election: with
+  the hub gone, a standby claimed the role, and every register it held the term for became an
+  island. Only the device that listens may host (`Runtime::start_sync_as`); a standby takes over
+  once discovery lets devices find it.
+- **A sync step took in one network event**, too few for a hub's devices at twenty turns a
+  second: it takes in what is waiting, up to 64 events in 10 ms, and its wait is capped at
+  50 ms, as the register's other calls wait for it. Joining starts the network before
+  replication, so a port that is taken leaves nothing half-joined; the hub listens on IPv6 and
+  IPv4.
+- **The modifier sheet kept choices by the modifier alone**, but a group can be offered in several
+  places: a sauce chosen under fries was chosen under the hash brown too, and charged twice.
+  Choices are kept by their place in the item's groups, a group's parent found by its place,
+  with the groups' depth from the kernel.
+- **Quick taps counted from the screen**: two taps of + made a line 2, not 3. Each counts from the
+  order as the kernel's thread has it, after the taps before it.
+- **"Synced" showed while sales were refused**, the register hearing its hub before its log
+  settled: it says "Joining…" until it settles. Signing out dropped the open order from the
+  screen: it stays, for the next cashier. A page holding a variant twice crashed the grid.
+- **A failed join left the store locked**, and a first open that failed left the print driver and
+  replication stopped for the process's life. The kernel opens without its network, joins
+  after with a growing wait while it can't, and the loops start once it is open, supervised, so
+  one failing stops neither the other. A job the driver refused stayed with it, and nothing
+  printed after: it is unconfirmed, for staff.
+- **The foreground service could crash the app**, started from the background where Android 12
+  and later refuse it: it starts from the register's screen in the foreground and at boot, and a
+  refusal stops it quietly. It holds a wake lock while it runs, as the hub answers the store's
+  devices with the screen off. The sync loop waits longer after a failure.
+- **A kit's secrets could stay in the clear**: a kit pushed after the first launch, or left by an
+  import that stopped, is removed whenever the device's files load, and its removal checked; each
+  file is written to a file beside it, synced to the disk and renamed. The Keystore losing its
+  key says so, where it made a new one and failed with an opaque bad tag.
+- **Cash offered for a currency without decimals** was in single units, ¥1,235 for ¥1,234: it is
+  in hundreds. The location's own denominations come with its profile.
+- **CI**: the alignment check's `zipalign` failure was hidden by a pipe, and only the kernel's
+  library was read; every library is now, under `pipefail`. The hub on the host is checked
+  listening before the tests, cargo runs `--locked`, and the on-device tests run this build's
+  binaries, never an older one's. Only another's hold of a store's lock reads as busy.
+- **Gaps the review named, left for later**: a hub's sync loop turns every 50 ms whatever it has
+  to do; nothing yet checks that a sale reached the hub on the emulator, beyond the hub's log
+  showing it serve; the directory isn't synced after a device's files are renamed into it; and a
+  standby's takeover waits for discovery.
 - **The release build isn't shrunk** yet: JNA finds the bindings' classes by reflection, and the
   rules that keep them (`kernel/consumer-rules.pro`) are checked when the release build is.
 

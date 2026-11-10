@@ -9,6 +9,9 @@
     <!-- What a connectedDevice service needs one of, for the store's network. -->
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The hub answers the store's devices with the screen off, and comes back at boot. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- The store and the wrapped keys never leave the device: no backup, no transfer. -->
     <application
@@ -33,5 +36,12 @@
             android:name=".RegisterService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

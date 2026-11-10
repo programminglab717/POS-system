@@ -18,4 +18,10 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onStart() {
+        super.onStart()
+        // In the foreground, where the system allows a foreground service to start.
+        RegisterService.start(this)
+    }
 }

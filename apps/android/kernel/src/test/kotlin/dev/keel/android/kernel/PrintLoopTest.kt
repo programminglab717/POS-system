@@ -3,6 +3,7 @@ package dev.keel.android.kernel
 import dev.keel.kernel.JobKind
 import dev.keel.kernel.JobState
 import dev.keel.kernel.Mode
+import dev.keel.kernel.Outcome
 import dev.keel.kernel.Register
 import dev.keel.kernel.RegisterConfig
 import dev.keel.kernel.demoProfile
@@ -100,7 +101,8 @@ class PrintLoopTest {
             server.close()
         }
         return server.localPort to {
-            worker.join()
+            worker.join(30_000)
+            check(!worker.isAlive) { "the printer had ${received.size} of $jobs jobs within 30 s" }
             received
         }
     }
@@ -134,6 +136,35 @@ class PrintLoopTest {
             val jobs = withContext(kernel) { register.printJobs() }
             assertEquals(listOf(JobKind.DRAWER, JobKind.RECEIPT), jobs.map { it.kind })
             assertEquals(listOf(JobState.QUEUED, JobState.QUEUED), jobs.map { it.state })
+        }
+    }
+
+    /** Found in review: a job the driver refused stayed with it, and nothing printed after it. */
+    @Test
+    fun a_job_the_driver_refuses_is_left_for_staff_and_the_next_prints() = withSale { register ->
+        val kernel = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val sent = mutableListOf<JobKind>()
+        kernel.use {
+            // The first job, the drawer's, fails in the driver; the receipt after it prints.
+            val loop = PrintLoop(
+                register,
+                kernel,
+                { PrinterAddress("127.0.0.1", 9100) },
+                idle = 20.milliseconds,
+                send = { _, _, job, _ ->
+                    sent += job.kind
+                    if (job.kind == JobKind.DRAWER) error("the driver failed") else Outcome.Printed(false)
+                },
+            )
+            val running = launch(Dispatchers.IO) { loop.run() }
+            withTimeout(10_000) {
+                while (sent.size < 2) delay(20)
+            }
+            running.cancelAndJoin()
+            val jobs = withContext(kernel) { register.printJobs() }
+            assertEquals(listOf(JobKind.DRAWER, JobKind.RECEIPT), sent)
+            assertEquals(listOf(JobKind.DRAWER), jobs.map { it.kind }, "the receipt printed")
+            assertEquals(JobState.UNCONFIRMED, jobs.single().state, "staff decide whether the drawer opened")
         }
     }
 }

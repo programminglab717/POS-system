@@ -32,7 +32,11 @@ class KeyVault(private val alias: String = "keel.wrap") : Vault {
     override fun unwrap(wrapped: ByteArray): ByteArray {
         require(wrapped.size > NONCE) { "a wrapped secret is too short" }
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_BITS, wrapped, 0, NONCE))
+        // The key that wrapped it, never a new one: one the Keystore lost can't unwrap anything.
+        // Found in review: a new key was made, and the failure was an opaque bad tag.
+        val key = keyStore.getKey(alias, null) as SecretKey?
+            ?: throw IllegalStateException("the Keystore no longer holds the key that wraps this register's secrets")
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, wrapped, 0, NONCE))
         return cipher.doFinal(wrapped, NONCE, wrapped.size - NONCE)
     }
 

@@ -69,11 +69,13 @@ class DeviceFilesTest {
             for (secret in listOf("signing.key", "store.key", "tls.key")) {
                 assertEquals(0x57.toByte(), File(dir, secret).readBytes().first(), "$secret kept wrapped")
             }
-            // A kit that comes later changes nothing: a device is made once.
+            // A kit that comes later changes nothing, and is removed: a device is made once, and
+            // the kit's secrets are in the clear. Found in review: it stayed.
             kit.mkdirs()
             for ((name, bytes) in files) File(kit, name).writeBytes(if (name == "device") "other".toByteArray() else bytes)
             assertEquals(imported.device, DeviceFiles.load(dir, Mirror, kit).device)
-            assertTrue(kit.exists())
+            assertFalse(kit.exists(), "a later kit is removed too")
+            assertTrue(dir.listFiles()!!.none { it.name.endsWith(".partial") }, "no partial files left")
         } finally {
             dir.deleteRecursively()
             kit.deleteRecursively()
@@ -81,13 +83,13 @@ class DeviceFilesTest {
     }
 
     @Test
-    fun a_kit_missing_a_file_is_left_and_the_device_drawn() {
+    fun a_kit_missing_a_file_isnt_taken_and_is_removed() {
         val (dir, kit) = temp() to temp()
         try {
             File(kit, "device").writeText("0192f0c1-0000-7000-8000-0000000000d1")
             val drawn = DeviceFiles.load(dir, Mirror, kit)
-            assertNull(drawn.sync)
-            assertTrue(File(kit, "device").exists(), "an incomplete kit isn't taken, nor removed")
+            assertNull(drawn.sync, "an incomplete kit isn't taken")
+            assertFalse(kit.exists(), "but it is removed")
         } finally {
             dir.deleteRecursively()
             kit.deleteRecursively()

@@ -78,7 +78,7 @@ val nativeLibraries = tasks.register<CargoTask>("nativeLibraries") {
     outputDir.set(layout.buildDirectory.dir("generated/jniLibs"))
     command.set(
         listOf("cargo", "ndk") + abis.flatMap { listOf("-t", it) } +
-            listOf("-P", "28", "-o", "{out}", "build", "-p", "keel-ffi", "--release"),
+            listOf("-P", "28", "-o", "{out}", "build", "--locked", "-p", "keel-ffi", "--release"),
     )
     environment.set(
         androidComponents.sdkComponents.ndkDirectory.map { mapOf("ANDROID_NDK_HOME" to it.asFile.path) },

@@ -1,7 +1,10 @@
 package dev.keel.android.kernel
 
 import dev.keel.kernel.Confirm
-import dev.keel.kernel.KeelException
+import dev.keel.kernel.Outcome
+import dev.keel.kernel.PrintJob
+import dev.keel.kernel.Unconfirmed
+import kotlinx.coroutines.CancellationException
 import dev.keel.kernel.Printer
 import dev.keel.kernel.Register
 import dev.keel.kernel.Waits
@@ -28,6 +31,8 @@ class PrintLoop(
     private val printer: Printer = Printer(columns = 48u, cutter = true, confirm = Confirm.PRINTED),
     private val waits: Waits = Waits(statusMs = 2_000u, wordMs = 10_000u),
     private val idle: Duration = 1.seconds,
+    /** What sends a job to a printer: `printTcp`, but for tests. */
+    private val send: (host: String, port: UShort, job: PrintJob, waits: Waits) -> Outcome = ::printTcp,
 ) {
     /** Runs until cancelled: call it on a thread that may block, such as `Dispatchers.IO`. */
     suspend fun run() {
@@ -45,7 +50,9 @@ class PrintLoop(
                     profiled = true
                     register.nextPrintJob()
                 }
-            } catch (_: KeelException) {
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
                 null
             }
             if (job == null) {
@@ -53,16 +60,20 @@ class PrintLoop(
                 continue
             }
             val outcome = try {
-                printTcp(target.host, target.port.toUShort(), job, waits)
-            } catch (_: KeelException) {
-                // A job the driver refuses, as none the register gives is: it stays with the
-                // driver until the register opens again, which leaves it unconfirmed, for staff.
-                delay(idle)
-                continue
+                send(target.host, target.port.toUShort(), job, waits)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // A job the driver refuses, as none the register gives is, or a failure in it:
+                // whether any of it reached the printer is unknown, so staff decide. Found in
+                // review: the job stayed with the driver, and nothing printed after it.
+                Outcome.Unconfirmed(Unconfirmed.SEND_FAILED)
             }
             try {
                 withContext(kernel) { register.printOutcome(job.job, outcome) }
-            } catch (_: KeelException) {
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
                 // The store couldn't record it: the job stays with the driver until the register
                 // opens again, which leaves it unconfirmed, for staff.
                 delay(idle)
