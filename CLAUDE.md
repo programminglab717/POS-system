@@ -44,6 +44,7 @@ cargo run -q -p keel-types --example locale_dump > /tmp/keel-locale.tsv && node 
 KEEL_STORE_MAKE_GOLDEN=1 cargo test -p keel-store --test golden_store -- --ignored  # once, for a new store schema version
 (cd bindings/kotlin && gradle test --no-daemon)  # the Kotlin bindings, generated from keel-ffi, against the host's kernel
 (cd apps/android && ./gradlew :register:jvmTest :kernel:testDebugUnitTest :app:assembleDebug)  # the Android app: needs the SDK, NDK r30 and cargo-ndk (ADR-0027)
+ABI=x86_64 tools/android/kernel-tests.sh  # the kernel's tests on a connected Android device or emulator, through adb
 ```
 
 ## Testing expectations

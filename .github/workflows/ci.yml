@@ -233,8 +233,11 @@ jobs:
           ram-size: 2048M
           disable-animations: true
           working-directory: apps/android
-          # On a failure, what the tests and the device said, for the log.
-          script: ./gradlew --no-daemon -PkeelAbis=x86_64 :app:connectedDebugAndroidTest || (find app/build/outputs/androidTest-results -name '*.xml' -exec cat {} + ; adb logcat -d '*:E' | tail -300 ; exit 1)
+          # On a failure, what the tests and the device said, for the log. Then the kernel's own
+          # tests, the golden baskets among them, run on the emulator.
+          script: |
+            ./gradlew --no-daemon -PkeelAbis=x86_64 :app:connectedDebugAndroidTest || (find app/build/outputs/androidTest-results -name '*.xml' -exec cat {} + ; adb logcat -d '*:E' | tail -300 ; exit 1)
+            ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION" ABI=x86_64 ../../tools/android/kernel-tests.sh
 
       - name: What the hub said
         if: always()
