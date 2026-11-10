@@ -88,4 +88,16 @@ class RegisterModelTest {
         testScheduler.advanceUntilIdle()
         assertEquals("not on the menu", model.state.value.error)
     }
+
+    @Test
+    fun a_failure_that_isnt_a_refusal_is_shown_not_thrown() = runTest {
+        val broken = object : Till by FakeTill() {
+            override fun menu(): List<MenuPage> = throw IllegalStateException("the store is gone")
+        }
+        val model = model(broken)
+        model.start("alex")
+        testScheduler.advanceUntilIdle()
+        assertEquals("Something went wrong: the store is gone", model.state.value.error)
+        assertEquals(false, model.state.value.loading)
+    }
 }

@@ -773,10 +773,10 @@ fn event_at(
     .transpose()
 }
 
-/// The WAL journal of the database at `path`, which SQLite keeps beside it.
 /// The lock of the store at `path`: a file beside it, `<path>.lock`, locked exclusively. The
 /// operating system releases it when the store closes or its process dies, so a lock never
-/// outlives its holder.
+/// outlives its holder. In a process that spawns others, a child holds a copy of the lock from its
+/// fork until its exec, so a store closed and opened again in that moment is briefly busy.
 fn take_lock(path: &Path) -> Result<std::fs::File, StoreError> {
     let mut name = path.as_os_str().to_owned();
     name.push(".lock");
@@ -792,6 +792,7 @@ fn take_lock(path: &Path) -> Result<std::fs::File, StoreError> {
     }
 }
 
+/// The WAL journal of the database at `path`, which SQLite keeps beside it.
 fn journal(path: &Path) -> PathBuf {
     let mut journal = path.as_os_str().to_owned();
     journal.push("-wal");

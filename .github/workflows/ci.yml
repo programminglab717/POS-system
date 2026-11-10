@@ -209,4 +209,14 @@ jobs:
           ram-size: 2048M
           disable-animations: true
           working-directory: apps/android
-          script: ./gradlew --no-daemon -PkeelAbis=x86_64 :app:connectedDebugAndroidTest
+          # On a failure, what the tests and the device said, for the log.
+          script: ./gradlew --no-daemon -PkeelAbis=x86_64 :app:connectedDebugAndroidTest || (find app/build/outputs/androidTest-results -name '*.xml' -exec cat {} + ; adb logcat -d '*:E' | tail -300 ; exit 1)
+
+      - name: Keep the instrumented tests' reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-reports
+          path: |
+            apps/android/app/build/reports/androidTests
+            apps/android/app/build/outputs/androidTest-results

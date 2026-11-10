@@ -1,5 +1,6 @@
 package dev.keel.register
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,7 +25,7 @@ data class RegisterState(
 /**
  * The register's state: the menu, the order being rung, and what the cashier last did. Each
  * intent runs on [worker], one at a time, so the kernel has one caller; the state changes when
- * it answers.
+ * it answers. A refusal, or any other failure, is kept in the state for the screen to show.
  */
 class RegisterModel(
     private val till: Till,
@@ -72,6 +73,14 @@ class RegisterModel(
                 withContext(worker) { intent() }
             } catch (refused: TillException) {
                 mutable.update { it.copy(loading = false, error = refused.message) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failed: Exception) {
+                // Anything else the kernel or the platform throws is shown, not a crash: the
+                // register stays up for whoever can look.
+                mutable.update {
+                    it.copy(loading = false, error = "Something went wrong: ${failed.message ?: failed::class.simpleName}")
+                }
             }
         }
     }

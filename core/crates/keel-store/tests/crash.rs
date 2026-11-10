@@ -315,14 +315,27 @@ type TestStore = Store<SoftwareSigner, SeededEntropy>;
 /// Opens the store in `scratch` with each key: exactly one must open it, one of `keys`. Returns
 /// the store, the key that opened it, and whether the store was recovering from a crash.
 fn open_with_one_key(scratch: &Scratch, keys: &[u8]) -> (TestStore, u8, bool) {
+    // Busy only while another test's child, between its fork and its exec, holds a copy of the
+    // lock's descriptor: the tests here spawn children side by side. Once it execs, the lock is
+    // free, so a moment's wait is enough.
     let open = |key: u8| {
-        Store::open(
-            scratch.db(),
-            store_key_of(key),
-            config(),
-            signer(OWN),
-            SeededEntropy::new(4242),
-        )
+        let mut tries = 0;
+        loop {
+            let opened = Store::open(
+                scratch.db(),
+                store_key_of(key),
+                config(),
+                signer(OWN),
+                SeededEntropy::new(4242),
+            );
+            match opened {
+                Err(StoreError::Busy) if tries < 100 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => break other,
+            }
+        }
     };
     // One key after the other, since a store opens once at a time; whether it was recovering is
     // what the first open that succeeds found.

@@ -1925,6 +1925,10 @@ Work deliberately left for later, so it isn't forgotten:
   - A hub alone never settles its log, since `keel-sync` settles only once a peer has answered: a
     location of one device writes as an island after 3 s, and confirms nothing (ADR-0026, as
     built).
+- **`keel-store`'s lock:** in a process that spawns others, a child holds a copy of a store's
+  lock from its fork until its exec, so a store closed and opened again in that moment is
+  briefly `Busy`. CI's crash tests met it, their children spawned side by side, and retry an open
+  that is busy; a shell that spawns processes would have to as well.
 - **`keel-net` and `keel-provision`:**
   - Certificates from a development CA, valid for a year, renewed only by provisioning again,
     where the Device CA's will live 24 to 72 hours (step 8); no revocation.
