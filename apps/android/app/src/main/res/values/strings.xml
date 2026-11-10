@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Keel Register</string>
+    <string name="service_channel">Register running</string>
+    <string name="service_text">Syncing with the store\'s devices.</string>
 </resources>

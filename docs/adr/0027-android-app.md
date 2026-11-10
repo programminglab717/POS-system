@@ -122,8 +122,16 @@ The skeleton's details, settled in building it:
   pushed into the app's external files directory, is imported on first launch by `DeviceFiles`,
   which wraps its secrets and removes it; a device without one is drawn alone, on the demo café's
   profile. Replication runs on the kernel's thread every 50 ms, each turn without waiting, so a
-  cashier's intents wait for none of it. The hub runs while the register's screen is open: the
-  foreground service that keeps it running in the background comes next.
+  cashier's intents wait for none of it. The kernel and its loops belong to the app's process
+  (`KernelHost`, held by `KeelApplication`), not to its screen; a joined register starts
+  `RegisterService`, a foreground service of type `connectedDevice`, as it serves the store's
+  devices and its printer on its network, and restarted by the system it opens the kernel again.
+  On Android 13 and later, the service's notification shows once the app may post notifications,
+  which it doesn't ask for yet.
+- **On the emulator**, besides the instrumented tests: a provisioned register syncing with a hub
+  on the host (`SyncTest`, the location provisioned by CI, the hub reached as 10.0.2.2), and the
+  kernel's own tests, the golden baskets among them, cross-built and run through `adb`
+  (`tools/android/kernel-tests.sh`).
 - **The release build isn't shrunk** yet: JNA finds the bindings' classes by reflection, and the
   rules that keep them (`kernel/consumer-rules.pro`) are checked when the release build is.
 

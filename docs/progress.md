@@ -180,9 +180,18 @@ Built in slice 4 so far, each verified as it landed:
     `DeviceFiles`: drawn once and the same after, keys kept wrapped; a kit imported once and
     removed, a later kit changing nothing; a kit missing a file left alone. `:register`'s 16th
     test: the sync status read again, and one that can't be read shown as nothing.
-  - Not yet: a register on Android syncing with a hub (an emulator test with a hub on the host),
-    and the hub's role as a foreground service, which keeps it running when the app is in the
-    background: until then, the hub runs while the register's screen is open.
+  - Parts 2 to 4's instrumented test passed in CI's emulator job: the drawer kick and the receipt
+    reach a printer in the test's own process.
+- **The hub in the background, and the sync test** (part 4, second half): the kernel, its thread,
+  the print driver and replication belong to the app's process (`KernelHost`, held by
+  `KeelApplication`), not its screen; a register joined to its location starts `RegisterService`,
+  a foreground service of type `connectedDevice`, which keeps the process running and, restarted
+  by the system, opens the kernel again. CI's emulator job provisions a location on the host and
+  runs its hub there; `SyncTest` imports the register's kit on the app's first launch, waits to
+  hear the hub, and sells while synced (the test orchestrator clears the app's data before each
+  test). And `tools/android/kernel-tests.sh` runs the golden baskets and the store's, the
+  runtime's and the bindings' unit tests on the emulator, cross-built with `cargo-ndk`, where the
+  store's lock failed before.
 
 Built in slice 5, each verified as it landed, then reviewed:
 
