@@ -144,6 +144,16 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
             "ndk;$NDK_VERSION" "platforms;android-36" "build-tools;36.1.0" > /dev/null
 
+      # The wrapper's distribution is pinned by its checksum, which must be Gradle's published one.
+      - name: Check the wrapper's pinned checksum against Gradle's
+        working-directory: apps/android/gradle/wrapper
+        run: |
+          url=$(sed -n 's/^distributionUrl=//p' gradle-wrapper.properties | sed 's/\\:/:/')
+          pinned=$(sed -n 's/^distributionSha256Sum=//p' gradle-wrapper.properties)
+          published=$(curl -fsSL "$url.sha256")
+          echo "pinned $pinned, published $published"
+          test "$pinned" = "$published"
+
       # The wrapper's jar is one of Gradle's own, checked against their published checksums.
       - uses: gradle/actions/setup-gradle@v4
 

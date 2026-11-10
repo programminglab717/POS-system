@@ -331,7 +331,7 @@ fn open_with_one_key(scratch: &Scratch, keys: &[u8]) -> (TestStore, u8, bool) {
             match opened {
                 Err(StoreError::Busy) if tries < 100 => {
                     tries += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(10));
                 }
                 other => break other,
             }

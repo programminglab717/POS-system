@@ -220,4 +220,11 @@ BUGS = [
         "    let signing_key = key()?;\n    Ok(NewDevice { device: device.to_string(), store_key: signing_key.clone(), signing_key })",
         "unit",
     ),
+    (
+        "ffi: the team is given in reverse",
+        "src/register.rs",
+        "                .team()\n                .iter()\n",
+        "                .team()\n                .iter()\n                .rev()\n",
+        "unit",
+    ),
 ]

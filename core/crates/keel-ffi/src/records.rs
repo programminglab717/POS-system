@@ -663,3 +663,12 @@ pub struct NewDevice {
     /// Its store's key: 32 random bytes.
     pub store_key: Vec<u8>,
 }
+
+/// A team member who may sign in.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Member {
+    /// Their identifier, for [`crate::Register::sign_in`].
+    pub id: String,
+    /// The name the register shows for them.
+    pub name: String,
+}

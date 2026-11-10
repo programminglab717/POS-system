@@ -380,4 +380,51 @@ BUGS = [
         "        self.settled && !self.forked() && self.is_hub()",
         "unit",
     ),
+    (
+        "runtime: today's orders are every day's",
+        "src/runtime.rs",
+        ".filter(|order| order.business_date == Some(today))",
+        ".filter(|order| order.business_date.is_some())",
+        "unit",
+    ),
+    (
+        "runtime: today's orders leave out the closed",
+        "src/runtime.rs",
+        "[OrderState::Active, OrderState::Closed, OrderState::Voided, OrderState::Abandoned]",
+        "[OrderState::Active, OrderState::Voided, OrderState::Abandoned]",
+        "unit",
+    ),
+    (
+        "runtime: a cash offer is the multiple at or below what is due",
+        "src/ticket.rs",
+        ".and_then(|unit| due.checked_div(unit)?.checked_add(1)?.checked_mul(unit));",
+        ".and_then(|unit| due.checked_div(unit)?.checked_add(0)?.checked_mul(unit));",
+        # The property test that catches it is a unit test, in src/tests.rs.
+        "unit",
+    ),
+    (
+        "runtime: one cash offer too many",
+        "src/ticket.rs",
+        "            && offers.len() < crate::CASH_OFFERS",
+        "            && offers.len() <= crate::CASH_OFFERS",
+        # The property test that catches it is a unit test, in src/tests.rs.
+        "unit",
+    ),
+    (
+        "runtime: an order that owes nothing is offered more",
+        "src/ticket.rs",
+        "    if due <= 0 {\n        return offers;",
+        "    if due < 0 {\n        return offers;",
+        # The property test that catches it is a unit test, in src/tests.rs.
+        "unit",
+    ),
+    (
+        "runtime: a cash offer may repeat",
+        "src/ticket.rs",
+        "            && !offers.contains(&above)\n",
+        "",
+        # The property test that catches it is a unit test, in src/tests.rs.
+        "unit",
+    ),
 ]
+

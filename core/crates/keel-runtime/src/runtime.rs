@@ -9,7 +9,7 @@ use keel_domain::order::{
     Channel, Check, LineAdded, LineChanged, Mode, Order, OrderCommand, OrderCreated,
 };
 use keel_domain::payment::{CashTendered, Payment, PaymentCaptured, PaymentCommand, Tender};
-use keel_domain::profile::{Choice, Profile};
+use keel_domain::profile::{Choice, Member, Profile};
 use keel_domain::refs::Variant;
 use keel_domain::schema::DomainEvent;
 use keel_events::envelope::{
@@ -34,6 +34,8 @@ use crate::views::{
     Amount, CashPaid, ItemView, MenuButton, MenuPage, MenuView, Ticket, group_views,
 };
 
+/// The most amounts [`Runtime::cash_offers`] offers.
+pub const CASH_OFFERS: usize = 5;
 /// How far ahead of the device's clock a received event's time may move it: a minute, as the
 /// simulator allows.
 const MAX_FORWARD_DRIFT: Duration = Duration::from_secs(60);
@@ -463,6 +465,61 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             .into_iter()
             .map(|order| self.ticket(order.id))
             .collect()
+    }
+
+    /// The tickets of the orders begun on today's business date, by the runtime's clock,
+    /// whatever became of them, oldest first: the register's list of today's orders.
+    ///
+    /// It reads every order of each state, as reprinting does: a store query by business date
+    /// comes when a day's orders are too many for it.
+    ///
+    /// # Errors
+    /// [`RuntimeError`] if the store can't be read, an order priced, or the clock is out of the
+    /// range a business date has.
+    pub fn orders_today(&self) -> Result<Vec<Ticket>, RuntimeError> {
+        let today = self.profile.business_day().business_date_of(self.clock.now())?;
+        let mut orders = Vec::new();
+        for state in
+            [OrderState::Active, OrderState::Closed, OrderState::Voided, OrderState::Abandoned]
+        {
+            orders.extend(
+                self.store
+                    .orders(state)?
+                    .into_iter()
+                    .filter(|order| order.business_date == Some(today)),
+            );
+        }
+        // Identifiers are UUIDv7s: their order is the order they were made in.
+        orders.sort_by_key(|order| order.id.to_bytes());
+        orders.iter().map(|order| self.ticket(order.id)).collect()
+    }
+
+    /// What the register offers a cashier as cash tendered for `order`: what it owes in cash,
+    /// then the smallest amounts above that in whole multiples of 1, 5, 10, 20, 50 and 100 of the
+    /// currency's major unit, each once, at most [`CASH_OFFERS`] in all. An order that owes
+    /// nothing is offered nothing more.
+    ///
+    /// # Errors
+    /// As [`Runtime::ticket`].
+    pub fn cash_offers(&self, order: Id<Order>) -> Result<Vec<Amount>, RuntimeError> {
+        let due = self.ticket(order)?.cash_due.money;
+        let currency = due.currency();
+        let offers = ticket::cash_offers(due.minor(), currency.minor_units());
+        Ok(offers
+            .into_iter()
+            .map(|minor| Amount::new(Money::from_minor(minor, currency), self.locale))
+            .collect())
+    }
+
+    /// `minor` of the location's currency, as the register shows it: for an amount a cashier
+    /// types.
+    pub fn amount(&self, minor: i64) -> Amount {
+        Amount::new(Money::from_minor(minor, self.profile.data().currency), self.locale)
+    }
+
+    /// The team members who may sign in, in the profile's order.
+    pub fn team(&self) -> &[Member] {
+        &self.profile.data().team
     }
 
     /// The menu, as the register shows it.

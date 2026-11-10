@@ -21,7 +21,7 @@ use keel_types::{Clock, Entropy, Id, IdGenerator, Locale, Money, OsEntropy, Syst
 
 use crate::error::KeelError;
 use crate::records::{
-    Amount, CashPaid, Choice, Item, Job, Menu, Mode, NewDevice, Outcome, PrintJob, Printer,
+    Amount, CashPaid, Choice, Item, Job, Member, Menu, Mode, NewDevice, Outcome, PrintJob, Printer,
     RegisterConfig, Resolution, Ticket, Waits,
 };
 
@@ -230,6 +230,51 @@ impl Register {
     pub fn open_orders(&self) -> Result<Vec<Ticket>, KeelError> {
         self.with(|runtime| runtime.open_orders())
             .map(|tickets| tickets.iter().map(Ticket::from).collect())
+    }
+
+    /// The tickets of the orders begun on today's business date, whatever became of them, oldest
+    /// first.
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read.
+    pub fn orders_today(&self) -> Result<Vec<Ticket>, KeelError> {
+        self.with(|runtime| runtime.orders_today())
+            .map(|tickets| tickets.iter().map(Ticket::from).collect())
+    }
+
+    /// What the register offers as cash tendered for `order`: what it owes in cash, then round
+    /// amounts above it, at most five.
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] if `order` isn't an identifier, [`KeelError::UnknownOrder`]
+    /// if the store holds no such order.
+    pub fn cash_offers(&self, order: String) -> Result<Vec<Amount>, KeelError> {
+        let order = id(&order)?;
+        self.with(|runtime| runtime.cash_offers(order))
+            .map(|offers| offers.iter().map(Amount::from).collect())
+    }
+
+    /// `minor` of the location's currency, as the register shows it: for an amount a cashier
+    /// types.
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the register's lock was poisoned.
+    pub fn amount(&self, minor: i64) -> Result<Amount, KeelError> {
+        self.with(|runtime| Ok(runtime.amount(minor))).map(|amount| (&amount).into())
+    }
+
+    /// The team members who may sign in, in the profile's order.
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the register's lock was poisoned.
+    pub fn team(&self) -> Result<Vec<Member>, KeelError> {
+        self.with(|runtime| {
+            Ok(runtime
+                .team()
+                .iter()
+                .map(|member| Member { id: member.id.to_string(), name: member.name.to_string() })
+                .collect())
+        })
     }
 
     /// The menu.

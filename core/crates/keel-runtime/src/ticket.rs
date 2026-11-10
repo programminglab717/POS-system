@@ -165,3 +165,28 @@ fn tax_name(rules: &Rules, tax: Id<Tax>) -> String {
         .map(|tax| tax.name.clone())
         .unwrap_or_default()
 }
+
+/// The amounts of cash a register offers for `due`, in minor units of a currency with
+/// `minor_units` decimals: `due`, then the smallest amounts above it in whole multiples of 1, 5,
+/// 10, 20, 50 and 100 major units, each once, at most [`crate::CASH_OFFERS`] in all; `due` alone if
+/// it is nothing or less, or an amount above it would overflow.
+pub(crate) fn cash_offers(due: i64, minor_units: u8) -> Vec<i64> {
+    let mut offers = vec![due];
+    if due <= 0 {
+        return offers;
+    }
+    let major = 10_i64.checked_pow(u32::from(minor_units)).unwrap_or(1);
+    for step in [1_i64, 5, 10, 20, 50, 100] {
+        // The smallest multiple of the step above what is due.
+        let above = major
+            .checked_mul(step)
+            .and_then(|unit| due.checked_div(unit)?.checked_add(1)?.checked_mul(unit));
+        if let Some(above) = above
+            && !offers.contains(&above)
+            && offers.len() < crate::CASH_OFFERS
+        {
+            offers.push(above);
+        }
+    }
+    offers
+}

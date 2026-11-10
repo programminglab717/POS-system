@@ -640,3 +640,47 @@ fn a_new_device_opens_a_register_of_its_own() {
     register.sign_in(domain::demo().unwrap().data().team[0].id.to_string()).unwrap();
     assert!(register.start_order(Mode::Takeout).is_ok());
 }
+
+#[test]
+fn the_team_and_todays_orders_cross_the_boundary() {
+    let scratch = Scratch::new();
+    let register = Register::open(config(&scratch)).unwrap();
+    let team = register.team().unwrap();
+    assert_eq!(
+        team,
+        vec![
+            Member { id: demo_id(0x501), name: "Alex".to_owned() },
+            Member { id: demo_id(0x502), name: "Sam".to_owned() },
+        ]
+    );
+    register.sign_in(team[1].id.clone()).unwrap();
+    let first = register.start_order(Mode::Takeout).unwrap();
+    register.add_item(first.order.clone(), demo_id(0x409), vec![], 1).unwrap();
+    register.pay_cash(first.order.clone(), 1_000).unwrap();
+    let second = register.start_order(Mode::DineIn).unwrap();
+    let today: Vec<(String, TicketState)> =
+        register.orders_today().unwrap().into_iter().map(|t| (t.order, t.state)).collect();
+    assert_eq!(today, vec![(first.order, TicketState::Closed), (second.order, TicketState::Open)]);
+}
+
+#[test]
+fn cash_offers_and_amounts_cross_the_boundary() {
+    let scratch = Scratch::new();
+    let register = Register::open(config(&scratch)).unwrap();
+    register.sign_in(demo_id(0x501)).unwrap();
+    let order = register.start_order(Mode::Takeout).unwrap().order;
+    register.add_item(order.clone(), demo_id(0x409), vec![], 1).unwrap();
+    let offers: Vec<(i64, String)> =
+        register.cash_offers(order).unwrap().into_iter().map(|a| (a.minor, a.text)).collect();
+    assert_eq!(
+        offers,
+        [(218, "$2.18"), (300, "$3.00"), (500, "$5.00"), (1_000, "$10.00"), (2_000, "$20.00")]
+            .map(|(minor, text)| (minor, text.to_owned()))
+    );
+    let typed = register.amount(-5).unwrap();
+    assert_eq!((typed.minor, typed.currency.as_str(), typed.text.as_str()), (-5, "USD", "-$0.05"));
+    assert!(matches!(
+        register.cash_offers("nope".to_owned()),
+        Err(KeelError::InvalidArgument { .. })
+    ));
+}

@@ -37,7 +37,7 @@ mod tests;
 
 pub use error::RuntimeError;
 pub use print::{DRAWER, Job, JobKind, JobState, JobView, PrintJob, RECEIPT, Resolution};
-pub use runtime::{Identity, Runtime};
+pub use runtime::{CASH_OFFERS, Identity, Runtime};
 pub use sync::{ISLAND_AFTER, SyncStatus};
 pub use views::{
     Amount, CashPaid, GroupView, ItemView, MenuButton, MenuPage, MenuView, ModifierView, Ticket,

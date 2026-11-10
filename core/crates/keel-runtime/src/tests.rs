@@ -8,7 +8,7 @@ use keel_domain::checkout::CheckoutError;
 use keel_domain::order::{Channel, CommandError, Lease, Mode, Order, Ownership, Prefix};
 use keel_domain::payment::{CashTendered, Payment};
 use keel_domain::profile::{CatalogVariant, Choice, Profile, ProfileData, RingError, demo};
-use keel_events::envelope::{Actor, Device};
+use keel_events::envelope::{Actor, Device, TeamMember};
 use keel_events::keys::{SignatureAlgorithm, SoftwareSigner};
 use keel_pricing::{Dining, PricingError, Tax};
 use keel_store::StoreKey;
@@ -509,4 +509,102 @@ fn the_menu_shows_each_page_with_prices_and_what_must_be_chosen() {
         runtime.item(id(0x4ff)),
         Err(RuntimeError::Ring(RingError::UnknownVariant(_)))
     ));
+}
+
+#[test]
+fn todays_orders_are_those_begun_since_the_business_day_began() {
+    let scratch = Scratch::new();
+    let mut runtime = signed_in(&scratch);
+    let dropped = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(dropped, id(0x409), &[], one()).unwrap();
+    runtime.abandon(dropped).unwrap();
+    let paid = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(paid, id(0x409), &[], one()).unwrap();
+    runtime.pay_cash(paid, usd(1_000)).unwrap();
+    let open = runtime.start_order(Mode::DineIn).unwrap().order;
+    let today = |runtime: &TestRuntime| -> Vec<(Id<Order>, TicketState)> {
+        runtime.orders_today().unwrap().iter().map(|ticket| (ticket.order, ticket.state)).collect()
+    };
+    let all = vec![
+        (dropped, TicketState::Abandoned),
+        (paid, TicketState::Closed),
+        (open, TicketState::Open),
+    ];
+    assert_eq!(today(&runtime), all, "whatever became of them, oldest first");
+    // The demo café's day begins at 4 am in New York: a minute before, it is still today.
+    runtime.clock().set("2026-10-03T07:59:00Z".parse().unwrap());
+    assert_eq!(today(&runtime), all);
+    runtime.clock().set("2026-10-03T08:00:00Z".parse().unwrap());
+    assert!(today(&runtime).is_empty(), "a new day begins with none");
+    // Yesterday's open order is still open, but not today's.
+    assert_eq!(runtime.open_orders().unwrap().len(), 1);
+    let next = runtime.start_order(Mode::Takeout).unwrap().order;
+    assert_eq!(today(&runtime), vec![(next, TicketState::Open)]);
+}
+
+#[test]
+fn the_team_is_the_profiles_in_its_order() {
+    let scratch = Scratch::new();
+    let runtime = register(&scratch, demo().unwrap());
+    let team: Vec<(Id<TeamMember>, &str)> =
+        runtime.team().iter().map(|member| (member.id, member.name.as_str())).collect();
+    assert_eq!(team, vec![(id(0x501), "Alex"), (id(0x502), "Sam")]);
+}
+
+#[test]
+fn cash_offered_is_what_is_due_then_round_amounts_above_it() {
+    let scratch = Scratch::new();
+    let mut runtime = signed_in(&scratch);
+    let offers = |runtime: &TestRuntime, order| -> Vec<String> {
+        runtime.cash_offers(order).unwrap().into_iter().map(|amount| amount.text).collect()
+    };
+    // A bottle of water, $2.00 and 8.875% tax: $2.18.
+    let water = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(water, id(0x409), &[], one()).unwrap();
+    assert_eq!(offers(&runtime, water), ["$2.18", "$3.00", "$5.00", "$10.00", "$20.00"]);
+    // Two bags of beans, untaxed: $28.00, and $30.00 is both the next 5 and the next 10.
+    let beans = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(beans, id(0x40a), &[], NonZeroU32::new(2).unwrap()).unwrap();
+    assert_eq!(offers(&runtime, beans), ["$28.00", "$29.00", "$30.00", "$40.00", "$50.00"]);
+    // Paid, it owes nothing, and is offered nothing more.
+    runtime.pay_cash(water, usd(500)).unwrap();
+    assert_eq!(offers(&runtime, water), ["$0.00"]);
+    assert_eq!(runtime.amount(1_234).text, "$12.34");
+}
+
+proptest::proptest! {
+    /// Every offer, against an oracle in `i128`, where nothing overflows: what is due first, then
+    /// the smallest multiple of each step above it that an `i64` holds, each once, at most five.
+    #[test]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "an oracle in i128, whose values stay far inside its range"
+    )]
+    fn cash_offers_match_an_exact_oracle(
+        due in proptest::prop_oneof![
+            // Nothing due, and a multiple of a step exactly.
+            proptest::sample::select(vec![0_i64, 1, 100, 500, 1_000, 2_000, 5_000, 10_000]),
+            -1_000_i64..=100_000,
+            0_i64..=i64::MAX,
+            // At the edge, where a multiple above overflows.
+            (i64::MAX - 20_000_000)..=i64::MAX,
+        ],
+        minor_units in 0_u8..=4,
+    ) {
+        let offers = ticket::cash_offers(due, minor_units);
+        let mut oracle: Vec<i128> = vec![i128::from(due)];
+        if due > 0 {
+            let major = 10_i128.pow(u32::from(minor_units));
+            for step in [1_i128, 5, 10, 20, 50, 100] {
+                let unit = major * step;
+                let above = (i128::from(due) / unit + 1) * unit;
+                proptest::prop_assert!(above > i128::from(due) && above - unit <= i128::from(due));
+                if above <= i128::from(i64::MAX) && !oracle.contains(&above) && oracle.len() < CASH_OFFERS {
+                    oracle.push(above);
+                }
+            }
+        }
+        let offers: Vec<i128> = offers.into_iter().map(i128::from).collect();
+        proptest::prop_assert_eq!(offers, oracle);
+    }
 }
