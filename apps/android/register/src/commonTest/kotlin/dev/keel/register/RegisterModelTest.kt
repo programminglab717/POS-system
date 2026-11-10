@@ -238,4 +238,26 @@ class RegisterModelTest {
         testScheduler.advanceUntilIdle()
         assertEquals("Only a paid order has a receipt.", model.state.value.error)
     }
+
+    @Test
+    fun how_replication_stands_is_read_again_and_a_failure_to_read_it_shown_as_nothing() = runTest {
+        var info: SyncInfo? = SyncInfo(listening = false, settled = true, hubReachable = true, serving = false)
+        var broken = false
+        val till = object : Till by FakeTill() {
+            override fun syncState(): SyncInfo? = if (broken) error("no store") else info
+        }
+        val model = model(till)
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(info, model.state.value.sync)
+        info = info!!.copy(hubReachable = false)
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(false, model.state.value.sync!!.hubReachable)
+        broken = true
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.sync)
+        assertNull(model.state.value.error, "no error for the cashier")
+    }
 }

@@ -18,7 +18,13 @@ import dev.keel.register.JobKind
 import dev.keel.register.JobState
 import dev.keel.register.PrintJob
 import dev.keel.register.PrinterAddress
+import dev.keel.kernel.SyncKit
+import dev.keel.register.SyncInfo
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import dev.keel.register.Member
 import dev.keel.register.MenuButton
 import dev.keel.register.MenuPage
@@ -125,6 +131,30 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
         call { register.resolve(job, if (printed) Resolution.PRINTED else Resolution.AGAIN) }.let { }
 
     override fun reprint(order: String) = call { register.reprint(order) }.let { }
+
+    /** Joins the location's network with [kit]: replication runs from [syncLoop]. */
+    fun startSync(kit: SyncKit) = call { register.startSync(kit) }
+
+    /**
+     * Runs replication until cancelled: a turn of it on the kernel's thread, [kernel], every
+     * [every], each without waiting, so a cashier's intents wait for none of it.
+     */
+    suspend fun syncLoop(kernel: CoroutineDispatcher, every: Duration = 50.milliseconds) {
+        while (true) {
+            withContext(kernel) {
+                try {
+                    register.syncStep(0u)
+                } catch (_: KeelException) {
+                    // A frame that couldn't be stored: its peer sends it again.
+                }
+            }
+            delay(every)
+        }
+    }
+
+    override fun syncState(): SyncInfo? = call {
+        register.syncStatus()?.let { SyncInfo(it.listening, it.settled, it.hubReachable, it.serving) }
+    }
 
     /** The print driver's loop for this till's register, sending to the printer [address] gives. */
     fun printLoop(kernel: CoroutineDispatcher, address: () -> PrinterAddress?): PrintLoop =

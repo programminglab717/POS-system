@@ -64,7 +64,22 @@ interface Till {
 
     /** Prints the receipt of the closed [order] again, marked as a reprint. */
     fun reprint(order: String)
+
+    /** How replication with the location stands, for a register joined to its network. */
+    fun syncState(): SyncInfo? = null
 }
+
+/** How replication with the location stands. */
+data class SyncInfo(
+    /** This register listens for the location's devices, as its hub's address. */
+    val listening: Boolean,
+    /** Its log is settled: until it is, it doesn't write. */
+    val settled: Boolean,
+    /** A hub is reachable. */
+    val hubReachable: Boolean,
+    /** This register serves as the hub now. */
+    val serving: Boolean,
+)
 
 /** What a print job prints. */
 enum class JobKind { RECEIPT, DRAWER }

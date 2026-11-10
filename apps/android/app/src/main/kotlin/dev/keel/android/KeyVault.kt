@@ -1,6 +1,7 @@
 package dev.keel.android
 
 import android.security.keystore.KeyGenParameterSpec
+import dev.keel.android.kernel.Vault
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import java.security.KeyStore
@@ -15,11 +16,11 @@ import javax.crypto.spec.GCMParameterSpec
  * kiosk doesn't have. A secret it wraps is unwrapped again at once, to catch hardware that wraps
  * wrongly before anything depends on it.
  */
-class KeyVault(private val alias: String = "keel.wrap") {
+class KeyVault(private val alias: String = "keel.wrap") : Vault {
     private val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
 
     /** [secret], wrapped: the 12-byte nonce, then the ciphertext and its tag. */
-    fun wrap(secret: ByteArray): ByteArray {
+    override fun wrap(secret: ByteArray): ByteArray {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val wrapped = cipher.iv + cipher.doFinal(secret)
@@ -28,7 +29,7 @@ class KeyVault(private val alias: String = "keel.wrap") {
     }
 
     /** The secret [wrapped] holds. */
-    fun unwrap(wrapped: ByteArray): ByteArray {
+    override fun unwrap(wrapped: ByteArray): ByteArray {
         require(wrapped.size > NONCE) { "a wrapped secret is too short" }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_BITS, wrapped, 0, NONCE))

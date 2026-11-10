@@ -54,6 +54,8 @@ data class RegisterState(
     val printer: PrinterAddress? = null,
     /** The print jobs, as last read. */
     val jobs: List<PrintJob> = emptyList(),
+    /** How replication stands, as last read, for a register joined to its network. */
+    val sync: SyncInfo? = null,
     /** The last refusal or failure, until the next intent. */
     val error: String? = null,
 )
@@ -245,6 +247,13 @@ class RegisterModel(
         till.resolve(job.job, printed)
         val jobs = till.printJobs()
         mutable.update { it.copy(jobs = jobs) }
+    }
+
+    /** Reads how replication stands again; the shell calls it every few seconds. */
+    fun refreshSync() = scope.launch {
+        // A status that can't be read is no reason to show the cashier an error.
+        val sync = runCatching { withContext(worker) { till.syncState() } }.getOrNull()
+        mutable.update { it.copy(sync = sync) }
     }
 
     /** Back to the register from today's orders or the printer. */

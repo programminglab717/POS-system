@@ -115,6 +115,15 @@ The skeleton's details, settled in building it:
   whether an unconfirmed one printed. `:kernel`'s unit tests run on the host, against the kernel
   built for it, through JNA's host library; the instrumented test's fake printer runs in the
   test's own process, on the device, rather than on the host.
+- **The hub on Android** (part 4): `keel-ffi` joins a register to its location's network
+  (`start_sync`, `sync_step`, `sync_status`), the roster's most preferred hub listening at its
+  port and every other device connecting; `keel-hub`'s daemon is behind a default feature, so the
+  bindings take `step` without the provisioning tool, which never ships. A provisioned kit,
+  pushed into the app's external files directory, is imported on first launch by `DeviceFiles`,
+  which wraps its secrets and removes it; a device without one is drawn alone, on the demo café's
+  profile. Replication runs on the kernel's thread every 50 ms, each turn without waiting, so a
+  cashier's intents wait for none of it. The hub runs while the register's screen is open: the
+  foreground service that keeps it running in the background comes next.
 - **The release build isn't shrunk** yet: JNA finds the bindings' classes by reflection, and the
   rules that keep them (`kernel/consumer-rules.pro`) are checked when the release build is.
 

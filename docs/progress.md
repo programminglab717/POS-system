@@ -164,6 +164,25 @@ Built in slice 4 so far, each verified as it landed:
     reprinted, an unconfirmed job printed again, and an unpaid order refused a reprint.
   - The instrumented test points the register at a printer in its own process before the sale,
     and the drawer kick and the receipt reach it.
+- **The hub on Android** (part 4, first half): `keel-ffi`'s `start_sync`, `sync_step` and
+  `sync_status`, and `NotSettled`; the roster's most preferred hub (the highest priority, then
+  the lowest identifier) listens at its port, every other device connects. `keel-hub`'s daemon is
+  behind a default feature, so the bindings take `step` without the provisioning tool. In the
+  app, a provisioned kit pushed to the app's external files is imported on first launch
+  (`DeviceFiles`, in `:kernel`): its secrets wrapped by the Keystore, its plaintext removed, and
+  the register opened with its identity and profile and joined to its location, replication
+  running on the kernel's thread every 50 ms without waiting; the register shows "Store hub",
+  "Synced", "Joining…" or "Offline". `tokio`, `rustls` and `ring` cross-compile for both ABIs;
+  the library is 9.8 MB for `arm64-v8a`.
+  - Known answers: through the bindings, a location provisioned in memory, its hub and register
+    joined over TLS on the host, the register settling and its sale reaching the hub, closed; the
+    roster's most preferred of three hubs listening; 4 planted bugs, each caught. On the host,
+    `DeviceFiles`: drawn once and the same after, keys kept wrapped; a kit imported once and
+    removed, a later kit changing nothing; a kit missing a file left alone. `:register`'s 16th
+    test: the sync status read again, and one that can't be read shown as nothing.
+  - Not yet: a register on Android syncing with a hub (an emulator test with a hub on the host),
+    and the hub's role as a foreground service, which keeps it running when the app is in the
+    background: until then, the hub runs while the register's screen is open.
 
 Built in slice 5, each verified as it landed, then reviewed:
 

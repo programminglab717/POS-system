@@ -109,6 +109,15 @@ private fun Register(state: RegisterState, model: RegisterModel) {
         Column(Modifier.weight(2f).fillMaxHeight()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(state.member?.name.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                state.sync?.let { sync ->
+                    val words = when {
+                        sync.serving -> "Store hub"
+                        sync.hubReachable -> "Synced"
+                        !sync.settled -> "Joining…"
+                        else -> "Offline"
+                    }
+                    Text(words, style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("sync"))
+                }
                 TextButton(onClick = model::showOrders, modifier = Modifier.testTag("orders")) { Text("Today's orders") }
                 TextButton(onClick = model::showPrinter, modifier = Modifier.testTag("printer")) { Text("Printer") }
                 TextButton(onClick = model::signOut, modifier = Modifier.testTag("sign-out")) { Text("Sign out") }
