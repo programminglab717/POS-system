@@ -127,6 +127,28 @@ Built in slice 4 so far, each verified as it landed:
     ABI the kernel isn't built for. The instrumented test, an espresso rung and paid on a device,
     runs in CI's new emulator job (API 30, 2 GB): this environment has no KVM.
 
+- **CI's first emulator runs** found two things, both fixed: the crash tests' children, spawned
+  side by side, hold a copy of a store's lock from fork to exec, so a test reopening its store in
+  that moment found it busy (the tests retry); and **every store open failed on Android**: std's
+  `File::try_lock` has no implementation there. `keel-store` locks with `flock` through `rustix`
+  on every Unix (its planted bug re-aimed and caught), and the app words the kernel's failures
+  when it opens, where the first run showed only "Something went wrong: ".
+- **The register's screens** (part 2): sign in from the team and out; the modifier sheet; a
+  line's quantity and removing it; dropping an order; the cash tender, from the kernel's offers
+  or typed on a keypad; and today's orders, an open one taken up again.
+  - The kernel: `Runtime::team`, `orders_today` (the orders begun on today's business date,
+    whatever became of them), `cash_offers` and `amount`, each through `keel-ffi`. Known answers:
+    today's orders across the demo café's 4 am cutoff; the team in order; offers for $2.18
+    ($3, $5, $10, $20) and $28.00 ($29, $30, $40, $50), and nothing more for an order paid; a
+    property test of the offers against an oracle in `i128`, aimed at zero and exact multiples;
+    and `keel-ffi`'s two new tests. 9 planted bugs, each caught.
+  - `:register`: `ModifierSheet` and the larger `RegisterModel`, 13 JVM tests against a fake till
+    (the sheet's rules, signing in and out, a latte rung through its sheet, lines changed and
+    taken off, cash tendered from an offer and typed, short refused, today's orders and an open
+    one resumed, refusals and failures shown); 4 bugs planted by hand in the sheet, each caught.
+  - The instrumented test signs in, rings a small latte with oat milk through its sheet, pays
+    the exact cash offered, and finds it paid among today's orders: in CI's emulator job.
+
 Built in slice 5, each verified as it landed, then reviewed:
 
 - **The roster v0** (`keel_domain::roster`): a location's devices, each with its signing key

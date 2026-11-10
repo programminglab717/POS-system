@@ -15,6 +15,10 @@ rusqlite.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 
+# The store's lock: `flock`, which std's `File::try_lock` doesn't offer on Android.
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 proptest.workspace = true
 

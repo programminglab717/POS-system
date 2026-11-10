@@ -1040,6 +1040,7 @@ dependencies = [
  "keel-types",
  "proptest",
  "rusqlite",
+ "rustix",
  "thiserror",
  "zeroize",
 ]

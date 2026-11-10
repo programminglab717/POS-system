@@ -1,0 +1,30 @@
+package dev.keel.android
+
+import dev.keel.register.Chosen
+import dev.keel.register.Till
+
+/** A [Till] opened by [open] at its first call, on whichever thread makes it: the kernel's. */
+class OpeningTill(open: () -> Till) : Till {
+    private val opened = lazy(open)
+    private val till get() = opened.value
+
+    /** The till, if it was opened. */
+    val openedTill: Till? get() = if (opened.isInitialized()) opened.value else null
+
+    override fun team() = till.team()
+    override fun signIn(member: String) = till.signIn(member)
+    override fun signOut() = till.signOut()
+    override fun menu() = till.menu()
+    override fun item(variant: String) = till.item(variant)
+    override fun startOrder() = till.startOrder()
+    override fun addItem(order: String, variant: String, choices: List<Chosen>, quantity: Int) =
+        till.addItem(order, variant, choices, quantity)
+    override fun changeQuantity(order: String, line: String, quantity: Int) = till.changeQuantity(order, line, quantity)
+    override fun removeLine(order: String, line: String) = till.removeLine(order, line)
+    override fun abandon(order: String) = till.abandon(order)
+    override fun cashOffers(order: String) = till.cashOffers(order)
+    override fun amount(minor: Long) = till.amount(minor)
+    override fun payCash(order: String, tenderedMinor: Long) = till.payCash(order, tenderedMinor)
+    override fun ticket(order: String) = till.ticket(order)
+    override fun ordersToday() = till.ordersToday()
+}

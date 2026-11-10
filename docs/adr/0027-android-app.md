@@ -92,6 +92,21 @@ The skeleton's details, settled in building it:
 - **The skeleton signs in as the demo café's first team member** and rings items with no
   choices, which every item of the demo café allows: the sign-in screen and the modifier sheet
   come with part 2.
+- **The store's lock failed on Android**, found by CI's emulator: std's `File::try_lock` has no
+  implementation for Android and always fails there, so every store was refused as open
+  already. `keel-store` takes the lock with `flock` through `rustix` on every Unix, so the host's
+  tests take the same path as Android. Opening the kernel goes through `KernelTill.open`, which
+  words its refusals as every other call's, and a failure with an empty message shows its
+  exception's name: the first sign of this bug was "Something went wrong: ", UniFFI's message for
+  a variant without fields.
+- **The register's screens** (part 2): signing in from the team, and out; the modifier sheet,
+  `ModifierSheet`, which shows the item's required groups first and a group under a modifier
+  once it is chosen, chooses alone in a group of one, counts repeats up to a group's most, and
+  clears what was chosen under a modifier with it; quantities and removing lines, and dropping
+  an order; the cash tender, with the kernel's offers (what is due, then the smallest amounts
+  above it in whole multiples of 1, 5, 10, 20, 50 and 100 of the currency's major unit) and a
+  keypad whose amount the kernel formats; and today's orders, an open one taken up again. The
+  kernel gains `team`, `orders_today`, `cash_offers` and `amount`.
 - **The release build isn't shrunk** yet: JNA finds the bindings' classes by reflection, and the
   rules that keep them (`kernel/consumer-rules.pro`) are checked when the release build is.
 

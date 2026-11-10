@@ -786,10 +786,23 @@ fn take_lock(path: &Path) -> Result<std::fs::File, StoreError> {
         .write(true)
         .open(PathBuf::from(name))
         .map_err(|_| StoreError::Busy)?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(_) => Err(StoreError::Busy),
-    }
+    lock(&file)?;
+    Ok(file)
+}
+
+/// Locks `file` exclusively, or refuses at once if another holds it: with `flock`, whose lock
+/// the operating system releases when the file is closed. Std's `File::try_lock` would do, but
+/// has no implementation for Android, where it always fails.
+#[cfg(unix)]
+fn lock(file: &std::fs::File) -> Result<(), StoreError> {
+    rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| StoreError::Busy)
+}
+
+/// Locks `file` exclusively, or refuses at once if another holds it.
+#[cfg(not(unix))]
+fn lock(file: &std::fs::File) -> Result<(), StoreError> {
+    file.try_lock().map_err(|_| StoreError::Busy)
 }
 
 /// The WAL journal of the database at `path`, which SQLite keeps beside it.

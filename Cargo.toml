@@ -42,6 +42,7 @@ keel-runtime = { path = "core/crates/keel-runtime" }
 # the same version (ADR-0016), as SQLCipher, with OpenSSL built from source for its crypto
 # (ADR-0018). zeroize clears the store's key from memory when it is dropped.
 rusqlite = { version = "0.40", default-features = false, features = ["bundled-sqlcipher-vendored-openssl"] }
+rustix = { version = "1.1", default-features = false, features = ["std", "fs"] }
 zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
 # The bindings (ADR-0025): UniFFI, pinned exactly, in keel-ffi alone.
 uniffi = { version = "=0.32.2", default-features = false }
