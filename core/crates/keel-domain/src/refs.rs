@@ -33,3 +33,7 @@ pub enum RevenueCenter {}
 /// Marks identifiers of tables on a floor plan.
 #[derive(Debug)]
 pub enum Table {}
+
+/// Marks identifiers of staff roles, which bundle permissions.
+#[derive(Debug)]
+pub enum Role {}

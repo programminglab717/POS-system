@@ -7,7 +7,8 @@
 //! - **Its catalog** ([`Catalog`]): items, their variants, and the modifier groups they offer,
 //!   from which a cashier's choices ring as a line ([`Profile::ring`]).
 //! - **Its menu**: pages of buttons, each a variant.
-//! - **Its team**: the members who may sign in.
+//! - **Its team**: the members who may sign in, and in format 2 the roles that say what each may
+//!   do, and each member's PIN (ADR-0029, [`crate::staff`]).
 //!
 //! A profile is canonical CBOR, like an event payload ([`crate::codec`]), and decoded as strictly:
 //! every value has exactly one encoding. Its catalog's encoding hashes, with SHA-256, to the
@@ -16,11 +17,11 @@
 //!
 //! Until the cloud publishes reference data, a profile is a file provisioned with the device.
 //!
-//! The profile, format 1:
+//! The profile, format 1, and format 2, which adds key 12 and each member's role and PIN:
 //!
 //! | Key | Field | Rules |
 //! |---|---|---|
-//! | 1 | format | 1 |
+//! | 1 | format | 1, or 2 for a profile with roles |
 //! | 2 | location | an identifier |
 //! | 3 | name | a name |
 //! | 4 | address | up to four names, the lines a receipt shows |
@@ -30,7 +31,11 @@
 //! | 8 | rules | the pricing rules, below |
 //! | 9 | catalog | the catalog, below |
 //! | 10 | menu | `{1: pages}`; a page is `{1: name, 2: [variant, ...]}`, with at least one button |
-//! | 11 | team | members, each `{1: identifier, 2: name}`; at least one |
+//! | 11 | team | members, each `{1: identifier, 2: name}`, and in format 2 `{3: role, 4: PIN}` too; at least one |
+//! | 12 | roles | format 2 alone: roles, each `{1: identifier, 2: name, 3: permissions}`; at least one, at most [`MAX_ROLES`] |
+//!
+//! A format-1 profile has no roles: every member may do everything, and signs in with no PIN.
+//! In format 2, every member has a role of the profile's, and a PIN.
 //!
 //! The pricing rules: `{1: extension rounding, 2: discount rounding, 3: taxes, 4: [tax rounding
 //! scope, mode]}`. A tax is `{1: identifier, 2: name, 3: rate, 4: tax categories, 5: dining}`:
@@ -72,11 +77,18 @@ pub use catalog::{
 pub use demo::demo;
 
 use crate::codec::{CatalogVersion, Field, Fields, Name, PayloadError, Record, RulesVersion};
-use crate::refs::{ModifierGroup, Variant};
+use crate::refs::{ModifierGroup, Role as RoleRef, Variant};
+use crate::staff::{PinHash, Request, Role};
 use catalog::{Index, full_name};
 
-/// The profile format this kernel reads and writes.
+/// The profile format of a profile without roles, which this kernel reads and writes.
 pub const FORMAT: u64 = 1;
+
+/// The profile format of a profile with roles (ADR-0029).
+pub const FORMAT_ROLES: u64 = 2;
+
+/// The most roles a profile has.
+pub const MAX_ROLES: usize = 100;
 
 /// The most items a catalog holds.
 pub const MAX_ITEMS: usize = 200_000;
@@ -139,6 +151,10 @@ pub struct Member {
     pub id: Id<TeamMember>,
     /// The name the register shows for them.
     pub name: Name,
+    /// Their role, one of the profile's; `None` in a profile without roles.
+    pub role: Option<Id<RoleRef>>,
+    /// Their PIN; `None` in a profile without roles.
+    pub pin: Option<PinHash>,
 }
 
 /// A location profile's contents, unchecked: [`Profile::new`] checks them.
@@ -164,6 +180,8 @@ pub struct ProfileData {
     pub menu: Menu,
     /// Who may sign in.
     pub team: Vec<Member>,
+    /// What each may do: empty for a profile without roles, whose members may do everything.
+    pub roles: Vec<Role>,
 }
 
 /// A location profile, checked whole.
@@ -238,7 +256,7 @@ impl Profile {
         rules::check(&data.rules)?;
         let index = check_catalog(&data.catalog, data.currency)?;
         check_menu(&data.menu, &index)?;
-        check_team(&data.team)?;
+        check_team(&data.team, &data.roles)?;
         let catalog_version =
             CatalogVersion::from_bytes(sha256(&catalog_value(&data.catalog).encode()));
         let rules_version =
@@ -255,9 +273,19 @@ impl Profile {
         let value = cbor::decode(bytes)?;
         let mut fields = Fields::read(&value)?;
         let format: u64 = fields.required(key::FORMAT, "profile format")?;
-        if format != FORMAT {
+        if format != FORMAT && format != FORMAT_ROLES {
             return Err(ProfileError::Format(format));
         }
+        // Format 2 has roles, and format 1 none: its key 12 is unknown.
+        let roles = if format == FORMAT_ROLES {
+            let roles: Vec<Role> = fields.required(key::ROLES, "roles")?;
+            if roles.is_empty() {
+                return Err(ProfileError::Invalid("a format-2 profile with no roles"));
+            }
+            roles
+        } else {
+            Vec::new()
+        };
         let business_day: BusinessDay = fields.required(key::BUSINESS_DAY, "business day")?;
         let rules = fields.required::<RulesField>(key::RULES, "pricing rules")?.0;
         let catalog = fields.required::<CatalogField>(key::CATALOG, "catalog")?.0;
@@ -274,6 +302,7 @@ impl Profile {
             catalog,
             menu: fields.required(key::MENU, "menu")?,
             team: fields.required(key::TEAM, "team")?,
+            roles,
         };
         fields.finish()?;
         Profile::new(data)
@@ -282,8 +311,11 @@ impl Profile {
     /// The profile's canonical encoding.
     pub fn encode(&self) -> Vec<u8> {
         let data = &self.data;
+        // A profile without roles is written as format 1, byte for byte as before.
+        let format = if data.roles.is_empty() { FORMAT } else { FORMAT_ROLES };
+        let roles = (!data.roles.is_empty()).then_some(&data.roles);
         Record::default()
-            .field(key::FORMAT, &FORMAT)
+            .field(key::FORMAT, &format)
             .field(key::LOCATION, &data.location)
             .field(key::NAME, &data.name)
             .field(key::ADDRESS, &data.address)
@@ -294,6 +326,7 @@ impl Profile {
             .field(key::CATALOG, &Encoded(catalog_value(&data.catalog)))
             .field(key::MENU, &data.menu)
             .field(key::TEAM, &data.team)
+            .optional(key::ROLES, roles)
             .build()
             .encode()
     }
@@ -347,6 +380,44 @@ impl Profile {
     /// The team member `member`, if the team has them.
     pub fn member(&self, member: Id<TeamMember>) -> Option<&Member> {
         self.data.team.iter().find(|candidate| candidate.id == member)
+    }
+
+    /// The role `role`, if the profile has it.
+    pub fn role(&self, role: Id<RoleRef>) -> Option<&Role> {
+        self.data.roles.iter().find(|candidate| candidate.id == role)
+    }
+
+    /// Whether `pin` is `member`'s: in a profile without roles, members have no PIN, and sign
+    /// in with an empty one alone.
+    pub fn verifies_pin(&self, member: Id<TeamMember>, pin: &str) -> bool {
+        match self.member(member) {
+            None => false,
+            Some(Member { pin: Some(hash), .. }) => hash.verifies(pin),
+            Some(Member { pin: None, .. }) => self.data.roles.is_empty() && pin.is_empty(),
+        }
+    }
+
+    /// Whether `member` may do what `request` asks by their role alone: in a profile without
+    /// roles, every member may do everything.
+    pub fn permits(&self, member: Id<TeamMember>, request: &Request) -> bool {
+        if self.data.roles.is_empty() {
+            return self.member(member).is_some();
+        }
+        self.member(member)
+            .and_then(|member| member.role)
+            .and_then(|role| self.role(role))
+            .is_some_and(|role| role.permits(request))
+    }
+
+    /// Whether `approver` may approve what `actor` asks: they are another member, whose role
+    /// permits it. Whoever asks never approves their own request.
+    pub fn may_approve(
+        &self,
+        approver: Id<TeamMember>,
+        actor: Id<TeamMember>,
+        request: &Request,
+    ) -> bool {
+        approver != actor && self.permits(approver, request)
     }
 }
 
@@ -528,8 +599,9 @@ fn check_menu(menu: &Menu, index: &Index) -> Result<(), ProfileError> {
     Ok(())
 }
 
-/// Checks the team.
-fn check_team(team: &[Member]) -> Result<(), ProfileError> {
+/// Checks the team, and the roles: with roles, every member has one of them and a PIN; without,
+/// none has either.
+fn check_team(team: &[Member], roles: &[Role]) -> Result<(), ProfileError> {
     if team.is_empty() {
         return Err(ProfileError::Invalid("no team members"));
     }
@@ -537,7 +609,32 @@ fn check_team(team: &[Member]) -> Result<(), ProfileError> {
         return Err(ProfileError::Invalid("more team members than allowed"));
     }
     let ids: BTreeSet<_> = team.iter().map(|member| member.id).collect();
-    if ids.len() == team.len() { Ok(()) } else { Err(ProfileError::Duplicate("team members")) }
+    if ids.len() != team.len() {
+        return Err(ProfileError::Duplicate("team members"));
+    }
+    if roles.len() > MAX_ROLES {
+        return Err(ProfileError::Invalid("more roles than allowed"));
+    }
+    let role_ids: BTreeSet<_> = roles.iter().map(|role| role.id).collect();
+    if role_ids.len() != roles.len() {
+        return Err(ProfileError::Duplicate("roles"));
+    }
+    for role in roles {
+        role.check().map_err(ProfileError::Invalid)?;
+    }
+    for member in team {
+        match (roles.is_empty(), member.role, member.pin) {
+            (true, None, None) => {}
+            (true, _, _) => {
+                return Err(ProfileError::Invalid("a role or PIN in a profile without roles"));
+            }
+            (false, Some(role), Some(_)) if role_ids.contains(&role) => {}
+            (false, Some(_), Some(_)) => return Err(ProfileError::Unknown("role")),
+            (false, None, _) => return Err(ProfileError::Invalid("a team member with no role")),
+            (false, _, None) => return Err(ProfileError::Invalid("a team member with no PIN")),
+        }
+    }
+    Ok(())
 }
 
 /// Profile keys.
@@ -553,6 +650,7 @@ mod key {
     pub(super) const CATALOG: u64 = 9;
     pub(super) const MENU: u64 = 10;
     pub(super) const TEAM: u64 = 11;
+    pub(super) const ROLES: u64 = 12;
 }
 
 impl Field for u64 {
@@ -812,7 +910,12 @@ impl Field for Page {
 
 impl Field for Member {
     fn to_value(&self) -> Value {
-        Record::default().field(1, &self.id).field(2, &self.name).build()
+        Record::default()
+            .field(1, &self.id)
+            .field(2, &self.name)
+            .optional(3, self.role.as_ref())
+            .optional(4, self.pin.as_ref())
+            .build()
     }
 
     fn from_value(value: &Value) -> Option<Member> {
@@ -820,6 +923,8 @@ impl Field for Member {
         let member = Member {
             id: fields.required(1, "team member").ok()?,
             name: fields.required(2, "team member name").ok()?,
+            role: fields.optional(3, "role").ok()?,
+            pin: fields.optional(4, "PIN").ok()?,
         };
         fields.finish().ok()?;
         Some(member)

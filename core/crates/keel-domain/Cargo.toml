@@ -17,6 +17,7 @@ keel-types.workspace = true
 keel-events.workspace = true
 keel-pricing.workspace = true
 thiserror.workspace = true
+argon2.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

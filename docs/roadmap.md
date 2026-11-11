@@ -272,6 +272,28 @@ Keel, and **never lose a sale to Keel**.
    ([ADR-0028](./adr/0028-cloud-cell-v0.md)): sync ingest, catalog publishing, the back office's
    API and the back office. See [progress](./progress.md).*
 
+### The MVP's build steps
+
+Planned 2026-11-11, once Phase 0 was built, in the order each makes the next possible. Each is
+designed in an ADR of its own when it begins, built in slices, and reviewed:
+
+1. **Staff, roles and approvals**: PIN sign-in, roles and ABAC permissions with limits, manager
+   approvals recorded as events, separation of duties (M-01). The gate every later step uses.
+   *Status: designed in [ADR-0029](./adr/0029-staff-roles-and-approvals.md).*
+2. **Selling at the register**: discounts with reason codes and limits, split tender, notes,
+   park and recall, open-price items (B-03…B-06, B-14).
+3. **Cash**: drawer sessions, paid-in and paid-out, no-sale, blind close with thresholds, and
+   X/Z reports from local data (N-01, N-02, O-02).
+4. **Returns and refunds**, linked to the original lines (B-09 basic, I-08).
+5. **Availability**: global 86 in-store, within 10 s (G-06).
+6. **The kitchen**: routing to stations, kitchen tickets and a KDS, ticket aging, fallbacks
+   (D-01…D-03, D-06, D-07, D-11).
+7. **Card payments**: a processor-agnostic connector, semi-integrated terminals, tips; built
+   against a simulated terminal until gate G2 chooses the processor (I-01, I-02, I-05, I-07).
+8. **Inventory**: the movement ledger (K-01).
+9. **The back office**: staff and roles, settings, the dashboard, export (O-01, V-07).
+10. **Training mode, and Spanish** (B-10, B-12, X-01).
+
 ## 9. Decision gates
 
 | Gate | When | Decision |

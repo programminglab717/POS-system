@@ -2743,4 +2743,83 @@ BUGS = [
         "    if sha256(&bytes) != *published.version.as_bytes() {",
         "    if bytes.is_empty() {",
     ),
+    # Staff, roles and approvals (ADR-0029).
+    (
+        "staff: any PIN verifies",
+        "src/staff.rs",
+        "            hash.iter().zip(&self.hash).fold(0_u8, |differ, (a, b)| differ | (a ^ b)) == 0",
+        "            hash.iter().zip(&self.hash).fold(0_u8, |differ, (a, b)| differ | (a ^ b)) <= 255",
+    ),
+    (
+        "staff: a PIN may be nine digits",
+        "src/staff.rs",
+        "    (MIN_PIN..=MAX_PIN).contains(&pin.len())",
+        "    (MIN_PIN..=MAX_PIN + 1).contains(&pin.len())",
+    ),
+    (
+        "staff: PINs hash with one pass, not two",
+        "src/staff.rs",
+        "const PASSES: u32 = 2;",
+        "const PASSES: u32 = 1;",
+    ),
+    (
+        "staff: a limit is exclusive",
+        "src/staff.rs",
+        "            (Some(amount), Some(most)) => amount.minor().unsigned_abs() <= most,",
+        "            (Some(amount), Some(most)) => amount.minor().unsigned_abs() < most,",
+    ),
+    (
+        "staff: a negative amount is within any limit",
+        "src/staff.rs",
+        "            (Some(amount), Some(most)) => amount.minor().unsigned_abs() <= most,",
+        "            (Some(amount), Some(most)) => amount.minor().max(0).unsigned_abs() <= most,",
+    ),
+    (
+        "staff: a percentage limit is ignored",
+        "src/staff.rs",
+        "            (Some(percent), Some(most)) => percent <= most,",
+        "            (Some(_), Some(_)) => true,",
+    ),
+    (
+        "staff: a role may list an action twice",
+        "src/staff.rs",
+        "            if *slot {\n                return Err(\"a role that lists an action twice\");",
+        "            if *slot && false {\n                return Err(\"a role that lists an action twice\");",
+    ),
+    (
+        "staff: an approval may carry an amount its action has no limit for",
+        "src/staff.rs",
+        "        if request.amount.is_some() && !request.action.has_amount() {",
+        "        if request.amount.is_some() && false {",
+    ),
+    (
+        "profile: a member approves their own request",
+        "src/profile/mod.rs",
+        "        approver != actor && self.permits(approver, request)",
+        "        self.permits(approver, request)",
+    ),
+    (
+        "profile: without roles, anyone may do everything, members or not",
+        "src/profile/mod.rs",
+        "            return self.member(member).is_some();",
+        "            return true;",
+    ),
+    (
+        "profile: a member's role needn't be the profile's",
+        "src/profile/mod.rs",
+        "            (false, Some(_), Some(_)) => return Err(ProfileError::Unknown(\"role\")),",
+        "            (false, Some(_), Some(_)) => {}",
+    ),
+    (
+        "profile: a profile without roles is written as format 2",
+        "src/profile/mod.rs",
+        "        let format = if data.roles.is_empty() { FORMAT } else { FORMAT_ROLES };",
+        "        let format = FORMAT_ROLES;",
+    ),
+    (
+        "profile: a member without a PIN signs in with any",
+        "src/profile/mod.rs",
+        "            Some(Member { pin: None, .. }) => self.data.roles.is_empty() && pin.is_empty(),",
+        "            Some(Member { pin: None, .. }) => self.data.roles.is_empty(),",
+    ),
 ]

@@ -26,6 +26,7 @@ use keel_domain::profile::{
     Member, Menu, Page, Profile, ProfileData, RingError, demo,
 };
 use keel_domain::refs::{Modifier, ModifierGroup, TaxCategory, Variant};
+use keel_domain::staff::{Action, MAX_PERCENT, Permission, PinHash, Role};
 use keel_events::cbor::{self, Map, Value};
 use keel_pricing::{Dining, Rules, Tax, TaxRounding, TaxScope};
 use keel_types::{Currency, Decimal, Id, Money, Rate, RoundingMode, RoundingRule};
@@ -507,14 +508,18 @@ fn any_profile() -> impl Strategy<Value = ProfileData> {
     );
     let pages =
         prop::collection::vec((any_name(), prop::collection::vec(any::<Index>(), 1..=4)), 0..=3);
-    let team = prop::collection::vec(any_name(), 1..=4);
-    (place, any_rules(), any_shape(), pages, team).prop_map(
+    let team = prop::collection::vec(
+        (any_name(), any::<Index>(), any::<[u8; 16]>(), any::<[u8; 32]>()),
+        1..=4,
+    );
+    (place, any_rules(), any_shape(), pages, team, any_roles()).prop_map(
         |(
             (location, title, address, currency, zone, hour, minute, cash_rounding),
             rules,
             shape,
             pages,
             team,
+            roles,
         )| {
             let catalog = catalog(&shape, currency);
             let variants: Vec<Id<Variant>> = catalog
@@ -547,11 +552,59 @@ fn any_profile() -> impl Strategy<Value = ProfileData> {
                 team: team
                     .into_iter()
                     .enumerate()
-                    .map(|(at, name)| Member { id: id(0x500 + u64::try_from(at).unwrap()), name })
+                    .map(|(at, (name, role, salt, hash))| Member {
+                        id: id(0x500 + u64::try_from(at).unwrap()),
+                        name,
+                        // With roles, each member has one, and a PIN, its hash's bytes drawn.
+                        role: (!roles.is_empty()).then(|| role.get(&roles).id),
+                        pin: (!roles.is_empty()).then(|| PinHash::from_parts(salt, hash)),
+                    })
                     .collect(),
+                roles,
             }
         },
     )
+}
+
+/// A profile's roles: none, as in format 1, or up to three, each permitting actions drawn, with
+/// limits only where an action has them.
+fn any_roles() -> impl Strategy<Value = Vec<Role>> {
+    let permission = (
+        prop::sample::select(Action::ALL.to_vec()),
+        prop::option::of(prop_oneof![
+            Just(0_u64),
+            1_u64..=1_000_000,
+            Just(i64::MAX.unsigned_abs())
+        ]),
+        prop::option::of(prop_oneof![Just(0_u32), 1_u32..=MAX_PERCENT, Just(MAX_PERCENT)]),
+    );
+    let role = (any_name(), prop::collection::vec(permission, 0..=6));
+    prop_oneof![
+        1 => Just(Vec::new()),
+        1 => prop::collection::vec(role, 1..=3).prop_map(|roles| {
+            roles
+                .into_iter()
+                .enumerate()
+                .map(|(at, (name, permissions))| {
+                    let mut seen = Vec::new();
+                    let permissions = permissions
+                        .into_iter()
+                        .filter(|(action, _, _)| {
+                            let first = !seen.contains(action);
+                            seen.push(*action);
+                            first
+                        })
+                        .map(|(action, most_amount, most_percent)| Permission {
+                            action,
+                            most_amount: most_amount.filter(|_| action.has_amount()),
+                            most_percent: most_percent.filter(|_| action.has_percent()),
+                        })
+                        .collect();
+                    Role { id: id(0x600 + u64::try_from(at).unwrap()), name, permissions }
+                })
+                .collect()
+        }),
+    ]
 }
 
 /// What a node of a profile's encoding is, which says which of a map's keys may be absent and
@@ -577,6 +630,11 @@ enum Kind {
     Page,
     Team,
     Member,
+    Pin,
+    Roles,
+    Role,
+    Permissions,
+    Permission,
     Other,
 }
 
@@ -588,6 +646,9 @@ impl Kind {
             (Kind::Profile, 9) => Kind::Catalog,
             (Kind::Profile, 10) => Kind::Menu,
             (Kind::Profile, 11) => Kind::Team,
+            (Kind::Profile, 12) => Kind::Roles,
+            (Kind::Member, 4) => Kind::Pin,
+            (Kind::Role, 3) => Kind::Permissions,
             (Kind::Rules, 3) => Kind::Taxes,
             (Kind::Tax, 4) => Kind::Categories,
             (Kind::Catalog, 1) => Kind::Items,
@@ -609,6 +670,8 @@ impl Kind {
             Kind::Modifiers => Kind::Modifier,
             Kind::Pages => Kind::Page,
             Kind::Team => Kind::Member,
+            Kind::Roles => Kind::Role,
+            Kind::Permissions => Kind::Permission,
             _ => Kind::Other,
         }
     }
@@ -620,6 +683,7 @@ impl Kind {
             Kind::Tax => &[5],
             Kind::Variant => &[2],
             Kind::Group => &[3, 5],
+            Kind::Permission => &[2, 3],
             _ => &[],
         }
     }

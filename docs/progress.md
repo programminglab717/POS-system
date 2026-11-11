@@ -6,16 +6,14 @@
 
 ## Where we are
 
-**Phase 0 (Foundations) is built: all 8 steps.** Step 8, the cloud cell v0, designed in
-[ADR-0028](./adr/0028-cloud-cell-v0.md), is built in four slices and reviewed, and its design
-accepted: the cloud is a device of each location's roster, the hub dials it, and the cell holds
-each location's durable copy in a store of its own, so a sale rung on a register reaches the hub
-and the cloud, and the durable-ack watermark comes back to the register; the cell publishes a
-location's profile as events in the cloud's log, which every device takes whole between two
-intents, within about a second on the host; and the back office, a React app on the cell's API,
-edits the catalog, which the kernel checks whole, and reports the durable copy's sales. Step 7,
-the Android register shell, is built and reviewed; what remains of it waits for the reference
-device, as do the performance budgets that decision gate G1 weighs.
+**The MVP, step 1 of 10:** staff, roles and approvals
+([ADR-0029](./adr/0029-staff-roles-and-approvals.md), proposed). Slice 1, the profile and the
+policy, is built: roles, permissions with limits, PIN hashes and approvals in the kernel. The
+runtime and the shells come next.
+
+**Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
+ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
+decision gate G1 weighs.
 
 ## Phase 0 milestones
 
@@ -81,6 +79,53 @@ Step 6 was built in four slices, each ending with a review
    epochs and fencing, and a split brain healing.
 
 ## Current slice
+
+The MVP, the pilot's counter service ([roadmap §3](./roadmap.md#3-mvp--pilot--counter-service-one-location-us)),
+is built in ten steps, planned on 2026-11-11
+([roadmap §8](./roadmap.md#the-mvps-build-steps)). Step 1, staff, roles and approvals
+([ADR-0029](./adr/0029-staff-roles-and-approvals.md), proposed), comes in three slices, each
+verified as it lands, then reviewed:
+
+1. **The profile and the policy** (built 2026-11-11): profile format 2, PINs, permissions, the
+   policy's decisions, and `approval.granted`.
+2. **The runtime and the bindings**: PIN sign-in and lockout, approvals, the gated intents.
+3. **The shells**: the Android register's PIN pad and approval sheet, and the back office's
+   staff and roles.
+
+Built in slice 1:
+
+- **`keel-domain`'s `staff`**: ten actions with stable codes and names, of which five are limited
+  by an amount and discounts by a percentage too; a role's permissions, each action once, with
+  limits only where it has them; a request, permitted when the role lists its action within its
+  limits, an amount counted by its size; `PinHash`, Argon2id with ADR-0029's parameters over 4 to
+  8 ASCII digits, compared in constant time; and `approval.granted` v1, in a stream of kind
+  `approval`.
+  - Known answers: PINs hashed as `argon2-cffi`, the reference implementation's bindings, hashes
+    them; PINs of every wrong shape refused, and only a PIN's own verifies; limits at their
+    bounds, a cent and a basis point over, and a negative amount by its size; a role's rules;
+    the actions' codes and names pinned; a cashier asking a manager, and no one approving their
+    own request; two approval payloads pinned as `cbor2` encodes them, and every rule a payload
+    breaks refused.
+- **The profile, format 2**: key 12, roles, and each member's role and PIN. A profile without
+  roles is format 1, byte for byte as before, and lets every member do everything with no PIN;
+  with roles, every member has one of them and a PIN. `Profile::permits`, `may_approve` and
+  `verifies_pin`. The demo café is now format 2: Alex a manager (PIN 1234), Sam a cashier (PIN
+  2468), its catalog's and rules' versions as before. The golden script builds it with `cbor2`
+  and `argon2-cffi`; the bakery stays format 1.
+  - Known answers: the demo pinned anew (2,632 bytes); format 1 refusing key 12, format 2
+    requiring it with at least one role; a member with no role, no PIN, or a role the profile
+    doesn't have; two roles of one identifier; a role or PIN without roles; the most roles.
+  - Properties: half the random profiles now have roles, permissions drawn with limits at their
+    bounds, and members with PINs; they round-trip, and every change to their encodings is
+    refused or canonical.
+  - Planted bugs: 13 new, all caught (392 in `keel-domain`'s list).
+- The dependency policy gains `argon2`, which builds for `wasm32`.
+- The workspace's tests, clippy with all features and none, the kernel crates for `wasm32`, and
+  every planted bug's text.
+
+## Completed
+
+### The cloud cell v0: step 8 (2026-11-10)
 
 Step 8, the cloud cell v0 ([ADR-0028](./adr/0028-cloud-cell-v0.md), accepted after its
 review), came in four slices, each verified as it landed, then reviewed together:
@@ -258,8 +303,6 @@ cell's concurrency, and `keel-net`'s refactoring.
   `keel-runtime` 64, `keel-net` 12, `keel-cloud` 19); the back office's 6 end-to-end tests, three
   runs in a row; the register module's 22 JVM tests, the Android kernel module's 6, and the app
   built.
-
-## Completed
 
 ### The Android register shell: step 7 (2026-10-06 to 2026-11-10)
 

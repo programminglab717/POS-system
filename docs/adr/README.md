@@ -34,5 +34,6 @@ supersedes the old one.
 | [0026](./0026-local-hub.md) | The local hub: a provisioned roster, replication in the runtime, WebSocket over mutual TLS in `keel-net`, a hub daemon and a provisioning tool | Accepted |
 | [0027](./0027-android-app.md) | The Android app: AGP 9.5 and Gradle 9.8, the kernel built with cargo-ndk, a register module in Kotlin alone, keys wrapped in the Keystore, built in parts | Accepted |
 | [0028](./0028-cloud-cell-v0.md) | The cloud cell v0: the cloud as each location's durable replica, catalogs published as chunked events, and a back office over the cell's API | Accepted |
+| [0029](./0029-staff-roles-and-approvals.md) | Staff, roles and approvals: PINs and roles in the profile, permissions with limits, and approvals as events | Proposed |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

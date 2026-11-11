@@ -3,13 +3,15 @@
 SHA-256 and length, and its catalog's and pricing rules' versions, which keel-domain's known
 answers pin.
 
-- The demo café's (`profile::demo`), in New York.
+- The demo café's (`profile::demo`), in New York: in format 2, with roles and its members' PINs
+  (ADR-0029), hashed with `argon2-cffi`, the Argon2 reference implementation's bindings.
 - A bakery's in Toronto (`golden_bakery` in `src/profile/tests.rs`), which writes every optional
   field the demo leaves out: cash rounding, a tax by dining, a group's minimum and free
   applications together, every prefix, and modifiers chosen under a modifier in a group that
   repeats.
 
 Run from anywhere:  python3 core/crates/keel-domain/tests/golden/profile.py
+(with `cbor2` and `argon2-cffi` installed, as in a virtual environment).
 """
 
 import hashlib
@@ -83,6 +85,21 @@ def team(*members):
     return [{1: ident(n), 2: name} for n, name in members]
 
 
+def pin(digits, salt):
+    """A PIN's hash, as ADR-0029 has it: Argon2id 0x13, 19 MiB, 2 passes, 1 lane, 32 bytes."""
+    from argon2.low_level import Type, hash_secret_raw
+
+    hashed = hash_secret_raw(digits.encode(), salt, time_cost=2, memory_cost=19456,
+                             parallelism=1, hash_len=32, type=Type.ID, version=19)
+    return {1: salt, 2: hashed}
+
+
+# The actions of ADR-0029, by code: order.void, line.remove, discount.apply, price.override,
+# refund.issue, drawer.no_sale, drawer.variance, drawer.paid_out, receipt.reprint,
+# item.availability.
+ACTIONS = range(10)
+
+
 def demo():
     modifier, group, item = builders("USD")
     groups = [
@@ -150,8 +167,22 @@ def demo():
             page("Food", [0x407, 0x408, 0x409]),
             page("Retail", [0x40A]),
         ]},
-        11: team((0x501, "Alex"), (0x502, "Sam")),
+        11: [
+            {1: ident(0x501), 2: "Alex", 3: ident(0x601), 4: pin("1234", b"keel-demo-alex-1")},
+            {1: ident(0x502), 2: "Sam", 3: ident(0x602), 4: pin("2468", b"keel-demo-sam--2")},
+        ],
+        12: [
+            {1: ident(0x601), 2: "Manager", 3: [{1: code} for code in ACTIONS]},
+            {1: ident(0x602), 2: "Cashier", 3: [
+                {1: 1},
+                {1: 2, 2: 500, 3: 1000},
+                {1: 6, 2: 500},
+                {1: 8},
+                {1: 9},
+            ]},
+        ],
     }
+    profile[1] = 2
     return profile, catalog, rules
 
 

@@ -317,12 +317,25 @@ fn entry(entries: &mut [(Value, Value)], key: u64) -> &mut Value {
 #[test]
 fn encodings_other_than_the_profiles_own_are_refused() {
     assert_eq!(
-        decode_changed(|e| *entry(e, 1) = Value::Unsigned(2)).map(|_| ()),
-        Err(ProfileError::Format(2))
+        decode_changed(|e| *entry(e, 1) = Value::Unsigned(3)).map(|_| ()),
+        Err(ProfileError::Format(3))
     );
     assert_eq!(
-        decode_changed(|e| e.push((Value::Unsigned(12), Value::Null))).map(|_| ()),
+        decode_changed(|e| e.push((Value::Unsigned(13), Value::Null))).map(|_| ()),
+        Err(ProfileError::Payload(PayloadError::UnknownField("13".to_owned())))
+    );
+    // Format 1 has no roles: their key is unknown to it. Format 2 has them.
+    assert_eq!(
+        decode_changed(|e| *entry(e, 1) = Value::Unsigned(1)).map(|_| ()),
         Err(ProfileError::Payload(PayloadError::UnknownField("12".to_owned())))
+    );
+    assert_eq!(
+        decode_changed(|e| e.retain(|(k, _)| *k != Value::Unsigned(12))).map(|_| ()),
+        Err(ProfileError::Payload(PayloadError::Missing("roles")))
+    );
+    assert_eq!(
+        decode_changed(|e| *entry(e, 12) = Value::Array(Vec::new())).map(|_| ()),
+        Err(ProfileError::Invalid("a format-2 profile with no roles"))
     );
     assert_eq!(
         decode_changed(|e| e.retain(|(k, _)| *k != Value::Unsigned(11))).map(|_| ()),
@@ -367,15 +380,17 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Pinned from `tests/golden/profile.py`, which builds the demo profile with Python's `cbor2`,
-/// independently of this codec.
+/// independently of this codec, and its PINs' hashes with `argon2-cffi`, the reference
+/// implementation's bindings. In format 2 since ADR-0029: its catalog's and rules' versions are
+/// as they were in format 1.
 #[test]
 fn the_demo_is_pinned_byte_for_byte() {
     let profile = demo().unwrap();
     let bytes = profile.encode();
-    assert_eq!(bytes.len(), 2367);
+    assert_eq!(bytes.len(), 2632);
     assert_eq!(
         hex(&sha256(&bytes)),
-        "d7b4ebe3f1d7e6e717702e613275048a268599fcf996f6ac7279e865c0fd1be7"
+        "f18e3f2d63758eee2275263b0659631f7c14f63c3cf7c5eb521b202e888cf202"
     );
     assert_eq!(
         hex(profile.catalog_version().as_bytes()),
@@ -534,9 +549,10 @@ fn every_count_has_a_limit() {
         (
             MAX_TEAM,
             Box::new(|d, n| {
+                let template = d.team[0].clone();
                 d.team = ids(0x10_0000, n)
                     .into_iter()
-                    .map(|id| Member { id, name: Name::new("Sam").unwrap() })
+                    .map(|id| Member { id, ..template.clone() })
                     .collect();
             }),
             "more team members than allowed",
@@ -561,6 +577,20 @@ fn every_count_has_a_limit() {
             MAX_ADDRESS,
             Box::new(|d, n| d.address = names(n, "Line")),
             "more than four address lines",
+        ),
+        (
+            MAX_ROLES,
+            Box::new(|d, n| {
+                let template = d.roles[0].clone();
+                d.roles = ids(0x10_0000, n)
+                    .into_iter()
+                    .map(|id| Role { id, ..template.clone() })
+                    .collect();
+                for member in &mut d.team {
+                    member.role = Some(d.roles[0].id);
+                }
+            }),
+            "more roles than allowed",
         ),
     ];
     for (index, (limit, change, refusal)) in cases.into_iter().enumerate() {
@@ -799,10 +829,11 @@ fn golden_bakery() -> Profile {
             ],
         },
         team: vec![
-            Member { id: id(0x511), name: name("Camille") },
-            Member { id: id(0x512), name: name("Jo") },
-            Member { id: id(0x513), name: name("Noor") },
+            Member { id: id(0x511), name: name("Camille"), role: None, pin: None },
+            Member { id: id(0x512), name: name("Jo"), role: None, pin: None },
+            Member { id: id(0x513), name: name("Noor"), role: None, pin: None },
         ],
+        roles: Vec::new(),
     })
     .unwrap()
 }

@@ -976,6 +976,16 @@ One state machine covers goods that are **in someone else's custody**:
     the same device, or a remote approval pushed to a manager's phone. This produces an
     `ApprovalGranted` event tied to the action.
   - Everything works offline because the policies are evaluated locally.
+- **As built: staff and roles v0** ([ADR-0029](../adr/0029-staff-roles-and-approvals.md)). Roles,
+  and each member's role and PIN, are part of the location's profile, in its format 2, published
+  as the catalog is. A permission is one of ten actions (`order.void`, `line.remove`,
+  `discount.apply`, `price.override`, `refund.issue`, `drawer.no_sale`, `drawer.variance`,
+  `drawer.paid_out`, `receipt.reprint`, `item.availability`) with a most amount and, for
+  discounts, a most percentage. Beyond a role, another member whose role permits it approves:
+  never the one who asked. An approval is an `approval.granted` event, written with what it
+  approves. A PIN is 4 to 8 digits, kept as its Argon2id hash. A profile without roles, format 1,
+  lets every member do everything with no PIN. Not yet: grants per location or revenue center,
+  time-of-day and own-records constraints, badges, and approvals on a manager's phone.
 - **Time and attendance**:
   - `TimeEntry` events cover clock in/out, breaks, job-code switches and declared cash tips.
   - The compliance profile enforces break rules, overtime, minor-labor restrictions and predictive

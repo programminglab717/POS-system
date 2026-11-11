@@ -26,6 +26,8 @@ sha2 = { version = "0.11", default-features = false }
 p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 ecdsa = { version = "0.17", default-features = false, features = ["der"] }
 ed25519-dalek = { version = "3.0", default-features = false, features = ["fast", "zeroize"] }
+# PINs' Argon2id hashes (ADR-0029), in keel-domain: pure Rust, deterministic given the salt.
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 keel-types = { path = "core/crates/keel-types", default-features = false }
 keel-events = { path = "core/crates/keel-events", default-features = false }
 keel-pricing = { path = "core/crates/keel-pricing" }

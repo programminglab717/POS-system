@@ -12,6 +12,7 @@ use super::{
 };
 use crate::codec::Name;
 use crate::order::Prefix;
+use crate::staff::{Action, Permission, PinHash, Role};
 
 /// An identifier of the demo's: a UUIDv7 ending in `n`.
 fn id<T>(n: u64) -> Result<Id<T>, ProfileError> {
@@ -105,7 +106,12 @@ fn item(
 /// | `201` to `213` | their modifiers |
 /// | `301` to `307` | the items: espresso, latte, drip coffee, bagel, breakfast sandwich, bottled water, coffee beans |
 /// | `401` to `40a` | their variants |
-/// | `501`, `502` | the team: Alex and Sam |
+/// | `501`, `502` | the team: Alex, a manager, PIN 1234, and Sam, a cashier, PIN 2468 |
+/// | `601`, `602` | the roles: manager, who may do everything, and cashier |
+///
+/// A cashier may take a line off, print a receipt again, mark an item available or not, discount
+/// up to 10% and $5, and close a drawer up to $5 over or short; anything else, a manager approves.
+/// The PINs' salts are fixed, so the demo has one encoding: a merchant's are drawn.
 ///
 /// # Errors
 /// None in practice: the demo is checked like any profile.
@@ -151,10 +157,64 @@ pub fn demo() -> Result<Profile, ProfileError> {
             ],
         },
         team: vec![
-            Member { id: id(0x501)?, name: name("Alex")? },
-            Member { id: id(0x502)?, name: name("Sam")? },
+            Member {
+                id: id(0x501)?,
+                name: name("Alex")?,
+                role: Some(id(0x601)?),
+                pin: Some(PinHash::from_parts(*b"keel-demo-alex-1", ALEX_PIN)),
+            },
+            Member {
+                id: id(0x502)?,
+                name: name("Sam")?,
+                role: Some(id(0x602)?),
+                pin: Some(PinHash::from_parts(*b"keel-demo-sam--2", SAM_PIN)),
+            },
         ],
+        roles: roles()?,
     })
+}
+
+/// Alex's PIN, 1234, hashed with the salt `keel-demo-alex-1`.
+const ALEX_PIN: [u8; 32] = [
+    0x53, 0xcf, 0x2a, 0x98, 0x09, 0xdd, 0x19, 0x6b, 0x7d, 0xb4, 0x76, 0x04, 0x53, 0x9a, 0xe2, 0x8b,
+    0x63, 0x4d, 0x54, 0xae, 0x60, 0xe0, 0x2b, 0x65, 0xb9, 0x60, 0x56, 0xe9, 0xbc, 0xbb, 0x26, 0x4a,
+];
+
+/// Sam's PIN, 2468, hashed with the salt `keel-demo-sam--2`.
+const SAM_PIN: [u8; 32] = [
+    0x0d, 0x9c, 0xf5, 0x91, 0xce, 0x3b, 0x83, 0x33, 0xc7, 0x7c, 0xee, 0xb0, 0x2d, 0x1c, 0x09, 0x8b,
+    0xf8, 0x18, 0x91, 0x04, 0x95, 0x4b, 0x4b, 0xbb, 0x67, 0x77, 0xbf, 0x41, 0x5a, 0x3c, 0xba, 0x49,
+];
+
+/// The demo's roles: a manager, who may do everything, and a cashier.
+fn roles() -> Result<Vec<Role>, ProfileError> {
+    let may = |action: Action| Permission { action, most_amount: None, most_percent: None };
+    Ok(vec![
+        Role {
+            id: id(0x601)?,
+            name: name("Manager")?,
+            permissions: Action::ALL.iter().copied().map(may).collect(),
+        },
+        Role {
+            id: id(0x602)?,
+            name: name("Cashier")?,
+            permissions: vec![
+                may(Action::LineRemove),
+                Permission {
+                    action: Action::DiscountApply,
+                    most_amount: Some(500),
+                    most_percent: Some(1_000),
+                },
+                Permission {
+                    action: Action::DrawerVariance,
+                    most_amount: Some(500),
+                    most_percent: None,
+                },
+                may(Action::ReceiptReprint),
+                may(Action::ItemAvailability),
+            ],
+        },
+    ])
 }
 
 /// The demo's modifier groups.

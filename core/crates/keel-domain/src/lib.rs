@@ -23,7 +23,8 @@
 //! starting a payment, closing a check, and money that doesn't fit the order. [`sequence`] holds
 //! the Store Hub's sequencing records, which number the store's events, and [`hub`] the claims by
 //! which a replica takes the hub's role, and the rules that say which hub's records count.
-//! [`profile`] holds a location's profile: its settings, pricing rules, catalog, menu and team,
+//! [`staff`] holds roles, permissions, PINs and approvals (ADR-0029). [`profile`] holds a
+//! location's profile: its settings, pricing rules, catalog, menu and team,
 //! and the rules by which a cashier's choices ring as a line; [`publication`], how the cloud
 //! publishes a new one, as events.
 //!
@@ -42,3 +43,4 @@ pub mod refs;
 pub mod roster;
 pub mod schema;
 pub mod sequence;
+pub mod staff;
