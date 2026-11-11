@@ -17,6 +17,18 @@ class FakeTill : Till {
 
     private class Line(val id: String, val variant: String, var count: Int)
 
+    /** A discount, on a line or on the whole order. */
+    private class Off(val id: String, val line: String?, val asked: DiscountAsked, val reason: String)
+
+    private val discounts = mutableMapOf<String, MutableList<Off>>()
+    private var discountsMinted = 0
+
+    /** The most a cashier takes off without a manager, in basis points; none means no limit. */
+    var discountLimit: Int? = null
+
+    /** The discounts asked for, as the till got them. */
+    val asked = mutableListOf<Pair<String?, DiscountAsked>>()
+
     val latte = Item(
         "latte", "Latte", "$4.50",
         listOf(
@@ -63,7 +75,7 @@ class FakeTill : Till {
         signedIn = member
     }
 
-    override fun approvers() = if (voidNeedsApproval) listOf("alex") else emptyList()
+    override fun approvers() = if (voidNeedsApproval || discountLimit != null) listOf("alex") else emptyList()
 
     override fun approve(approver: String, pin: String) {
         if (pin != pins[approver].orEmpty()) throw TillException("That PIN isn't right.")
@@ -110,6 +122,27 @@ class FakeTill : Till {
         return ticket(order)
     }
 
+    override fun applyDiscount(order: String, line: String?, discount: DiscountAsked, reason: String): Ticket {
+        open(order)
+        if (line != null && orders.getValue(order).none { it.id == line }) throw TillException("no such line")
+        if (line == null && discount is DiscountAsked.Amount) throw TillException("a whole order takes a percentage")
+        val limit = discountLimit
+        if (limit != null && discount is DiscountAsked.Percent && discount.basisPoints > limit) {
+            if (approvedBy == null) throw TillException("That discount needs a manager's approval.", approval = "discount.apply")
+            approvedBy = null
+        }
+        asked += line to discount
+        discountsMinted += 1
+        discounts.getOrPut(order) { mutableListOf() } += Off("discount$discountsMinted", line, discount, reason)
+        return ticket(order)
+    }
+
+    override fun removeDiscount(order: String, discount: String): Ticket {
+        open(order)
+        if (discounts[order]?.removeAll { it.id == discount } != true) throw TillException("no such discount")
+        return ticket(order)
+    }
+
     override fun abandon(order: String): Ticket {
         if (voidNeedsApproval && open(order).isNotEmpty()) {
             if (approvedBy == null) throw TillException("Dropping it needs a manager.", approval = "order.void")
@@ -138,16 +171,48 @@ class FakeTill : Till {
 
     override fun ticket(order: String): Ticket {
         val due = due(order)
+        val (lines, onOrder) = priced(order)
         return Ticket(
             order = order,
             lines = orders.getValue(order).map { line ->
-                TicketLine(line.id, line.variant, line.count.toString(), money(prices.getValue(line.variant) * line.count), line.count)
+                TicketLine(
+                    line.id, line.variant, line.count.toString(), money(prices.getValue(line.variant) * line.count), line.count,
+                    discounts = lines.getValue(line.id).second,
+                )
             },
             total = money(due),
             cashDueMinor = due,
             cashDue = money(due),
             state = states.getValue(order),
+            discounts = onOrder.second,
         )
+    }
+
+    /** Each line's net and discounts, and the whole order's net and discounts: each takes from what is left. */
+    private fun priced(order: String): Pair<Map<String, Pair<Long, List<TicketDiscount>>>, Pair<Long, List<TicketDiscount>>> {
+        val offs = discounts[order].orEmpty()
+        fun take(left: Long, off: Off): Long = when (val asked = off.asked) {
+            is DiscountAsked.Percent -> (left * asked.basisPoints + 5_000) / 10_000
+            is DiscountAsked.Amount -> minOf(asked.minor, left)
+        }
+        fun words(off: Off) = reasonWords(off.reason) +
+            ((off.asked as? DiscountAsked.Percent)?.let { " " + percentWords(it.basisPoints) } ?: "")
+        val lines = orders.getValue(order).associate { line ->
+            var left = prices.getValue(line.variant) * line.count
+            val taken = offs.filter { it.line == line.id }.map { off ->
+                val amount = take(left, off)
+                left -= amount
+                TicketDiscount(off.id, words(off), "−" + money(amount))
+            }
+            line.id to (left to taken)
+        }
+        var left = lines.values.sumOf { it.first }
+        val onOrder = offs.filter { it.line == null }.map { off ->
+            val amount = take(left, off)
+            left -= amount
+            TicketDiscount(off.id, words(off), "−" + money(amount))
+        }
+        return lines to (left to onOrder)
     }
 
     override fun ordersToday() = orders.keys.map(::ticket)
@@ -171,8 +236,7 @@ class FakeTill : Till {
         return orders.getValue(order)
     }
 
-    private fun due(order: String) =
-        if (states[order] == OrderState.OPEN) orders.getValue(order).sumOf { prices.getValue(it.variant) * it.count } else 0L
+    private fun due(order: String) = if (states[order] == OrderState.OPEN) priced(order).second.first else 0L
 
     private fun money(minor: Long) = (if (minor < 0) "-$" else "$") + kotlin.math.abs(minor) / 100 + "." +
         (kotlin.math.abs(minor) % 100).toString().padStart(2, '0')

@@ -379,3 +379,38 @@ fn reprints_are_recognised_in_any_language() {
     assert_eq!(blocks.iter().filter(|b| **b == english || **b == spanish).count(), 2);
     assert_eq!(doc_of(&runtime, job).blocks()[0], crate::receipt::reprint_banner(Locale::EN_US));
 }
+
+/// Found building discounts: the receipt listed each line before its discounts and the subtotal
+/// after them, and nothing between. Each discount now shows, under its line or above the
+/// subtotal, as less (ADR-0030).
+#[test]
+fn a_receipt_shows_each_discount_as_less() {
+    use keel_domain::codec::ReasonCode;
+    use keel_domain::order::{DiscountValue, Reason};
+    let scratch = Scratch::new();
+    let mut runtime = signed_in(&scratch);
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    let ticket = runtime.add_item(order, id(0x401), &[], NonZeroU32::new(2).unwrap()).unwrap();
+    let reason = || Reason { code: ReasonCode::new("loyalty").unwrap(), note: None };
+    let line = Some(ticket.lines[0].line);
+    runtime.apply_discount(order, line, DiscountValue::Percent(1_000), reason()).unwrap();
+    runtime.apply_discount(order, line, DiscountValue::Amount(usd(25)), reason()).unwrap();
+    runtime.apply_discount(order, None, DiscountValue::Percent(1_250), reason()).unwrap();
+    runtime.pay_cash(order, usd(1_000)).unwrap();
+    let jobs = runtime.print_jobs().unwrap();
+    let text = plain_text(&doc_of(&runtime, jobs[1].job), Columns::PAPER_80MM);
+    // $6.50, less 10%, $0.65, less $0.25, is $5.60; less 12.5%, $0.70, $4.90, with $0.43 of tax.
+    let from = text.find("2 × Espresso").unwrap();
+    let to = text.find("TOTAL").unwrap();
+    assert_eq!(
+        &text[from..to],
+        "2 × Espresso                               $6.50
+  Discount 10%                            -$0.65
+  Discount                                -$0.25
+------------------------------------------------
+Discount 12.5%                            -$0.70
+Subtotal                                   $4.90
+NYC sales tax                              $0.43
+"
+    );
+}

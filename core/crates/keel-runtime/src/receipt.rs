@@ -9,7 +9,7 @@ use keel_domain::profile::Profile;
 use keel_types::{LocalTime, Locale, Money};
 
 use crate::error::RuntimeError;
-use crate::views::Ticket;
+use crate::views::{Ticket, TicketDiscount};
 
 /// The most bytes of blocks a receipt's lines take, well within an effect's payload: an order
 /// with more lines than fit ends its list with how many more there are.
@@ -24,6 +24,8 @@ struct Words {
     order: &'static str,
     cashier: &'static str,
     subtotal: &'static str,
+    discount: &'static str,
+    decimal: char,
     total: &'static str,
     cash: &'static str,
     rounding: &'static str,
@@ -39,6 +41,8 @@ const ENGLISH: Words = Words {
     order: "Order",
     cashier: "Cashier",
     subtotal: "Subtotal",
+    discount: "Discount",
+    decimal: '.',
     total: "TOTAL",
     cash: "Cash",
     rounding: "Rounding",
@@ -54,6 +58,8 @@ const SPANISH: Words = Words {
     order: "Orden",
     cashier: "Cajero",
     subtotal: "Subtotal",
+    discount: "Descuento",
+    decimal: ',',
     total: "TOTAL",
     cash: "Efectivo",
     rounding: "Redondeo",
@@ -121,6 +127,9 @@ pub(crate) fn receipt(
     blocks.push(Block::Rule);
     blocks.extend(lines(ticket, words, locale)?);
     blocks.push(Block::Rule);
+    for discount in &ticket.discounts {
+        blocks.push(discount_row(discount, words, locale, 0)?);
+    }
     blocks.push(Block::row(words.subtotal, ticket.subtotal.text.clone()));
     for tax in &ticket.taxes {
         blocks.push(Block::row(tax.name.clone(), tax.amount.text.clone()));
@@ -192,6 +201,9 @@ fn lines(ticket: &Ticket, words: &Words, locale: Locale) -> Result<Vec<Block>, R
                 style: Style::default(),
             });
         }
+        for discount in &line.discounts {
+            these.push(discount_row(discount, words, locale, 2)?);
+        }
         let bytes: usize = these.iter().map(block_size).sum();
         if size.saturating_add(bytes) > MAX_LINES_BYTES
             || lines.len().saturating_add(these.len()) > MAX_LINES_BLOCKS
@@ -211,6 +223,31 @@ fn lines(ticket: &Ticket, words: &Words, locale: Locale) -> Result<Vec<Block>, R
         ));
     }
     Ok(lines)
+}
+
+/// A discount's row, `indent` in: "Discount 10%" and what it took, as less (ADR-0030).
+fn discount_row(
+    discount: &TicketDiscount,
+    words: &Words,
+    locale: Locale,
+    indent: u8,
+) -> Result<Block, RuntimeError> {
+    let left = match discount.percent {
+        Some(bp) => format!("{} {}", words.discount, percent(bp, words.decimal)),
+        None => words.discount.to_owned(),
+    };
+    let right = locale.money(discount.amount.money.checked_neg()?);
+    Ok(Block::Row { left, right, indent, style: Style::default() })
+}
+
+/// `bp` basis points as a percentage, with `decimal` before any hundredths: "10%", "12.5%".
+fn percent(bp: u32, decimal: char) -> String {
+    let (whole, part) = (bp / 100, bp % 100);
+    if part == 0 {
+        return format!("{whole}%");
+    }
+    let hundredths = format!("{part:02}");
+    format!("{whole}{decimal}{}%", hundredths.trim_end_matches('0'))
 }
 
 /// A receipt for when the whole one can't be made, because its parts go past what a document

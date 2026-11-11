@@ -2,7 +2,7 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-11-10.
+> Last updated: 2026-11-11.
 
 ## Where we are
 
@@ -10,7 +10,11 @@
 ([ADR-0029](./adr/0029-staff-roles-and-approvals.md), accepted after its review): roles,
 permissions with limits, PIN hashes and approvals in the kernel; PIN sign-in, a lockout and
 approvals bound to what was asked in the runtime; a PIN pad and an approval sheet on the Android
-register; and staff and roles in the back office. Step 2, selling at the register, is next.
+register; and staff and roles in the back office.
+
+**Step 2, selling at the register, is being built**
+([ADR-0030](./adr/0030-selling-at-the-register.md), proposed): its first slice, discounts, has
+landed; price overrides and notes are next.
 
 **Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
 ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
@@ -80,6 +84,68 @@ Step 6 was built in four slices, each ending with a review
    epochs and fencing, and a split brain healing.
 
 ## Current slice
+
+The MVP's step 2, selling at the register
+([ADR-0030](./adr/0030-selling-at-the-register.md), proposed), is built in four slices, each
+verified as it lands, then reviewed together:
+
+1. **Discounts** (built 2026-11-11): the schemas, the fold and the baskets, the closing
+   snapshot, the gate, the bindings, the Android register's discount sheet, and the receipt.
+2. **Price overrides and notes**: next.
+3. **Split checks and partial payments**.
+4. **Park and recall across devices**, through the hub.
+
+Built in slice 1:
+
+- **`keel-domain`**: `order.discount_applied` v1, a percentage (1 to 10,000 basis points) or an
+  amount (more than zero) off a line, or a percentage off the whole order, with a reason code
+  and an optional note; and `order.discount_removed` v1. The fold keeps each line's discounts and
+  the whole order's, in the order applied; a discount's identifier names it for good, even once
+  it is taken off. A discount on a removed line or in another currency doesn't apply; one on a
+  line with a part on a closed check, or on the whole order once it is closed or a check is,
+  applies and is reported; taking off one never applied is reported, and one taken off already,
+  as two devices may, is not. Commands refuse all of these. Baskets carry the discounts to
+  pricing; an amount off a line shared among checks is split among them as the line's gross is.
+  `Order::discount_effect` prices what a discount would take, and the percentage it counts as:
+  an amount's share of what is left of its line, rounded up.
+  - Known answers: a line's 2.50 and 10%, then 20% off the order, priced to 9.40; a removal;
+    1.01 off a shared line split 0.51 and 0.50; every refusal and every conflict, each named;
+    the effect of each kind, a comped line's, and a removed line's none; both payloads pinned
+    as `cbor2` encodes them, an order-wide percentage too, and every cross-field rule broken.
+  - Properties: both order models (the command model and the fold model) now generate and model
+    discounts, so every merge, race and refusal they check covers them; the basket invariants
+    check each line's discounts and the order's, and that the checks' parts of an amount off a
+    shared line add up to it; the payload model knows both schemas, with discounts changed on
+    their own so each field is tried often.
+  - Planted bugs: 22, every one caught.
+- **`keel-runtime`**: `apply_discount`, gated as `discount.apply` for what the discount would
+  take before tax and its percentage, after the order's own rules have had their say, so a
+  discount the order refuses asks for no approval; `remove_discount`, not gated. Tickets list each
+  line's discounts and the whole order's, with what each took, open or closed.
+  - Known answers: a cashier's 10% off four lattes alone; 20% off the order once a manager
+    approves, the approval recorded for $3.78 and 20%; $1.00 off counting as 5.30%; $6.00 off
+    needing a manager, for 33.52%; a removal; a closed ticket's discounts; refusals asking for no
+    approval. Planted bugs: 5, every one caught.
+  - **The receipt** shows each discount as less, under its line or above the subtotal: found
+    building it, the receipt listed lines before their discounts and a subtotal after them, so
+    they didn't add up. Known answer: two espressos, 10% and $0.25 off, then 12.5% off the
+    order, printed line by line. Planted bugs: 2.
+- **`keel-ffi`**: percentage and amount discounts, their removal, and the tickets' discounts,
+  crossed field for field.
+- **The Android register**: a discount sheet for a line or the order, with the register's
+  reasons, six percentages, and an amount typed as a cash keypad types it; each discount on the
+  ticket, with a way to take it off; a discount beyond the cashier's role waits for a manager and
+  goes on as it was asked.
+  - Tests: the model's discounts on a line and the order, an amount typed, an order refusing an
+    amount, a removal, and an approval retried as it was asked; percentages in words; and, on
+    an emulator, a cashier's 20% off an order once a manager approves, totalling $2.83.
+- **Verified**: `cargo fmt`, clippy with all features and none, the docs, every workspace test;
+  the Android register's JVM tests, the kernel's unit tests, the app and its instrumented tests
+  built.
+
+## Completed
+
+### Staff, roles and approvals: MVP step 1 (2026-11-11)
 
 The MVP, the pilot's counter service ([roadmap §3](./roadmap.md#3-mvp--pilot--counter-service-one-location-us)),
 is built in ten steps, planned on 2026-11-11
@@ -200,8 +266,6 @@ naming, the API's PIN handling, and the project's rules.
   documentation, every planted bug's text, and the new ones caught (11 more); `RegisterModel`'s
   17 JVM tests, one new, its bug planted by hand and caught; the Android kernel module's 6 tests,
   the app and its instrumented tests built; and the back office's 7 end-to-end tests, twice.
-
-## Completed
 
 ### The cloud cell v0: step 8 (2026-11-10)
 

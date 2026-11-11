@@ -651,4 +651,16 @@ BUGS = [
         "        loaded.decide(self.location(), self.device, command.clone())?;",
         "        let _ = &loaded;",
     ),
+    (
+        "discount: a receipt leaves out a line's discounts",
+        "src/receipt.rs",
+        "        for discount in &line.discounts {",
+        "        for discount in line.discounts.iter().take(0) {",
+    ),
+    (
+        "discount: a receipt leaves out the whole order's discounts",
+        "src/receipt.rs",
+        "    for discount in &ticket.discounts {",
+        "    for discount in ticket.discounts.iter().take(0) {",
+    ),
 ]

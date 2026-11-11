@@ -77,6 +77,32 @@ class RegisterTest {
     }
 
     /**
+     * A cashier takes 20% off an order, beyond their role's 10% (ADR-0030): a manager approves,
+     * and the total is $3.25 less 20%, $2.60, with $0.23 of tax at 8.875%.
+     */
+    @Test
+    fun a_cashier_discounts_an_order_once_a_manager_approves() {
+        compose.tap("member:Sam", wait = 20_000)
+        compose.enterPin("2468")
+        compose.tap("button:${demoId(0x401)}")
+        compose.tap("sheet:add")
+        compose.tap("discount:order")
+        compose.tap("reason:loyalty")
+        compose.tap("percent:2000")
+        compose.waitFor("approval:reason")
+        compose.tap("approver:Alex")
+        compose.enterPin("1234")
+        compose.waitUntil(10_000) { compose.shown("total").contains("$2.83") }
+        // Dropped, as the next test begins with no order open.
+        compose.tap("abandon")
+        compose.waitFor("approval:reason")
+        compose.tap("approver:Alex")
+        compose.enterPin("1234")
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("abandon")).fetchSemanticsNodes().isEmpty() }
+        compose.tap("sign-out")
+    }
+
+    /**
      * A printer in the test's process that takes [jobs] connections, one after the other, each
      * answered as a ready Epson that printed what it was sent; and what each brought, waited for.
      */

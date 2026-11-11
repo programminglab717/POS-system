@@ -45,6 +45,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.keel.register.Approval
+import dev.keel.register.DISCOUNT_REASONS
+import dev.keel.register.DiscountSheet
+import dev.keel.register.TicketDiscount
+import dev.keel.register.percentWords
 import dev.keel.register.JobKind
 import dev.keel.register.JobState
 import dev.keel.register.ModifierSheet
@@ -79,6 +83,7 @@ fun RegisterScreen(model: RegisterModel) {
         }
         state.sheet?.let { SheetDialog(it, model) }
         state.tender?.let { TenderDialog(it, model) }
+        state.discount?.let { DiscountDialog(it, state.error, model) }
         state.pinFor?.let { member ->
             PinDialog("${member.name}'s PIN", state.error, onEnter = model::enterPin, onCancel = model::cancelPin)
         }
@@ -179,12 +184,14 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                         Text(line.amount)
                     }
                     for (words in line.modifiers) Text(words, style = MaterialTheme.typography.bodySmall)
+                    for (discount in line.discounts) DiscountRow(discount, model)
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         if (line.count != null) {
                             TextButton(onClick = { model.fewer(line) }, modifier = Modifier.testTag("fewer:${line.line}")) { Text("−") }
                             TextButton(onClick = { model.more(line) }, modifier = Modifier.testTag("more:${line.line}")) { Text("+") }
                         }
                         TextButton(onClick = { model.remove(line) }, modifier = Modifier.testTag("remove:${line.line}")) { Text("Remove") }
+                        TextButton(onClick = { model.openDiscount(line) }, modifier = Modifier.testTag("discount:${line.line}")) { Text("Discount") }
                     }
                 }
             }
@@ -192,6 +199,7 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
         state.change?.let { Text("Change: $it", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("change")) }
         if (ticket != null) {
             HorizontalDivider()
+            for (discount in ticket.discounts) DiscountRow(discount, model)
             ticket.tax?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             Text("Total ${ticket.total}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("total"))
             Spacer(Modifier.height(8.dp))
@@ -200,9 +208,86 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                 enabled = ticket.lines.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth().testTag("pay"),
             ) { Text("Cash ${ticket.cashDue}") }
+            OutlinedButton(
+                onClick = { model.openDiscount() },
+                enabled = ticket.lines.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth().testTag("discount:order"),
+            ) { Text("Discount the order") }
             OutlinedButton(onClick = model::abandon, modifier = Modifier.fillMaxWidth().testTag("abandon")) { Text("Drop order") }
         }
     }
+}
+
+/** A discount on the ticket: its words, what it took, and a way to take it off. */
+@Composable
+private fun DiscountRow(discount: TicketDiscount, model: RegisterModel) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.testTag("discounted:${discount.discount}")) {
+        Text(discount.words, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+        Text(discount.amount, style = MaterialTheme.typography.bodySmall)
+        TextButton(onClick = { model.removeDiscount(discount) }, modifier = Modifier.testTag("undiscount:${discount.discount}")) {
+            Text("✕")
+        }
+    }
+}
+
+/** The discount sheet: a reason, then a percentage, or for a line an amount typed. */
+@Composable
+private fun DiscountDialog(sheet: DiscountSheet, error: String?, model: RegisterModel) {
+    AlertDialog(
+        onDismissRequest = model::closeDiscount,
+        title = { Text(sheet.line?.let { "Discount: ${it.name}" } ?: "Discount the order") },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                Text("Why", style = MaterialTheme.typography.titleSmall)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (reason in DISCOUNT_REASONS) {
+                        FilterChip(
+                            selected = sheet.reason == reason.code,
+                            onClick = { model.discountReason(reason.code) },
+                            label = { Text(reason.words) },
+                            modifier = Modifier.testTag("reason:${reason.code}"),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("How much", style = MaterialTheme.typography.titleSmall)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (percent in sheet.percents) {
+                        Button(onClick = { model.discountPercent(percent) }, modifier = Modifier.testTag("percent:$percent")) {
+                            Text(percentWords(percent))
+                        }
+                    }
+                }
+                if (sheet.line != null) {
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        sheet.typed?.text ?: "Or type an amount off",
+                        style = MaterialTheme.typography.headlineSmall,
+                        modifier = Modifier.testTag("discount:typed"),
+                    )
+                    for (row in listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9))) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            for (digit in row) Key(digit.toString(), "discount:digit:$digit") { model.typeDiscountDigit(digit) }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Key("⌫", "discount:erase") { model.eraseDiscountDigit() }
+                        Key("0", "discount:digit:0") { model.typeDiscountDigit(0) }
+                    }
+                }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("discount:error")) }
+            }
+        },
+        confirmButton = {
+            if (sheet.line != null) {
+                val typed = sheet.typed
+                Button(onClick = model::discountAmount, enabled = typed != null, modifier = Modifier.testTag("discount:amount")) {
+                    Text("Take ${typed?.text.orEmpty()} off")
+                }
+            }
+        },
+        dismissButton = { TextButton(onClick = model::closeDiscount, modifier = Modifier.testTag("discount:cancel")) { Text("Cancel") } },
+    )
 }
 
 @Composable

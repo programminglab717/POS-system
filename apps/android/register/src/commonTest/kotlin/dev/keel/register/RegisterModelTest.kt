@@ -444,4 +444,94 @@ class RegisterModelTest {
         assertEquals(order, model.state.value.ticket!!.order, "rung on the same order")
         assertEquals(2, model.state.value.ticket!!.lines.size)
     }
+
+    @Test
+    fun a_discount_goes_on_a_line_or_the_order_and_comes_off() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        // No order, no sheet.
+        model.openDiscount()
+        assertNull(model.state.value.discount)
+        model.tap(model.button("Tea"))
+        model.tap(model.button("Scone"))
+        testScheduler.advanceUntilIdle()
+        val tea = model.state.value.ticket!!.lines[0]
+        model.openDiscount(tea)
+        model.discountReason("staff")
+        assertEquals(DiscountSheet(tea, "staff"), model.state.value.discount)
+        model.discountPercent(1_000)
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.discount, "the sheet closes once it is on")
+        val ticket = model.state.value.ticket!!
+        assertEquals(listOf("Staff 10%"), ticket.lines[0].discounts.map { it.words })
+        assertEquals("−$0.30", ticket.lines[0].discounts[0].amount)
+        assertEquals("$5.45", ticket.total)
+        // An amount typed as a cash keypad types it.
+        model.openDiscount(model.state.value.ticket!!.lines[1])
+        model.typeDiscountDigit(5)
+        model.typeDiscountDigit(0)
+        model.typeDiscountDigit(1)
+        model.eraseDiscountDigit()
+        testScheduler.advanceUntilIdle()
+        assertEquals(50L, model.state.value.discount?.typed?.minor)
+        model.discountAmount()
+        testScheduler.advanceUntilIdle()
+        assertEquals("$4.95", model.state.value.ticket!!.total)
+        assertEquals(DiscountAsked.Amount(50), till.asked.last().second)
+        // A whole order takes a percentage, never an amount.
+        model.openDiscount()
+        model.typeDiscountDigit(1)
+        testScheduler.advanceUntilIdle()
+        model.discountAmount()
+        testScheduler.advanceUntilIdle()
+        assertEquals("A whole order takes a percentage off.", model.state.value.error)
+        model.discountPercent(2_000)
+        testScheduler.advanceUntilIdle()
+        val discounted = model.state.value.ticket!!
+        assertEquals(listOf("Loyalty 20%"), discounted.discounts.map { it.words })
+        assertEquals("$3.96", discounted.total)
+        // Off again.
+        model.removeDiscount(discounted.discounts[0])
+        testScheduler.advanceUntilIdle()
+        assertEquals("$4.95", model.state.value.ticket!!.total)
+        assertEquals(emptyList(), model.state.value.ticket!!.discounts)
+    }
+
+    @Test
+    fun a_discount_beyond_the_cashier_waits_for_a_manager_and_goes_on_as_asked() = runTest {
+        val till = FakeTill().apply {
+            pins = mapOf("alex" to "1234")
+            discountLimit = 1_000
+        }
+        // Sam, a cashier, signs in; Alex approves.
+        val model = signedIn(object : Till by till {
+            override fun team() = listOf(Member("sam", "Sam"), Member("alex", "Alex", "Manager", true))
+        })
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        val tea = model.state.value.ticket!!.lines[0]
+        model.openDiscount(tea)
+        model.discountReason("damaged")
+        model.discountPercent(5_000)
+        testScheduler.advanceUntilIdle()
+        assertEquals("discount.apply", model.state.value.approval?.action)
+        assertNull(model.state.value.ticket!!.lines[0].discounts.firstOrNull())
+        // The sheet is closed meanwhile: the retry asks for what was asked, as it was.
+        model.closeDiscount()
+        model.chooseApprover(model.approvers().single())
+        model.approve("1234")
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.approval)
+        assertEquals(listOf("Damaged 50%"), model.state.value.ticket!!.lines[0].discounts.map { it.words })
+        assertEquals(listOf<Pair<String?, DiscountAsked>>(tea.line to DiscountAsked.Percent(5_000)), till.asked)
+    }
+
+    @Test
+    fun percentages_read_as_people_write_them() {
+        assertEquals("10%", percentWords(1_000))
+        assertEquals("12.5%", percentWords(1_250))
+        assertEquals("0.01%", percentWords(1))
+        assertEquals("100%", percentWords(10_000))
+        assertEquals("33.33%", percentWords(3_333))
+    }
 }

@@ -34,6 +34,23 @@ data class Tender(
     val typed: Amount? = null,
 )
 
+/**
+ * The discount sheet: a discount for [line], or for the whole order when it is null, for [reason],
+ * a percentage tapped or an amount typed, in minor units, as a cash keypad types it (ADR-0030).
+ */
+data class DiscountSheet(
+    val line: TicketLine? = null,
+    val reason: String = DISCOUNT_REASONS.first().code,
+    val typed: Amount? = null,
+) {
+    /** The percentages offered, in basis points: 5%, 10%, 15%, 20%, 50% and all of it. */
+    val percents: List<Int> get() = PERCENTS
+
+    private companion object {
+        val PERCENTS = listOf(500, 1_000, 1_500, 2_000, 5_000, 10_000)
+    }
+}
+
 /** A manager's approval the register asks for: the action, why, and the manager asked, once chosen. */
 data class Approval(
     val action: String,
@@ -56,6 +73,8 @@ data class RegisterState(
     val sheet: ModifierSheet? = null,
     /** The cash tender open for the order, if any. */
     val tender: Tender? = null,
+    /** The discount sheet open for the order or one of its lines, if any. */
+    val discount: DiscountSheet? = null,
     /** The change handed back for the last order paid, until the next is begun. */
     val change: String? = null,
     val orders: List<Ticket> = emptyList(),
@@ -253,11 +272,74 @@ class RegisterModel(
         return ticket.lines.firstOrNull { it.line == line.line }?.let { ticket.order to it }
     }
 
+    /** Opens the discount sheet for [line], or for the whole order when it is null. */
+    fun openDiscount(line: TicketLine? = null) {
+        if (current.ticket == null) return
+        mutable.update { it.copy(discount = DiscountSheet(line), error = null) }
+    }
+
+    /** The reason for the discount on the sheet. */
+    fun discountReason(code: String) =
+        mutable.update { state -> state.copy(discount = state.discount?.copy(reason = code)) }
+
+    /** Types [digit] into the sheet's amount, in minor units. */
+    fun typeDiscountDigit(digit: Int) = perform {
+        val sheet = current.discount ?: return@perform
+        val typed = (sheet.typed?.minor ?: 0) * 10 + digit.coerceIn(0, 9)
+        if (typed > MAX_TYPED) return@perform
+        val amount = till.amount(typed)
+        mutable.update { state -> state.copy(discount = state.discount?.copy(typed = amount)) }
+    }
+
+    /** Takes the last digit typed off the sheet's amount. */
+    fun eraseDiscountDigit() = perform {
+        val sheet = current.discount ?: return@perform
+        val typed = (sheet.typed?.minor ?: 0) / 10
+        val amount = if (typed == 0L) null else till.amount(typed)
+        mutable.update { state -> state.copy(discount = state.discount?.copy(typed = amount)) }
+    }
+
+    /** Takes [basisPoints] off the sheet's line or order, and closes the sheet. */
+    fun discountPercent(basisPoints: Int) = discount(DiscountAsked.Percent(basisPoints))
+
+    /** Takes the amount typed off the sheet's line, and closes the sheet. A whole order takes a percentage. */
+    fun discountAmount() {
+        val sheet = current.discount ?: return
+        val typed = sheet.typed ?: return
+        if (sheet.line == null) {
+            mutable.update { it.copy(error = "A whole order takes a percentage off.") }
+            return
+        }
+        discount(DiscountAsked.Amount(typed.minor))
+    }
+
+    /**
+     * Asks for [asked] as the sheet says, the sheet's line and reason taken now: tried again as
+     * they were once a manager approves.
+     */
+    private fun discount(asked: DiscountAsked) {
+        val sheet = current.discount ?: return
+        val order = current.ticket?.order ?: return
+        perform {
+            show(till.applyDiscount(order, sheet.line?.line, asked, sheet.reason))
+            mutable.update { it.copy(discount = null) }
+        }
+    }
+
+    /** Closes the discount sheet. */
+    fun closeDiscount() = mutable.update { it.copy(discount = null) }
+
+    /** Takes [discount] off the order being rung. */
+    fun removeDiscount(discount: TicketDiscount) = perform {
+        val ticket = current.ticket ?: return@perform
+        show(till.removeDiscount(ticket.order, discount.discount))
+    }
+
     /** Drops the order being rung. */
     fun abandon() = perform {
         val ticket = current.ticket ?: return@perform
         till.abandon(ticket.order)
-        mutable.update { it.copy(ticket = null, tender = null) }
+        mutable.update { it.copy(ticket = null, tender = null, discount = null) }
     }
 
     /** Opens the cash tender for the order being rung. */
@@ -292,7 +374,7 @@ class RegisterModel(
     fun pay(tendered: Amount) = perform {
         val tender = current.tender ?: return@perform
         val paid = till.payCash(tender.order, tendered.minor)
-        mutable.update { it.copy(ticket = null, tender = null, change = paid.change) }
+        mutable.update { it.copy(ticket = null, tender = null, discount = null, change = paid.change) }
     }
 
     /** Shows today's orders. */

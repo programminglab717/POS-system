@@ -1,6 +1,7 @@
 package dev.keel.android
 
 import dev.keel.register.Chosen
+import dev.keel.register.DiscountAsked
 import dev.keel.register.Till
 
 /** A [Till] opened by [open] at its first call, on whichever thread makes it: the kernel's. */
@@ -26,6 +27,9 @@ class OpeningTill(open: () -> Till) : Till {
         till.addItem(order, variant, choices, quantity)
     override fun changeQuantity(order: String, line: String, quantity: Int) = till.changeQuantity(order, line, quantity)
     override fun removeLine(order: String, line: String) = till.removeLine(order, line)
+    override fun applyDiscount(order: String, line: String?, discount: DiscountAsked, reason: String) =
+        till.applyDiscount(order, line, discount, reason)
+    override fun removeDiscount(order: String, discount: String) = till.removeDiscount(order, discount)
     override fun abandon(order: String) = till.abandon(order)
     override fun cashOffers(order: String) = till.cashOffers(order)
     override fun amount(minor: Long) = till.amount(minor)

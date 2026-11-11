@@ -38,6 +38,11 @@ import dev.keel.register.TillException
 import dev.keel.kernel.Amount as KernelAmount
 import dev.keel.kernel.Ticket as KernelTicket
 import dev.keel.kernel.TicketModifier as KernelModifier
+import dev.keel.kernel.TicketDiscount as KernelDiscount
+import dev.keel.register.DiscountAsked
+import dev.keel.register.TicketDiscount
+import dev.keel.register.percentWords
+import dev.keel.register.reasonWords
 
 /** The register's [Till], answered by the kernel's [register], which it closes with itself. */
 class KernelTill(private val register: Register) : Till, AutoCloseable {
@@ -98,6 +103,19 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
         call { register.changeQuantity(order, line, quantity.toUInt()).toTicket() }
 
     override fun removeLine(order: String, line: String): Ticket = call { register.removeLine(order, line).toTicket() }
+
+    override fun applyDiscount(order: String, line: String?, discount: DiscountAsked, reason: String): Ticket = call {
+        when (discount) {
+            is DiscountAsked.Percent -> register.applyPercentDiscount(order, line, discount.basisPoints.toUInt(), reason, null)
+            is DiscountAsked.Amount -> {
+                val on = line ?: throw TillException("A whole order takes a percentage off.")
+                register.applyAmountDiscount(order, on, discount.minor, reason, null)
+            }
+        }.toTicket()
+    }
+
+    override fun removeDiscount(order: String, discount: String): Ticket =
+        call { register.removeDiscount(order, discount).toTicket() }
 
     override fun abandon(order: String): Ticket = call { register.abandon(order).toTicket() }
 
@@ -239,8 +257,10 @@ private fun KernelTicket.toTicket() = Ticket(
             amount = line.amount.text,
             count = if (line.quantityMillionths % MILLION == 0L) (line.quantityMillionths / MILLION).toInt() else null,
             modifiers = line.modifiers.map(::words),
+            discounts = line.discounts.map { it.toDiscount() },
         )
     },
+    discounts = discounts.map { it.toDiscount() },
     total = total.text,
     cashDueMinor = cashDue.minor,
     cashDue = cashDue.text,
@@ -252,6 +272,13 @@ private fun KernelTicket.toTicket() = Ticket(
     },
     subtotal = subtotal.text,
     tax = taxes.takeIf { it.isNotEmpty() }?.joinToString { "${it.name} ${it.amount.text}" },
+)
+
+/** A discount in words, its reason and its percentage, and what it took: "Loyalty 10%", "−$2.10". */
+private fun KernelDiscount.toDiscount() = TicketDiscount(
+    discount = discount,
+    words = reasonWords(reason) + (percentBasisPoints?.let { " " + percentWords(it.toInt()) } ?: ""),
+    amount = "−" + amount.text,
 )
 
 /** A ticket's modifier in words, indented by its depth: "No onions", "Extra shot ×2 $1.90". */

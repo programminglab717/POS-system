@@ -44,6 +44,16 @@ interface Till {
     /** Takes [line] off [order], and gives the ticket. */
     fun removeLine(order: String, line: String): Ticket
 
+    /**
+     * Puts [discount] on [line] of [order], or on the whole order when [line] is null, for
+     * [reason], one of [DISCOUNT_REASONS]' codes, and gives the ticket (ADR-0030). One beyond the
+     * cashier's role is refused with [TillException.approval].
+     */
+    fun applyDiscount(order: String, line: String?, discount: DiscountAsked, reason: String): Ticket
+
+    /** Takes [discount] off [order], and gives the ticket. */
+    fun removeDiscount(order: String, discount: String): Ticket
+
     /** Drops [order], and gives its ticket. */
     fun abandon(order: String): Ticket
 
@@ -202,6 +212,8 @@ data class Ticket(
     val state: OrderState = OrderState.OPEN,
     val subtotal: String = total,
     val tax: String? = null,
+    /** The discounts on the whole order. */
+    val discounts: List<TicketDiscount> = emptyList(),
 )
 
 /** A line of a ticket: what it sells, how many, its modifiers in words, and its amount. */
@@ -213,7 +225,44 @@ data class TicketLine(
     /** How many, if it is a whole number; a line sold by weight has none. */
     val count: Int? = null,
     val modifiers: List<String> = emptyList(),
+    /** Its discounts. */
+    val discounts: List<TicketDiscount> = emptyList(),
 )
+
+/** A discount on a ticket, in words, such as "Loyalty 10%", and what it took, such as "−$2.10". */
+data class TicketDiscount(val discount: String, val words: String, val amount: String)
+
+/** A discount the cashier asks for: a percentage, in basis points, or an amount, in minor units. */
+sealed interface DiscountAsked {
+    data class Percent(val basisPoints: Int) : DiscountAsked
+
+    data class Amount(val minor: Long) : DiscountAsked
+}
+
+/** A reason a discount is given: the code the kernel keeps, and the words the cashier reads. */
+data class DiscountReason(val code: String, val words: String)
+
+/**
+ * The reasons the register offers to begin with; reports group by their codes. Reasons the
+ * merchant keeps in the profile wait for the profile's settings (ADR-0030, decision 7).
+ */
+val DISCOUNT_REASONS = listOf(
+    DiscountReason("loyalty", "Loyalty"),
+    DiscountReason("staff", "Staff"),
+    DiscountReason("damaged", "Damaged"),
+    DiscountReason("service", "Service recovery"),
+    DiscountReason("manager", "Manager's call"),
+)
+
+/** [basisPoints] as a percentage: "10%", "12.5%", "0.01%". */
+fun percentWords(basisPoints: Int): String {
+    val whole = basisPoints / 100
+    val part = (basisPoints % 100).toString().padStart(2, '0').trimEnd('0')
+    return if (part.isEmpty()) "$whole%" else "$whole.$part%"
+}
+
+/** The words for the reason [code]: its own, if the register offers it, or the code. */
+fun reasonWords(code: String): String = DISCOUNT_REASONS.firstOrNull { it.code == code }?.words ?: code
 
 /** What paying cash did: the change to hand back, and the ticket afterwards. */
 data class Paid(val change: String, val ticket: Ticket)
