@@ -534,4 +534,56 @@ class RegisterModelTest {
         assertEquals("100%", percentWords(10_000))
         assertEquals("33.33%", percentWords(3_333))
     }
+
+    @Test
+    fun a_line_is_priced_by_hand_once_a_manager_approves() = runTest {
+        val till = FakeTill().apply {
+            pins = mapOf("alex" to "1234")
+            priceNeedsApproval = true
+        }
+        val model = signedIn(object : Till by till {
+            override fun team() = listOf(Member("sam", "Sam"), Member("alex", "Alex", "Manager", true))
+        })
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.openPrice(model.state.value.ticket!!.lines[0])
+        model.priceReason("damaged")
+        for (digit in listOf(2, 5, 0)) model.typePriceDigit(digit)
+        testScheduler.advanceUntilIdle()
+        assertEquals("$2.50", model.state.value.price?.typed?.text)
+        model.setPrice()
+        testScheduler.advanceUntilIdle()
+        assertEquals("price.override", model.state.value.approval?.action)
+        model.chooseApprover(model.approvers().single())
+        model.approve("1234")
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.price, "the sheet closes once it is priced")
+        val line = model.state.value.ticket!!.lines[0]
+        assertEquals("$2.50 (was $3.00), damaged", line.repriced)
+        assertEquals("$2.50", line.amount)
+        assertEquals("$2.50", model.state.value.ticket!!.total)
+    }
+
+    @Test
+    fun a_lines_notes_are_kept_and_cleared() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.openNotes(model.state.value.ticket!!.lines[0])
+        model.saveNotes("  oat milk on the side ")
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.notes)
+        assertEquals("oat milk on the side", model.state.value.ticket!!.lines[0].notes)
+        // The same notes change nothing, and ask the till nothing.
+        model.openNotes(model.state.value.ticket!!.lines[0])
+        model.saveNotes("oat milk on the side")
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.error)
+        // Blank clears them.
+        model.openNotes(model.state.value.ticket!!.lines[0])
+        model.saveNotes("   ")
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.ticket!!.lines[0].notes)
+    }
 }

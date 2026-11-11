@@ -117,6 +117,12 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
     override fun removeDiscount(order: String, discount: String): Ticket =
         call { register.removeDiscount(order, discount).toTicket() }
 
+    override fun repriceLine(order: String, line: String, unitPriceMinor: Long, reason: String): Ticket =
+        call { register.repriceLine(order, line, unitPriceMinor, reason, null).toTicket() }
+
+    override fun setNotes(order: String, line: String, notes: String?): Ticket =
+        call { register.setLineNotes(order, line, notes).toTicket() }
+
     override fun abandon(order: String): Ticket = call { register.abandon(order).toTicket() }
 
     override fun cashOffers(order: String): List<Amount> = call { register.cashOffers(order).map { it.toAmount() } }
@@ -258,6 +264,8 @@ private fun KernelTicket.toTicket() = Ticket(
             count = if (line.quantityMillionths % MILLION == 0L) (line.quantityMillionths / MILLION).toInt() else null,
             modifiers = line.modifiers.map(::words),
             discounts = line.discounts.map { it.toDiscount() },
+            repriced = line.repriced?.let { "${it.unitPrice.text} (was ${it.rung.text}), ${reasonWords(it.reason).lowercase()}" },
+            notes = line.notes,
         )
     },
     discounts = discounts.map { it.toDiscount() },

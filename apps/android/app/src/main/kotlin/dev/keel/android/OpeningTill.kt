@@ -30,6 +30,9 @@ class OpeningTill(open: () -> Till) : Till {
     override fun applyDiscount(order: String, line: String?, discount: DiscountAsked, reason: String) =
         till.applyDiscount(order, line, discount, reason)
     override fun removeDiscount(order: String, discount: String) = till.removeDiscount(order, discount)
+    override fun repriceLine(order: String, line: String, unitPriceMinor: Long, reason: String) =
+        till.repriceLine(order, line, unitPriceMinor, reason)
+    override fun setNotes(order: String, line: String, notes: String?) = till.setNotes(order, line, notes)
     override fun abandon(order: String) = till.abandon(order)
     override fun cashOffers(order: String) = till.cashOffers(order)
     override fun amount(minor: Long) = till.amount(minor)

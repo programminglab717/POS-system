@@ -51,6 +51,16 @@ data class DiscountSheet(
     }
 }
 
+/** The price sheet: a new unit price for [line], typed as a cash keypad types it, for [reason] (ADR-0030). */
+data class PriceSheet(
+    val line: TicketLine,
+    val reason: String = PRICE_REASONS.first().code,
+    val typed: Amount? = null,
+)
+
+/** The notes sheet: [line]'s notes, as they are when it opens. */
+data class NotesSheet(val line: TicketLine)
+
 /** A manager's approval the register asks for: the action, why, and the manager asked, once chosen. */
 data class Approval(
     val action: String,
@@ -75,6 +85,10 @@ data class RegisterState(
     val tender: Tender? = null,
     /** The discount sheet open for the order or one of its lines, if any. */
     val discount: DiscountSheet? = null,
+    /** The price sheet open for a line, if any. */
+    val price: PriceSheet? = null,
+    /** The notes sheet open for a line, if any. */
+    val notes: NotesSheet? = null,
     /** The change handed back for the last order paid, until the next is begun. */
     val change: String? = null,
     val orders: List<Ticket> = emptyList(),
@@ -335,11 +349,78 @@ class RegisterModel(
         show(till.removeDiscount(ticket.order, discount.discount))
     }
 
+    /** Opens the price sheet for [line]. */
+    fun openPrice(line: TicketLine) {
+        if (current.ticket == null) return
+        mutable.update { it.copy(price = PriceSheet(line), error = null) }
+    }
+
+    /** The reason for the price on the sheet. */
+    fun priceReason(code: String) = mutable.update { state -> state.copy(price = state.price?.copy(reason = code)) }
+
+    /** Types [digit] into the sheet's price, in minor units. */
+    fun typePriceDigit(digit: Int) = perform {
+        val sheet = current.price ?: return@perform
+        val typed = (sheet.typed?.minor ?: 0) * 10 + digit.coerceIn(0, 9)
+        if (typed > MAX_TYPED) return@perform
+        val amount = till.amount(typed)
+        mutable.update { state -> state.copy(price = state.price?.copy(typed = amount)) }
+    }
+
+    /** Takes the last digit typed off the sheet's price. */
+    fun erasePriceDigit() = perform {
+        val sheet = current.price ?: return@perform
+        val typed = (sheet.typed?.minor ?: 0) / 10
+        val amount = if (typed == 0L) null else till.amount(typed)
+        mutable.update { state -> state.copy(price = state.price?.copy(typed = amount)) }
+    }
+
+    /**
+     * Prices the sheet's line at what was typed, nothing typed being free, and closes the sheet:
+     * tried again as it was once a manager approves.
+     */
+    fun setPrice() {
+        val sheet = current.price ?: return
+        val order = current.ticket?.order ?: return
+        val minor = sheet.typed?.minor ?: 0
+        perform {
+            show(till.repriceLine(order, sheet.line.line, minor, sheet.reason))
+            mutable.update { it.copy(price = null) }
+        }
+    }
+
+    /** Closes the price sheet. */
+    fun closePrice() = mutable.update { it.copy(price = null) }
+
+    /** Opens the notes sheet for [line]. */
+    fun openNotes(line: TicketLine) {
+        if (current.ticket == null) return
+        mutable.update { it.copy(notes = NotesSheet(line), error = null) }
+    }
+
+    /** Keeps [text] as the sheet's line's notes, blank clearing them, and closes the sheet. */
+    fun saveNotes(text: String) {
+        val sheet = current.notes ?: return
+        val order = current.ticket?.order ?: return
+        val notes = text.trim().ifEmpty { null }
+        if (notes == sheet.line.notes) {
+            mutable.update { it.copy(notes = null) }
+            return
+        }
+        perform {
+            show(till.setNotes(order, sheet.line.line, notes))
+            mutable.update { it.copy(notes = null) }
+        }
+    }
+
+    /** Closes the notes sheet. */
+    fun closeNotes() = mutable.update { it.copy(notes = null) }
+
     /** Drops the order being rung. */
     fun abandon() = perform {
         val ticket = current.ticket ?: return@perform
         till.abandon(ticket.order)
-        mutable.update { it.copy(ticket = null, tender = null, discount = null) }
+        mutable.update { it.copy(ticket = null, tender = null, discount = null, price = null, notes = null) }
     }
 
     /** Opens the cash tender for the order being rung. */
@@ -374,7 +455,9 @@ class RegisterModel(
     fun pay(tendered: Amount) = perform {
         val tender = current.tender ?: return@perform
         val paid = till.payCash(tender.order, tendered.minor)
-        mutable.update { it.copy(ticket = null, tender = null, discount = null, change = paid.change) }
+        mutable.update {
+            it.copy(ticket = null, tender = null, discount = null, price = null, notes = null, change = paid.change)
+        }
     }
 
     /** Shows today's orders. */

@@ -486,6 +486,7 @@ PartiallyPaid and Paid stages, come later. Payloads follow
 | `order.ownership_overridden` | A device took the order on a manager's word, from the lease it saw, with a reason. |
 | `order.discount_applied` | A discount went on a line, a percentage or an amount, or on the whole order, a percentage, with a reason (ADR-0030). |
 | `order.discount_removed` | A discount came off. |
+| `order.line_repriced` | A line was priced again by hand, at a unit price of zero or more, with a reason (ADR-0030). |
 
 - **A line's life.** A line is *pending* until it is fired, then *fired*. A pending line can be
   removed; a fired line can only be voided. Removed and voided lines no longer count, but a line

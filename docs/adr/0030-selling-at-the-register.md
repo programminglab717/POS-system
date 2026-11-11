@@ -48,10 +48,14 @@ What is built shapes it:
    most. Taking one off is not gated.
 
 3. **A price override is an order event.** `order.line_repriced` v1, `{1: line, 2: unit price,
-   3: reason}`: the line is priced at the new unit price from then on, in the location's
-   currency, at least zero. It is gated as `price.override`, the amount being how far the new
-   price is from the line's, for its whole quantity. An item rung at a price the catalog gives as
-   zero is how an open-price item rings until the catalog marks one so.
+   3: reason code, 4: note}`: the line is priced at the new unit price, with its modifiers, from
+   then on, in the order's currency, at least zero; the price it was rung at stays with it. The
+   last price that applies is the line's. A live line, pending or fired, takes one unless it has
+   a part on a closed check; a price that changes nothing is refused. The fold reports one for a
+   removed line or in another currency, which don't apply, and one on a closed check, which
+   does. It is gated as `price.override`, the amount being how far the new price is from the
+   line's, for its whole quantity, after the order's own rules. An item rung at a price the
+   catalog gives as zero is how an open-price item rings until the catalog marks one so.
 
 4. **Notes**: the runtime sets a line's notes (`order.line_changed`), which the kitchen and the
    receipt show. An order's own note, and tags, wait for a version of `order.attributes_changed`.

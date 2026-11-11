@@ -54,6 +54,16 @@ interface Till {
     /** Takes [discount] off [order], and gives the ticket. */
     fun removeDiscount(order: String, discount: String): Ticket
 
+    /**
+     * Prices [line] of [order] again at [unitPriceMinor], in the location's minor units, for
+     * [reason], one of [PRICE_REASONS]' codes, and gives the ticket (ADR-0030). One beyond the
+     * cashier's role is refused with [TillException.approval].
+     */
+    fun repriceLine(order: String, line: String, unitPriceMinor: Long, reason: String): Ticket
+
+    /** Sets [line]'s notes, or clears them when [notes] is null, and gives the ticket. */
+    fun setNotes(order: String, line: String, notes: String?): Ticket
+
     /** Drops [order], and gives its ticket. */
     fun abandon(order: String): Ticket
 
@@ -227,6 +237,10 @@ data class TicketLine(
     val modifiers: List<String> = emptyList(),
     /** Its discounts. */
     val discounts: List<TicketDiscount> = emptyList(),
+    /** Its price as staff set it, in words, such as "$2.75 (was $3.25), price match"; none if they didn't. */
+    val repriced: String? = null,
+    /** Its notes, for the kitchen and the receipt. */
+    val notes: String? = null,
 )
 
 /** A discount on a ticket, in words, such as "Loyalty 10%", and what it took, such as "−$2.10". */
@@ -261,8 +275,17 @@ fun percentWords(basisPoints: Int): String {
     return if (part.isEmpty()) "$whole%" else "$whole.$part%"
 }
 
+/** The reasons the register offers for pricing a line by hand, to begin with. */
+val PRICE_REASONS = listOf(
+    DiscountReason("price_match", "Price match"),
+    DiscountReason("open_price", "Open price"),
+    DiscountReason("damaged", "Damaged"),
+    DiscountReason("manager", "Manager's call"),
+)
+
 /** The words for the reason [code]: its own, if the register offers it, or the code. */
-fun reasonWords(code: String): String = DISCOUNT_REASONS.firstOrNull { it.code == code }?.words ?: code
+fun reasonWords(code: String): String =
+    (DISCOUNT_REASONS + PRICE_REASONS).firstOrNull { it.code == code }?.words ?: code
 
 /** What paying cash did: the change to hand back, and the ticket afterwards. */
 data class Paid(val change: String, val ticket: Ticket)

@@ -15,7 +15,14 @@ class FakeTill : Till {
     /** The print jobs, as a printer that never answers leaves them. */
     val jobs = mutableListOf<PrintJob>()
 
-    private class Line(val id: String, val variant: String, var count: Int)
+    private class Line(val id: String, val variant: String, var count: Int) {
+        /** The price staff set, in cents, and why, if they did. */
+        var price: Pair<Long, String>? = null
+        var notes: String? = null
+    }
+
+    /** Whether pricing by hand needs a manager, as for a cashier. */
+    var priceNeedsApproval = false
 
     /** A discount, on a line or on the whole order. */
     private class Off(val id: String, val line: String?, val asked: DiscountAsked, val reason: String)
@@ -75,7 +82,8 @@ class FakeTill : Till {
         signedIn = member
     }
 
-    override fun approvers() = if (voidNeedsApproval || discountLimit != null) listOf("alex") else emptyList()
+    override fun approvers() =
+        if (voidNeedsApproval || discountLimit != null || priceNeedsApproval) listOf("alex") else emptyList()
 
     override fun approve(approver: String, pin: String) {
         if (pin != pins[approver].orEmpty()) throw TillException("That PIN isn't right.")
@@ -143,6 +151,27 @@ class FakeTill : Till {
         return ticket(order)
     }
 
+    override fun repriceLine(order: String, line: String, unitPriceMinor: Long, reason: String): Ticket {
+        val found = open(order).singleOrNull { it.id == line } ?: throw TillException("no such line")
+        if (unitPriceMinor < 0) throw TillException("A price can't be less than nothing.")
+        if (unitPriceMinor == unitPrice(found)) throw TillException("That's its price already.")
+        if (priceNeedsApproval) {
+            if (approvedBy == null) throw TillException("Changing a price needs a manager's approval.", approval = "price.override")
+            approvedBy = null
+        }
+        found.price = unitPriceMinor to reason
+        return ticket(order)
+    }
+
+    override fun setNotes(order: String, line: String, notes: String?): Ticket {
+        val found = open(order).singleOrNull { it.id == line } ?: throw TillException("no such line")
+        if (found.notes == notes) throw TillException("Those are its notes already.")
+        found.notes = notes
+        return ticket(order)
+    }
+
+    private fun unitPrice(line: Line) = line.price?.first ?: prices.getValue(line.variant)
+
     override fun abandon(order: String): Ticket {
         if (voidNeedsApproval && open(order).isNotEmpty()) {
             if (approvedBy == null) throw TillException("Dropping it needs a manager.", approval = "order.void")
@@ -176,8 +205,12 @@ class FakeTill : Till {
             order = order,
             lines = orders.getValue(order).map { line ->
                 TicketLine(
-                    line.id, line.variant, line.count.toString(), money(prices.getValue(line.variant) * line.count), line.count,
+                    line.id, line.variant, line.count.toString(), money(unitPrice(line) * line.count), line.count,
                     discounts = lines.getValue(line.id).second,
+                    repriced = line.price?.let { (price, reason) ->
+                        "${money(price)} (was ${money(prices.getValue(line.variant))}), ${reasonWords(reason).lowercase()}"
+                    },
+                    notes = line.notes,
                 )
             },
             total = money(due),
@@ -198,7 +231,7 @@ class FakeTill : Till {
         fun words(off: Off) = reasonWords(off.reason) +
             ((off.asked as? DiscountAsked.Percent)?.let { " " + percentWords(it.basisPoints) } ?: "")
         val lines = orders.getValue(order).associate { line ->
-            var left = prices.getValue(line.variant) * line.count
+            var left = unitPrice(line) * line.count
             val taken = offs.filter { it.line == line.id }.map { off ->
                 val amount = take(left, off)
                 left -= amount

@@ -2,6 +2,7 @@ package dev.keel.android
 
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ComposeTimeoutException
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -34,4 +35,15 @@ fun ComposeTestRule.shown(tag: String): String = onAllNodes(hasTestTag(tag)).fet
 fun ComposeTestRule.enterPin(pin: String) {
     for (digit in pin) tap("pin:$digit")
     tap("pin:enter")
+}
+
+/** Nodes whose test tag starts with [prefix], such as a line's buttons, whose tags end with its identifier. */
+fun tagStarting(prefix: String) = SemanticsMatcher("test tag starting with $prefix") { node ->
+    node.config.getOrElse(SemanticsProperties.TestTag) { "" }.startsWith(prefix)
+}
+
+/** Waits for the first node whose tag starts with [prefix], then taps it. */
+fun ComposeTestRule.tapStarting(prefix: String, timeoutMillis: Long = 10_000) {
+    waitUntil(timeoutMillis) { onAllNodes(tagStarting(prefix)).fetchSemanticsNodes().isNotEmpty() }
+    onAllNodes(tagStarting(prefix))[0].performClick()
 }

@@ -103,6 +103,39 @@ class RegisterTest {
     }
 
     /**
+     * A cashier prices an espresso by hand at $2.50, which needs a manager (ADR-0030), and notes
+     * it: $2.50 with $0.22 of tax at 8.875%.
+     */
+    @Test
+    fun a_cashier_prices_a_line_by_hand_once_a_manager_approves() {
+        compose.tap("member:Sam", wait = 20_000)
+        compose.enterPin("2468")
+        compose.tap("button:${demoId(0x401)}")
+        compose.tap("sheet:add")
+        compose.tapStarting("price:0")
+        compose.tap("price-reason:damaged")
+        compose.tap("price:digit:2")
+        compose.tap("price:digit:5")
+        compose.tap("price:digit:0")
+        compose.tap("price:set")
+        compose.waitFor("approval:reason")
+        compose.tap("approver:Alex")
+        compose.enterPin("1234")
+        compose.waitUntil(10_000) { compose.shown("total").contains("$2.72") }
+        compose.tapStarting("note:0")
+        compose.waitFor("notes:text")
+        compose.onNodeWithTag("notes:text").performTextReplacement("extra hot")
+        compose.tap("notes:save")
+        compose.waitUntil(10_000) { compose.onAllNodes(tagStarting("notes:0")).fetchSemanticsNodes().isNotEmpty() }
+        compose.tap("abandon")
+        compose.waitFor("approval:reason")
+        compose.tap("approver:Alex")
+        compose.enterPin("1234")
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("abandon")).fetchSemanticsNodes().isEmpty() }
+        compose.tap("sign-out")
+    }
+
+    /**
      * A printer in the test's process that takes [jobs] connections, one after the other, each
      * answered as a ready Epson that printed what it was sent; and what each brought, waited for.
      */

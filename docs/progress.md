@@ -91,9 +91,34 @@ verified as it lands, then reviewed together:
 
 1. **Discounts** (built 2026-11-11): the schemas, the fold and the baskets, the closing
    snapshot, the gate, the bindings, the Android register's discount sheet, and the receipt.
-2. **Price overrides and notes**: next.
+2. **Price overrides and notes** (built 2026-11-11): the schema, the fold, the gate, the notes
+   intent, the bindings, and the Android register's price and notes sheets.
 3. **Split checks and partial payments**.
 4. **Park and recall across devices**, through the hub.
+
+Built in slice 2:
+
+- **`keel-domain`**: `order.line_repriced` v1, a line priced again at a unit price of zero or
+  more, with a reason and an optional note; the line keeps the price it was rung at, and prices
+  at the new one, with its modifiers, from then on, the last that applies winning. The fold
+  reports a price for a removed line or in another currency, neither applying, and one on a
+  closed check, applying; commands refuse those and a price that changes nothing.
+  - Known answers: two at $3.95 instead of $4.50; free; every conflict and refusal, each named;
+    the payload pinned as `cbor2` encodes it.
+  - Properties: both order models generate and model prices set by hand, at prices that
+    sometimes match the rung one; the payload model knows the schema; the basket invariants
+    price each line at its own unit price.
+  - Planted bugs: 9.
+- **`keel-runtime`**: `reprice_line`, gated as `price.override` for the difference over the
+  whole quantity, after the order's own rules; `set_line_notes`, setting or clearing a pending
+  line's notes. Tickets show a line's price as set, as rung, and why, and its notes.
+  - Known answers: a cashier's $2.75 for two $3.25 espressos approved for $1.00; a manager's
+    $3.00 alone; free, and less than free refused; the same price asking for no approval; notes
+    set, the same refused, cleared. Planted bugs: 3.
+- **`keel-ffi`**: both intents, and a line's price and notes crossed field for field.
+- **The Android register**: a price sheet (reasons, a price typed) and a notes sheet for each
+  line; a line's price and notes on the ticket. Tests: the model's price approved by a manager,
+  notes kept, unchanged and cleared; on an emulator, a cashier's price approved, then a note.
 
 Built in slice 1:
 

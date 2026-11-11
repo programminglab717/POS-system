@@ -47,6 +47,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.keel.register.Approval
 import dev.keel.register.DISCOUNT_REASONS
 import dev.keel.register.DiscountSheet
+import dev.keel.register.NotesSheet
+import dev.keel.register.PRICE_REASONS
+import dev.keel.register.PriceSheet
 import dev.keel.register.TicketDiscount
 import dev.keel.register.percentWords
 import dev.keel.register.JobKind
@@ -84,6 +87,8 @@ fun RegisterScreen(model: RegisterModel) {
         state.sheet?.let { SheetDialog(it, model) }
         state.tender?.let { TenderDialog(it, model) }
         state.discount?.let { DiscountDialog(it, state.error, model) }
+        state.price?.let { PriceDialog(it, state.error, model) }
+        state.notes?.let { NotesDialog(it, model) }
         state.pinFor?.let { member ->
             PinDialog("${member.name}'s PIN", state.error, onEnter = model::enterPin, onCancel = model::cancelPin)
         }
@@ -184,6 +189,8 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                         Text(line.amount)
                     }
                     for (words in line.modifiers) Text(words, style = MaterialTheme.typography.bodySmall)
+                    line.repriced?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("repriced:${line.line}")) }
+                    line.notes?.let { Text("“$it”", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("notes:${line.line}")) }
                     for (discount in line.discounts) DiscountRow(discount, model)
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         if (line.count != null) {
@@ -192,6 +199,8 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                         }
                         TextButton(onClick = { model.remove(line) }, modifier = Modifier.testTag("remove:${line.line}")) { Text("Remove") }
                         TextButton(onClick = { model.openDiscount(line) }, modifier = Modifier.testTag("discount:${line.line}")) { Text("Discount") }
+                        TextButton(onClick = { model.openPrice(line) }, modifier = Modifier.testTag("price:${line.line}")) { Text("Price") }
+                        TextButton(onClick = { model.openNotes(line) }, modifier = Modifier.testTag("note:${line.line}")) { Text("Note") }
                     }
                 }
             }
@@ -217,6 +226,77 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
         }
     }
 }
+
+/** The price sheet: a reason, and a new unit price typed. */
+@Composable
+private fun PriceDialog(sheet: PriceSheet, error: String?, model: RegisterModel) {
+    AlertDialog(
+        onDismissRequest = model::closePrice,
+        title = { Text("Price: ${sheet.line.name}") },
+        text = {
+            Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                Text("Why", style = MaterialTheme.typography.titleSmall)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (reason in PRICE_REASONS) {
+                        FilterChip(
+                            selected = sheet.reason == reason.code,
+                            onClick = { model.priceReason(reason.code) },
+                            label = { Text(reason.words) },
+                            modifier = Modifier.testTag("price-reason:${reason.code}"),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    sheet.typed?.text ?: "Type the price of one",
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.testTag("price:typed"),
+                )
+                for (row in listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9))) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (digit in row) Key(digit.toString(), "price:digit:$digit") { model.typePriceDigit(digit) }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Key("⌫", "price:erase") { model.erasePriceDigit() }
+                    Key("0", "price:digit:0") { model.typePriceDigit(0) }
+                }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("price:error")) }
+            }
+        },
+        confirmButton = {
+            Button(onClick = model::setPrice, modifier = Modifier.testTag("price:set")) {
+                Text(sheet.typed?.let { "Sell at ${it.text}" } ?: "Sell free")
+            }
+        },
+        dismissButton = { TextButton(onClick = model::closePrice, modifier = Modifier.testTag("price:cancel")) { Text("Cancel") } },
+    )
+}
+
+/** The notes sheet: the line's notes, for the kitchen and the receipt. */
+@Composable
+private fun NotesDialog(sheet: NotesSheet, model: RegisterModel) {
+    var text by rememberSaveable(sheet.line.line) { mutableStateOf(sheet.line.notes.orEmpty()) }
+    AlertDialog(
+        onDismissRequest = model::closeNotes,
+        title = { Text("Note: ${sheet.line.name}") },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { if (it.length <= MAX_NOTE) text = it },
+                label = { Text("For the kitchen and the receipt") },
+                modifier = Modifier.fillMaxWidth().testTag("notes:text"),
+            )
+        },
+        confirmButton = {
+            Button(onClick = { model.saveNotes(text) }, modifier = Modifier.testTag("notes:save")) { Text("Keep") }
+        },
+        dismissButton = { TextButton(onClick = model::closeNotes, modifier = Modifier.testTag("notes:cancel")) { Text("Cancel") } },
+    )
+}
+
+/** The most characters a note holds, as the kernel keeps them. */
+private const val MAX_NOTE = 500
 
 /** A discount on the ticket: its words, what it took, and a way to take it off. */
 @Composable
