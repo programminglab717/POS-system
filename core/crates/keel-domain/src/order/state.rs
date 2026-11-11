@@ -48,7 +48,10 @@ use super::checks::{Check, CheckShare, LinesAllocated};
 use super::closing::CheckClosed;
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
 use super::ownership::{Lease, Ownership, OwnershipGranted, Request};
-use super::types::{Channel, ChosenModifier, ItemSnapshot, Mode, Reason, modifier_currency};
+use super::types::{
+    Channel, ChosenModifier, Discount, DiscountApplied, DiscountValue, ItemSnapshot, Mode, Reason,
+    modifier_currency,
+};
 use crate::aggregate::{Aggregate, EventMeta, Skipped};
 use crate::codec::{Change, Note};
 use crate::refs::{RevenueCenter, Table};
@@ -65,6 +68,11 @@ pub struct Order {
     ownership: Option<Ownership>,
     requests: Vec<Request>,
     answered: BTreeSet<Id<Event>>,
+    /// Discounts on the whole order, in the order they were applied.
+    discounts: Vec<DiscountApplied>,
+    /// The identifier of every discount applied, even those since taken off: a discount's
+    /// identifier names it for good.
+    used_discounts: BTreeSet<Id<Discount>>,
     conflicts: Vec<Conflict>,
     skipped: Vec<Skipped>,
 }
@@ -130,6 +138,8 @@ pub struct Line {
     notes: Option<Note>,
     status: LineStatus,
     comp: Option<Reason>,
+    /// Its discounts, in the order they were applied.
+    discounts: Vec<DiscountApplied>,
     fired: bool,
     allocation: Vec<CheckShare>,
 }
@@ -191,6 +201,12 @@ impl Line {
     /// Why it was comped, if it was: it is then served at no charge.
     pub const fn comp(&self) -> Option<&Reason> {
         self.comp.as_ref()
+    }
+
+    /// Its discounts, in the order they were applied: each takes from what the ones before it
+    /// left (ADR-0030).
+    pub fn discounts(&self) -> &[DiscountApplied] {
+        &self.discounts
     }
 
     /// Whether the line still counts: it hasn't been removed or voided.
@@ -296,6 +312,17 @@ pub enum ConflictKind {
     Overridden(Id<Device>),
     /// A device overrode a lease that had already moved on; the override didn't apply.
     StaleOverride,
+    /// A discount was applied with the identifier of one applied before, even one since taken
+    /// off; it wasn't applied again.
+    DuplicateDiscount(Id<Discount>),
+    /// A discount was applied to a line after it was removed or voided; it has no effect.
+    DiscountedAfterRemoval(Id<Line>),
+    /// A discount on the whole order was applied or taken off once it was closed, voided or
+    /// abandoned, or while a check was closed: it applies, and the closed checks' snapshots
+    /// stand.
+    DiscountOnClosed(Id<Discount>),
+    /// A discount was taken off that was never applied.
+    UnknownDiscount(Id<Discount>),
 }
 
 impl Order {
@@ -310,6 +337,8 @@ impl Order {
             ownership: None,
             requests: Vec::new(),
             answered: BTreeSet::new(),
+            discounts: Vec::new(),
+            used_discounts: BTreeSet::new(),
             conflicts: Vec::new(),
             skipped: Vec::new(),
         }
@@ -360,6 +389,31 @@ impl Order {
     /// The line with identifier `id`.
     pub fn line(&self, id: Id<Line>) -> Option<&Line> {
         self.lines.iter().find(|line| line.id == id)
+    }
+
+    /// The discounts on the whole order, in the order they were applied: each takes from what
+    /// the line discounts and the ones before it left (ADR-0030).
+    pub fn discounts(&self) -> &[DiscountApplied] {
+        &self.discounts
+    }
+
+    /// The discount with identifier `discount`, on the order or on any of its lines, live or
+    /// not, unless it was taken off.
+    pub fn discount(&self, discount: Id<Discount>) -> Option<&DiscountApplied> {
+        self.discounts
+            .iter()
+            .chain(self.lines.iter().flat_map(|line| line.discounts.iter()))
+            .find(|applied| applied.discount == discount)
+    }
+
+    /// Whether a discount with identifier `discount` was ever applied, even if since taken off.
+    pub fn discount_used(&self, discount: Id<Discount>) -> bool {
+        self.used_discounts.contains(&discount)
+    }
+
+    /// The identifier of every discount ever applied, even those since taken off.
+    pub fn used_discounts(&self) -> &BTreeSet<Id<Discount>> {
+        &self.used_discounts
     }
 
     /// The lines that still count, in the order they were added.
@@ -537,6 +591,7 @@ impl Order {
             notes: added.notes.clone(),
             status: LineStatus::Pending,
             comp: None,
+            discounts: Vec::new(),
             fired: false,
             allocation: vec![CheckShare { check, shares: NonZeroU16::MIN }],
         });
@@ -662,6 +717,71 @@ impl Order {
             if frozen {
                 self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
             }
+        }
+    }
+
+    fn apply_discount_applied(
+        &mut self,
+        meta: &EventMeta,
+        currency: Currency,
+        applied: &DiscountApplied,
+    ) {
+        if self.discount_used(applied.discount) {
+            return self.conflict(meta, ConflictKind::DuplicateDiscount(applied.discount));
+        }
+        let Some(id) = applied.line else {
+            self.used_discounts.insert(applied.discount);
+            self.discounts.push(applied.clone());
+            return self.order_discount_changed(meta, applied.discount);
+        };
+        let foreign = matches!(
+            applied.value,
+            DiscountValue::Amount(amount) if amount.currency() != currency
+        );
+        let frozen = self.frozen(id);
+        let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
+            return self.conflict(meta, ConflictKind::UnknownLine(id));
+        };
+        if foreign {
+            return self.conflict(meta, ConflictKind::CurrencyMismatch(id));
+        }
+        if !line.is_live() {
+            return self.conflict(meta, ConflictKind::DiscountedAfterRemoval(id));
+        }
+        line.discounts.push(applied.clone());
+        self.used_discounts.insert(applied.discount);
+        if frozen {
+            self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
+        }
+    }
+
+    fn apply_discount_removed(&mut self, meta: &EventMeta, discount: Id<Discount>) {
+        let Some(line) = self.discount(discount).map(|applied| applied.line) else {
+            // Taken off already, as another device may have done at the same time.
+            if !self.discount_used(discount) {
+                self.conflict(meta, ConflictKind::UnknownDiscount(discount));
+            }
+            return;
+        };
+        let Some(id) = line else {
+            self.discounts.retain(|other| other.discount != discount);
+            return self.order_discount_changed(meta, discount);
+        };
+        let frozen = self.frozen(id);
+        let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
+            return;
+        };
+        line.discounts.retain(|other| other.discount != discount);
+        if frozen && line.is_live() {
+            self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
+        }
+    }
+
+    /// Flags a change to the whole order's discounts once it has ended or while a check is
+    /// closed: the closed checks' snapshots stand.
+    fn order_discount_changed(&mut self, meta: &EventMeta, discount: Id<Discount>) {
+        if self.status != OrderStatus::Active || self.closed_check().is_some() {
+            self.conflict(meta, ConflictKind::DiscountOnClosed(discount));
         }
     }
 
@@ -855,6 +975,12 @@ impl Aggregate for Order {
             OrderEvent::OwnershipRequested { lease } => self.apply_requested(meta, *lease),
             OrderEvent::OwnershipGranted(granted) => self.apply_granted(meta, granted),
             OrderEvent::OwnershipOverridden { lease, .. } => self.apply_overridden(meta, *lease),
+            OrderEvent::DiscountApplied(applied) => {
+                self.apply_discount_applied(meta, currency, applied);
+            }
+            OrderEvent::DiscountRemoved { discount } => {
+                self.apply_discount_removed(meta, *discount);
+            }
         }
     }
 

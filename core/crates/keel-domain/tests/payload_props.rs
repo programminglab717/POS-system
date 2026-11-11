@@ -132,10 +132,22 @@ enum Kind {
     Runs,
     /// A claim's cuts.
     Cuts,
+    /// A discount's percentage, in basis points: from 1 to 10,000.
+    Percent,
 }
 
 use Kind::*;
 use Presence::{Clearable, Optional, Required};
+
+/// The keys of a discount (ADR-0030).
+const DISCOUNT_APPLIED: &[(u64, Kind, Presence)] = &[
+    (1, Id, Required),
+    (2, Id, Optional),
+    (3, Percent, Optional),
+    (4, Money, Optional),
+    (5, Reason, Required),
+    (6, Note, Optional),
+];
 
 /// The documented keys of each schema: the model.
 fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
@@ -179,7 +191,9 @@ fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
             (5, Count8, Clearable),
             (6, Note, Clearable),
         ],
-        "order.line_removed" | "order.check_opened" => vec![(1, Id, Required)],
+        "order.line_removed" | "order.check_opened" | "order.discount_removed" => {
+            vec![(1, Id, Required)]
+        }
         "order.lines_fired" => vec![(1, IdSet, Required)],
         "order.line_voided" | "order.line_comped" => {
             vec![(1, Id, Required), (2, Reason, Required), (3, Note, Optional)]
@@ -220,6 +234,7 @@ fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
         "order.ownership_overridden" => {
             vec![(1, Lease, Required), (2, Reason, Required), (3, Note, Optional)]
         }
+        "order.discount_applied" => DISCOUNT_APPLIED.to_vec(),
         "hub.claimed" => {
             vec![
                 (1, Number, Required),
@@ -469,6 +484,7 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
         Lease => value.as_u64().is_some_and(|n| n <= LARGEST),
         Runs => runs_valid(value),
         Cuts => cuts_valid(value),
+        Percent => value.as_u64().is_some_and(|bp| (1..=10_000).contains(&bp)),
     }
 }
 
@@ -581,6 +597,12 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
             map.len() > 1 && quantity_positive && modifiers_consistent
         }
         "order.check_closed" => snapshot_valid(map),
+        // A percentage or an amount, which only a line may take, and more than zero.
+        "order.discount_applied" => match (get(3), get(4)) {
+            (Some(_), None) => true,
+            (None, Some(amount)) => get(2).is_some() && money(amount).unwrap().0 > 0,
+            _ => false,
+        },
         "payment.initiated" => money(get(4).unwrap()).unwrap().0 > 0,
         "payment.authorized" => money(get(1).unwrap()).unwrap().0 > 0,
         "payment.captured" => capture_valid(map),
@@ -689,6 +711,7 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
         Number | Lease => number_near_miss(),
         Runs => runs_near_miss(),
         Cuts => cuts_near_miss(),
+        Percent => percent_near_miss(),
         Allocations => prop_oneof![
             3 => any_lines_allocated().prop_map(|allocated| allocations_value(&allocated)),
             // Valid allocations spoiled: out of order, repeated, not in lowest terms, a share of
@@ -706,6 +729,17 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
         Just(Value::Map(Map::new())),
     ];
     prop_oneof![4 => aimed, 1 => anything].boxed()
+}
+
+/// Percentages close to a discount's: at the ends of its range, past them, or anywhere.
+fn percent_near_miss() -> BoxedStrategy<Value> {
+    prop_oneof![
+        prop::sample::select(vec![0_u64, 1, 2, 9_999, 10_000, 10_001, 1 << 32, u64::MAX])
+            .prop_map(Value::Unsigned),
+        (0_u64..=20_000).prop_map(Value::Unsigned),
+        (-2_i64..=-1).prop_map(Value::integer),
+    ]
+    .boxed()
 }
 
 /// Epochs and numbers close to a sequencing record's: valid, at the ends, or past them.

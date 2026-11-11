@@ -37,10 +37,10 @@ use keel_domain::checkout::Checkout;
 use keel_domain::codec::{CatalogVersion, Change, IdSet, Name, Note, ReasonCode, RulesVersion};
 use keel_domain::order::{
     Allocation, AttributesChanged, Channel, Check, CheckClosed, CheckShare, ChosenModifier,
-    CommandError, ConflictKind, Epoch, ItemSnapshot, Lease, Line, LineAdded, LineChanged,
-    LineCharge, LineStatus, LinesAllocated, Mode, Order, OrderCommand, OrderCreated, OrderEvent,
-    OrderInfo, OrderStatus, Ownership, OwnershipGranted, Placement, Prefix, Reason,
-    Refusal as Answer, Request, Stage,
+    CommandError, ConflictKind, Discount, DiscountApplied, DiscountValue, Epoch, ItemSnapshot,
+    Lease, Line, LineAdded, LineChanged, LineCharge, LineStatus, LinesAllocated, Mode, Order,
+    OrderCommand, OrderCreated, OrderEvent, OrderInfo, OrderStatus, Ownership, OwnershipGranted,
+    Placement, Prefix, Reason, Refusal as Answer, Request, Stage,
 };
 use keel_domain::payment::{CashTendered, Payment, PaymentCaptured, PaymentCommand, Tender};
 use keel_domain::schema::{DecodeError, DomainEvent};
@@ -301,13 +301,14 @@ fn action(
     step: &Step,
     fresh: Id<Line>,
     fresh_check: Id<Check>,
+    fresh_discount: Id<Discount>,
 ) -> (Action, Id<Location>) {
     let lines: Vec<Id<Line>> = view.lines().iter().map(Line::id).collect();
     let known =
         |index: &Index| if lines.is_empty() { fresh } else { lines[index.index(lines.len())] };
     let pick = |index: &Index| if step.fault == 1 { fresh } else { known(index) };
     let from = if step.fault == 5 { other_location() } else { location() };
-    let command = match (step.kind % 60, step.fault) {
+    let command = match (step.kind % 64, step.fault) {
         (0..=9, 1) => OrderCommand::AddLine(line_added(known(&step.pick), step)),
         (0..=9, _) => OrderCommand::AddLine(line_added(fresh, step)),
         (10..=13, _) => OrderCommand::ChangeLine(line_changed(known(&step.pick), step)),
@@ -341,9 +342,54 @@ fn action(
         (52..=53, _) => OrderCommand::Close,
         (54..=55, _) => OrderCommand::Reopen(reason(step.amount)),
         (56..=57, _) => OrderCommand::RequestOwnership,
-        _ => OrderCommand::OverrideOwnership(reason(step.amount)),
+        (58..=59, _) => OrderCommand::OverrideOwnership(reason(step.amount)),
+        (60..=61, _) => {
+            OrderCommand::ApplyDiscount(discount_applied(view, step, pick, fresh_discount))
+        }
+        _ => {
+            let on = view.discounts().iter().chain(view.lines().iter().flat_map(Line::discounts));
+            let known: Vec<Id<Discount>> = on.map(|applied| applied.discount).collect();
+            let picked = known.get(step.other.index(known.len().max(1))).copied();
+            let unknown = step.fault == 1 || picked.is_none();
+            OrderCommand::RemoveDiscount(if unknown { fresh_discount } else { picked.unwrap() })
+        }
     };
     (Action::Order(command), from)
+}
+
+/// A discount: on a line picked as `pick` does, or on the whole order one time in three; an
+/// amount off a line when the step's flag is up, and else a percentage, often a round one.
+/// Fault 1 reuses an identifier the order has used, if any; fault 2 makes it invalid (no
+/// percentage, more than 100%, nothing off, or an amount off the whole order); fault 3 prices it
+/// in euros.
+fn discount_applied(
+    view: &Order,
+    step: &Step,
+    pick: impl Fn(&Index) -> Id<Line>,
+    fresh: Id<Discount>,
+) -> DiscountApplied {
+    let used: Vec<Id<Discount>> = view.used_discounts().iter().copied().collect();
+    let discount = match used.get(step.other.index(used.len().max(1))) {
+        Some(&used) if step.fault == 1 => used,
+        _ => fresh,
+    };
+    let line = (!step.amount.is_multiple_of(3)).then(|| pick(&step.pick));
+    let currency = if step.fault == 3 { eur() } else { usd() };
+    let percents = [500, 1_000, 2_500, 3_333, 5_000, 10_000];
+    let value = match (step.fault, step.flag) {
+        (2, _) => match step.amount % 4 {
+            0 => DiscountValue::Percent(0),
+            1 => DiscountValue::Percent(10_001),
+            2 if line.is_some() => DiscountValue::Amount(Money::zero(currency)),
+            _ => DiscountValue::Amount(Money::from_minor(100, currency)),
+        },
+        (_, true) if line.is_some() || step.fault == 3 => {
+            DiscountValue::Amount(Money::from_minor(1 + i64::from(step.amount) * 3, currency))
+        }
+        _ => DiscountValue::Percent(percents[usize::from(step.amount) % percents.len()]),
+    };
+    let line = if step.fault == 2 && step.amount % 4 == 3 { None } else { line };
+    DiscountApplied { discount, line, value, reason: reason(step.amount) }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -360,6 +406,7 @@ struct ModelLine {
     seat: Option<NonZeroU16>,
     course: Option<NonZeroU8>,
     notes: Option<Note>,
+    discounts: Vec<DiscountApplied>,
     fired: bool,
     allocation: Vec<CheckShare>,
 }
@@ -376,6 +423,7 @@ impl ModelLine {
             seat: added.seat,
             course: added.course,
             notes: added.notes.clone(),
+            discounts: Vec::new(),
             fired: false,
             allocation: vec![whole(main_check())],
         }
@@ -420,6 +468,7 @@ fn lines_of(order: &Order) -> Vec<ModelLine> {
             seat: line.seat(),
             course: line.course(),
             notes: line.notes().cloned(),
+            discounts: line.discounts().to_vec(),
             fired: line.was_fired(),
             allocation: line.allocation().to_vec(),
         })
@@ -524,6 +573,9 @@ struct Model {
     /// lease each saw.
     ownership: Ownership,
     requests: Vec<(Id<Device>, Lease)>,
+    /// The discounts on the whole order, and every discount's identifier ever applied.
+    discounts: Vec<DiscountApplied>,
+    used: BTreeSet<Id<Discount>>,
 }
 
 /// The requests for `order` that wait: each device, and the lease it saw.
@@ -543,7 +595,9 @@ fn owners_only(command: &OrderCommand) -> bool {
         | OrderCommand::OpenCheck(_)
         | OrderCommand::AllocateLines(_)
         | OrderCommand::Close
-        | OrderCommand::Reopen(_) => true,
+        | OrderCommand::Reopen(_)
+        | OrderCommand::ApplyDiscount(_)
+        | OrderCommand::RemoveDiscount(_) => true,
         OrderCommand::Create(_)
         | OrderCommand::ChangeAttributes(_)
         | OrderCommand::AddLine(_)
@@ -588,6 +642,8 @@ enum Refusal {
     NotOwner(Id<Device>),
     AlreadyOwner,
     RequestPending,
+    DiscountExists(Id<Discount>),
+    UnknownDiscount(Id<Discount>),
     /// The event wouldn't satisfy its schema, such as a negative price or a zero quantity.
     Invalid,
 }
@@ -618,6 +674,8 @@ fn refusal_of(error: &CommandError) -> Refusal {
         CommandError::NotOwner(owner) => Refusal::NotOwner(owner),
         CommandError::AlreadyOwner => Refusal::AlreadyOwner,
         CommandError::RequestPending => Refusal::RequestPending,
+        CommandError::DiscountExists(discount) => Refusal::DiscountExists(discount),
+        CommandError::UnknownDiscount(discount) => Refusal::UnknownDiscount(discount),
         CommandError::Invalid(_) => Refusal::Invalid,
         ref other => panic!("no command here should be refused with {other:?}"),
     }
@@ -641,6 +699,8 @@ impl Model {
             checks: vec![(main_check(), None)],
             ownership: Ownership { device: creator, lease: Lease::FIRST },
             requests: Vec::new(),
+            discounts: Vec::new(),
+            used: BTreeSet::new(),
         }
     }
 
@@ -657,6 +717,8 @@ impl Model {
                 .collect(),
             ownership: order.ownership().unwrap(),
             requests: requests_of(order),
+            discounts: order.discounts().to_vec(),
+            used: order.used_discounts().clone(),
         }
     }
 
@@ -848,6 +910,65 @@ impl Model {
                     .find(|(check, charged)| charged.is_none() && !self.on(*check).is_empty());
                 open.map_or(Ok(()), |(check, _)| Err(Refusal::CheckOpen(*check)))
             }
+            _ => self.discount_refused(command),
+        }
+    }
+
+    /// A discount's rules: valid, with an identifier never used, in the order's currency, and
+    /// discountable; taken off, on the order, and off a line that has since gone or discountable.
+    fn discount_refused(&self, command: &OrderCommand) -> Result<(), Refusal> {
+        match command {
+            OrderCommand::ApplyDiscount(applied) => {
+                let invalid = match applied.value {
+                    DiscountValue::Percent(bp) => bp == 0 || bp > 10_000,
+                    DiscountValue::Amount(amount) => {
+                        !amount.is_positive() || applied.line.is_none()
+                    }
+                };
+                if invalid {
+                    Err(Refusal::Invalid)
+                } else if self.used.contains(&applied.discount) {
+                    Err(Refusal::DiscountExists(applied.discount))
+                } else if matches!(applied.value, DiscountValue::Amount(a) if a.currency() != usd())
+                {
+                    Err(Refusal::WrongCurrency)
+                } else {
+                    self.discountable(applied.line)
+                }
+            }
+            OrderCommand::RemoveDiscount(discount) => {
+                let on = self.discount(*discount).ok_or(Refusal::UnknownDiscount(*discount))?.line;
+                match on.and_then(|id| self.line(id)) {
+                    Some(line) if !line.live() => Ok(()),
+                    _ => self.discountable(on),
+                }
+            }
+            other => unreachable!("not a discount: {other:?}"),
+        }
+    }
+
+    /// The discount with identifier `discount`, if it is on the order or one of its lines.
+    fn discount(&self, discount: Id<Discount>) -> Option<&DiscountApplied> {
+        self.discounts
+            .iter()
+            .chain(self.lines.iter().flat_map(|line| &line.discounts))
+            .find(|applied| applied.discount == discount)
+    }
+
+    /// A discount on a line must find it live and not frozen; on the whole order, every check
+    /// open.
+    fn discountable(&self, line: Option<Id<Line>>) -> Result<(), Refusal> {
+        let Some(id) = line else {
+            let closed = self.checks.iter().find(|(_, charged)| charged.is_some());
+            return closed.map_or(Ok(()), |(check, _)| Err(Refusal::CheckClosed(*check)));
+        };
+        let found = self.line(id).ok_or(Refusal::UnknownLine(id))?;
+        if !found.live() {
+            Err(Refusal::LineNotLive(id))
+        } else if self.frozen(found) {
+            Err(Refusal::LineOnClosedCheck(id))
+        } else {
+            Ok(())
         }
     }
 
@@ -973,6 +1094,20 @@ impl Model {
                     self.line_mut(id).allocation = shares;
                 }
             }
+            OrderCommand::ApplyDiscount(applied) => {
+                self.used.insert(applied.discount);
+                match applied.line {
+                    Some(id) => self.line_mut(id).discounts.push(applied.clone()),
+                    None => self.discounts.push(applied.clone()),
+                }
+            }
+            OrderCommand::RemoveDiscount(discount) => {
+                let off = |applied: &DiscountApplied| applied.discount != *discount;
+                self.discounts.retain(off);
+                for line in &mut self.lines {
+                    line.discounts.retain(off);
+                }
+            }
         }
     }
 }
@@ -1005,6 +1140,7 @@ struct Working {
     lines_minted: u64,
     checks_minted: u64,
     payments_minted: u64,
+    discounts_minted: u64,
     log: Vec<(EventMeta, OrderEvent)>,
 }
 
@@ -1019,6 +1155,7 @@ impl Working {
             lines_minted: 0,
             checks_minted: 0,
             payments_minted: 0,
+            discounts_minted: 0,
             log: Vec::new(),
         }
     }
@@ -1038,6 +1175,11 @@ impl Working {
         id((self.device << 16) + 0x3000 + self.payments_minted)
     }
 
+    /// An identifier for the device's next discount, which no other device uses.
+    fn fresh_discount(&self) -> Id<Discount> {
+        id((self.device << 16) + 0x4000 + self.discounts_minted)
+    }
+
     fn next_meta(&mut self, from: Id<Location>, delay: u64) -> EventMeta {
         self.seq += 1;
         self.hlc += 1 + delay;
@@ -1046,7 +1188,8 @@ impl Working {
 
     /// Runs a step; returns whether its action was accepted.
     fn step(&mut self, step: &Step) -> bool {
-        let (action, from) = action(&self.view, step, self.fresh(), self.fresh_check());
+        let (action, from) =
+            action(&self.view, step, self.fresh(), self.fresh_check(), self.fresh_discount());
         self.run(action, from, u64::from(step.amount % 3))
     }
 
@@ -1057,12 +1200,16 @@ impl Working {
         };
         let adds = matches!(command, OrderCommand::AddLine(_));
         let opens = matches!(command, OrderCommand::OpenCheck(_));
+        let discounts = matches!(command, OrderCommand::ApplyDiscount(_));
         let Ok(event) = self.view.decide(from, id(self.device), command) else { return false };
         if adds {
             self.lines_minted += 1;
         }
         if opens {
             self.checks_minted += 1;
+        }
+        if discounts {
+            self.discounts_minted += 1;
         }
         self.record(event, from, delay);
         true
@@ -1170,8 +1317,8 @@ fn merge(prefix: &[Step], devices: &[Vec<Step>]) -> Merged {
 }
 
 /// Commands on the whole order: adding a line and changing its attributes, as any device may,
-/// and opening a check, as only its owner may; ending, closing and reopening it; and asking for
-/// it or overriding its owner.
+/// and opening a check, as only its owner may; ending, closing and reopening it; asking for it
+/// or overriding its owner; and a discount on all of it.
 fn order_wide() -> Vec<OrderCommand> {
     let added = LineAdded {
         line: id(0xADD),
@@ -1202,13 +1349,29 @@ fn order_wide() -> Vec<OrderCommand> {
         OrderCommand::Reopen(reason(1)),
         OrderCommand::RequestOwnership,
         OrderCommand::OverrideOwnership(reason(4)),
+        OrderCommand::ApplyDiscount(DiscountApplied {
+            discount: id(0xD15C),
+            line: None,
+            value: DiscountValue::Percent(1_000),
+            reason: reason(5),
+        }),
     ]
 }
 
-/// Commands to try on an order: the order-wide ones, and removing, firing, voiding, comping,
-/// changing and moving each of its lines.
+/// Commands to try on an order: the order-wide ones, taking off and reusing each of its
+/// discounts, and removing, firing, voiding, comping, changing, moving and discounting each of
+/// its lines.
 fn battery(order: &Order) -> Vec<OrderCommand> {
     let mut commands = order_wide();
+    for &discount in order.used_discounts() {
+        commands.push(OrderCommand::RemoveDiscount(discount));
+        commands.push(OrderCommand::ApplyDiscount(DiscountApplied {
+            discount,
+            line: None,
+            value: DiscountValue::Percent(500),
+            reason: reason(6),
+        }));
+    }
     for line in order.lines() {
         let id = line.id();
         let mut quantity = LineChanged::to(id);
@@ -1222,6 +1385,12 @@ fn battery(order: &Order) -> Vec<OrderCommand> {
             OrderCommand::CompLine { line: id, reason: reason(3) },
             OrderCommand::ChangeLine(quantity),
             OrderCommand::ChangeLine(seat),
+            OrderCommand::ApplyDiscount(DiscountApplied {
+                discount: support::id(0xD15D),
+                line: Some(id),
+                value: DiscountValue::Amount(Money::from_minor(50, usd())),
+                reason: reason(7),
+            }),
         ]);
         for check in order.checks() {
             let moved = Allocation { line: id, check: check.id(), shares: NonZeroU16::MIN };
@@ -1298,7 +1467,8 @@ fn carry_on(merged: &Merged, steps: &[Step]) -> Result<(), TestCaseError> {
             (action.clone(), location())
         } else {
             let step = &steps[k - takeover.len()];
-            action(&device.view, step, device.fresh(), device.fresh_check())
+            let fresh = (device.fresh(), device.fresh_check(), device.fresh_discount());
+            action(&device.view, step, fresh.0, fresh.1, fresh.2)
         };
         let mut model = Model::of(&device.view);
         check_refusal(&device.view, &model, &action, from, me)?;
@@ -1333,6 +1503,8 @@ struct Expected {
     checks: Vec<ModelCheck>,
     ownership: Option<Ownership>,
     requests: Vec<Request>,
+    discounts: Vec<DiscountApplied>,
+    used: BTreeSet<Id<Discount>>,
     conflicts: Vec<(Id<Event>, ConflictKind)>,
 }
 
@@ -1349,7 +1521,9 @@ fn owners_only_event(event: &OrderEvent) -> bool {
         | OrderEvent::LinesAllocated(_)
         | OrderEvent::CheckClosed(_)
         | OrderEvent::Closed
-        | OrderEvent::Reopened { .. } => true,
+        | OrderEvent::Reopened { .. }
+        | OrderEvent::DiscountApplied(_)
+        | OrderEvent::DiscountRemoved { .. } => true,
         OrderEvent::Created(_)
         | OrderEvent::AttributesChanged(_)
         | OrderEvent::LineAdded(_)
@@ -1547,6 +1721,8 @@ struct Pass {
     allocation: BTreeMap<Id<Line>, Vec<CheckShare>>,
     /// Just before each position, the lines with a part on a closed check.
     frozen: Vec<BTreeSet<Id<Line>>>,
+    /// Just before each position, whether any check is closed.
+    closed_any: Vec<bool>,
 }
 
 fn exists(checks: &Checks, check: Id<Check>) -> bool {
@@ -1705,8 +1881,10 @@ fn pass_checks(
     let mut ledger =
         Ledger { lives, currency, checks: vec![(main_check(), None)], allocation: BTreeMap::new() };
     let mut frozen = vec![BTreeSet::new(); events.len()];
+    let mut closed_any = vec![false; events.len()];
     for &i in timeline.applying {
         let at = events[i].0.event_id;
+        closed_any[i] = ledger.checks.iter().any(|(_, charged)| charged.is_some());
         frozen[i] = ledger
             .allocation
             .iter()
@@ -1745,7 +1923,90 @@ fn pass_checks(
             _ => {}
         }
     }
-    Pass { checks: ledger.checks, allocation: ledger.allocation, frozen }
+    Pass { checks: ledger.checks, allocation: ledger.allocation, frozen, closed_any }
+}
+
+/// What the model predicts for the discounts: those on the whole order, those on each line, and
+/// every identifier ever applied.
+struct Discounts {
+    order: Vec<DiscountApplied>,
+    lines: BTreeMap<Id<Line>, Vec<DiscountApplied>>,
+    used: BTreeSet<Id<Discount>>,
+}
+
+/// The discounts the events that apply leave, in order. An identifier names one discount for
+/// good: the first application that takes. One on a line takes if the line was born before it,
+/// in the order's currency, and is live; on a line with a part on a closed check, it is flagged.
+/// One on the whole order always takes, but is flagged once the order is closed or ended, or
+/// while any check is closed, as is taking it off. Taking off a discount never applied is
+/// flagged; one already taken off, not.
+fn expect_discounts(
+    timeline: &Timeline<'_>,
+    lives: &[Life],
+    pass: &Pass,
+    currency: Currency,
+    conflicts: &mut Vec<(Id<Event>, ConflictKind)>,
+) -> Discounts {
+    let events = timeline.events;
+    let mut model = Discounts { order: Vec::new(), lines: BTreeMap::new(), used: BTreeSet::new() };
+    for &i in timeline.applying {
+        let at = events[i].0.event_id;
+        let on_closed = timeline.inactive(i) || pass.closed_any[i];
+        let life = |line: Id<Line>| lives.iter().find(|life| life.id == line && life.birth < i);
+        let kind = match &events[i].1 {
+            OrderEvent::DiscountApplied(applied) if model.used.contains(&applied.discount) => {
+                Some(ConflictKind::DuplicateDiscount(applied.discount))
+            }
+            OrderEvent::DiscountApplied(applied) => match applied.line {
+                None => {
+                    model.used.insert(applied.discount);
+                    model.order.push(applied.clone());
+                    on_closed.then_some(ConflictKind::DiscountOnClosed(applied.discount))
+                }
+                Some(line) => match life(line) {
+                    None => Some(ConflictKind::UnknownLine(line)),
+                    Some(_)
+                        if matches!(applied.value,
+                            DiscountValue::Amount(amount) if amount.currency() != currency) =>
+                    {
+                        Some(ConflictKind::CurrencyMismatch(line))
+                    }
+                    Some(life) if !life.live(i) => Some(ConflictKind::DiscountedAfterRemoval(line)),
+                    Some(_) => {
+                        model.used.insert(applied.discount);
+                        model.lines.entry(line).or_default().push(applied.clone());
+                        pass.frozen[i]
+                            .contains(&line)
+                            .then_some(ConflictKind::ChangedOnClosedCheck(line))
+                    }
+                },
+            },
+            OrderEvent::DiscountRemoved { discount } => {
+                let off = |applied: &DiscountApplied| applied.discount == *discount;
+                let on_line = model
+                    .lines
+                    .iter()
+                    .find(|(_, applied)| applied.iter().any(off))
+                    .map(|(line, _)| *line);
+                if let Some(at) = model.order.iter().position(off) {
+                    model.order.remove(at);
+                    on_closed.then_some(ConflictKind::DiscountOnClosed(*discount))
+                } else if let Some(line) = on_line {
+                    model.lines.get_mut(&line).unwrap().retain(|applied| !off(applied));
+                    let live = life(line).is_some_and(|life| life.live(i));
+                    (live && pass.frozen[i].contains(&line))
+                        .then_some(ConflictKind::ChangedOnClosedCheck(line))
+                } else if model.used.contains(discount) {
+                    None
+                } else {
+                    Some(ConflictKind::UnknownDiscount(*discount))
+                }
+            }
+            _ => None,
+        };
+        conflicts.extend(kind.map(|kind| (at, kind)));
+    }
+    model
 }
 
 /// What the model predicts for one line.
@@ -1916,6 +2177,8 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
             checks: Vec::new(),
             ownership: None,
             requests: Vec::new(),
+            discounts: Vec::new(),
+            used: BTreeSet::new(),
             conflicts,
         };
     };
@@ -1948,6 +2211,7 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
     let timeline = Timeline { events, applying: &applying, end };
     let lives = lives_of(&timeline, currency, &mut info, &mut conflicts);
     let pass = pass_checks(events, &timeline, &lives, currency, &mut conflicts);
+    let mut discounts = expect_discounts(&timeline, &lives, &pass, currency, &mut conflicts);
     let mut lines = Vec::new();
     // Whether, when the order ended, a line was live or had been fired: something was ordered.
     let mut ordered_at_end = false;
@@ -1955,6 +2219,7 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
         let mut history =
             expect_line(events, &timeline, life, currency, &pass.frozen, &mut conflicts);
         history.line.allocation.clone_from(&pass.allocation[&life.id]);
+        history.line.discounts = discounts.lines.remove(&life.id).unwrap_or_default();
         ordered_at_end |= end.is_some_and(|end| {
             life.birth < end
                 && (life.terminal.is_none_or(|terminal| terminal > end)
@@ -1978,6 +2243,8 @@ fn expected(events: &[(EventMeta, OrderEvent)]) -> Expected {
         checks: with_numbers(&pass.checks),
         ownership: Some(ownership),
         requests,
+        discounts: discounts.order,
+        used: discounts.used,
         conflicts,
     }
 }
@@ -1999,6 +2266,8 @@ fn check(order: &Order, events: &[(EventMeta, OrderEvent)]) -> Result<(), TestCa
     prop_assert_eq!(checks_of(order), expected.checks);
     prop_assert_eq!(order.ownership(), expected.ownership);
     prop_assert_eq!(order.requests(), expected.requests.as_slice());
+    prop_assert_eq!(order.discounts(), expected.discounts.as_slice());
+    prop_assert_eq!(order.used_discounts(), &expected.used);
     let actual = order.conflicts().iter().map(|conflict| (conflict.event, conflict.kind)).collect();
     prop_assert_eq!(sorted(actual), sorted(expected.conflicts));
     Ok(())
@@ -2087,6 +2356,14 @@ fn checks_hold_the_lines(order: &Order, charged: bool) -> Result<(), TestCaseErr
     }
     let rules = Rules::untaxed();
     let mut parts = vec![0_i128; live.len()];
+    // What the checks take off each line, discount by discount: the amounts off a shared line
+    // add up to the whole amount.
+    let mut taken: Vec<Vec<i128>> =
+        live.iter().map(|line| vec![0; line.discounts().len()]).collect();
+    prop_assert_eq!(
+        &order.check_basket(main_check()).unwrap().discounts,
+        &priced_discounts(order.discounts())
+    );
     for &(check, _, _) in &checks {
         let basket = order.check_basket(check).unwrap();
         let held: Vec<(usize, &Line)> = live
@@ -2096,7 +2373,7 @@ fn checks_hold_the_lines(order: &Order, charged: bool) -> Result<(), TestCaseErr
             .map(|(k, line)| (k, *line))
             .collect();
         prop_assert_eq!(basket.lines.len(), held.len());
-        for (priced, (_, line)) in basket.lines.iter().zip(&held) {
+        for (priced, (k, line)) in basket.lines.iter().zip(&held) {
             let allocation = line.allocation();
             let share = (allocation.len() > 1).then(|| keel_pricing::Share {
                 weights: allocation.iter().map(|share| u64::from(share.shares.get())).collect(),
@@ -2106,6 +2383,24 @@ fn checks_hold_the_lines(order: &Order, charged: bool) -> Result<(), TestCaseErr
             prop_assert_eq!(priced.unit_price, line.item().unit_price);
             prop_assert_eq!(priced.quantity, line.quantity());
             prop_assert_eq!(priced.comped, line.comp().is_some());
+            prop_assert_eq!(priced.discounts.len(), line.discounts().len());
+            for ((part, applied), whole) in priced
+                .discounts
+                .iter()
+                .zip(line.discounts())
+                .zip(&priced_discounts(line.discounts()))
+            {
+                if let (keel_pricing::Discount::Amount(part), DiscountValue::Amount(amount)) =
+                    (part, applied.value)
+                {
+                    let at = line.discounts().iter().position(|d| d == applied).unwrap();
+                    taken[*k][at] += i128::from(part.minor());
+                    prop_assert_eq!(part.currency(), amount.currency());
+                    prop_assert!(share.is_some() || part == &amount);
+                } else {
+                    prop_assert_eq!(part, whole);
+                }
+            }
         }
         if let Ok(totals) = price(&basket, &rules) {
             for (priced, &(k, _)) in totals.lines.iter().zip(&held) {
@@ -2117,6 +2412,13 @@ fn checks_hold_the_lines(order: &Order, charged: bool) -> Result<(), TestCaseErr
         let wholes: Vec<i128> =
             whole.lines.iter().map(|line| i128::from(line.gross.minor())).collect();
         prop_assert_eq!(parts, wholes);
+    }
+    for (line, taken) in live.iter().zip(&taken) {
+        for (applied, &taken) in line.discounts().iter().zip(taken) {
+            if let DiscountValue::Amount(amount) = applied.value {
+                prop_assert_eq!(taken, i128::from(amount.minor()));
+            }
+        }
     }
     Ok(())
 }
@@ -2130,7 +2432,8 @@ fn basket_holds_the_live_lines(order: &Order) -> Result<(), TestCaseError> {
     let basket = order.basket().unwrap();
     prop_assert_eq!(basket.currency, info.currency);
     prop_assert_eq!(basket.dining == Dining::OnPremises, info.mode == Mode::DineIn);
-    prop_assert!(basket.discounts.is_empty() && basket.exemptions.is_empty());
+    prop_assert_eq!(&basket.discounts, &priced_discounts(order.discounts()));
+    prop_assert!(basket.exemptions.is_empty());
     let live: Vec<&Line> = order.live_lines().collect();
     prop_assert_eq!(basket.lines.len(), live.len());
     for (priced, line) in basket.lines.iter().zip(live) {
@@ -2138,10 +2441,23 @@ fn basket_holds_the_live_lines(order: &Order) -> Result<(), TestCaseError> {
         prop_assert_eq!(priced.quantity, line.quantity());
         prop_assert_eq!(priced.tax_category, line.item().tax_category.cast());
         prop_assert_eq!(priced.comped, line.comp().is_some());
-        prop_assert!(priced.discounts.is_empty());
+        prop_assert_eq!(&priced.discounts, &priced_discounts(line.discounts()));
         prop_assert!(same_modifiers(&priced.modifiers, line.modifiers()));
     }
     Ok(())
+}
+
+/// Discounts as pricing sees them, on a whole line or on the whole order.
+fn priced_discounts(discounts: &[DiscountApplied]) -> Vec<keel_pricing::Discount> {
+    discounts
+        .iter()
+        .map(|applied| match applied.value {
+            DiscountValue::Percent(bp) => {
+                keel_pricing::Discount::Percent(keel_types::Rate::from_basis_points(i64::from(bp)))
+            }
+            DiscountValue::Amount(amount) => keel_pricing::Discount::Amount(amount),
+        })
+        .collect()
 }
 
 /// Whether pricing's modifiers are the chosen ones: the same prices and quantities, all the way
@@ -2336,6 +2652,26 @@ fn fold_closed() -> impl Strategy<Value = CheckClosed> {
     })
 }
 
+/// One of a few discounts: on one of the few lines or on the whole order, a percentage or, on a
+/// line, an amount, mostly in dollars.
+fn fold_discount_applied() -> impl Strategy<Value = DiscountApplied> {
+    let line = prop::option::weighted(0.7, fold_line());
+    (fold_discount(), line, any::<bool>(), fold_currency(), 0_u8..4).prop_map(
+        |(discount, line, amount, currency, n)| {
+            let value = if amount && line.is_some() {
+                DiscountValue::Amount(Money::from_minor(50 + i64::from(n) * 200, currency))
+            } else {
+                DiscountValue::Percent([500, 2_500, 3_333, 10_000][usize::from(n)])
+            };
+            DiscountApplied { discount, line, value, reason: reason(n) }
+        },
+    )
+}
+
+fn fold_discount() -> impl Strategy<Value = Id<Discount>> {
+    (1_u64..=3).prop_map(|n| id(0xD0 + n))
+}
+
 /// An event, and whether it was recorded at another location.
 fn any_fold_event() -> impl Strategy<Value = (bool, OrderEvent)> {
     let event = prop_oneof![
@@ -2357,6 +2693,8 @@ fn any_fold_event() -> impl Strategy<Value = (bool, OrderEvent)> {
         3 => fold_closed().prop_map(OrderEvent::CheckClosed),
         1 => Just(OrderEvent::Closed),
         1 => any::<u8>().prop_map(|n| OrderEvent::Reopened { reason: reason(n) }),
+        3 => fold_discount_applied().prop_map(OrderEvent::DiscountApplied),
+        2 => fold_discount().prop_map(|discount| OrderEvent::DiscountRemoved { discount }),
     ];
     (prop::bool::weighted(0.08), event)
 }
@@ -2397,6 +2735,8 @@ fn any_closing_event() -> impl Strategy<Value = OrderEvent> {
         2 => any::<u8>().prop_map(|n| OrderEvent::Reopened { reason: reason(n) }),
         1 => any::<u8>().prop_map(|n| OrderEvent::Voided { reason: reason(n) }),
         1 => Just(OrderEvent::CheckOpened { check: forgery() }),
+        2 => fold_discount_applied().prop_map(OrderEvent::DiscountApplied),
+        1 => fold_discount().prop_map(|discount| OrderEvent::DiscountRemoved { discount }),
     ]
 }
 
@@ -2749,7 +3089,8 @@ proptest! {
         let me = id(1);
         let mut model = Model::new(info_of(&device.log[0].0, &created()), me);
         for step in &steps {
-            let (action, from) = action(&device.view, step, device.fresh(), device.fresh_check());
+            let fresh = (device.fresh(), device.fresh_check(), device.fresh_discount());
+            let (action, from) = action(&device.view, step, fresh.0, fresh.1, fresh.2);
             check_refusal(&device.view, &model, &action, from, me)?;
             let allowed = model.allows(&action, from, me);
             let accepted = device.run(action.clone(), from, 0);

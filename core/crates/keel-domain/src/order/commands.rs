@@ -19,7 +19,7 @@ use keel_types::Id;
 use super::checks::{Check, LinesAllocated};
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
 use super::state::{Line, LineStatus, Order, OrderInfo, OrderStatus};
-use super::types::Reason;
+use super::types::{Discount, DiscountApplied, DiscountValue, Reason};
 use crate::codec::{Change, IdSet, PayloadError};
 use crate::schema::{SchemaError, Unrecordable, check_recordable};
 
@@ -74,6 +74,11 @@ pub enum OrderCommand {
     /// Take the order on a manager's word, without the hub: an active or closed order the
     /// device doesn't own. It is flagged for reconciliation.
     OverrideOwnership(Reason),
+    /// Apply a discount, on a live line that isn't on a closed check, or on the whole order
+    /// while none of its checks is closed (ADR-0030).
+    ApplyDiscount(DiscountApplied),
+    /// Take a discount off.
+    RemoveDiscount(Id<Discount>),
 }
 
 impl OrderCommand {
@@ -93,6 +98,8 @@ impl OrderCommand {
                 | OrderCommand::AllocateLines(_)
                 | OrderCommand::Close
                 | OrderCommand::Reopen(_)
+                | OrderCommand::ApplyDiscount(_)
+                | OrderCommand::RemoveDiscount(_)
         )
     }
 }
@@ -173,6 +180,12 @@ pub enum CommandError {
     /// The device already owns the order.
     #[error("the device already owns the order")]
     AlreadyOwner,
+    /// A discount with that identifier was applied before, even if since taken off.
+    #[error("discount {0} was applied before")]
+    DiscountExists(Id<Discount>),
+    /// The order has no discount with that identifier, or it was taken off.
+    #[error("no discount {0}")]
+    UnknownDiscount(Id<Discount>),
     /// The device's request for the order still waits for the hub's answer.
     #[error("the device's request for the order is waiting")]
     RequestPending,
@@ -296,8 +309,55 @@ impl Order {
     }
 
     /// The first closed check, by number.
-    fn closed_check(&self) -> Option<Id<Check>> {
+    pub(super) fn closed_check(&self) -> Option<Id<Check>> {
         self.checks().iter().find(|check| !check.is_open()).map(Check::id)
+    }
+
+    /// Decides on a discount: on a live line that isn't on a closed check, or on the whole order
+    /// while no check is closed (ADR-0030).
+    fn decide_discount(
+        &self,
+        info: &OrderInfo,
+        applied: DiscountApplied,
+    ) -> Result<OrderEvent, CommandError> {
+        applied.validate().map_err(CommandError::Invalid)?;
+        if self.discount_used(applied.discount) {
+            return Err(CommandError::DiscountExists(applied.discount));
+        }
+        if let DiscountValue::Amount(amount) = applied.value
+            && amount.currency() != info.currency
+        {
+            return Err(CommandError::WrongCurrency);
+        }
+        self.check_discountable(applied.line)?;
+        Ok(OrderEvent::DiscountApplied(applied))
+    }
+
+    /// Decides on taking a discount off, on the same terms as applying it, but for a line that has
+    /// since gone, from which it can always come off.
+    fn decide_discount_removed(&self, discount: Id<Discount>) -> Result<OrderEvent, CommandError> {
+        let applied = self.discount(discount).ok_or(CommandError::UnknownDiscount(discount))?;
+        match applied.line.and_then(|id| self.line(id)) {
+            Some(line) if !line.is_live() => {}
+            _ => self.check_discountable(applied.line)?,
+        }
+        Ok(OrderEvent::DiscountRemoved { discount })
+    }
+
+    /// Refuses a discount on a line that isn't live or is on a closed check, or on the whole order
+    /// while a check is closed.
+    fn check_discountable(&self, line: Option<Id<Line>>) -> Result<(), CommandError> {
+        let Some(id) = line else {
+            return match self.closed_check() {
+                Some(check) => Err(CommandError::CheckClosed(check)),
+                None => Ok(()),
+            };
+        };
+        let line = self.line(id).ok_or(CommandError::UnknownLine(id))?;
+        if !line.is_live() {
+            return Err(CommandError::LineNotLive(id));
+        }
+        self.check_not_frozen(line)
     }
 
     /// Refuses a command on a line with a part on a closed check.
@@ -404,6 +464,8 @@ impl Order {
                 Ok(OrderEvent::LinesAllocated(allocated))
             }
             OrderCommand::Close => self.decide_close(),
+            OrderCommand::ApplyDiscount(applied) => self.decide_discount(info, applied),
+            OrderCommand::RemoveDiscount(discount) => self.decide_discount_removed(discount),
         }
     }
 

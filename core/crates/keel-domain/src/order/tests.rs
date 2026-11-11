@@ -1328,6 +1328,16 @@ fn golden_events() -> Vec<OrderEvent> {
                 note: Some(Note::new("bar is offline").unwrap()),
             },
         },
+        OrderEvent::DiscountApplied(DiscountApplied {
+            discount: id(0xD1),
+            line: Some(id(1)),
+            value: DiscountValue::Amount(usd(250)),
+            reason: Reason {
+                code: ReasonCode::new("loyalty").unwrap(),
+                note: Some(Note::new("regular").unwrap()),
+            },
+        }),
+        OrderEvent::DiscountRemoved { discount: id(0xD1) },
     ]
 }
 
@@ -1405,8 +1415,8 @@ fn bytes(hex: &str) -> Vec<u8> {
 
 /// The order payloads, pinned forever: one example of each schema. Python's `cbor2` decoded
 /// each one, confirmed it is canonical, and matched it field by field against the documented
-/// key tables; it encoded the check payloads, the closing and reopening ones, and the ownership
-/// ones (ADR-0021), itself, from the key tables. If this test fails, a payload format changed,
+/// key tables; it encoded the check payloads, the closing and reopening ones, the ownership ones
+/// (ADR-0021) and the discount ones (ADR-0030), itself, from the key tables. If this test fails, a payload format changed,
 /// and stored events would no longer decode.
 #[test]
 fn the_payload_formats_are_pinned() {
@@ -1457,6 +1467,11 @@ fn the_payload_formats_are_pinned() {
             "order.ownership_overridden",
             "a30101026f6875625f756e726561636861626c65036e626172206973206f66666c696e65",
         ),
+        (
+            "order.discount_applied",
+            "a501500192f0c10000700080000000000000d102500192f0c1000070008000000000000001048218fa6355534405676c6f79616c74790667726567756c6172",
+        ),
+        ("order.discount_removed", "a101500192f0c10000700080000000000000d1"),
     ];
     let events = golden_events();
     assert_eq!(events.len(), pinned.len());
@@ -1467,4 +1482,246 @@ fn the_payload_formats_are_pinned() {
         assert_eq!(payload.as_bytes(), bytes(hex).as_slice(), "{name}");
         assert_eq!(OrderEvent::decode(&schema, &payload), Ok(event), "{name}");
     }
+}
+
+fn percent_off(discount: u64, line: Option<u64>, bp: u32) -> DiscountApplied {
+    DiscountApplied {
+        discount: id(discount),
+        line: line.map(id),
+        value: DiscountValue::Percent(bp),
+        reason: reason("loyalty"),
+    }
+}
+
+fn amount_off(discount: u64, line: u64, amount: Money) -> DiscountApplied {
+    DiscountApplied {
+        discount: id(discount),
+        line: Some(id(line)),
+        value: DiscountValue::Amount(amount),
+        reason: reason("damaged"),
+    }
+}
+
+/// A discount at rest, as Python's `cbor2` encoded it: 10% off the whole order, with no note.
+#[test]
+fn a_percentage_off_the_whole_order_is_pinned() {
+    let applied = OrderEvent::DiscountApplied(DiscountApplied {
+        reason: reason("staff_meal"),
+        ..percent_off(0xD2, None, 1_000)
+    });
+    let (schema, payload) = applied.encode().unwrap();
+    let pinned = "a301500192f0c10000700080000000000000d2031903e8056a73746166665f6d65616c";
+    assert_eq!(payload.as_bytes(), bytes(pinned).as_slice());
+    assert_eq!(OrderEvent::decode(&schema, &payload), Ok(applied));
+}
+
+/// A discount takes a percentage or an amount, never both or neither; a percentage from 0.01%
+/// to 100%, an amount more than zero and off a line.
+#[test]
+fn discount_payloads_keep_their_rules() {
+    let schema = OrderEvent::DiscountApplied(percent_off(1, None, 1)).schema().to_ref().unwrap();
+    let with = |applied: DiscountApplied, extra: &[(u64, Value)]| {
+        let event = OrderEvent::DiscountApplied(applied);
+        let mut entries = event.to_value().as_map().unwrap().clone().into_entries();
+        for (key, value) in extra {
+            entries.retain(|(existing, _)| existing.as_u64() != Some(*key));
+            entries.push((Value::Unsigned(*key), value.clone()));
+        }
+        OrderEvent::from_value(
+            &schema,
+            &Value::Map(keel_events::cbor::Map::from_entries(entries).unwrap()),
+        )
+    };
+    let invalid = |field| Err(DecodeError::Malformed(PayloadError::Invalid(field)));
+    assert!(with(percent_off(1, None, 1), &[]).is_ok());
+    assert!(with(percent_off(1, None, 10_000), &[]).is_ok());
+    assert_eq!(with(percent_off(1, None, 0), &[]), invalid("percent"));
+    assert_eq!(with(percent_off(1, None, 10_001), &[]), invalid("percent"));
+    assert_eq!(with(percent_off(1, None, 1), &[(3, Value::Unsigned(1 << 32))]), invalid("percent"));
+    assert_eq!(with(amount_off(1, 2, usd(0)), &[]), invalid("amount"));
+    assert_eq!(with(amount_off(1, 2, usd(-5)), &[]), invalid("amount"));
+    let both = [(3, Value::Unsigned(500))];
+    assert_eq!(with(amount_off(1, 2, usd(5)), &both), invalid("discount"));
+    let mut neither = OrderEvent::DiscountApplied(amount_off(1, 2, usd(5)))
+        .to_value()
+        .as_map()
+        .unwrap()
+        .clone()
+        .into_entries();
+    neither.retain(|(key, _)| key.as_u64() != Some(4));
+    assert_eq!(
+        OrderEvent::from_value(
+            &schema,
+            &Value::Map(keel_events::cbor::Map::from_entries(neither).unwrap())
+        ),
+        Err(DecodeError::Malformed(PayloadError::Missing("percent or amount")))
+    );
+    let mut off_order = amount_off(1, 2, usd(5));
+    off_order.line = None;
+    assert_eq!(with(off_order, &[]), invalid("amount"));
+}
+
+#[test]
+fn discounts_are_priced_with_the_order() {
+    let mut script = Script::created();
+    script.apply(&OrderEvent::LineAdded(added(1, usd(1_000))));
+    script.apply(&OrderEvent::LineAdded(added(2, usd(500))));
+    script.apply(&OrderEvent::DiscountApplied(amount_off(0xD1, 1, usd(250))));
+    script.apply(&OrderEvent::DiscountApplied(percent_off(0xD2, Some(1), 1_000)));
+    script.apply(&OrderEvent::DiscountApplied(percent_off(0xD3, None, 2_000)));
+    assert_eq!(script.kinds(), []);
+    let rules = keel_pricing::Rules::untaxed();
+    let totals = keel_pricing::price(&script.order.basket().unwrap(), &rules).unwrap();
+    // Line 1: 10.00, less 2.50, less 10% of 7.50: 6.75. With line 2's 5.00, 11.75, less 20%:
+    // 9.40.
+    assert_eq!(totals.lines[0].discounts, [usd(250), usd(75)]);
+    assert_eq!(totals.discounts, [usd(235)]);
+    assert_eq!(totals.total, usd(940));
+
+    // Taken off, a discount no longer prices; its identifier stays used.
+    script.apply(&OrderEvent::DiscountRemoved { discount: id(0xD3) });
+    assert!(script.order.discounts().is_empty() && script.order.discount_used(id(0xD3)));
+    let totals = keel_pricing::price(&script.order.basket().unwrap(), &rules).unwrap();
+    assert_eq!(totals.total, usd(1_175));
+
+    // Split among checks, an amount off a shared line is split as the line is: 1.01 off line 2,
+    // shared evenly, is 0.51 off the first check's half and 0.50 off the second's.
+    script.apply(&OrderEvent::DiscountApplied(amount_off(0xD4, 2, usd(101))));
+    script.apply(&OrderEvent::DiscountApplied(percent_off(0xD5, None, 1_000)));
+    script.apply(&OrderEvent::CheckOpened { check: id(0xC2) });
+    let split = LinesAllocated::new([allocation(2, 0xA, 1), allocation(2, 0xC2, 1)]).unwrap();
+    script.apply(&OrderEvent::LinesAllocated(split));
+    assert_eq!(script.kinds(), []);
+    let first = script.order.check_basket(id(0xA)).unwrap();
+    let second = script.order.check_basket(id(0xC2)).unwrap();
+    assert_eq!(first.lines[1].discounts, [keel_pricing::Discount::Amount(usd(51))]);
+    assert_eq!(second.lines[0].discounts, [keel_pricing::Discount::Amount(usd(50))]);
+    // The whole order's percentage applies to each check.
+    let tenth = keel_pricing::Discount::Percent(keel_types::Rate::from_basis_points(1_000));
+    assert_eq!(first.discounts, [tenth]);
+    assert_eq!(second.discounts, [tenth]);
+}
+
+#[test]
+fn discount_commands_follow_the_rules() {
+    let apply = OrderCommand::ApplyDiscount;
+    let mut device = Device::with_line(false);
+    device.run(OrderCommand::AddLine(added(2, usd(100)))).unwrap();
+    let invalid = |field| Err(CommandError::Invalid(PayloadError::Invalid(field)));
+    assert_eq!(device.run(apply(percent_off(1, Some(1), 0))), invalid("percent"));
+    let mut off_order = amount_off(1, 1, usd(5));
+    off_order.line = None;
+    assert_eq!(device.run(apply(off_order)), invalid("amount"));
+    assert_eq!(device.run(apply(amount_off(1, 1, eur(5)))), Err(CommandError::WrongCurrency));
+    assert_eq!(device.run(apply(amount_off(1, 7, usd(5)))), Err(CommandError::UnknownLine(id(7))));
+    device.run(apply(amount_off(1, 1, usd(5)))).unwrap();
+    device.run(apply(percent_off(2, None, 500))).unwrap();
+    device.run(apply(percent_off(3, Some(2), 500))).unwrap();
+    assert_eq!(
+        device.run(apply(percent_off(1, None, 5))),
+        Err(CommandError::DiscountExists(id(1)))
+    );
+    assert_eq!(device.order.line(id(1)).unwrap().discounts(), [amount_off(1, 1, usd(5))]);
+
+    // Taken off once; its identifier is never used again.
+    device.run(OrderCommand::RemoveDiscount(id(1))).unwrap();
+    assert_eq!(
+        device.run(OrderCommand::RemoveDiscount(id(1))),
+        Err(CommandError::UnknownDiscount(id(1)))
+    );
+    assert_eq!(
+        device.run(apply(percent_off(1, Some(1), 5))),
+        Err(CommandError::DiscountExists(id(1)))
+    );
+    assert_eq!(
+        device.run(OrderCommand::RemoveDiscount(id(9))),
+        Err(CommandError::UnknownDiscount(id(9)))
+    );
+
+    // A line taken off takes no discount, and its discounts can still come off.
+    device.run(OrderCommand::RemoveLine(id(2))).unwrap();
+    assert_eq!(
+        device.run(apply(percent_off(4, Some(2), 5))),
+        Err(CommandError::LineNotLive(id(2)))
+    );
+    device.run(OrderCommand::RemoveDiscount(id(3))).unwrap();
+
+    // A closed check freezes its lines' discounts, and the whole order's.
+    device.run(apply(percent_off(5, Some(1), 5))).unwrap();
+    device.record(&OrderEvent::CheckClosed(closed(0xA, &[(1, 100)])));
+    assert_eq!(
+        device.run(apply(percent_off(6, Some(1), 5))),
+        Err(CommandError::LineOnClosedCheck(id(1)))
+    );
+    assert_eq!(
+        device.run(OrderCommand::RemoveDiscount(id(5))),
+        Err(CommandError::LineOnClosedCheck(id(1)))
+    );
+    assert_eq!(device.run(apply(percent_off(6, None, 5))), Err(CommandError::CheckClosed(id(0xA))));
+    assert_eq!(
+        device.run(OrderCommand::RemoveDiscount(id(2))),
+        Err(CommandError::CheckClosed(id(0xA)))
+    );
+    device.run(OrderCommand::Close).unwrap();
+    assert_eq!(device.run(apply(percent_off(6, None, 5))), Err(CommandError::OrderClosed));
+}
+
+#[test]
+fn concurrent_discounts_resolve_by_the_rules() {
+    let mut script = Script::created();
+    script.apply(&OrderEvent::LineAdded(added(1, usd(450))));
+    script.apply(&OrderEvent::LineAdded(added(2, usd(300))));
+    // One identifier names one discount, even once it is taken off.
+    let first = script.apply(&OrderEvent::DiscountApplied(percent_off(1, Some(1), 500)));
+    let again = script.apply(&OrderEvent::DiscountApplied(percent_off(1, None, 500)));
+    script.apply(&OrderEvent::DiscountRemoved { discount: id(1) });
+    let reused = script.apply(&OrderEvent::DiscountApplied(percent_off(1, Some(2), 500)));
+    // Two devices taking off the same discount agree; one never applied is reported.
+    script.apply(&OrderEvent::DiscountRemoved { discount: id(1) });
+    let never = script.apply(&OrderEvent::DiscountRemoved { discount: id(9) });
+    let unknown = script.apply(&OrderEvent::DiscountApplied(percent_off(2, Some(7), 500)));
+    let foreign = script.apply(&OrderEvent::DiscountApplied(amount_off(3, 1, eur(5))));
+    script.apply(&OrderEvent::LineRemoved { line: id(2) });
+    let removed = script.apply(&OrderEvent::DiscountApplied(percent_off(4, Some(2), 500)));
+    assert!(first != again);
+    assert!(!script.order.discount_used(id(2)) && !script.order.discount_used(id(3)));
+    assert!(!script.order.discount_used(id(4)));
+    assert!(script.order.line(id(1)).unwrap().discounts().is_empty());
+    assert!(script.order.discounts().is_empty());
+    let conflicts: Vec<(Id<Event>, ConflictKind)> =
+        script.order.conflicts().iter().map(|c| (c.event, c.kind)).collect();
+    assert_eq!(
+        conflicts,
+        [
+            (again, ConflictKind::DuplicateDiscount(id(1))),
+            (reused, ConflictKind::DuplicateDiscount(id(1))),
+            (never, ConflictKind::UnknownDiscount(id(9))),
+            (unknown, ConflictKind::UnknownLine(id(7))),
+            (foreign, ConflictKind::CurrencyMismatch(id(1))),
+            (removed, ConflictKind::DiscountedAfterRemoval(id(2))),
+        ]
+    );
+
+    // Once a check is closed, discounts on its lines, and on the whole order, apply and are
+    // reported: the snapshot stands.
+    script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(1, 450)])));
+    let on_line = script.apply(&OrderEvent::DiscountApplied(percent_off(5, Some(1), 500)));
+    let on_order = script.apply(&OrderEvent::DiscountApplied(percent_off(6, None, 500)));
+    let off_line = script.apply(&OrderEvent::DiscountRemoved { discount: id(5) });
+    let off_order = script.apply(&OrderEvent::DiscountRemoved { discount: id(6) });
+    script.apply(&OrderEvent::Closed);
+    let closed_order = script.apply(&OrderEvent::DiscountApplied(percent_off(7, None, 500)));
+    assert_eq!(script.order.discounts(), [percent_off(7, None, 500)]);
+    let late: Vec<(Id<Event>, ConflictKind)> =
+        script.order.conflicts().iter().skip(6).map(|c| (c.event, c.kind)).collect();
+    assert_eq!(
+        late,
+        [
+            (on_line, ConflictKind::ChangedOnClosedCheck(id(1))),
+            (on_order, ConflictKind::DiscountOnClosed(id(6))),
+            (off_line, ConflictKind::ChangedOnClosedCheck(id(1))),
+            (off_order, ConflictKind::DiscountOnClosed(id(6))),
+            (closed_order, ConflictKind::DiscountOnClosed(id(7))),
+        ]
+    );
 }

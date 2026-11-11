@@ -2027,10 +2027,10 @@ BUGS = [
         """                | OrderEvent::CheckClosed(_)
                 | OrderEvent::Closed
                 | OrderEvent::Reopened { .. }
-        )""",
+                | OrderEvent::DiscountApplied(_)""",
         """                | OrderEvent::Closed
                 | OrderEvent::Reopened { .. }
-        )""",
+                | OrderEvent::DiscountApplied(_)""",
     ),
     (
         "ownership: firing lines needs ownership, in the fold",
@@ -2821,5 +2821,156 @@ BUGS = [
         "src/profile/mod.rs",
         "            Some(Member { pin: None, .. }) => self.data.roles.is_empty() && pin.is_empty(),",
         "            Some(Member { pin: None, .. }) => self.data.roles.is_empty(),",
+    ),
+    # Discounts (ADR-0030): the payload rules.
+    (
+        "discount: a percentage of zero accepted",
+        "src/order/types.rs",
+        "            DiscountValue::Percent(bp) if bp == 0 || bp > MAX_DISCOUNT_PERCENT => {",
+        "            DiscountValue::Percent(bp) if bp > MAX_DISCOUNT_PERCENT => {",
+    ),
+    (
+        "discount: more than 100% accepted",
+        "src/order/types.rs",
+        "            DiscountValue::Percent(bp) if bp == 0 || bp > MAX_DISCOUNT_PERCENT => {",
+        "            DiscountValue::Percent(bp) if bp == 0 || bp > MAX_DISCOUNT_PERCENT + 1 => {",
+    ),
+    (
+        "discount: nothing off accepted",
+        "src/order/types.rs",
+        "            DiscountValue::Amount(amount) if !amount.is_positive() => {",
+        "            DiscountValue::Amount(amount) if amount.is_negative() => {",
+    ),
+    (
+        "discount: an amount off the whole order accepted",
+        "src/order/types.rs",
+        "            DiscountValue::Amount(_) if self.line.is_none() => {",
+        "            DiscountValue::Amount(_) if false => {",
+    ),
+    (
+        "discount: a percentage and an amount accepted together",
+        "src/order/events.rs",
+        "        (Some(_), Some(_)) => return Err(PayloadError::Invalid(\"discount\")),",
+        "        (Some(bp), Some(_)) => DiscountValue::Percent(u32::try_from(bp.0).unwrap_or(1)),",
+    ),
+    # Discounts: the fold.
+    (
+        "discount: an identifier applies twice",
+        "src/order/state.rs",
+        """        if self.discount_used(applied.discount) {
+            return self.conflict(meta, ConflictKind::DuplicateDiscount(applied.discount));""",
+        """        if self.discount(applied.discount).is_some() {
+            return self.conflict(meta, ConflictKind::DuplicateDiscount(applied.discount));""",
+    ),
+    (
+        "discount: a discount off the whole order isn't marked used",
+        "src/order/state.rs",
+        """            self.used_discounts.insert(applied.discount);
+            self.discounts.push(applied.clone());""",
+        """            self.discounts.push(applied.clone());""",
+    ),
+    (
+        "discount: a foreign amount applies",
+        "src/order/state.rs",
+        """        if foreign {
+            return self.conflict(meta, ConflictKind::CurrencyMismatch(id));
+        }""",
+        """        if foreign {
+            self.conflict(meta, ConflictKind::CurrencyMismatch(id));
+        }""",
+    ),
+    (
+        "discount: a removed line takes a discount",
+        "src/order/state.rs",
+        """        if !line.is_live() {
+            return self.conflict(meta, ConflictKind::DiscountedAfterRemoval(id));
+        }""",
+        """        if !line.is_live() {
+            self.conflict(meta, ConflictKind::DiscountedAfterRemoval(id));
+        }""",
+    ),
+    (
+        "discount: a frozen line's discount isn't reported",
+        "src/order/state.rs",
+        """        self.used_discounts.insert(applied.discount);
+        if frozen {
+            self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
+        }""",
+        """        self.used_discounts.insert(applied.discount);
+        if frozen && false {
+            self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
+        }""",
+    ),
+    (
+        "discount: a double removal is reported",
+        "src/order/state.rs",
+        """            if !self.discount_used(discount) {
+                self.conflict(meta, ConflictKind::UnknownDiscount(discount));
+            }""",
+        """            self.conflict(meta, ConflictKind::UnknownDiscount(discount));""",
+    ),
+    (
+        "discount: a removal leaves a line's discount on",
+        "src/order/state.rs",
+        "        line.discounts.retain(|other| other.discount != discount);",
+        "        line.discounts.retain(|other| other.discount == discount);",
+    ),
+    (
+        "discount: the whole order's discounts change unreported while a check is closed",
+        "src/order/state.rs",
+        "        if self.status != OrderStatus::Active || self.closed_check().is_some() {",
+        "        if self.status != OrderStatus::Active {",
+    ),
+    # Discounts: the commands.
+    (
+        "discount: a used identifier is decided again",
+        "src/order/commands.rs",
+        """        if self.discount_used(applied.discount) {
+            return Err(CommandError::DiscountExists(applied.discount));""",
+        """        if self.discount(applied.discount).is_some() {
+            return Err(CommandError::DiscountExists(applied.discount));""",
+    ),
+    (
+        "discount: a foreign amount is decided",
+        "src/order/commands.rs",
+        "            && amount.currency() != info.currency",
+        "            && amount.currency() != info.currency && false",
+    ),
+    (
+        "discount: a removed line's discount can't come off",
+        "src/order/commands.rs",
+        "            Some(line) if !line.is_live() => {}",
+        "            Some(line) if !line.is_live() && false => {}",
+    ),
+    (
+        "discount: the whole order is discounted while a check is closed",
+        "src/order/commands.rs",
+        """            return match self.closed_check() {
+                Some(check) => Err(CommandError::CheckClosed(check)),""",
+        """            return match None::<Id<Check>> {
+                Some(check) => Err(CommandError::CheckClosed(check)),""",
+    ),
+    (
+        "discount: a frozen line is discounted",
+        "src/order/commands.rs",
+        """            return Err(CommandError::LineNotLive(id));
+        }
+        self.check_not_frozen(line)""",
+        """            return Err(CommandError::LineNotLive(id));
+        }
+        Ok(())""",
+    ),
+    # Discounts: pricing.
+    (
+        "discount: a shared line's checks each take the whole amount",
+        "src/order/basket.rs",
+        "            Discount::Amount(part.unwrap_or(amount))",
+        "            Discount::Amount(part.map_or(amount, |_| amount))",
+    ),
+    (
+        "discount: the whole order's discounts aren't priced",
+        "src/order/basket.rs",
+        "    let discounts = discounts.iter().map(|applied| discount(applied, None)).collect();",
+        "    let discounts = discounts.iter().take(0).map(|applied| discount(applied, None)).collect();",
     ),
 ]

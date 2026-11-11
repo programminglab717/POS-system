@@ -24,6 +24,8 @@
 //! | `order.ownership_granted` | 1 request (an event identifier), 2 device, 3 lease (from 1), 4 epoch (from 1) |
 //! | `order.ownership_refused` | 1 request (an event identifier), 2 refusal |
 //! | `order.ownership_overridden` | 1 lease: the one it overrides, 2 reason code, 3 note (optional) |
+//! | `order.discount_applied` | 1 discount, 2 line (optional: absent for the whole order), 3 percent (basis points, optional), 4 amount (optional), 5 reason code, 6 note (optional) |
+//! | `order.discount_removed` | 1 discount |
 //!
 //! A chosen modifier is a map: 1 modifier, 2 name, 3 prefix, 4 quantity, 5 placement, 6 unit
 //! price, 7 modifiers (an array, possibly empty). An allocation is a map: 1 line, 2 check, 3
@@ -41,7 +43,10 @@
 //!   between zero and its gross and a tax of zero or more; its tax charges are in strictly
 //!   ascending order of tax, each taxing more than zero, with a tax of zero or more; the taxes
 //!   add up to the lines' tax; the total is the lines' net plus their tax; and payments are
-//!   listed when the total is more than zero.
+//!   listed when the total is more than zero;
+//! - a discount has a percentage or an amount, not both: a percentage from 1 to 10,000 basis
+//!   points, an amount more than zero; and a discount on the whole order is a percentage
+//!   (ADR-0030).
 
 use core::num::{NonZeroU8, NonZeroU16};
 
@@ -53,7 +58,10 @@ use super::checks::{Check, LinesAllocated};
 use super::closing::CheckClosed;
 use super::ownership::{Lease, OwnershipGranted, Refusal};
 use super::state::Line;
-use super::types::{Channel, ChosenModifier, ItemSnapshot, Mode, Reason, modifier_currency};
+use super::types::{
+    Channel, ChosenModifier, Discount, DiscountApplied, DiscountValue, ItemSnapshot, Mode, Reason,
+    modifier_currency,
+};
 use crate::codec::{Change, Fields, IdSet, PayloadError, Record};
 use crate::refs::{RevenueCenter, Table};
 use crate::schema::{DecodeError, DomainEvent, SchemaId};
@@ -231,6 +239,13 @@ pub enum OrderEvent {
         /// Why.
         refusal: Refusal,
     },
+    /// A discount was applied, on a line or on the whole order (ADR-0030).
+    DiscountApplied(DiscountApplied),
+    /// A discount was taken off.
+    DiscountRemoved {
+        /// The discount.
+        discount: Id<Discount>,
+    },
     /// A device took the order on a manager's word, without the hub.
     OwnershipOverridden {
         /// The lease it overrode, which it replaces.
@@ -257,6 +272,8 @@ impl OrderEvent {
                 | OrderEvent::CheckClosed(_)
                 | OrderEvent::Closed
                 | OrderEvent::Reopened { .. }
+                | OrderEvent::DiscountApplied(_)
+                | OrderEvent::DiscountRemoved { .. }
         )
     }
 }
@@ -281,6 +298,8 @@ const OWNERSHIP_REQUESTED: SchemaId = SchemaId { name: "order.ownership_requeste
 const OWNERSHIP_GRANTED: SchemaId = SchemaId { name: "order.ownership_granted", version: 1 };
 const OWNERSHIP_REFUSED: SchemaId = SchemaId { name: "order.ownership_refused", version: 1 };
 const OWNERSHIP_OVERRIDDEN: SchemaId = SchemaId { name: "order.ownership_overridden", version: 1 };
+const DISCOUNT_APPLIED: SchemaId = SchemaId { name: "order.discount_applied", version: 1 };
+const DISCOUNT_REMOVED: SchemaId = SchemaId { name: "order.discount_removed", version: 1 };
 
 impl DomainEvent for OrderEvent {
     const STREAM: &'static str = "order";
@@ -305,6 +324,8 @@ impl DomainEvent for OrderEvent {
         OWNERSHIP_GRANTED,
         OWNERSHIP_REFUSED,
         OWNERSHIP_OVERRIDDEN,
+        DISCOUNT_APPLIED,
+        DISCOUNT_REMOVED,
     ];
 
     fn schema(&self) -> SchemaId {
@@ -328,6 +349,8 @@ impl DomainEvent for OrderEvent {
             OrderEvent::OwnershipGranted(_) => OWNERSHIP_GRANTED,
             OrderEvent::OwnershipRefused { .. } => OWNERSHIP_REFUSED,
             OrderEvent::OwnershipOverridden { .. } => OWNERSHIP_OVERRIDDEN,
+            OrderEvent::DiscountApplied(_) => DISCOUNT_APPLIED,
+            OrderEvent::DiscountRemoved { .. } => DISCOUNT_REMOVED,
         }
     }
 
@@ -393,6 +416,20 @@ impl DomainEvent for OrderEvent {
             OrderEvent::OwnershipOverridden { lease, reason } => {
                 record.field(1, lease).field(2, &reason.code).optional(3, reason.note.as_ref())
             }
+            OrderEvent::DiscountApplied(applied) => {
+                let (percent, amount) = match applied.value {
+                    DiscountValue::Percent(bp) => (Some(u64::from(bp)), None),
+                    DiscountValue::Amount(amount) => (None, Some(amount)),
+                };
+                record
+                    .field(1, &applied.discount)
+                    .optional(2, applied.line.as_ref())
+                    .optional(3, percent.map(Basis).as_ref())
+                    .optional(4, amount.as_ref())
+                    .field(5, &applied.reason.code)
+                    .optional(6, applied.reason.note.as_ref())
+            }
+            OrderEvent::DiscountRemoved { discount } => record.field(1, discount),
         }
         .build()
     }
@@ -450,6 +487,10 @@ impl DomainEvent for OrderEvent {
                 request: fields.required(1, "request")?,
                 refusal: fields.required(2, "refusal")?,
             }
+        } else if DISCOUNT_APPLIED.matches(schema) {
+            OrderEvent::DiscountApplied(read_discount(&mut fields)?)
+        } else if DISCOUNT_REMOVED.matches(schema) {
+            OrderEvent::DiscountRemoved { discount: fields.required(1, "discount")? }
         } else if OWNERSHIP_OVERRIDDEN.matches(schema) {
             OrderEvent::OwnershipOverridden {
                 lease: fields.required(1, "lease")?,
@@ -464,6 +505,38 @@ impl DomainEvent for OrderEvent {
         fields.finish()?;
         Ok(event)
     }
+}
+
+/// Basis points, as encoded: the discount's rules judge the value.
+struct Basis(u64);
+
+impl crate::codec::Field for Basis {
+    fn to_value(&self) -> Value {
+        Value::Unsigned(self.0)
+    }
+
+    fn from_value(value: &Value) -> Option<Basis> {
+        value.as_u64().map(Basis)
+    }
+}
+
+fn read_discount(fields: &mut Fields<'_>) -> Result<DiscountApplied, PayloadError> {
+    let discount: Id<Discount> = fields.required(1, "discount")?;
+    let line = fields.optional(2, "line")?;
+    let percent: Option<Basis> = fields.optional(3, "percent")?;
+    let amount = fields.optional(4, "amount")?;
+    let reason = Reason { code: fields.required(5, "reason")?, note: fields.optional(6, "note")? };
+    let value = match (percent, amount) {
+        (Some(bp), None) => DiscountValue::Percent(
+            u32::try_from(bp.0).map_err(|_| PayloadError::Invalid("percent"))?,
+        ),
+        (None, Some(amount)) => DiscountValue::Amount(amount),
+        (Some(_), Some(_)) => return Err(PayloadError::Invalid("discount")),
+        (None, None) => return Err(PayloadError::Missing("percent or amount")),
+    };
+    let applied = DiscountApplied { discount, line, value, reason };
+    applied.validate()?;
+    Ok(applied)
 }
 
 fn read_created(fields: &mut Fields<'_>) -> Result<OrderCreated, PayloadError> {

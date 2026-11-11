@@ -8,9 +8,10 @@ use keel_domain::codec::{
     CatalogVersion, Change, IdSet, Name, Note, ProcessorRef, ReasonCode, RulesVersion,
 };
 use keel_domain::order::{
-    Allocation, AttributesChanged, Channel, CheckClosed, ChosenModifier, Epoch, ItemSnapshot,
-    Lease, LineAdded, LineChanged, LineCharge, LinesAllocated, Mode, OrderCreated, OrderEvent,
-    OwnershipGranted, Placement, Prefix, Reason, Refusal, TaxCharge,
+    Allocation, AttributesChanged, Channel, CheckClosed, ChosenModifier, DiscountApplied,
+    DiscountValue, Epoch, ItemSnapshot, Lease, LineAdded, LineChanged, LineCharge, LinesAllocated,
+    Mode, OrderCreated, OrderEvent, OwnershipGranted, Placement, Prefix, Reason, Refusal,
+    TaxCharge,
 };
 use keel_domain::payment::{
     CashTendered, PaymentAuthorized, PaymentCaptured, PaymentEnded, PaymentEvent, PaymentInitiated,
@@ -380,6 +381,21 @@ pub(crate) fn any_ownership_event() -> impl Strategy<Value = OrderEvent> {
     ]
 }
 
+/// Any discount (ADR-0030): on a line, or on the whole order, which only a percentage may be;
+/// from 0.01% to 100%, or an amount more than zero.
+pub(crate) fn any_discount_applied() -> impl Strategy<Value = DiscountApplied> {
+    let percent =
+        prop_oneof![Just(1_u32), Just(10_000_u32), 1_u32..=10_000].prop_map(DiscountValue::Percent);
+    let amount = (any_currency(), prop_oneof![Just(1_i64), 1_i64..10_000, 1_i64..=i64::MAX])
+        .prop_map(|(currency, minor)| DiscountValue::Amount(Money::from_minor(minor, currency)));
+    let on_line = (any_id(), prop_oneof![percent.clone(), amount])
+        .prop_map(|(line, value)| (Some(line), value));
+    let on_order = percent.prop_map(|value| (None, value));
+    (any_id(), prop_oneof![3 => on_line, 1 => on_order], any_reason()).prop_map(
+        |(discount, (line, value), reason)| DiscountApplied { discount, line, value, reason },
+    )
+}
+
 /// Any order event, of any kind.
 pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
     prop_oneof![
@@ -404,5 +420,7 @@ pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
             .prop_map(|(request, refusal)| OrderEvent::OwnershipRefused { request, refusal }),
         (any_lease(), any_reason())
             .prop_map(|(lease, reason)| OrderEvent::OwnershipOverridden { lease, reason }),
+        any_discount_applied().prop_map(OrderEvent::DiscountApplied),
+        any_id().prop_map(|discount| OrderEvent::DiscountRemoved { discount }),
     ]
 }

@@ -192,3 +192,51 @@ pub struct Reason {
     /// Anything more the person wanted to say.
     pub note: Option<Note>,
 }
+
+/// Marks identifiers of discounts on an order (ADR-0030).
+#[derive(Debug)]
+pub enum Discount {}
+
+/// The most basis points a percentage discount may be: 100%.
+pub const MAX_DISCOUNT_PERCENT: u32 = 10_000;
+
+/// What a discount takes off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscountValue {
+    /// A share of what is left, in basis points: from 1 to 10,000.
+    Percent(u32),
+    /// An amount, more than zero, but never more than what is left.
+    Amount(Money),
+}
+
+/// A discount applied: on a line, or on the whole order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscountApplied {
+    /// Its identifier, minted by the device that applied it.
+    pub discount: Id<Discount>,
+    /// The line it is on; `None` for the whole order, which only a percentage may be.
+    pub line: Option<Id<super::state::Line>>,
+    /// What it takes off.
+    pub value: DiscountValue,
+    /// Why.
+    pub reason: Reason,
+}
+
+impl DiscountApplied {
+    /// Checks the payload's rules: a percentage from 1 to 10,000 basis points, an amount more
+    /// than zero, and a discount on the whole order a percentage.
+    pub(crate) fn validate(&self) -> Result<(), crate::codec::PayloadError> {
+        match self.value {
+            DiscountValue::Percent(bp) if bp == 0 || bp > MAX_DISCOUNT_PERCENT => {
+                Err(crate::codec::PayloadError::Invalid("percent"))
+            }
+            DiscountValue::Amount(amount) if !amount.is_positive() => {
+                Err(crate::codec::PayloadError::Invalid("amount"))
+            }
+            DiscountValue::Amount(_) if self.line.is_none() => {
+                Err(crate::codec::PayloadError::Invalid("amount"))
+            }
+            _ => Ok(()),
+        }
+    }
+}

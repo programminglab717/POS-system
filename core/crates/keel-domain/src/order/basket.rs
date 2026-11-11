@@ -2,28 +2,29 @@
 
 use core::num::NonZeroU32;
 
-use keel_pricing::{Basket, Dining, Modifier, Share};
-use keel_types::Id;
+use keel_pricing::{Basket, Dining, Discount, Modifier, Share};
+use keel_types::{Id, Rate};
 
 use super::checks::Check;
 use super::state::{Line, Order, OrderInfo};
-use super::types::{ChosenModifier, Mode};
+use super::types::{ChosenModifier, DiscountApplied, DiscountValue, Mode};
 
 impl Order {
     /// The basket that prices the whole order as one sale: its live lines, each with the prices
     /// it was rung up with, and comped if it was. `None` until the order is created.
     ///
     /// The basket's lines are the order's [live lines](Order::live_lines), in the same order, so
-    /// `order.live_lines().zip(&totals.lines)` pairs each line with its amounts. Orders don't
-    /// record discounts or exemptions yet, so the basket has none. An order is eaten on the
-    /// premises when its mode is dine-in; every other mode takes it away.
+    /// `order.live_lines().zip(&totals.lines)` pairs each line with its amounts. Each line
+    /// carries its discounts, and the basket the whole order's, in the order they were applied
+    /// (ADR-0030); orders don't record exemptions yet. An order is eaten on the premises when its
+    /// mode is dine-in; every other mode takes it away.
     ///
     /// An order split among several checks is paid as several sales: see
     /// [`Order::check_basket`].
     pub fn basket(&self) -> Option<Basket> {
         let info = self.info()?;
         let lines = self.live_lines().map(|line| priced(line, None)).collect();
-        Some(sale(info, lines))
+        Some(sale(info, lines, self.discounts()))
     }
 
     /// The basket that prices `check` as its own sale: the live lines allocated to it, in the
@@ -32,7 +33,9 @@ impl Order {
     ///
     /// A shared line's share lists every check's shares of it, in ascending order of the checks'
     /// identifiers, so the baskets of all the checks sharing it split it the same way, and their
-    /// parts add up to the whole line.
+    /// parts add up to the whole line. Its percentage discounts apply to each part as they are,
+    /// and an amount off is split among the parts the same way, so each check takes its part of
+    /// it. The whole order's discounts, all percentages, apply to each check's basket.
     pub fn check_basket(&self, check: Id<Check>) -> Option<Basket> {
         let info = self.info()?;
         self.check(check)?;
@@ -48,7 +51,7 @@ impl Order {
                 Some(priced(line, share))
             })
             .collect();
-        Some(sale(info, lines))
+        Some(sale(info, lines, self.discounts()))
     }
 
     /// The live lines with a part on `check`, in the order's order: the lines its basket holds,
@@ -59,10 +62,24 @@ impl Order {
     }
 }
 
-/// A basket of `lines` for the order described by `info`.
-fn sale(info: &OrderInfo, lines: Vec<keel_pricing::Line>) -> Basket {
+/// A basket of `lines` for the order described by `info`, with the whole order's `discounts`.
+fn sale(info: &OrderInfo, lines: Vec<keel_pricing::Line>, discounts: &[DiscountApplied]) -> Basket {
     let dining = if info.mode == Mode::DineIn { Dining::OnPremises } else { Dining::ToGo };
-    Basket { currency: info.currency, lines, discounts: Vec::new(), dining, exemptions: Vec::new() }
+    let discounts = discounts.iter().map(|applied| discount(applied, None)).collect();
+    Basket { currency: info.currency, lines, discounts, dining, exemptions: Vec::new() }
+}
+
+/// A discount as pricing sees it, on a whole line or on `share` of it: an amount off a share
+/// is the share's part of the amount, split as the line's gross is.
+fn discount(applied: &DiscountApplied, share: Option<&Share>) -> Discount {
+    match applied.value {
+        DiscountValue::Percent(bp) => Discount::Percent(Rate::from_basis_points(i64::from(bp))),
+        DiscountValue::Amount(amount) => {
+            let part = share
+                .and_then(|share| amount.allocate(&share.weights).ok()?.get(share.index).copied());
+            Discount::Amount(part.unwrap_or(amount))
+        }
+    }
 }
 
 /// A line as pricing sees it, whole or shared.
@@ -73,7 +90,11 @@ fn priced(line: &Line, share: Option<Share>) -> keel_pricing::Line {
         quantity: line.quantity(),
         tax_category: line.item().tax_category.cast(),
         comped: line.comp().is_some(),
-        discounts: Vec::new(),
+        discounts: line
+            .discounts()
+            .iter()
+            .map(|applied| discount(applied, share.as_ref()))
+            .collect(),
         share,
     }
 }
