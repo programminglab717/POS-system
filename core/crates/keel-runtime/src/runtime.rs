@@ -74,6 +74,8 @@ pub struct Runtime<S, E, C, I> {
     pub(crate) pins: crate::staff::PinGuard,
     /// An approval waiting for the intent it is for.
     pub(crate) pending: Option<crate::staff::Pending>,
+    /// The request last refused for want of an approval, which an approval answers.
+    pub(crate) asked: Option<crate::staff::Asked>,
     /// The printer jobs go to, once the shell sets one.
     printer: Option<PrinterProfile>,
     /// The job with the driver, if one is.
@@ -152,6 +154,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             member: None,
             pins: crate::staff::PinGuard::default(),
             pending: None,
+            asked: None,
             printer: None,
             sending: None,
             key: public_key,
@@ -277,12 +280,29 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         line: Id<keel_domain::order::Line>,
         quantity: NonZeroU32,
     ) -> Result<Ticket, RuntimeError> {
-        let meta = self.meta()?;
-        let change = LineChanged {
-            quantity: Some(Quantity::from_whole(i64::from(quantity.get()), Unit::Each)?),
-            ..LineChanged::to(line)
+        let quantity = Quantity::from_whole(i64::from(quantity.get()), Unit::Each)?;
+        // Fewer of a line takes some of it off: `line.remove`, as taking all of it off is. Found
+        // in review: a line of ten could go to one with no approval.
+        let loaded = self.store.load(Order::new(order))?;
+        let fewer =
+            loaded.line(line).is_some_and(|now| now.quantity().micros() > quantity.micros());
+        let granted = if fewer {
+            self.gate(Request::of(Action::LineRemove), Some(order.cast()))?
+        } else {
+            None
         };
-        self.decide(order, OrderCommand::ChangeLine(change), &meta)
+        let meta = self.meta()?;
+        let stream = self.approval_stream(granted.as_ref())?;
+        let change = LineChanged { quantity: Some(quantity), ..LineChanged::to(line) };
+        let ticket = self.decide_approved(
+            order,
+            OrderCommand::ChangeLine(change),
+            &meta,
+            granted.as_ref(),
+            stream,
+        )?;
+        self.spend(granted.as_ref());
+        Ok(ticket)
     }
 
     /// Takes `line` off `order`: `line.remove`, which the member's role permits or a manager
@@ -318,8 +338,8 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         granted.map(|_| self.ids.generate(self.clock.now())).transpose().map_err(RuntimeError::from)
     }
 
-    /// Drops `order`: takes off every line it has, then abandons it, in one write. An order with
-    /// lines on it is voided, `order.void`, which the member's role permits or a manager approves
+    /// Drops `order`: takes off every line it has, then abandons it, in one write. An order that
+    /// has had lines on it is voided, `order.void`, which the member's role permits or a manager approves
     /// (ADR-0029); an empty one is dropped by whoever began it.
     ///
     /// # Errors
@@ -327,11 +347,14 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// it doesn't have; [`RuntimeError`] if no one is signed in, or the order refuses: it isn't
     /// open, or a line was sent to be prepared.
     pub fn abandon(&mut self, order: Id<Order>) -> Result<Ticket, RuntimeError> {
-        let lines = self.store.load(Order::new(order))?.live_lines().count();
-        let granted = if lines > 0 {
-            self.gate(Request::of(Action::OrderVoid), Some(order.cast()))?
-        } else {
+        // An order that ever had a line is voided, whether its lines were taken off first or not.
+        // Found in review: taking each line off, then dropping the empty order, needed no approval.
+        let loaded = self.store.load(Order::new(order))?;
+        known(&loaded)?;
+        let granted = if loaded.lines().is_empty() {
             None
+        } else {
+            self.gate(Request::of(Action::OrderVoid), Some(order.cast()))?
         };
         let meta = self.meta()?;
         let stream = self.approval_stream(granted.as_ref())?;
@@ -781,7 +804,8 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// [`RuntimeError::NoReceipt`] if the order printed no receipt, and [`RuntimeError::Store`]
     /// if the store can't be read or written.
     pub fn reprint(&mut self, order: Id<Order>) -> Result<Id<Job>, RuntimeError> {
-        let granted = self.gate(Request::of(Action::ReceiptReprint), Some(order.cast()))?;
+        // Someone is signed in first: whether a receipt exists is for them to learn.
+        self.member.ok_or(RuntimeError::NotSignedIn)?;
         let mut original = None;
         for queued in self.store.effects()? {
             if !matches!(print::job_of(&queued), Some((_, JobKind::Receipt))) {
@@ -798,6 +822,9 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             }
         }
         let (doc, cause) = original.ok_or(RuntimeError::NoReceipt(order))?;
+        // Gated once there is something to print: an approval is never asked for, nor given, for
+        // a reprint that can't be. Found in review.
+        let granted = self.gate(Request::of(Action::ReceiptReprint), Some(order.cast()))?;
         let doc = self.as_reprint(&doc)?;
         let now = self.clock.now();
         let job: Id<Job> = self.ids.generate(now)?;

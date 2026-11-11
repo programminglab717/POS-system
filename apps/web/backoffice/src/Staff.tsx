@@ -41,6 +41,16 @@ export function StaffEditor({ api, location }: { api: Api; location: string }) {
   // Amounts are shown in the catalog's currency: two digits, as every currency the profile
   // takes but a few. The API checks every limit whole.
   const [digits, setDigits] = useState(2);
+  // The limits whose text isn't one: while any is, nothing is checked or published.
+  const [badLimits, setBadLimits] = useState<ReadonlySet<string>>(new Set());
+  const limitValidity = (key: string) => (valid: boolean) =>
+    setBadLimits((all) => {
+      if (valid === !all.has(key)) return all;
+      const next = new Set(all);
+      if (valid) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const load = () =>
     Promise.all([api.staff(location), api.catalog(location)])
@@ -72,6 +82,7 @@ export function StaffEditor({ api, location }: { api: Api; location: string }) {
     }),
   });
   const badPin = team.some((member) => member.pin !== "" && !/^\d{4,8}$/.test(member.pin));
+  const blocked = badPin || badLimits.size > 0;
   const run = async (publish: boolean) => {
     setBusy(true);
     try {
@@ -116,15 +127,16 @@ export function StaffEditor({ api, location }: { api: Api; location: string }) {
           <button disabled={busy || !changed} onClick={() => void load().then(() => setStatus(null))}>
             Discard
           </button>
-          <button disabled={busy || badPin} onClick={() => void run(false)}>
+          <button disabled={busy || blocked} onClick={() => void run(false)}>
             Check
           </button>
-          <button className="primary" disabled={busy || !changed || badPin} onClick={() => void run(true)}>
+          <button className="primary" disabled={busy || !changed || blocked} onClick={() => void run(true)}>
             Publish
           </button>
         </div>
       </div>
       {badPin && <p className="error banner">A PIN is 4 to 8 digits.</p>}
+      {badLimits.size > 0 && <p className="error banner">A limit isn't an amount: correct it, or leave it blank for none.</p>}
       {status && (
         <p role="status" className={status.kind === "error" ? "error banner" : "ok banner"}>
           {status.text}
@@ -172,6 +184,10 @@ export function StaffEditor({ api, location }: { api: Api; location: string }) {
                       value={member.role ?? ""}
                       onChange={(event) => updateMember(index, (m) => ({ ...m, role: event.target.value }))}
                     >
+                      {/* A member with no role shows it: found in review, they seemed to have the first. */}
+                      <option value="" disabled>
+                        Choose a role
+                      </option>
                       {roles.map((role) => (
                         <option key={role.id} value={role.id}>
                           {role.name}
@@ -221,7 +237,10 @@ export function StaffEditor({ api, location }: { api: Api; location: string }) {
           <h2>Roles</h2>
           <button
             onClick={() => {
-              setRoles((all) => [...all, { id: newId(), name: "New role", permissions: [] }]);
+              const role = { id: newId(), name: "New role", permissions: [] };
+              // The first role is everyone's, to begin with: with roles, each member has one.
+              if (roles.length === 0) setTeam((all) => all.map((member) => ({ ...member, role: role.id })));
+              setRoles((all) => [...all, role]);
               touch();
             }}
           >
@@ -278,6 +297,7 @@ export function StaffEditor({ api, location }: { api: Api; location: string }) {
                       <td>
                         {permission && action.hasAmount && (
                           <LimitInput
+                            onValidity={limitValidity(`${role.id}:${action.name}:amount`)}
                             label={`Most amount for ${action.name} in ${role.name}`}
                             value={permission.mostAmount}
                             toText={(minor) => format(minor, digits)}
@@ -289,6 +309,7 @@ export function StaffEditor({ api, location }: { api: Api; location: string }) {
                       <td>
                         {permission && action.hasPercent && (
                           <LimitInput
+                            onValidity={limitValidity(`${role.id}:${action.name}:percent`)}
                             label={`Most percent for ${action.name} in ${role.name}`}
                             value={permission.mostPercent}
                             toText={(bp) => format(bp, 2)}
@@ -319,7 +340,11 @@ function withLimit(permission: Permission, key: "mostAmount" | "mostPercent", va
   return next;
 }
 
-/** A limit: blank for none, else a decimal amount or percentage. */
+/**
+ * A limit: blank for none, else a decimal amount or percentage. The text follows the value when it
+ * changes otherwise, as when the staff are loaded again. Found in review: after Discard it showed
+ * what had been typed.
+ */
 function LimitInput({
   label,
   value,
@@ -327,6 +352,7 @@ function LimitInput({
   fromText,
   suffix,
   onChange,
+  onValidity,
 }: {
   label: string;
   value: number | undefined;
@@ -334,10 +360,19 @@ function LimitInput({
   fromText: (text: string) => number | null;
   suffix?: string;
   onChange: (n: number | undefined) => void;
+  onValidity: (valid: boolean) => void;
 }) {
   const [text, setText] = useState(value === undefined ? "" : toText(value));
-  const parsed = text.trim() === "" ? undefined : fromText(text);
+  const read = (typed: string) => (typed.trim() === "" ? undefined : fromText(typed));
+  useEffect(() => {
+    setText((typed) => (read(typed) === value ? typed : value === undefined ? "" : toText(value)));
+  }, [value]);
+  const parsed = read(text);
   const valid = parsed !== null && (parsed === undefined || parsed >= 0);
+  useEffect(() => {
+    onValidity(valid);
+    return () => onValidity(true);
+  }, [valid]);
   return (
     <span className="inline">
       up to{" "}

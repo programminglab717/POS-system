@@ -34,6 +34,10 @@ pub enum KeelError {
         /// The action, as ADR-0029 names it, such as `order.void`.
         action: String,
     },
+    /// Nothing waits for an approval: approve only after an intent answers
+    /// [`KeelError::ApprovalRequired`].
+    #[error("nothing waits for an approval")]
+    NothingToApprove,
     /// The approval given can't approve this: the approver's role doesn't permit it, or it is
     /// their own request.
     #[error("{approver} can't approve {action}")]
@@ -166,6 +170,7 @@ impl From<RuntimeError> for KeelError {
             RuntimeError::ApprovalRequired(action) => {
                 KeelError::ApprovalRequired { action: action.name().to_owned() }
             }
+            RuntimeError::NothingToApprove => KeelError::NothingToApprove,
             RuntimeError::NotApprover { approver, action } => KeelError::NotApprover {
                 approver: approver.to_string(),
                 action: action.name().to_owned(),

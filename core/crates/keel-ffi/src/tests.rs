@@ -164,22 +164,23 @@ fn a_cashier_signs_in_with_their_pin_and_a_manager_approves_a_void() {
     assert_eq!(register.sign_in(demo_id(0x502), "1234".into()), Err(KeelError::WrongPin));
     assert_eq!(register.approve(demo_id(0x501), "1234".into()), Err(KeelError::NotSignedIn));
     register.sign_in(demo_id(0x502), "2468".into()).unwrap();
+    assert_eq!(register.approve(demo_id(0x501), "1234".into()), Err(KeelError::NothingToApprove));
+    assert!(register.approvers().is_empty());
     let order = register.start_order(Mode::Takeout).unwrap().order;
     register.add_item(order.clone(), demo_id(0x401), vec![], 1).unwrap();
     assert_eq!(
         register.abandon(order.clone()),
         Err(KeelError::ApprovalRequired { action: "order.void".into() })
     );
+    assert_eq!(register.approvers(), [demo_id(0x501)]);
     assert_eq!(
-        register
-            .approve(demo_id(0x502), "2468".into())
-            .and_then(|()| register.abandon(order.clone())),
+        register.approve(demo_id(0x502), "2468".into()),
         Err(KeelError::NotApprover { approver: demo_id(0x502), action: "order.void".into() })
     );
     register.approve(demo_id(0x501), "1234".into()).unwrap();
     assert_eq!(register.abandon(order).unwrap().state, TicketState::Abandoned);
-    // Five wrong PINs lock PIN entry for 30 s.
-    for _ in 0..5 {
+    // Every five wrong PINs lock PIN entry, the one above among them.
+    for _ in 0..4 {
         assert_eq!(register.sign_in(demo_id(0x502), "0000".into()), Err(KeelError::WrongPin));
     }
     assert!(matches!(
@@ -392,6 +393,7 @@ fn every_refusal_a_cashier_meets_has_a_variant() {
         (R::NotUnconfirmed(id(5)), KeelError::NotUnconfirmed { job: demo_id(5) }),
         (R::NoReceipt(id(6)), KeelError::NoReceipt { order: demo_id(6) }),
         (R::WrongPin, KeelError::WrongPin),
+        (R::NothingToApprove, KeelError::NothingToApprove),
         (R::LockedOut { seconds: 30 }, KeelError::LockedOut { seconds: 30 }),
         (
             R::ApprovalRequired(keel_domain::staff::Action::OrderVoid),

@@ -180,6 +180,16 @@ test("a cashier's role and PIN are changed, published, and taken by the register
   await expect
     .poll(() => registerVersion(), { timeout: 60_000, intervals: [250] })
     .not.toBe(before);
+  // A limit that isn't one holds back publishing; Discard puts back what was published.
+  // Found in review: after Discard, the field showed what had been typed.
+  const limit = page.getByLabel("Most amount for discount.apply in Cashier");
+  await expect(limit).toHaveValue("5.00");
+  await limit.fill("abc");
+  await expect(page.getByRole("button", { name: "Publish" })).toBeDisabled();
+  await limit.fill("7.00");
+  await expect(page.getByRole("button", { name: "Publish" })).toBeEnabled();
+  await page.getByRole("button", { name: "Discard" }).click();
+  await expect(limit).toHaveValue("5.00");
   // A member new to the team needs a PIN: the kernel says so.
   await page.getByRole("button", { name: "Add member" }).click();
   await page.getByRole("button", { name: "Check" }).click();

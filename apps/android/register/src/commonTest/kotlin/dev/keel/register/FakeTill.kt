@@ -63,6 +63,8 @@ class FakeTill : Till {
         signedIn = member
     }
 
+    override fun approvers() = if (voidNeedsApproval) listOf("alex") else emptyList()
+
     override fun approve(approver: String, pin: String) {
         if (pin != pins[approver].orEmpty()) throw TillException("That PIN isn't right.")
         approvedBy = approver

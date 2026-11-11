@@ -281,4 +281,10 @@ BUGS = [
         "                    has_pin: member.pin.is_some(),",
         "                    has_pin: false,",
     ),
+    (
+        "ffi: the approvers are the whole team",
+        "src/register.rs",
+        "            .approvers()\n            .iter()",
+        "            .team()\n            .iter()\n            .map(|member| member.id)\n            .collect::<Vec<_>>()\n            .iter()",
+    ),
 ]

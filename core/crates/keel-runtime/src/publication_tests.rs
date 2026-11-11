@@ -140,3 +140,35 @@ fn a_member_the_new_team_doesnt_have_is_signed_out() {
     assert!(runtime.take_publications().unwrap());
     assert_eq!(runtime.signed_in(), Some(other));
 }
+
+/// Found in review: a member signed in stayed so when their PIN or role changed under them.
+#[test]
+fn a_member_whose_pin_or_role_changes_signs_in_again() {
+    let scratch = Scratch::new();
+    let mut runtime = cloud(&scratch);
+    runtime.sign_in(id(0x502), "2468").unwrap();
+    // A price changed: nothing of Sam's, who stays.
+    let espresso =
+        demo_with(|data| crate::tests::variant(data, 0x401).price = crate::tests::usd(410));
+    write(&mut runtime, &publication::publish(&espresso).unwrap());
+    assert!(runtime.take_publications().unwrap());
+    assert_eq!(runtime.signed_in(), Some(id(0x502)));
+    // A new PIN for Sam.
+    let new_pin = demo_with(|data| {
+        crate::tests::variant(data, 0x401).price = crate::tests::usd(410);
+        data.team[1].pin = Some(keel_domain::staff::PinHash::new("8642", [3; 16]).unwrap());
+    });
+    write(&mut runtime, &publication::publish(&new_pin).unwrap());
+    assert!(runtime.take_publications().unwrap());
+    assert_eq!(runtime.signed_in(), None);
+    // Sam made a manager.
+    runtime.sign_in(id(0x502), "8642").unwrap();
+    let promoted = demo_with(|data| {
+        crate::tests::variant(data, 0x401).price = crate::tests::usd(410);
+        data.team[1].pin = Some(keel_domain::staff::PinHash::new("8642", [3; 16]).unwrap());
+        data.team[1].role = data.team[0].role;
+    });
+    write(&mut runtime, &publication::publish(&promoted).unwrap());
+    assert!(runtime.take_publications().unwrap());
+    assert_eq!(runtime.signed_in(), None);
+}

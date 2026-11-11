@@ -35,7 +35,13 @@ data class Tender(
 )
 
 /** A manager's approval the register asks for: the action, why, and the manager asked, once chosen. */
-data class Approval(val action: String, val reason: String, val approver: Member? = null)
+data class Approval(
+    val action: String,
+    val reason: String,
+    /** Who may approve it, as the kernel says: never the cashier. */
+    val approvers: List<Member> = emptyList(),
+    val approver: Member? = null,
+)
 
 /** What the register's screens show. */
 data class RegisterState(
@@ -123,8 +129,8 @@ class RegisterModel(
     /** Back to the team, with no one asked for. */
     fun cancelPin() = mutable.update { it.copy(pinFor = null, error = null) }
 
-    /** Who may be asked to approve [approval]: the team but the cashier. */
-    fun approvers(): List<Member> = current.team.filter { it.id != current.member?.id }
+    /** Who may be asked to approve the approval asked for: those the kernel says may. */
+    fun approvers(): List<Member> = current.approval?.approvers.orEmpty()
 
     /** The manager asked to approve: the register asks for their PIN. */
     fun chooseApprover(approver: Member) =
@@ -134,7 +140,9 @@ class RegisterModel(
     fun approve(pin: String) {
         val approver = current.approval?.approver ?: return
         val retry = pendingRetry ?: return
-        perform {
+        // Refused again, it is the intent that is tried again, never the approval: the PIN is
+        // never kept. Found in review.
+        perform(retryAs = retry) {
             till.approve(approver.id, pin)
             mutable.update { it.copy(approval = null) }
             pendingRetry = null
@@ -394,8 +402,11 @@ class RegisterModel(
 
     private fun show(ticket: Ticket) = mutable.update { it.copy(ticket = ticket, change = null) }
 
-    /** Runs [intent] on the worker, clearing the last refusal first and keeping a new one. */
-    private fun perform(intent: () -> Unit) {
+    /**
+     * Runs [intent] on the worker, clearing the last refusal first and keeping a new one. One that
+     * needs an approval is kept, as [retryAs] if given, to try again once one is given.
+     */
+    private fun perform(retryAs: (() -> Unit)? = null, intent: () -> Unit) {
         mutable.update { it.copy(error = null) }
         scope.launch {
             try {
@@ -404,8 +415,12 @@ class RegisterModel(
                 val action = refused.approval
                 if (action != null) {
                     // Asked again once a manager approves.
-                    pendingRetry = intent
-                    mutable.update { it.copy(loading = false, approval = Approval(action, refused.message.orEmpty())) }
+                    pendingRetry = retryAs ?: intent
+                    val ids = withContext(worker) { till.approvers() }
+                    val approvers = current.team.filter { it.id in ids }
+                    mutable.update {
+                        it.copy(loading = false, approval = Approval(action, refused.message.orEmpty(), approvers))
+                    }
                 } else {
                     mutable.update { it.copy(loading = false, error = refused.message) }
                 }

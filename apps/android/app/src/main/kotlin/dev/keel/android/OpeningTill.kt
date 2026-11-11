@@ -17,6 +17,7 @@ class OpeningTill(open: () -> Till) : Till {
     override fun team() = till.team()
     override fun signIn(member: String, pin: String) = till.signIn(member, pin)
     override fun approve(approver: String, pin: String) = till.approve(approver, pin)
+    override fun approvers() = till.approvers()
     override fun signOut() = till.signOut()
     override fun menu() = till.menu()
     override fun item(variant: String) = till.item(variant)

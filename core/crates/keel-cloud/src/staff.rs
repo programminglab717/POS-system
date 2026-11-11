@@ -92,8 +92,9 @@ pub struct StaffEdit {
     pub team: Vec<MemberEdit>,
 }
 
-/// A team member to write.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A team member to write. Its `Debug` leaves out a new PIN's digits: found in review, a log
+/// line of it would have held them.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemberEdit {
     /// Their identifier.
@@ -106,6 +107,17 @@ pub struct MemberEdit {
     /// A new PIN, its 4 to 8 digits; absent to keep the one they have.
     #[serde(default)]
     pub pin: Option<String>,
+}
+
+impl core::fmt::Debug for MemberEdit {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MemberEdit")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("role", &self.role)
+            .field("pin", &self.pin.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 /// `profile`'s staff, as read.
@@ -345,6 +357,20 @@ mod tests {
             refused(&|edit| edit.roles.clear()),
             StaffError::Profile("a role or PIN in a profile without roles".into())
         );
+    }
+
+    #[test]
+    fn a_new_pin_is_never_in_a_log_line() {
+        let member = MemberEdit {
+            id: "0192f0c1-0000-7000-8000-000000000502".into(),
+            name: "Sam".into(),
+            role: None,
+            pin: Some("8642".into()),
+        };
+        let shown =
+            format!("{:?}", StaffEdit { base: None, roles: Vec::new(), team: vec![member] });
+        assert!(!shown.contains("8642"), "{shown}");
+        assert!(shown.contains("Sam"));
     }
 
     #[test]

@@ -38,6 +38,9 @@ pub enum RuntimeError {
     /// The action needs a manager's approval, which no one has given.
     #[error("{} needs a manager's approval", .0.name())]
     ApprovalRequired(Action),
+    /// No request waits for an approval: nothing the member asked for was refused for want of one.
+    #[error("nothing waits for an approval")]
+    NothingToApprove,
     /// The approval waiting can't approve this: the approver's role doesn't permit it, or it is
     /// their own request.
     #[error("{approver} can't approve {}", action.name())]

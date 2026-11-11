@@ -521,10 +521,10 @@ BUGS = [
         "        if let Some(seconds) = self.pins.locked(now).filter(|_| false) {",
     ),
     (
-        "runtime: a right PIN doesn't start the count again",
+        "runtime: a right PIN starts the count of wrong ones again, whoever's it is",
         "src/staff.rs",
-        "            self.pins.right();\n",
-        "",
+        "        if self.profile.verifies_pin(member, pin) {\n            Ok(())",
+        "        if self.profile.verifies_pin(member, pin) {\n            self.pins = PinGuard::default();\n            Ok(())",
     ),
     (
         "runtime: every lock is as short as the first",
@@ -541,8 +541,8 @@ BUGS = [
     (
         "runtime: an approval never expires",
         "src/staff.rs",
-        "        (Some(pending.actor) == self.member && (0..=millis(APPROVAL_LIFE)).contains(&age))",
-        "        (Some(pending.actor) == self.member && (0..=i64::MAX).contains(&age))",
+        "        (pending.asked == *asked && (0..=millis(APPROVAL_LIFE)).contains(&age))",
+        "        (pending.asked == *asked && (0..=i64::MAX).contains(&age))",
     ),
     (
         "runtime: an approval outlives a sign-in",
@@ -571,13 +571,62 @@ BUGS = [
     (
         "runtime: dropping an empty order needs an approval",
         "src/runtime.rs",
-        "        let granted = if lines > 0 {",
-        "        let granted = if lines > 0 || lines == 0 {",
+        "        let granted = if loaded.lines().is_empty() {",
+        "        let granted = if false {",
     ),
     (
         "runtime: anyone reprints, signed in or not",
         "src/runtime.rs",
         "        let granted = self.gate(Request::of(Action::ReceiptReprint), Some(order.cast()))?;",
         "        let granted: Option<Granted> = None;",
+    ),
+    # Found in step 1's review.
+    (
+        "runtime: quiet never starts the count of wrong PINs again",
+        "src/staff.rs",
+        "        if quiet {\n            self.wrong = 0;",
+        "        if quiet && false {\n            self.wrong = 0;",
+    ),
+    (
+        "runtime: an approval covers any request of the one who asked",
+        "src/staff.rs",
+        "        (pending.asked == *asked && (0..=millis(APPROVAL_LIFE)).contains(&age))",
+        "        (pending.asked.actor == asked.actor && (0..=millis(APPROVAL_LIFE)).contains(&age))",
+    ),
+    (
+        "runtime: an approver is taken before they are known to be one",
+        "src/staff.rs",
+        "        if !self.profile.may_approve(approver, actor, &asked.request) {",
+        "        if false {",
+    ),
+    (
+        "runtime: an order emptied line by line is dropped with no approval",
+        "src/runtime.rs",
+        "        let granted = if loaded.lines().is_empty() {",
+        "        let granted = if loaded.live_lines().next().is_none() {",
+    ),
+    (
+        "runtime: fewer of a line needs no approval",
+        "src/runtime.rs",
+        "        let granted = if fewer {",
+        "        let granted = if fewer && false {",
+    ),
+    (
+        "runtime: an approval is asked for a reprint that can't be",
+        "src/runtime.rs",
+        "        // Someone is signed in first: whether a receipt exists is for them to learn.\n        self.member.ok_or(RuntimeError::NotSignedIn)?;",
+        "        self.gate(Request::of(Action::ReceiptReprint), Some(order.cast()))?;",
+    ),
+    (
+        "runtime: anyone but the one who asked is an approver",
+        "src/staff.rs",
+        "            .filter(|&member| self.profile.may_approve(member, asked.actor, &asked.request))",
+        "            .filter(|&member| member != asked.actor)",
+    ),
+    (
+        "runtime: a member whose PIN or role changed stays signed in",
+        "src/publication.rs",
+        "                (Some(before), Some(after)) => before.role != after.role || before.pin != after.pin,",
+        "                (Some(_), Some(_)) => false,",
     ),
 ]

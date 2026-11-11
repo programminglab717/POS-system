@@ -36,6 +36,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -60,7 +61,8 @@ fun RegisterScreen(model: RegisterModel) {
     val state by model.state.collectAsStateWithLifecycle()
     Scaffold { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            state.error?.let { error ->
+            // A PIN pad shows its own refusal.
+            state.error?.takeIf { state.pinFor == null && state.approval?.approver == null }?.let { error ->
                 Text(
                     error,
                     color = MaterialTheme.colorScheme.error,
@@ -251,8 +253,9 @@ private fun SheetDialog(sheet: ModifierSheet, model: RegisterModel) {
 
 @Composable
 private fun PinDialog(title: String, error: String?, onEnter: (String) -> Unit, onCancel: () -> Unit) {
-    // The digits typed stay on this screen alone: a PIN is never in the register's state.
-    var typed by rememberSaveable { mutableStateOf("") }
+    // The digits typed stay on this screen alone: a PIN is never in the register's state, nor in
+    // the state Android saves for the activity. Found in review: it was.
+    var typed by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onCancel,
         title = { Text(title) },

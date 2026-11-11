@@ -150,9 +150,20 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         if version == self.profile_version {
             return Ok(false);
         }
-        // A member the new team doesn't have is signed out.
-        if self.member.is_some_and(|member| profile.member(member).is_none()) {
+        // A member the new team doesn't have is signed out, and so is one whose role or PIN
+        // changed: they sign in again, under the new one. Found in review: a member signed in
+        // with no PIN stayed so once PINs came.
+        let changed = |member: Id<keel_events::envelope::TeamMember>| {
+            let (before, after) = (self.profile.member(member), profile.member(member));
+            match (before, after) {
+                (Some(before), Some(after)) => before.role != after.role || before.pin != after.pin,
+                _ => true,
+            }
+        };
+        if self.member.is_some_and(changed) {
             self.member = None;
+            self.pending = None;
+            self.asked = None;
         }
         self.profile = profile;
         self.profile_version = version;

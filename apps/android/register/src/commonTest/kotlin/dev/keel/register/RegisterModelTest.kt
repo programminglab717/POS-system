@@ -383,6 +383,33 @@ class RegisterModelTest {
         assertNotNull(model.state.value.ticket)
     }
 
+    /** Found in review: refused again once approved, the next approval replayed the first PIN. */
+    @Test
+    fun an_intent_refused_again_is_tried_again_without_the_first_approval() = runTest {
+        val fake = FakeTill().apply { voidNeedsApproval = true }
+        val approvals = mutableListOf<Pair<String, String>>()
+        val till = object : Till by fake {
+            override fun approve(approver: String, pin: String) {
+                approvals += approver to pin
+            }
+            override fun abandon(order: String): Ticket =
+                throw TillException("Dropping it needs a manager.", approval = "order.void")
+        }
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.abandon()
+        testScheduler.advanceUntilIdle()
+        model.chooseApprover(model.approvers().first())
+        model.approve("1234")
+        testScheduler.advanceUntilIdle()
+        assertNotNull(model.state.value.approval, "refused again: asked again")
+        model.chooseApprover(model.approvers().first())
+        model.approve("5678")
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("alex" to "1234", "alex" to "5678"), approvals, "never the first PIN again")
+    }
+
     /** Found in review: two taps before the screen showed the first counted from the same line. */
     @Test
     fun taps_queued_together_each_count_from_the_one_before() = runTest {

@@ -369,6 +369,18 @@ impl Register {
         self.with(|runtime| drain(|wait| keel_hub::step(runtime, net, wait), wait).map(|_| ()))
     }
 
+    /// Who may approve what the member signed in was last refused for want of an approval: the
+    /// team members whose role permits it, but the one who asked. Empty when nothing waits.
+    pub fn approvers(&self) -> Vec<String> {
+        self.runtime
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .approvers()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
     /// The version of the profile the register rings from, 64 hexadecimal digits: the one
     /// provisioned until it takes one the cloud publishes. When it changes, the menu and the team
     /// are read again.

@@ -6,11 +6,11 @@
 
 ## Where we are
 
-**The MVP, step 1 of 10:** staff, roles and approvals
-([ADR-0029](./adr/0029-staff-roles-and-approvals.md), proposed). All three slices are built:
-roles, permissions with limits, PIN hashes and approvals in the kernel; PIN sign-in, a lockout
-and approvals in the runtime; a PIN pad and an approval sheet on the Android register; and staff
-and roles in the back office. The step's review is next.
+**The MVP, step 1 of 10, is done:** staff, roles and approvals
+([ADR-0029](./adr/0029-staff-roles-and-approvals.md), accepted after its review): roles,
+permissions with limits, PIN hashes and approvals in the kernel; PIN sign-in, a lockout and
+approvals bound to what was asked in the runtime; a PIN pad and an approval sheet on the Android
+register; and staff and roles in the back office. Step 2, selling at the register, is next.
 
 **Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
 ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
@@ -84,8 +84,8 @@ Step 6 was built in four slices, each ending with a review
 The MVP, the pilot's counter service ([roadmap §3](./roadmap.md#3-mvp--pilot--counter-service-one-location-us)),
 is built in ten steps, planned on 2026-11-11
 ([roadmap §8](./roadmap.md#the-mvps-build-steps)). Step 1, staff, roles and approvals
-([ADR-0029](./adr/0029-staff-roles-and-approvals.md), proposed), comes in three slices, each
-verified as it lands, then reviewed:
+([ADR-0029](./adr/0029-staff-roles-and-approvals.md), accepted after its review), came in three
+slices, each verified as it landed, then reviewed together:
 
 1. **The profile and the policy** (built 2026-11-11): profile format 2, PINs, permissions, the
    policy's decisions, and `approval.granted`.
@@ -170,6 +170,36 @@ Built in slice 3:
     end-to-end test in Chromium, a cashier's role and PIN changed, a short PIN refused,
     published, taken by the register, and a new member refused without a PIN.
   - Planted bugs: 2 new, both caught.
+
+**Review** (2026-11-11), by an independent reviewer, which found, each now fixed with a test or a
+planted bug (ADR-0029, as built):
+
+- Any right PIN started the count of wrong ones again: a cashier could guess at a manager's PIN,
+  four tries between each of their own sign-ins, and never be locked. Every wrong PIN on the
+  device counts now, and only 15 quiet minutes start the count again.
+- An approval covered whatever gated intent came next: one given for a reprint that then failed
+  covered another order's void. An approval is for the request asked (the action, its amount or
+  percentage, and its subject), and `approve` checks the approver may give it; `approvers()` says
+  who may. A reprint asks for one only once there is a receipt.
+- A cashier could take each line off, then drop the empty order with no approval; and fewer of a
+  line needed none. Both are gated.
+- A member signed in stayed so when their PIN or role changed under them.
+- The Android register replayed an approver's PIN when an intent was refused again, kept PIN
+  digits in the state Android saves, listed every member as an approver, and showed a PIN pad's
+  refusal twice.
+- The back office showed a member with no role as having the first, so a location couldn't be
+  given its first role, showed typed limits after Discard, and published with a limit that
+  wasn't one; the cell's `Debug` would have shown a new PIN's digits.
+
+Its other points are recorded as gaps in ADR-0029. Checked and found sound: the format-2 profile
+and its compatibility, the pinned encodings, the property tests, the no-PIN path, `PinHash`,
+self-approval, approvals across members, the gate's re-check, the approval event and its
+naming, the API's PIN handling, and the project's rules.
+
+- **After the review:** the workspace's tests, clippy with all features and none, the
+  documentation, every planted bug's text, and the new ones caught (11 more); `RegisterModel`'s
+  17 JVM tests, one new, its bug planted by hand and caught; the Android kernel module's 6 tests,
+  the app and its instrumented tests built; and the back office's 7 end-to-end tests, twice.
 
 ## Completed
 

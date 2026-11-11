@@ -133,4 +133,10 @@ BUGS = [
         "            Some(digits) => Some(PinHash::new(digits, salt(entropy)?).map_err(|error| {",
         "            Some(digits) => Some(PinHash::new(digits, [0; 16]).map_err(|error| {",
     ),
+    (
+        "staff: a new PIN's digits are in a log line",
+        "src/staff.rs",
+        "            .field(\"pin\", &self.pin.as_ref().map(|_| \"..\"))",
+        "            .field(\"pin\", &self.pin)",
+    ),
 ]

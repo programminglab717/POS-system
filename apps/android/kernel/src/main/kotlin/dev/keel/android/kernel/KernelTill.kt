@@ -52,6 +52,8 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
 
     override fun approve(approver: String, pin: String) = call { register.approve(approver, pin) }
 
+    override fun approvers(): List<String> = register.approvers()
+
     override fun signOut() = call { register.signOut() }
 
     override fun menu(): List<MenuPage> = call {
@@ -201,6 +203,7 @@ internal fun words(refused: KeelException): String = when (refused) {
     is KeelException.NotSettled -> "Waiting for the store's hub: try again in a moment."
     is KeelException.UnknownMember -> "That team member isn't on this register."
     is KeelException.WrongPin -> "That PIN isn't right."
+    is KeelException.NothingToApprove -> "Nothing is waiting for an approval."
     is KeelException.LockedOut -> "Too many wrong PINs: try again in ${refused.seconds} seconds."
     is KeelException.ApprovalRequired -> "${action(refused.action)} needs a manager's approval."
     is KeelException.NotApprover -> "That manager can't approve ${action(refused.action).lowercase()}."

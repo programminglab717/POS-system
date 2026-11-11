@@ -1,6 +1,7 @@
 # ADR-0029: Staff, roles and approvals: PINs and roles in the profile, permissions with limits, and approvals as events
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-11) after review, with the details settled in building and
+  reviewing it, under "As built"
 - **Date:** 2026-11-11
 
 ## Context
@@ -87,6 +88,44 @@ What is built shapes it:
    approvals pushed to a manager's phone; per-location and revenue-center grants; time-of-day
    and own-records-only constraints; sign-in and sign-out as audit events; and a lockout that
    survives a restart of the app.
+
+## As built
+
+The details settled in building it:
+
+- **A PIN's lockout counts every wrong PIN on the device**, whoever's it was meant to be, through
+  sign-in and approval alike: every five lock PIN entry, 30 s doubling to 15 minutes. Only 15
+  minutes with no wrong PIN start the count again.
+- **An approval is for the request asked.** An intent refused for want of one remembers what was
+  asked: who, the action with its amount or percentage, and what it was on. `approve` checks the
+  approver's PIN and that they may approve that request, and holds the approval for that request
+  alone, for 60 s; `approvers()` names who may. A write that fails leaves it waiting for the same
+  request; a write that succeeds spends it.
+- **What is gated**: an order that has ever had a line, dropped (`order.void`), even once its
+  lines are off; a line taken off, or fewer of it (`line.remove`); and a receipt printed again
+  (`receipt.reprint`), asked only once there is a receipt to print.
+- **A member whose role or PIN changes** in a profile the device takes is signed out, as one
+  the new team doesn't have is.
+- **The shells**: the bindings' `approvers()`; the Android register's approval sheet lists only
+  who may approve, and tries the refused intent again, never the approval, so no PIN is kept; its
+  PIN pad's digits stay out of the state Android saves. The back office shows a member with no
+  role as such, gives the first role to everyone, and holds back publishing while a limit isn't
+  an amount; a new PIN's digits are left out of the cell's `Debug`.
+
+Found in review, each fixed with a test or a planted bug: any right PIN started the count of
+wrong ones again, so a cashier could guess at a manager's PIN between their own sign-ins; an
+approval covered whatever gated intent came next, so one given for a reprint that failed covered
+another order's void; an order emptied line by line, which a cashier may do, was dropped with no
+approval; fewer of a line needed none; a member's sign-in outlived a change to their PIN; the
+Android register replayed an approver's PIN when an intent was refused again, kept PIN digits in
+saved state, and listed every member as an approver; and the back office's role and limit fields
+could show what wasn't so. Left as gaps: `resolve(Again)` prints an unconfirmed receipt again
+without the gate, as staff decide what an unconfirmed job did; a print job doesn't name the
+approval that allowed it; hashing a PIN holds the register's lock for as long as Argon2 takes,
+some 100 to 400 ms on a slow device, and a device without the memory aborts; a kernel older than
+this one refuses a format-2 profile, and keeps the format-1 one it has, so a fleet updates its
+apps before it publishes roles; and the cell hashes every new PIN of a request on the location's
+thread.
 
 ## Consequences
 

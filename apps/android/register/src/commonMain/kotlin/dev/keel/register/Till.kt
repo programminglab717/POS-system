@@ -20,6 +20,9 @@ interface Till {
      */
     fun approve(approver: String, pin: String)
 
+    /** Who may approve what was last refused for want of an approval: members' identifiers. */
+    fun approvers(): List<String> = emptyList()
+
     /** Signs whoever is signed in out. */
     fun signOut()
 
