@@ -7,7 +7,8 @@ use std::path::Path;
 use keel_domain::checkout::Checkout;
 use keel_domain::codec::ProfileVersion;
 use keel_domain::order::{
-    Channel, Check, LineAdded, LineChanged, Mode, Order, OrderCommand, OrderCreated,
+    Channel, Check, Discount, DiscountApplied, DiscountValue, LineAdded, LineChanged, Mode, Order,
+    OrderCommand, OrderCreated, Reason,
 };
 use keel_domain::payment::{CashTendered, Payment, PaymentCaptured, PaymentCommand, Tender};
 use keel_domain::profile::{Choice, Member, Profile};
@@ -328,6 +329,59 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         )?;
         self.spend(granted.as_ref());
         Ok(ticket)
+    }
+
+    /// Puts a discount on `line` of `order`, or on the whole order when `line` is `None`, for
+    /// `reason`: `discount.apply`, for its percentage and what it takes off before tax, which the
+    /// member's role permits or a manager approves (ADR-0029, ADR-0030). An amount off counts as
+    /// the percentage it takes of what is left of its line, rounded up.
+    ///
+    /// # Errors
+    /// [`RuntimeError::ApprovalRequired`] or [`RuntimeError::NotApprover`] if it needs an approval
+    /// it doesn't have; [`RuntimeError`] if no one is signed in, or the order refuses it: the
+    /// line isn't live or is on a closed check, a check is closed, or the discount is invalid.
+    pub fn apply_discount(
+        &mut self,
+        order: Id<Order>,
+        line: Option<Id<keel_domain::order::Line>>,
+        value: DiscountValue,
+        reason: Reason,
+    ) -> Result<Ticket, RuntimeError> {
+        let discount = self.ids.generate(self.clock.now())?;
+        let applied = DiscountApplied { discount, line, value, reason };
+        let loaded = self.store.load(Order::new(order))?;
+        known(&loaded)?;
+        // The order's own rules come before an approval is asked for one it would refuse.
+        let command = OrderCommand::ApplyDiscount(applied.clone());
+        loaded.decide(self.location(), self.device, command.clone())?;
+        let effect = loaded
+            .discount_effect(&applied, &self.profile.data().rules)?
+            .ok_or(RuntimeError::UnknownOrder(order))?;
+        let request = Request {
+            action: Action::DiscountApply,
+            amount: Some(effect.taken),
+            percent: Some(effect.percent),
+        };
+        let granted = self.gate(request, Some(order.cast()))?;
+        let meta = self.meta()?;
+        let stream = self.approval_stream(granted.as_ref())?;
+        let ticket = self.decide_approved(order, command, &meta, granted.as_ref(), stream)?;
+        self.spend(granted.as_ref());
+        Ok(ticket)
+    }
+
+    /// Takes `discount` off `order`, which needs no approval.
+    ///
+    /// # Errors
+    /// [`RuntimeError`] if no one is signed in, or the order refuses: it has no such discount,
+    /// or it is on a closed check.
+    pub fn remove_discount(
+        &mut self,
+        order: Id<Order>,
+        discount: Id<Discount>,
+    ) -> Result<Ticket, RuntimeError> {
+        let meta = self.meta()?;
+        self.decide(order, OrderCommand::RemoveDiscount(discount), &meta)
     }
 
     /// A stream for the approval `granted`, if there is one.

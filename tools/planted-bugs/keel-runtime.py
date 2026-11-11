@@ -128,15 +128,12 @@ BUGS = [
         .lines()
         .iter()
         .filter_map(|line| {
-            let charge = closed.lines.iter().find(|charge| charge.line == line.id())?;
-            Some(ticket_line(line, charge.gross, locale))
-        })
-        .collect();""",
+            let charge = closed.lines.iter().find(|charge| charge.line == line.id())?;""",
         """    let lines = closed
         .lines
         .iter()
-        .filter_map(|charge| Some(ticket_line(order.line(charge.line)?, charge.gross, locale)))
-        .collect();""",
+        .filter_map(|charge| {
+            let line = order.line(charge.line)?;""",
     ),
     (
         "runtime: a paid ticket lists its taxes by identifier",
@@ -628,5 +625,30 @@ BUGS = [
         "src/publication.rs",
         "                (Some(before), Some(after)) => before.role != after.role || before.pin != after.pin,",
         "                (Some(_), Some(_)) => false,",
+    ),
+    # Discounts (ADR-0030): the gate.
+    (
+        "discount: the gate is asked for no amount",
+        "src/runtime.rs",
+        "            amount: Some(effect.taken),",
+        "            amount: None,",
+    ),
+    (
+        "discount: the gate is asked for no percentage",
+        "src/runtime.rs",
+        "            percent: Some(effect.percent),",
+        "            percent: None,",
+    ),
+    (
+        "discount: a discount isn't gated",
+        "src/runtime.rs",
+        "        let granted = self.gate(request, Some(order.cast()))?;",
+        "        let granted: Option<Granted> = None;\n        let _ = request;",
+    ),
+    (
+        "discount: a discount the order refuses asks for an approval first",
+        "src/runtime.rs",
+        "        loaded.decide(self.location(), self.device, command.clone())?;",
+        "        let _ = &loaded;",
     ),
 ]

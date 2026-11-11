@@ -2872,22 +2872,16 @@ BUGS = [
     (
         "discount: a foreign amount applies",
         "src/order/state.rs",
-        """        if foreign {
-            return self.conflict(meta, ConflictKind::CurrencyMismatch(id));
-        }""",
-        """        if foreign {
-            self.conflict(meta, ConflictKind::CurrencyMismatch(id));
-        }""",
+        "        if foreign {",
+        "        if foreign && false {",
     ),
     (
         "discount: a removed line takes a discount",
         "src/order/state.rs",
         """        if !line.is_live() {
-            return self.conflict(meta, ConflictKind::DiscountedAfterRemoval(id));
-        }""",
-        """        if !line.is_live() {
-            self.conflict(meta, ConflictKind::DiscountedAfterRemoval(id));
-        }""",
+            return self.conflict(meta, ConflictKind::DiscountedAfterRemoval(id));""",
+        """        if !line.is_live() && false {
+            return self.conflict(meta, ConflictKind::DiscountedAfterRemoval(id));""",
     ),
     (
         "discount: a frozen line's discount isn't reported",
@@ -2972,5 +2966,17 @@ BUGS = [
         "src/order/basket.rs",
         "    let discounts = discounts.iter().map(|applied| discount(applied, None)).collect();",
         "    let discounts = discounts.iter().take(0).map(|applied| discount(applied, None)).collect();",
+    ),
+    (
+        "discount: an amount's share rounds down",
+        "src/order/basket.rs",
+        "scaled.checked_add(left)?.checked_sub(1)?.checked_div(left)",
+        "scaled.checked_div(left)",
+    ),
+    (
+        "discount: an amount's share is of the line's gross",
+        "src/order/basket.rs",
+        "        let left = line.net.checked_add(order_share)?.checked_add(taken)?;",
+        "        let left = line.gross.checked_add(order_share)?.checked_sub(order_share)?;",
     ),
 ]

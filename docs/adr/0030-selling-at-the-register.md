@@ -26,14 +26,22 @@ What is built shapes it:
 
 ## Decision
 
-1. **Discounts are order events.** `order.discount_applied` v1, `{1: discount, 2: line, 3: kind,
-   4: value, 5: reason}`: its identifier; the line it is on, absent for the whole order; kind 0 a
-   percentage, its value in basis points from 1 to 10,000, or 1 an amount, its value money; and
-   the reason, the merchant's code with an optional note. `order.discount_removed` v1, `{1:
-   discount}`. Each prices as `keel-pricing`'s discount, on its line or on the order, in the order
-   they were applied. A discount on the whole order is a percentage: an amount on the whole of a
-   split order has no one right share for each check. A discount can't be applied to a line or
-   order that can't be changed: a fired or closed line, a closed check.
+1. **Discounts are order events.** `order.discount_applied` v1, `{1: discount, 2: line, 3:
+   percent, 4: amount, 5: reason code, 6: note}`: its identifier; the line it is on, absent for
+   the whole order; exactly one of a percentage, in basis points from 1 to 10,000, or an amount,
+   more than zero; and the reason, the merchant's code with an optional note.
+   `order.discount_removed` v1, `{1: discount}`. Each prices as `keel-pricing`'s discount, on its
+   line or on the order, in the order they were applied. A discount on the whole order is a
+   percentage: an amount on the whole of a split order has no one right share for each check. An
+   amount off a line shared among checks is split among them as the line is, so each check takes
+   its part. A discount's identifier names it for good: once applied, even if since taken off, it
+   is never applied again. A discount goes on a live line (pending or fired: a meal is often
+   discounted after it is served) that has no part on a closed check, or on the whole order while
+   no check is closed; it comes off on the same terms, but always off a line since removed or
+   voided. The fold applies what it can and reports the rest: a discount on a removed line or in
+   another currency doesn't apply; one on a frozen line, or on the whole order once it is closed
+   or a check is, applies and is reported, since the closed checks' snapshots stand; taking off a
+   discount never applied is reported, and one already taken off, as two devices may, is not.
 
 2. **A discount is gated as `discount.apply`**, with its percentage and the amount it takes off,
    before tax, as the kernel prices it: "10% and $5" means a 10% discount that takes off $5 at

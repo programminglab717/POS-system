@@ -30,6 +30,7 @@ mod state;
 mod tests;
 mod types;
 
+pub use basket::DiscountEffect;
 pub use checks::{Allocation, Check, CheckShare, LinesAllocated};
 pub use closing::{CheckClosed, LineCharge, TaxCharge};
 pub use commands::{CommandError, OrderCommand};

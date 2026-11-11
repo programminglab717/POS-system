@@ -484,6 +484,8 @@ PartiallyPaid and Paid stages, come later. Payloads follow
 | `order.ownership_granted` | The hub gave the order to the device that asked, under the next lease, in its epoch. |
 | `order.ownership_refused` | The hub refused a request: the lease had moved on, the device already owned the order, or a payment was in progress. |
 | `order.ownership_overridden` | A device took the order on a manager's word, from the lease it saw, with a reason. |
+| `order.discount_applied` | A discount went on a line, a percentage or an amount, or on the whole order, a percentage, with a reason (ADR-0030). |
+| `order.discount_removed` | A discount came off. |
 
 - **A line's life.** A line is *pending* until it is fired, then *fired*. A pending line can be
   removed; a fired line can only be voided. Removed and voided lines no longer count, but a line

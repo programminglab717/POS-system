@@ -108,7 +108,9 @@ pub struct Ticket {
     pub state: TicketState,
     /// Its live lines, in the order they were rung.
     pub lines: Vec<TicketLine>,
-    /// The lines' amounts before tax, added up.
+    /// The discounts on the whole order, in the order they were applied.
+    pub discounts: Vec<TicketDiscount>,
+    /// The lines' amounts before tax, less every discount, added up.
     pub subtotal: Amount,
     /// Each tax with something to tax, in the location's order of taxes.
     pub taxes: Vec<TicketTax>,
@@ -137,6 +139,32 @@ pub struct TicketLine {
     pub modifiers: Vec<TicketModifier>,
     /// Its price with its modifiers, for its quantity, before tax.
     pub amount: Amount,
+    /// Its discounts, in the order they were applied.
+    pub discounts: Vec<TicketDiscount>,
+}
+
+/// A discount on a ticket: on a line, or on the whole order (ADR-0030).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TicketDiscount {
+    /// The discount: what `remove_discount` takes.
+    pub discount: String,
+    /// Why it was given: the merchant's reason code.
+    pub reason: String,
+    /// The percentage it takes, in basis points; `None` for an amount off.
+    pub percent_basis_points: Option<u32>,
+    /// What it took off, before tax.
+    pub amount: Amount,
+}
+
+impl From<&runtime::TicketDiscount> for TicketDiscount {
+    fn from(discount: &runtime::TicketDiscount) -> TicketDiscount {
+        TicketDiscount {
+            discount: discount.discount.to_string(),
+            reason: discount.reason.as_str().to_owned(),
+            percent_basis_points: discount.percent,
+            amount: (&discount.amount).into(),
+        }
+    }
 }
 
 /// A modifier on a ticket's line.
@@ -198,8 +226,10 @@ impl From<&runtime::Ticket> for Ticket {
                         })
                         .collect(),
                     amount: (&line.amount).into(),
+                    discounts: line.discounts.iter().map(TicketDiscount::from).collect(),
                 })
                 .collect(),
+            discounts: ticket.discounts.iter().map(TicketDiscount::from).collect(),
             subtotal: (&ticket.subtotal).into(),
             taxes: ticket
                 .taxes

@@ -2,7 +2,8 @@
 //! decisions 2 and 5).
 
 use keel_domain::codec::Name;
-use keel_domain::order::{ChosenModifier, Line, Order, OrderStatus, Prefix};
+use keel_domain::codec::ReasonCode;
+use keel_domain::order::{ChosenModifier, Discount, Line, Order, OrderStatus, Prefix};
 use keel_domain::profile::{CatalogGroup, Profile};
 use keel_domain::refs::{Modifier, ModifierGroup, Variant};
 use keel_pricing::Tax;
@@ -61,7 +62,9 @@ pub struct Ticket {
     pub state: TicketState,
     /// Its live lines, in the order they were added.
     pub lines: Vec<TicketLine>,
-    /// The lines' amounts before tax, added up.
+    /// The discounts on the whole order, in the order they were applied (ADR-0030).
+    pub discounts: Vec<TicketDiscount>,
+    /// The lines' amounts before tax, less every discount, added up.
     pub subtotal: Amount,
     /// Each tax with something to tax, in the location's order of taxes.
     pub taxes: Vec<TicketTax>,
@@ -89,6 +92,21 @@ pub struct TicketLine {
     /// Its modifiers, each followed by those chosen under it.
     pub modifiers: Vec<TicketModifier>,
     /// Its price with its modifiers, for its quantity, before tax.
+    pub amount: Amount,
+    /// Its discounts, in the order they were applied (ADR-0030).
+    pub discounts: Vec<TicketDiscount>,
+}
+
+/// A discount on a ticket: on a line, or on the whole order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TicketDiscount {
+    /// The discount.
+    pub discount: Id<Discount>,
+    /// Why it was given: the merchant's reason code.
+    pub reason: ReasonCode,
+    /// The percentage it takes, in basis points; `None` for an amount off.
+    pub percent: Option<u32>,
+    /// What it took off, before tax.
     pub amount: Amount,
 }
 

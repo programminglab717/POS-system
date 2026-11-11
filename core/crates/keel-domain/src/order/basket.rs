@@ -2,12 +2,12 @@
 
 use core::num::NonZeroU32;
 
-use keel_pricing::{Basket, Dining, Discount, Modifier, Share};
-use keel_types::{Id, Rate};
+use keel_pricing::{Basket, Dining, Discount, Modifier, PricingError, Rules, Share};
+use keel_types::{Id, Money, Rate};
 
 use super::checks::Check;
 use super::state::{Line, Order, OrderInfo};
-use super::types::{ChosenModifier, DiscountApplied, DiscountValue, Mode};
+use super::types::{ChosenModifier, DiscountApplied, DiscountValue, MAX_DISCOUNT_PERCENT, Mode};
 
 impl Order {
     /// The basket that prices the whole order as one sale: its live lines, each with the prices
@@ -59,6 +59,74 @@ impl Order {
     pub fn lines_on(&self, check: Id<Check>) -> impl Iterator<Item = &Line> {
         self.live_lines()
             .filter(move |line| line.allocation().iter().any(|share| share.check == check))
+    }
+}
+
+/// What a discount would take off an order before tax, as [`Order::discount_effect`] prices
+/// it, for the approval it may need (ADR-0030).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiscountEffect {
+    /// What it would take.
+    pub taken: Money,
+    /// Its percentage, in basis points: a percentage's own; an amount's share of what is left of
+    /// its line when it applies, rounded up, and all of it when nothing is left.
+    pub percent: u32,
+}
+
+impl Order {
+    /// What `applied` would take off the order, priced by `rules`, after the discounts it has:
+    /// the discount's own part, before the whole order's discounts after it take their share.
+    /// `None` until the order is created, or for a line that isn't live.
+    ///
+    /// # Errors
+    /// [`PricingError`] if the order, with the discount, can't be priced.
+    pub fn discount_effect(
+        &self,
+        applied: &DiscountApplied,
+        rules: &Rules,
+    ) -> Result<Option<DiscountEffect>, PricingError> {
+        let Some(mut basket) = self.basket() else { return Ok(None) };
+        let priced = discount(applied, None);
+        let Some(at) = applied.line else {
+            basket.discounts.push(priced);
+            let totals = keel_pricing::price(&basket, rules)?;
+            let taken = totals.discounts.last().copied().unwrap_or(Money::zero(basket.currency));
+            return Ok(Some(DiscountEffect { taken, percent: percent_of(applied, taken, taken) }));
+        };
+        let Some(index) = self.live_lines().position(|line| line.id() == at) else {
+            return Ok(None);
+        };
+        let Some(line) = basket.lines.get_mut(index) else { return Ok(None) };
+        line.discounts.push(priced);
+        let totals = keel_pricing::price(&basket, rules)?;
+        let Some(line) = totals.lines.get(index) else { return Ok(None) };
+        let taken = line.discounts.last().copied().unwrap_or(Money::zero(basket.currency));
+        // What was left of the line when the discount applied: its net before the order's
+        // discounts, and before this one.
+        let order_share = Money::sum(basket.currency, line.order_discounts.iter().copied())?;
+        let left = line.net.checked_add(order_share)?.checked_add(taken)?;
+        Ok(Some(DiscountEffect { taken, percent: percent_of(applied, taken, left) }))
+    }
+}
+
+/// The percentage `applied` counts as: a percentage's own, or the share `taken` is of `left`,
+/// rounded up to the next basis point; all of it when nothing was left.
+fn percent_of(applied: &DiscountApplied, taken: Money, left: Money) -> u32 {
+    match applied.value {
+        DiscountValue::Percent(bp) => bp,
+        DiscountValue::Amount(_) => {
+            let (taken, left) = (i128::from(taken.minor()), i128::from(left.minor()));
+            if left <= 0 {
+                return MAX_DISCOUNT_PERCENT;
+            }
+            // |taken| ≤ left < 2^63, so taken × 10,000 + left fits an i128.
+            let share = taken
+                .checked_mul(10_000)
+                .and_then(|scaled| scaled.checked_add(left)?.checked_sub(1)?.checked_div(left));
+            share
+                .and_then(|share| u32::try_from(share).ok())
+                .map_or(MAX_DISCOUNT_PERCENT, |share| share.min(MAX_DISCOUNT_PERCENT))
+        }
     }
 }
 

@@ -12,6 +12,8 @@ use std::net::{TcpListener, ToSocketAddrs};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use keel_doc::{Columns, PrinterProfile};
+use keel_domain::codec::{Note, ReasonCode};
+use keel_domain::order::{DiscountValue, Reason};
 use keel_domain::profile::{self, Profile};
 use keel_domain::roster::Roster;
 use keel_events::envelope::Device;
@@ -53,6 +55,16 @@ pub(crate) fn id<T>(text: &str) -> Result<Id<T>, KeelError> {
     Id::parse(text).ok().filter(|id: &Id<T>| id.to_string() == text).ok_or_else(|| {
         KeelError::invalid(format!("{text:?} isn't an identifier in its canonical form"))
     })
+}
+
+/// A reason: the merchant's `code`, and an optional `note`.
+fn reason(code: &str, note: Option<String>) -> Result<Reason, KeelError> {
+    let code = ReasonCode::new(code)
+        .map_err(|_| KeelError::invalid(format!("{code:?} isn't a reason code")))?;
+    let note = note
+        .map(|note| Note::new(&note).map_err(|_| KeelError::invalid("the note isn't valid")))
+        .transpose()?;
+    Ok(Reason { code, note })
 }
 
 /// The longest [`Register::sync_step`] waits for the network.
@@ -261,6 +273,58 @@ impl Register {
     pub fn remove_line(&self, order: String, line: String) -> Result<Ticket, KeelError> {
         let (order, line) = (id(&order)?, id(&line)?);
         self.with(|runtime| runtime.remove_line(order, line)).map(|ticket| (&ticket).into())
+    }
+
+    /// Takes `basis_points` (from 1, 0.01%, to 10,000, 100%) off `line` of `order`, or off the
+    /// whole order when `line` is `None`, for `reason`, the merchant's code, with an optional
+    /// `note` (ADR-0030). A manager approves one beyond the member's role.
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] if an identifier, the reason or the note isn't valid;
+    /// [`KeelError::ApprovalRequired`] if it needs an approval; and as [`Register::add_item`].
+    pub fn apply_percent_discount(
+        &self,
+        order: String,
+        line: Option<String>,
+        basis_points: u32,
+        reason: String,
+        note: Option<String>,
+    ) -> Result<Ticket, KeelError> {
+        let (order, line) = (id(&order)?, line.as_deref().map(id).transpose()?);
+        let (value, reason) = (DiscountValue::Percent(basis_points), self::reason(&reason, note)?);
+        self.with(|runtime| runtime.apply_discount(order, line, value, reason))
+            .map(|ticket| (&ticket).into())
+    }
+
+    /// Takes `amount`, in the location's currency's minor units, off `line` of `order`, for
+    /// `reason`, with an optional `note` (ADR-0030). A whole order takes only a percentage.
+    ///
+    /// # Errors
+    /// As [`Register::apply_percent_discount`].
+    pub fn apply_amount_discount(
+        &self,
+        order: String,
+        line: String,
+        amount: i64,
+        reason: String,
+        note: Option<String>,
+    ) -> Result<Ticket, KeelError> {
+        let (order, line) = (id(&order)?, id(&line)?);
+        let reason = self::reason(&reason, note)?;
+        self.with(|runtime| {
+            let amount = Money::from_minor(amount, runtime.profile().data().currency);
+            runtime.apply_discount(order, Some(line), DiscountValue::Amount(amount), reason)
+        })
+        .map(|ticket| (&ticket).into())
+    }
+
+    /// Takes `discount` off `order`.
+    ///
+    /// # Errors
+    /// As [`Register::add_item`].
+    pub fn remove_discount(&self, order: String, discount: String) -> Result<Ticket, KeelError> {
+        let (order, discount) = (id(&order)?, id(&discount)?);
+        self.with(|runtime| runtime.remove_discount(order, discount)).map(|ticket| (&ticket).into())
     }
 
     /// Drops `order`, its lines taken off first.

@@ -1,14 +1,18 @@
 //! An order's ticket: its lines, what it costs and what it still owes.
 
 use keel_domain::checkout::Checkout;
-use keel_domain::order::{Check, CheckClosed, Line, Order, OrderStatus};
+use keel_domain::order::{
+    Check, CheckClosed, DiscountApplied, DiscountValue, Line, Order, OrderStatus,
+};
 use keel_domain::payment::Payment;
 use keel_domain::profile::Profile;
 use keel_pricing::{Rules, Tax, round_cash};
 use keel_types::{Id, Locale, Money};
 
 use crate::error::RuntimeError;
-use crate::views::{Amount, Ticket, TicketLine, TicketState, TicketTax, ticket_modifiers};
+use crate::views::{
+    Amount, Ticket, TicketDiscount, TicketLine, TicketState, TicketTax, ticket_modifiers,
+};
 
 /// What is due in cash, and the cash rounding in it.
 pub(crate) struct Cash {
@@ -40,6 +44,7 @@ pub(crate) fn cash_due(profile: &Profile, due: Money) -> Result<Cash, RuntimeErr
 /// What an order's lines were, or are, charged.
 struct Charges {
     lines: Vec<TicketLine>,
+    discounts: Vec<TicketDiscount>,
     subtotal: Money,
     taxes: Vec<TicketTax>,
     total: Money,
@@ -75,6 +80,7 @@ pub(crate) fn ticket(
         order: order.id(),
         state: TicketState::of(order.status()),
         lines: charges.lines,
+        discounts: charges.discounts,
         subtotal: amount(charges.subtotal),
         taxes: charges.taxes,
         total: amount(charges.total),
@@ -92,13 +98,22 @@ fn charged(
     locale: Locale,
 ) -> Result<Charges, RuntimeError> {
     // In the order the lines were rung, as an open order's ticket lists them: the snapshot
-    // lists its lines by identifier.
+    // lists its lines by identifier. It says what each line came to, not what each discount
+    // took, so the discounts are priced again: a closed check's lines and the whole order's
+    // discounts can't change without a conflict, so they price as they did.
+    let basket = order.basket().ok_or(RuntimeError::UnknownOrder(order.id()))?;
+    let totals = keel_pricing::price(&basket, rules)?;
     let lines = order
         .lines()
         .iter()
         .filter_map(|line| {
             let charge = closed.lines.iter().find(|charge| charge.line == line.id())?;
-            Some(ticket_line(line, charge.gross, locale))
+            let taken = order
+                .live_lines()
+                .position(|live| live.id() == line.id())
+                .and_then(|at| totals.lines.get(at))
+                .map_or(&[][..], |line| line.discounts.as_slice());
+            Some(ticket_line(line, charge.gross, taken, locale))
         })
         .collect();
     let subtotal =
@@ -117,7 +132,8 @@ fn charged(
             amount: Amount::new(charge.amount, locale),
         })
         .collect();
-    Ok(Charges { lines, subtotal, taxes, total: closed.total })
+    let discounts = ticket_discounts(order.discounts(), &totals.discounts, locale);
+    Ok(Charges { lines, discounts, subtotal, taxes, total: closed.total })
 }
 
 /// What pricing charges an open order's live lines and taxes.
@@ -127,7 +143,9 @@ fn priced(order: &Order, rules: &Rules, locale: Locale) -> Result<Charges, Runti
     let lines = order
         .live_lines()
         .zip(&totals.lines)
-        .map(|(line, line_totals)| ticket_line(line, line_totals.gross, locale))
+        .map(|(line, line_totals)| {
+            ticket_line(line, line_totals.gross, &line_totals.discounts, locale)
+        })
         .collect();
     let taxes = totals
         .taxes
@@ -139,11 +157,33 @@ fn priced(order: &Order, rules: &Rules, locale: Locale) -> Result<Charges, Runti
             amount: Amount::new(tax.tax, locale),
         })
         .collect();
-    Ok(Charges { lines, subtotal: totals.net, taxes, total: totals.total })
+    let discounts = ticket_discounts(order.discounts(), &totals.discounts, locale);
+    Ok(Charges { lines, discounts, subtotal: totals.net, taxes, total: totals.total })
 }
 
-/// A ticket's line for `line`, charged `gross` before tax.
-fn ticket_line(line: &Line, gross: Money, locale: Locale) -> TicketLine {
+/// The discounts `applied`, each with what it took, as `taken` gives them in the same order.
+fn ticket_discounts(
+    applied: &[DiscountApplied],
+    taken: &[Money],
+    locale: Locale,
+) -> Vec<TicketDiscount> {
+    applied
+        .iter()
+        .zip(taken)
+        .map(|(applied, &taken)| TicketDiscount {
+            discount: applied.discount,
+            reason: applied.reason.code.clone(),
+            percent: match applied.value {
+                DiscountValue::Percent(bp) => Some(bp),
+                DiscountValue::Amount(_) => None,
+            },
+            amount: Amount::new(taken, locale),
+        })
+        .collect()
+}
+
+/// A ticket's line for `line`, charged `gross` before tax, its discounts having taken `taken`.
+fn ticket_line(line: &Line, gross: Money, taken: &[Money], locale: Locale) -> TicketLine {
     let mut modifiers = Vec::new();
     ticket_modifiers(line.modifiers(), 1, locale, &mut modifiers);
     TicketLine {
@@ -153,6 +193,7 @@ fn ticket_line(line: &Line, gross: Money, locale: Locale) -> TicketLine {
         quantity_text: locale.quantity(line.quantity()),
         modifiers,
         amount: Amount::new(gross, locale),
+        discounts: ticket_discounts(line.discounts(), taken, locale),
     }
 }
 

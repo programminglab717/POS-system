@@ -1582,6 +1582,21 @@ proptest! {
         accepted_exactly_when_valid(&event, &change)?;
     }
 
+    /// The same for discounts (ADR-0030), on their own, so that each of their fields, and the
+    /// rules across them, are tried often.
+    #[test]
+    fn changed_discount_payloads_are_accepted_exactly_when_valid(
+        (event, change) in any_case(
+            prop_oneof![
+                support::any_discount_applied().prop_map(OrderEvent::DiscountApplied),
+                support::any_id().prop_map(|discount| OrderEvent::DiscountRemoved { discount }),
+            ]
+            .prop_map(Event::Order),
+        ),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
     /// Every number in an ownership payload, a lease or an epoch, set to each end of its range,
     /// next to them, and past them, decodes exactly when the model says it is valid: a grant's
     /// lease and epoch start at 1, a request's or an override's lease at 0.
