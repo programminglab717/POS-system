@@ -9,9 +9,9 @@ use keel_domain::codec::{
 };
 use keel_domain::order::{
     Allocation, AttributesChanged, Channel, CheckClosed, ChosenModifier, DiscountApplied,
-    DiscountValue, Epoch, ItemSnapshot, Lease, LineAdded, LineChanged, LineCharge, LinesAllocated,
-    Mode, OrderCreated, OrderEvent, OwnershipGranted, Placement, Prefix, Reason, Refusal,
-    TaxCharge,
+    DiscountValue, Epoch, ItemSnapshot, Lease, LineAdded, LineChanged, LineCharge, LineRepriced,
+    LinesAllocated, Mode, OrderCreated, OrderEvent, OwnershipGranted, Placement, Prefix, Reason,
+    Refusal, TaxCharge,
 };
 use keel_domain::payment::{
     CashTendered, PaymentAuthorized, PaymentCaptured, PaymentEnded, PaymentEvent, PaymentInitiated,
@@ -422,5 +422,12 @@ pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
             .prop_map(|(lease, reason)| OrderEvent::OwnershipOverridden { lease, reason }),
         any_discount_applied().prop_map(OrderEvent::DiscountApplied),
         any_id().prop_map(|discount| OrderEvent::DiscountRemoved { discount }),
+        (any_id(), any_currency().prop_flat_map(price), any_reason()).prop_map(
+            |(line, unit_price, reason)| OrderEvent::LineRepriced(LineRepriced {
+                line,
+                unit_price,
+                reason,
+            })
+        ),
     ]
 }

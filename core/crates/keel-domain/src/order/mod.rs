@@ -41,6 +41,6 @@ pub use state::{Conflict, ConflictKind, Line, LineStatus, Order, OrderInfo, Orde
 pub use crate::aggregate::Skipped;
 pub use crate::hub::Epoch;
 pub use types::{
-    Channel, ChosenModifier, Discount, DiscountApplied, DiscountValue, ItemSnapshot,
+    Channel, ChosenModifier, Discount, DiscountApplied, DiscountValue, ItemSnapshot, LineRepriced,
     MAX_DISCOUNT_PERCENT, Mode, Placement, Prefix, Reason,
 };

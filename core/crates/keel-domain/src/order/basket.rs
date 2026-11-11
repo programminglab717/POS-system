@@ -153,7 +153,7 @@ fn discount(applied: &DiscountApplied, share: Option<&Share>) -> Discount {
 /// A line as pricing sees it, whole or shared.
 fn priced(line: &Line, share: Option<Share>) -> keel_pricing::Line {
     keel_pricing::Line {
-        unit_price: line.item().unit_price,
+        unit_price: line.unit_price(),
         modifiers: line.modifiers().iter().map(modifier).collect(),
         quantity: line.quantity(),
         tax_category: line.item().tax_category.cast(),

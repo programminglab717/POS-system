@@ -642,14 +642,20 @@ BUGS = [
     (
         "discount: a discount isn't gated",
         "src/runtime.rs",
-        "        let granted = self.gate(request, Some(order.cast()))?;",
-        "        let granted: Option<Granted> = None;\n        let _ = request;",
+        """            percent: Some(effect.percent),
+        };
+        let granted = self.gate(request, Some(order.cast()))?;""",
+        """            percent: Some(effect.percent),
+        };
+        let granted: Option<Granted> = None;
+        let _ = request;""",
     ),
     (
         "discount: a discount the order refuses asks for an approval first",
         "src/runtime.rs",
-        "        loaded.decide(self.location(), self.device, command.clone())?;",
-        "        let _ = &loaded;",
+        """        let command = OrderCommand::ApplyDiscount(applied.clone());
+        loaded.decide(self.location(), self.device, command.clone())?;""",
+        """        let command = OrderCommand::ApplyDiscount(applied.clone());""",
     ),
     (
         "discount: a receipt leaves out a line's discounts",
@@ -662,5 +668,30 @@ BUGS = [
         "src/receipt.rs",
         "    for discount in &ticket.discounts {",
         "    for discount in ticket.discounts.iter().take(0) {",
+    ),
+    (
+        "reprice: the gate is asked for the unit difference, not the line's",
+        "src/runtime.rs",
+        "            .mul_decimal(now.quantity().to_decimal(), extension)?;",
+        "            .mul_decimal(Quantity::from_whole(1, Unit::Each)?.to_decimal(), extension)?;",
+    ),
+    (
+        "reprice: a price set by hand isn't gated",
+        "src/runtime.rs",
+        """            percent: None,
+        };
+        let granted = self.gate(request, Some(order.cast()))?;""",
+        """            percent: None,
+        };
+        let _ = request;
+        let granted: Option<Granted> = None;""",
+    ),
+    (
+        "reprice: a price the order refuses asks for an approval first",
+        "src/runtime.rs",
+        """        let command = OrderCommand::RepriceLine(repriced);
+        // The order's own rules come before an approval is asked for one it would refuse.
+        loaded.decide(self.location(), self.device, command.clone())?;""",
+        """        let command = OrderCommand::RepriceLine(repriced);""",
     ),
 ]

@@ -1338,6 +1338,14 @@ fn golden_events() -> Vec<OrderEvent> {
             },
         }),
         OrderEvent::DiscountRemoved { discount: id(0xD1) },
+        OrderEvent::LineRepriced(LineRepriced {
+            line: id(1),
+            unit_price: usd(395),
+            reason: Reason {
+                code: ReasonCode::new("price_match").unwrap(),
+                note: Some(Note::new("cafe across the street").unwrap()),
+            },
+        }),
     ]
 }
 
@@ -1416,7 +1424,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 /// The order payloads, pinned forever: one example of each schema. Python's `cbor2` decoded
 /// each one, confirmed it is canonical, and matched it field by field against the documented
 /// key tables; it encoded the check payloads, the closing and reopening ones, the ownership ones
-/// (ADR-0021) and the discount ones (ADR-0030), itself, from the key tables. If this test fails, a payload format changed,
+/// (ADR-0021) and the discount and pricing ones (ADR-0030), itself, from the key tables. If this test fails, a payload format changed,
 /// and stored events would no longer decode.
 #[test]
 fn the_payload_formats_are_pinned() {
@@ -1472,6 +1480,10 @@ fn the_payload_formats_are_pinned() {
             "a501500192f0c10000700080000000000000d102500192f0c1000070008000000000000001048218fa6355534405676c6f79616c74790667726567756c6172",
         ),
         ("order.discount_removed", "a101500192f0c10000700080000000000000d1"),
+        (
+            "order.line_repriced",
+            "a401500192f0c1000070008000000000000001028219018b63555344036b70726963655f6d61746368047663616665206163726f73732074686520737472656574",
+        ),
     ];
     let events = golden_events();
     assert_eq!(events.len(), pinned.len());
@@ -1769,4 +1781,75 @@ fn a_discounts_effect_is_what_it_would_take() {
     script.apply(&OrderEvent::LineRemoved { line: id(2) });
     assert_eq!(script.order.discount_effect(&amount_off(3, 2, usd(100)), &rules), Ok(None));
     assert_eq!(script.order.discount_effect(&amount_off(3, 7, usd(100)), &rules), Ok(None));
+}
+
+fn repriced(line: u64, price: Money) -> LineRepriced {
+    LineRepriced { line: id(line), unit_price: price, reason: reason("price_match") }
+}
+
+#[test]
+fn a_line_priced_again_prices_at_its_new_price() {
+    let mut script = Script::created();
+    let mut latte = added(1, usd(450));
+    latte.quantity = each(2);
+    script.apply(&OrderEvent::LineAdded(latte));
+    script.apply(&OrderEvent::LineRepriced(repriced(1, usd(395))));
+    assert_eq!(script.kinds(), []);
+    let line = script.order.line(id(1)).unwrap();
+    assert_eq!(line.unit_price(), usd(395));
+    assert_eq!(line.item().unit_price, usd(450), "the price it was rung at stays");
+    assert_eq!(line.repriced(), Some(&repriced(1, usd(395))));
+    // Two at $3.95.
+    let totals =
+        keel_pricing::price(&script.order.basket().unwrap(), &keel_pricing::Rules::untaxed())
+            .unwrap();
+    assert_eq!(totals.lines[0].gross, usd(790));
+    // The last price set is the line's; free is a price.
+    script.apply(&OrderEvent::LineRepriced(repriced(1, usd(0))));
+    assert_eq!(script.order.line(id(1)).unwrap().unit_price(), usd(0));
+
+    // A price in another currency, or for a line removed or unknown, doesn't apply; one on a
+    // closed check applies and is reported.
+    let foreign = script.apply(&OrderEvent::LineRepriced(repriced(1, eur(100))));
+    let unknown = script.apply(&OrderEvent::LineRepriced(repriced(7, usd(100))));
+    script.apply(&OrderEvent::LineAdded(added(2, usd(300))));
+    script.apply(&OrderEvent::LineRemoved { line: id(2) });
+    let removed = script.apply(&OrderEvent::LineRepriced(repriced(2, usd(100))));
+    script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(1, 100)])));
+    let frozen = script.apply(&OrderEvent::LineRepriced(repriced(1, usd(100))));
+    assert_eq!(script.order.line(id(1)).unwrap().unit_price(), usd(100));
+    assert_eq!(script.order.line(id(2)).unwrap().unit_price(), usd(300));
+    let conflicts: Vec<(Id<Event>, ConflictKind)> =
+        script.order.conflicts().iter().map(|c| (c.event, c.kind)).collect();
+    assert_eq!(
+        conflicts,
+        [
+            (foreign, ConflictKind::CurrencyMismatch(id(1))),
+            (unknown, ConflictKind::UnknownLine(id(7))),
+            (removed, ConflictKind::RepricedAfterRemoval(id(2))),
+            (frozen, ConflictKind::ChangedOnClosedCheck(id(1))),
+        ]
+    );
+}
+
+#[test]
+fn a_line_is_priced_again_only_as_its_rules_allow() {
+    let reprice = |line, price| OrderCommand::RepriceLine(repriced(line, price));
+    let mut device = Device::with_line(true);
+    assert_eq!(
+        device.run(reprice(1, usd(-1))),
+        Err(CommandError::Invalid(PayloadError::Invalid("unit price")))
+    );
+    assert_eq!(device.run(reprice(7, usd(50))), Err(CommandError::UnknownLine(id(7))));
+    assert_eq!(device.run(reprice(1, eur(50))), Err(CommandError::WrongCurrency));
+    assert_eq!(device.run(reprice(1, usd(100))), Err(CommandError::NoChange));
+    // A fired line is priced again; then its new price is the one that changes nothing.
+    device.run(reprice(1, usd(50))).unwrap();
+    assert_eq!(device.run(reprice(1, usd(50))), Err(CommandError::NoChange));
+    device.run(reprice(1, usd(100))).unwrap();
+    device.run(OrderCommand::VoidLine { line: id(1), reason: reason("kitchen_error") }).unwrap();
+    assert_eq!(device.run(reprice(1, usd(0))), Err(CommandError::LineNotLive(id(1))));
+    let mut device = Device::with_line(false);
+    device.record(&OrderEvent::CheckClosed(closed(0xA, &[(1, 100)])));
+    assert_eq!(device.run(reprice(1, usd(0))), Err(CommandError::LineOnClosedCheck(id(1))));
 }

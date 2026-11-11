@@ -140,3 +140,69 @@ fn a_discount_the_order_refuses_asks_for_no_approval() {
         Err(RuntimeError::UnknownOrder(_))
     ));
 }
+
+/// Sam, a cashier, signed in, with two espressos, $6.50, on an order.
+fn two_espressos(runtime: &mut TestRuntime) -> Ticket {
+    runtime.sign_in(id(0x502), "2468").unwrap();
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(order, id(0x401), &[], NonZeroU32::new(2).unwrap()).unwrap()
+}
+
+#[test]
+fn a_price_set_by_hand_is_approved_for_the_difference_over_the_whole_line() {
+    let scratch = Scratch::new();
+    let mut runtime = register(&scratch, demo().unwrap());
+    let ticket = two_espressos(&mut runtime);
+    let (order, line) = (ticket.order, ticket.lines[0].line);
+    // The same price changes nothing, and asks for no approval.
+    assert!(matches!(
+        runtime.reprice_line(order, line, usd(325), reason("price_match")),
+        Err(RuntimeError::Order(_))
+    ));
+    assert!(matches!(runtime.approve(id(0x501), "1234"), Err(RuntimeError::NothingToApprove)));
+    // A cashier's role doesn't price by hand: $2.75 instead of $3.25, for two, is $1.00 off.
+    assert!(matches!(
+        runtime.reprice_line(order, line, usd(275), reason("price_match")),
+        Err(RuntimeError::ApprovalRequired(Action::PriceOverride))
+    ));
+    runtime.approve(id(0x501), "1234").unwrap();
+    let ticket = runtime.reprice_line(order, line, usd(275), reason("price_match")).unwrap();
+    let asked = Request { action: Action::PriceOverride, amount: Some(usd(100)), percent: None };
+    assert_eq!(approved(&runtime), [asked]);
+    let repriced = ticket.lines[0].repriced.as_ref().unwrap();
+    assert_eq!(repriced.unit_price.money, usd(275));
+    assert_eq!(repriced.rung.money, usd(325));
+    assert_eq!(repriced.reason.as_str(), "price_match");
+    assert_eq!(ticket.lines[0].amount.money, usd(550));
+    assert_eq!(ticket.subtotal.money, usd(550));
+    // Up as well as down: $3.00 is $0.25 more each, $0.50, and a manager prices alone.
+    runtime.sign_in(id(0x501), "1234").unwrap();
+    let ticket = runtime.reprice_line(order, line, usd(300), reason("upcharge")).unwrap();
+    assert_eq!(ticket.lines[0].amount.money, usd(600));
+    assert_eq!(approved(&runtime).len(), 1, "no approval for what a role permits");
+    // Free is a price; less than free isn't.
+    runtime.reprice_line(order, line, usd(0), reason("manager")).unwrap();
+    assert!(matches!(
+        runtime.reprice_line(order, line, usd(-1), reason("manager")),
+        Err(RuntimeError::Order(_))
+    ));
+}
+
+#[test]
+fn a_lines_notes_are_set_and_cleared() {
+    let scratch = Scratch::new();
+    let mut runtime = register(&scratch, demo().unwrap());
+    let ticket = two_espressos(&mut runtime);
+    let (order, line) = (ticket.order, ticket.lines[0].line);
+    let notes = keel_domain::codec::Note::new("extra hot").unwrap();
+    let ticket = runtime.set_line_notes(order, line, Some(notes.clone())).unwrap();
+    assert_eq!(ticket.lines[0].notes, Some(notes.clone()));
+    // The same notes change nothing.
+    assert!(matches!(
+        runtime.set_line_notes(order, line, Some(notes)),
+        Err(RuntimeError::Order(_))
+    ));
+    let ticket = runtime.set_line_notes(order, line, None).unwrap();
+    assert_eq!(ticket.lines[0].notes, None);
+    assert!(matches!(runtime.set_line_notes(order, line, None), Err(RuntimeError::Order(_))));
+}

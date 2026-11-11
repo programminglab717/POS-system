@@ -11,7 +11,8 @@ use keel_types::{Id, Locale, Money};
 
 use crate::error::RuntimeError;
 use crate::views::{
-    Amount, Ticket, TicketDiscount, TicketLine, TicketState, TicketTax, ticket_modifiers,
+    Amount, Ticket, TicketDiscount, TicketLine, TicketRepriced, TicketState, TicketTax,
+    ticket_modifiers,
 };
 
 /// What is due in cash, and the cash rounding in it.
@@ -194,6 +195,12 @@ fn ticket_line(line: &Line, gross: Money, taken: &[Money], locale: Locale) -> Ti
         modifiers,
         amount: Amount::new(gross, locale),
         discounts: ticket_discounts(line.discounts(), taken, locale),
+        repriced: line.repriced().map(|repriced| TicketRepriced {
+            unit_price: Amount::new(repriced.unit_price, locale),
+            rung: Amount::new(line.item().unit_price, locale),
+            reason: repriced.reason.code.clone(),
+        }),
+        notes: line.notes().cloned(),
     }
 }
 

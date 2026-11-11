@@ -141,6 +141,21 @@ pub struct TicketLine {
     pub amount: Amount,
     /// Its discounts, in the order they were applied.
     pub discounts: Vec<TicketDiscount>,
+    /// The price staff set for it, if they did.
+    pub repriced: Option<TicketRepriced>,
+    /// Its notes, for the kitchen and the receipt.
+    pub notes: Option<String>,
+}
+
+/// A line's price as staff set it, and as it was rung (ADR-0030).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TicketRepriced {
+    /// The unit price it is sold at now.
+    pub unit_price: Amount,
+    /// The unit price it was rung at.
+    pub rung: Amount,
+    /// Why: the merchant's reason code.
+    pub reason: String,
 }
 
 /// A discount on a ticket: on a line, or on the whole order (ADR-0030).
@@ -227,6 +242,12 @@ impl From<&runtime::Ticket> for Ticket {
                         .collect(),
                     amount: (&line.amount).into(),
                     discounts: line.discounts.iter().map(TicketDiscount::from).collect(),
+                    repriced: line.repriced.as_ref().map(|repriced| TicketRepriced {
+                        unit_price: (&repriced.unit_price).into(),
+                        rung: (&repriced.rung).into(),
+                        reason: repriced.reason.as_str().to_owned(),
+                    }),
+                    notes: line.notes.as_ref().map(|notes| notes.as_str().to_owned()),
                 })
                 .collect(),
             discounts: ticket.discounts.iter().map(TicketDiscount::from).collect(),

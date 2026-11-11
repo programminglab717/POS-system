@@ -240,3 +240,25 @@ impl DiscountApplied {
         }
     }
 }
+
+/// A line priced again, at a unit price staff set, for a reason (ADR-0030): it is priced at
+/// `unit_price`, with its modifiers, from then on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineRepriced {
+    /// The line.
+    pub line: Id<super::state::Line>,
+    /// Its new unit price: zero or more, in the order's currency.
+    pub unit_price: Money,
+    /// Why.
+    pub reason: Reason,
+}
+
+impl LineRepriced {
+    /// Checks the payload's rule: a price of zero or more.
+    pub(crate) fn validate(&self) -> Result<(), crate::codec::PayloadError> {
+        if self.unit_price.is_negative() {
+            return Err(crate::codec::PayloadError::Invalid("unit price"));
+        }
+        Ok(())
+    }
+}

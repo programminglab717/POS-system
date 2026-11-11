@@ -2,7 +2,7 @@
 //! decisions 2 and 5).
 
 use keel_domain::codec::Name;
-use keel_domain::codec::ReasonCode;
+use keel_domain::codec::{Note, ReasonCode};
 use keel_domain::order::{ChosenModifier, Discount, Line, Order, OrderStatus, Prefix};
 use keel_domain::profile::{CatalogGroup, Profile};
 use keel_domain::refs::{Modifier, ModifierGroup, Variant};
@@ -95,6 +95,21 @@ pub struct TicketLine {
     pub amount: Amount,
     /// Its discounts, in the order they were applied (ADR-0030).
     pub discounts: Vec<TicketDiscount>,
+    /// The price staff set for it, if they did (ADR-0030).
+    pub repriced: Option<TicketRepriced>,
+    /// Its notes, for the kitchen and the receipt.
+    pub notes: Option<Note>,
+}
+
+/// A line's price as staff set it, and as it was rung.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TicketRepriced {
+    /// The unit price it is sold at now.
+    pub unit_price: Amount,
+    /// The unit price it was rung at.
+    pub rung: Amount,
+    /// Why: the merchant's reason code.
+    pub reason: ReasonCode,
 }
 
 /// A discount on a ticket: on a line, or on the whole order.

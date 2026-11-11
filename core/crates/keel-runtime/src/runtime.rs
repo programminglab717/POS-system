@@ -5,10 +5,10 @@ use core::time::Duration;
 use std::path::Path;
 
 use keel_domain::checkout::Checkout;
-use keel_domain::codec::ProfileVersion;
+use keel_domain::codec::{Change, Note, ProfileVersion};
 use keel_domain::order::{
-    Channel, Check, Discount, DiscountApplied, DiscountValue, LineAdded, LineChanged, Mode, Order,
-    OrderCommand, OrderCreated, Reason,
+    Channel, Check, Discount, DiscountApplied, DiscountValue, LineAdded, LineChanged, LineRepriced,
+    Mode, Order, OrderCommand, OrderCreated, Reason,
 };
 use keel_domain::payment::{CashTendered, Payment, PaymentCaptured, PaymentCommand, Tender};
 use keel_domain::profile::{Choice, Member, Profile};
@@ -368,6 +368,67 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let ticket = self.decide_approved(order, command, &meta, granted.as_ref(), stream)?;
         self.spend(granted.as_ref());
         Ok(ticket)
+    }
+
+    /// Prices `line` of `order` again, at `unit_price` with its modifiers, for `reason`:
+    /// `price.override`, for how far the new price is from the line's, for its whole quantity,
+    /// which the member's role permits or a manager approves (ADR-0029, ADR-0030).
+    ///
+    /// # Errors
+    /// [`RuntimeError::ApprovalRequired`] or [`RuntimeError::NotApprover`] if it needs an approval
+    /// it doesn't have; [`RuntimeError`] if no one is signed in, or the order refuses it: the
+    /// line isn't live or is on a closed check, or the price is negative, foreign or the same.
+    pub fn reprice_line(
+        &mut self,
+        order: Id<Order>,
+        line: Id<keel_domain::order::Line>,
+        unit_price: Money,
+        reason: Reason,
+    ) -> Result<Ticket, RuntimeError> {
+        let loaded = self.store.load(Order::new(order))?;
+        known(&loaded)?;
+        let repriced = LineRepriced { line, unit_price, reason };
+        let command = OrderCommand::RepriceLine(repriced);
+        // The order's own rules come before an approval is asked for one it would refuse.
+        loaded.decide(self.location(), self.device, command.clone())?;
+        let now = loaded.line(line).ok_or(RuntimeError::UnknownOrder(order))?;
+        let extension = self.profile.data().rules.extension;
+        let difference = unit_price
+            .checked_sub(now.unit_price())?
+            .mul_decimal(now.quantity().to_decimal(), extension)?;
+        let request = Request {
+            action: Action::PriceOverride,
+            amount: Some(if difference.is_negative() {
+                difference.checked_neg()?
+            } else {
+                difference
+            }),
+            percent: None,
+        };
+        let granted = self.gate(request, Some(order.cast()))?;
+        let meta = self.meta()?;
+        let stream = self.approval_stream(granted.as_ref())?;
+        let ticket = self.decide_approved(order, command, &meta, granted.as_ref(), stream)?;
+        self.spend(granted.as_ref());
+        Ok(ticket)
+    }
+
+    /// Sets `line`'s notes, for the kitchen and the receipt, or clears them when `notes` is
+    /// `None`. A line's notes change while it waits to be fired, and need no approval.
+    ///
+    /// # Errors
+    /// [`RuntimeError`] if no one is signed in, or the order refuses: the line was fired or
+    /// taken off, or its notes already are `notes`.
+    pub fn set_line_notes(
+        &mut self,
+        order: Id<Order>,
+        line: Id<keel_domain::order::Line>,
+        notes: Option<Note>,
+    ) -> Result<Ticket, RuntimeError> {
+        let meta = self.meta()?;
+        let notes = Some(notes.map_or(Change::Clear, Change::Set));
+        let change = LineChanged { notes, ..LineChanged::to(line) };
+        self.decide(order, OrderCommand::ChangeLine(change), &meta)
     }
 
     /// Takes `discount` off `order`, which needs no approval.

@@ -26,6 +26,7 @@
 //! | `order.ownership_overridden` | 1 lease: the one it overrides, 2 reason code, 3 note (optional) |
 //! | `order.discount_applied` | 1 discount, 2 line (optional: absent for the whole order), 3 percent (basis points, optional), 4 amount (optional), 5 reason code, 6 note (optional) |
 //! | `order.discount_removed` | 1 discount |
+//! | `order.line_repriced` | 1 line, 2 unit price, 3 reason code, 4 note (optional) |
 //!
 //! A chosen modifier is a map: 1 modifier, 2 name, 3 prefix, 4 quantity, 5 placement, 6 unit
 //! price, 7 modifiers (an array, possibly empty). An allocation is a map: 1 line, 2 check, 3
@@ -46,6 +47,7 @@
 //!   listed when the total is more than zero;
 //! - a discount has a percentage or an amount, not both: a percentage from 1 to 10,000 basis
 //!   points, an amount more than zero; and a discount on the whole order is a percentage
+//! - a line is priced again at zero or more
 //!   (ADR-0030).
 
 use core::num::{NonZeroU8, NonZeroU16};
@@ -59,8 +61,8 @@ use super::closing::CheckClosed;
 use super::ownership::{Lease, OwnershipGranted, Refusal};
 use super::state::Line;
 use super::types::{
-    Channel, ChosenModifier, Discount, DiscountApplied, DiscountValue, ItemSnapshot, Mode, Reason,
-    modifier_currency,
+    Channel, ChosenModifier, Discount, DiscountApplied, DiscountValue, ItemSnapshot, LineRepriced,
+    Mode, Reason, modifier_currency,
 };
 use crate::codec::{Change, Fields, IdSet, PayloadError, Record};
 use crate::refs::{RevenueCenter, Table};
@@ -246,6 +248,8 @@ pub enum OrderEvent {
         /// The discount.
         discount: Id<Discount>,
     },
+    /// A line was priced again (ADR-0030).
+    LineRepriced(LineRepriced),
     /// A device took the order on a manager's word, without the hub.
     OwnershipOverridden {
         /// The lease it overrode, which it replaces.
@@ -274,6 +278,7 @@ impl OrderEvent {
                 | OrderEvent::Reopened { .. }
                 | OrderEvent::DiscountApplied(_)
                 | OrderEvent::DiscountRemoved { .. }
+                | OrderEvent::LineRepriced(_)
         )
     }
 }
@@ -300,6 +305,7 @@ const OWNERSHIP_REFUSED: SchemaId = SchemaId { name: "order.ownership_refused", 
 const OWNERSHIP_OVERRIDDEN: SchemaId = SchemaId { name: "order.ownership_overridden", version: 1 };
 const DISCOUNT_APPLIED: SchemaId = SchemaId { name: "order.discount_applied", version: 1 };
 const DISCOUNT_REMOVED: SchemaId = SchemaId { name: "order.discount_removed", version: 1 };
+const LINE_REPRICED: SchemaId = SchemaId { name: "order.line_repriced", version: 1 };
 
 impl DomainEvent for OrderEvent {
     const STREAM: &'static str = "order";
@@ -326,6 +332,7 @@ impl DomainEvent for OrderEvent {
         OWNERSHIP_OVERRIDDEN,
         DISCOUNT_APPLIED,
         DISCOUNT_REMOVED,
+        LINE_REPRICED,
     ];
 
     fn schema(&self) -> SchemaId {
@@ -351,6 +358,7 @@ impl DomainEvent for OrderEvent {
             OrderEvent::OwnershipOverridden { .. } => OWNERSHIP_OVERRIDDEN,
             OrderEvent::DiscountApplied(_) => DISCOUNT_APPLIED,
             OrderEvent::DiscountRemoved { .. } => DISCOUNT_REMOVED,
+            OrderEvent::LineRepriced(_) => LINE_REPRICED,
         }
     }
 
@@ -430,6 +438,11 @@ impl DomainEvent for OrderEvent {
                     .optional(6, applied.reason.note.as_ref())
             }
             OrderEvent::DiscountRemoved { discount } => record.field(1, discount),
+            OrderEvent::LineRepriced(repriced) => record
+                .field(1, &repriced.line)
+                .field(2, &repriced.unit_price)
+                .field(3, &repriced.reason.code)
+                .optional(4, repriced.reason.note.as_ref()),
         }
         .build()
     }
@@ -491,6 +504,17 @@ impl DomainEvent for OrderEvent {
             OrderEvent::DiscountApplied(read_discount(&mut fields)?)
         } else if DISCOUNT_REMOVED.matches(schema) {
             OrderEvent::DiscountRemoved { discount: fields.required(1, "discount")? }
+        } else if LINE_REPRICED.matches(schema) {
+            let repriced = LineRepriced {
+                line: fields.required(1, "line")?,
+                unit_price: fields.required(2, "unit price")?,
+                reason: Reason {
+                    code: fields.required(3, "reason")?,
+                    note: fields.optional(4, "note")?,
+                },
+            };
+            repriced.validate()?;
+            OrderEvent::LineRepriced(repriced)
         } else if OWNERSHIP_OVERRIDDEN.matches(schema) {
             OrderEvent::OwnershipOverridden {
                 lease: fields.required(1, "lease")?,

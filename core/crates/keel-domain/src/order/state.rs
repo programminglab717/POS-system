@@ -42,15 +42,15 @@ use core::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 use std::collections::BTreeSet;
 
 use keel_events::envelope::{self, Customer, Device, Event, Location, SchemaRef, TeamMember};
-use keel_types::{Currency, Id, Quantity};
+use keel_types::{Currency, Id, Money, Quantity};
 
 use super::checks::{Check, CheckShare, LinesAllocated};
 use super::closing::CheckClosed;
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
 use super::ownership::{Lease, Ownership, OwnershipGranted, Request};
 use super::types::{
-    Channel, ChosenModifier, Discount, DiscountApplied, DiscountValue, ItemSnapshot, Mode, Reason,
-    modifier_currency,
+    Channel, ChosenModifier, Discount, DiscountApplied, DiscountValue, ItemSnapshot, LineRepriced,
+    Mode, Reason, modifier_currency,
 };
 use crate::aggregate::{Aggregate, EventMeta, Skipped};
 use crate::codec::{Change, Note};
@@ -140,6 +140,8 @@ pub struct Line {
     comp: Option<Reason>,
     /// Its discounts, in the order they were applied.
     discounts: Vec<DiscountApplied>,
+    /// The price staff set for it, if they did: the last that applied.
+    repriced: Option<LineRepriced>,
     fired: bool,
     allocation: Vec<CheckShare>,
 }
@@ -201,6 +203,17 @@ impl Line {
     /// Why it was comped, if it was: it is then served at no charge.
     pub const fn comp(&self) -> Option<&Reason> {
         self.comp.as_ref()
+    }
+
+    /// What one of it costs before its modifiers: the price staff set for it, if they did, or
+    /// else the item's as it was rung (ADR-0030).
+    pub fn unit_price(&self) -> Money {
+        self.repriced.as_ref().map_or(self.item.unit_price, |repriced| repriced.unit_price)
+    }
+
+    /// The price staff set for it, and why, if they did.
+    pub fn repriced(&self) -> Option<&LineRepriced> {
+        self.repriced.as_ref()
     }
 
     /// Its discounts, in the order they were applied: each takes from what the ones before it
@@ -323,6 +336,8 @@ pub enum ConflictKind {
     DiscountOnClosed(Id<Discount>),
     /// A discount was taken off that was never applied.
     UnknownDiscount(Id<Discount>),
+    /// A line was priced again after it was removed or voided; it has no effect.
+    RepricedAfterRemoval(Id<Line>),
 }
 
 impl Order {
@@ -592,6 +607,7 @@ impl Order {
             status: LineStatus::Pending,
             comp: None,
             discounts: Vec::new(),
+            repriced: None,
             fired: false,
             allocation: vec![CheckShare { check, shares: NonZeroU16::MIN }],
         });
@@ -773,6 +789,29 @@ impl Order {
         };
         line.discounts.retain(|other| other.discount != discount);
         if frozen && line.is_live() {
+            self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
+        }
+    }
+
+    fn apply_line_repriced(
+        &mut self,
+        meta: &EventMeta,
+        currency: Currency,
+        repriced: &LineRepriced,
+    ) {
+        let id = repriced.line;
+        let frozen = self.frozen(id);
+        let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
+            return self.conflict(meta, ConflictKind::UnknownLine(id));
+        };
+        if !line.is_live() {
+            return self.conflict(meta, ConflictKind::RepricedAfterRemoval(id));
+        }
+        if repriced.unit_price.currency() != currency {
+            return self.conflict(meta, ConflictKind::CurrencyMismatch(id));
+        }
+        line.repriced = Some(repriced.clone());
+        if frozen {
             self.conflict(meta, ConflictKind::ChangedOnClosedCheck(id));
         }
     }
@@ -980,6 +1019,9 @@ impl Aggregate for Order {
             }
             OrderEvent::DiscountRemoved { discount } => {
                 self.apply_discount_removed(meta, *discount);
+            }
+            OrderEvent::LineRepriced(repriced) => {
+                self.apply_line_repriced(meta, currency, repriced);
             }
         }
     }

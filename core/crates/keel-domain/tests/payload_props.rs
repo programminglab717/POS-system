@@ -139,6 +139,10 @@ enum Kind {
 use Kind::*;
 use Presence::{Clearable, Optional, Required};
 
+/// The keys of a line priced again (ADR-0030).
+const LINE_REPRICED: &[(u64, Kind, Presence)] =
+    &[(1, Id, Required), (2, Money, Required), (3, Reason, Required), (4, Note, Optional)];
+
 /// The keys of a discount (ADR-0030).
 const DISCOUNT_APPLIED: &[(u64, Kind, Presence)] = &[
     (1, Id, Required),
@@ -235,6 +239,7 @@ fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
             vec![(1, Lease, Required), (2, Reason, Required), (3, Note, Optional)]
         }
         "order.discount_applied" => DISCOUNT_APPLIED.to_vec(),
+        "order.line_repriced" => LINE_REPRICED.to_vec(),
         "hub.claimed" => {
             vec![
                 (1, Number, Required),
@@ -597,6 +602,7 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
             map.len() > 1 && quantity_positive && modifiers_consistent
         }
         "order.check_closed" => snapshot_valid(map),
+        "order.line_repriced" => money(get(2).unwrap()).unwrap().0 >= 0,
         // A percentage or an amount, which only a line may take, and more than zero.
         "order.discount_applied" => match (get(3), get(4)) {
             (Some(_), None) => true,

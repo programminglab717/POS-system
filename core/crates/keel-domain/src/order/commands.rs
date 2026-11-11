@@ -19,7 +19,7 @@ use keel_types::Id;
 use super::checks::{Check, LinesAllocated};
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
 use super::state::{Line, LineStatus, Order, OrderInfo, OrderStatus};
-use super::types::{Discount, DiscountApplied, DiscountValue, Reason};
+use super::types::{Discount, DiscountApplied, DiscountValue, LineRepriced, Reason};
 use crate::codec::{Change, IdSet, PayloadError};
 use crate::schema::{SchemaError, Unrecordable, check_recordable};
 
@@ -79,6 +79,9 @@ pub enum OrderCommand {
     ApplyDiscount(DiscountApplied),
     /// Take a discount off.
     RemoveDiscount(Id<Discount>),
+    /// Price a live line again, at a unit price of zero or more in the order's currency, unless
+    /// it is on a closed check (ADR-0030).
+    RepriceLine(LineRepriced),
 }
 
 impl OrderCommand {
@@ -100,6 +103,7 @@ impl OrderCommand {
                 | OrderCommand::Reopen(_)
                 | OrderCommand::ApplyDiscount(_)
                 | OrderCommand::RemoveDiscount(_)
+                | OrderCommand::RepriceLine(_)
         )
     }
 }
@@ -344,6 +348,28 @@ impl Order {
         Ok(OrderEvent::DiscountRemoved { discount })
     }
 
+    /// Decides on pricing a line again: valid, on a live line, in the order's currency, not frozen,
+    /// and another price than it has.
+    fn decide_repriced(
+        &self,
+        info: &OrderInfo,
+        repriced: LineRepriced,
+    ) -> Result<OrderEvent, CommandError> {
+        repriced.validate().map_err(CommandError::Invalid)?;
+        let line = self.line(repriced.line).ok_or(CommandError::UnknownLine(repriced.line))?;
+        if !line.is_live() {
+            return Err(CommandError::LineNotLive(repriced.line));
+        }
+        if repriced.unit_price.currency() != info.currency {
+            return Err(CommandError::WrongCurrency);
+        }
+        self.check_not_frozen(line)?;
+        if repriced.unit_price == line.unit_price() {
+            return Err(CommandError::NoChange);
+        }
+        Ok(OrderEvent::LineRepriced(repriced))
+    }
+
     /// Refuses a discount on a line that isn't live or is on a closed check, or on the whole order
     /// while a check is closed.
     fn check_discountable(&self, line: Option<Id<Line>>) -> Result<(), CommandError> {
@@ -465,6 +491,7 @@ impl Order {
             }
             OrderCommand::Close => self.decide_close(),
             OrderCommand::ApplyDiscount(applied) => self.decide_discount(info, applied),
+            OrderCommand::RepriceLine(repriced) => self.decide_repriced(info, repriced),
             OrderCommand::RemoveDiscount(discount) => self.decide_discount_removed(discount),
         }
     }

@@ -38,9 +38,9 @@ use keel_domain::codec::{CatalogVersion, Change, IdSet, Name, Note, ReasonCode, 
 use keel_domain::order::{
     Allocation, AttributesChanged, Channel, Check, CheckClosed, CheckShare, ChosenModifier,
     CommandError, ConflictKind, Discount, DiscountApplied, DiscountValue, Epoch, ItemSnapshot,
-    Lease, Line, LineAdded, LineChanged, LineCharge, LineStatus, LinesAllocated, Mode, Order,
-    OrderCommand, OrderCreated, OrderEvent, OrderInfo, OrderStatus, Ownership, OwnershipGranted,
-    Placement, Prefix, Reason, Refusal as Answer, Request, Stage,
+    Lease, Line, LineAdded, LineChanged, LineCharge, LineRepriced, LineStatus, LinesAllocated,
+    Mode, Order, OrderCommand, OrderCreated, OrderEvent, OrderInfo, OrderStatus, Ownership,
+    OwnershipGranted, Placement, Prefix, Reason, Refusal as Answer, Request, Stage,
 };
 use keel_domain::payment::{CashTendered, Payment, PaymentCaptured, PaymentCommand, Tender};
 use keel_domain::schema::{DecodeError, DomainEvent};
@@ -308,7 +308,7 @@ fn action(
         |index: &Index| if lines.is_empty() { fresh } else { lines[index.index(lines.len())] };
     let pick = |index: &Index| if step.fault == 1 { fresh } else { known(index) };
     let from = if step.fault == 5 { other_location() } else { location() };
-    let command = match (step.kind % 64, step.fault) {
+    let command = match (step.kind % 68, step.fault) {
         (0..=9, 1) => OrderCommand::AddLine(line_added(known(&step.pick), step)),
         (0..=9, _) => OrderCommand::AddLine(line_added(fresh, step)),
         (10..=13, _) => OrderCommand::ChangeLine(line_changed(known(&step.pick), step)),
@@ -346,6 +346,7 @@ fn action(
         (60..=61, _) => {
             OrderCommand::ApplyDiscount(discount_applied(view, step, pick, fresh_discount))
         }
+        (64..=67, _) => OrderCommand::RepriceLine(line_repriced(pick(&step.pick), step)),
         _ => {
             let on = view.discounts().iter().chain(view.lines().iter().flat_map(Line::discounts));
             let known: Vec<Id<Discount>> = on.map(|applied| applied.discount).collect();
@@ -355,6 +356,20 @@ fn action(
         }
     };
     (Action::Order(command), from)
+}
+
+/// A line priced again, at one of a few prices, one of them a line's as rung, so that a price
+/// that changes nothing comes up; free, sometimes. Fault 2 makes it negative; fault 3 prices it
+/// in euros.
+fn line_repriced(line: Id<Line>, step: &Step) -> LineRepriced {
+    let currency = if step.fault == 3 { eur() } else { usd() };
+    let minor = [0, 395, 450, 500][usize::from(step.amount % 4)];
+    let minor = if step.fault == 2 { -1 - minor } else { minor };
+    LineRepriced {
+        line,
+        unit_price: Money::from_minor(minor, currency),
+        reason: reason(step.amount),
+    }
 }
 
 /// A discount: on a line picked as `pick` does, or on the whole order one time in three; an
@@ -407,6 +422,7 @@ struct ModelLine {
     course: Option<NonZeroU8>,
     notes: Option<Note>,
     discounts: Vec<DiscountApplied>,
+    repriced: Option<LineRepriced>,
     fired: bool,
     allocation: Vec<CheckShare>,
 }
@@ -424,6 +440,7 @@ impl ModelLine {
             course: added.course,
             notes: added.notes.clone(),
             discounts: Vec::new(),
+            repriced: None,
             fired: false,
             allocation: vec![whole(main_check())],
         }
@@ -469,6 +486,7 @@ fn lines_of(order: &Order) -> Vec<ModelLine> {
             course: line.course(),
             notes: line.notes().cloned(),
             discounts: line.discounts().to_vec(),
+            repriced: line.repriced().cloned(),
             fired: line.was_fired(),
             allocation: line.allocation().to_vec(),
         })
@@ -597,7 +615,8 @@ fn owners_only(command: &OrderCommand) -> bool {
         | OrderCommand::Close
         | OrderCommand::Reopen(_)
         | OrderCommand::ApplyDiscount(_)
-        | OrderCommand::RemoveDiscount(_) => true,
+        | OrderCommand::RemoveDiscount(_)
+        | OrderCommand::RepriceLine(_) => true,
         OrderCommand::Create(_)
         | OrderCommand::ChangeAttributes(_)
         | OrderCommand::AddLine(_)
@@ -918,6 +937,26 @@ impl Model {
     /// discountable; taken off, on the order, and off a line that has since gone or discountable.
     fn discount_refused(&self, command: &OrderCommand) -> Result<(), Refusal> {
         match command {
+            // A price of zero or more, for a live line, in dollars, not frozen, and new.
+            OrderCommand::RepriceLine(repriced) => {
+                let price = repriced.unit_price;
+                if price.is_negative() {
+                    return Err(Refusal::Invalid);
+                }
+                let found = self.line(repriced.line).ok_or(Refusal::UnknownLine(repriced.line))?;
+                let now = found.repriced.as_ref().map_or(found.item.unit_price, |r| r.unit_price);
+                if !found.live() {
+                    Err(Refusal::LineNotLive(repriced.line))
+                } else if price.currency() != usd() {
+                    Err(Refusal::WrongCurrency)
+                } else if self.frozen(found) {
+                    Err(Refusal::LineOnClosedCheck(repriced.line))
+                } else if price == now {
+                    Err(Refusal::NoChange)
+                } else {
+                    Ok(())
+                }
+            }
             OrderCommand::ApplyDiscount(applied) => {
                 let invalid = match applied.value {
                     DiscountValue::Percent(bp) => bp == 0 || bp > 10_000,
@@ -1093,6 +1132,9 @@ impl Model {
                 for (id, shares) in allocated_lines(allocated) {
                     self.line_mut(id).allocation = shares;
                 }
+            }
+            OrderCommand::RepriceLine(repriced) => {
+                self.line_mut(repriced.line).repriced = Some(repriced.clone());
             }
             OrderCommand::ApplyDiscount(applied) => {
                 self.used.insert(applied.discount);
@@ -1523,7 +1565,8 @@ fn owners_only_event(event: &OrderEvent) -> bool {
         | OrderEvent::Closed
         | OrderEvent::Reopened { .. }
         | OrderEvent::DiscountApplied(_)
-        | OrderEvent::DiscountRemoved { .. } => true,
+        | OrderEvent::DiscountRemoved { .. }
+        | OrderEvent::LineRepriced(_) => true,
         OrderEvent::Created(_)
         | OrderEvent::AttributesChanged(_)
         | OrderEvent::LineAdded(_)
@@ -1643,6 +1686,7 @@ fn expected_answers(
 fn referred(event: &OrderEvent) -> Vec<Id<Line>> {
     match event {
         OrderEvent::LineChanged(changed) => vec![changed.line],
+        OrderEvent::LineRepriced(repriced) => vec![repriced.line],
         OrderEvent::LineRemoved { line }
         | OrderEvent::LineVoided { line, .. }
         | OrderEvent::LineComped { line, .. } => vec![*line],
@@ -2075,6 +2119,15 @@ fn expect_line(
                 }
                 found
             }
+            OrderEvent::LineRepriced(_) if !live(i) => vec![ConflictKind::RepricedAfterRemoval(id)],
+            OrderEvent::LineRepriced(repriced) if repriced.unit_price.currency() != currency => {
+                vec![ConflictKind::CurrencyMismatch(id)]
+            }
+            // The last price that applies is the line's; on a closed check, it is reported.
+            OrderEvent::LineRepriced(repriced) => {
+                line.repriced = Some(repriced.clone());
+                if frozen_at(i) { vec![ConflictKind::ChangedOnClosedCheck(id)] } else { Vec::new() }
+            }
             OrderEvent::LinesFired { .. } if !live(i) => vec![ConflictKind::FiredAfterRemoval(id)],
             OrderEvent::LineComped { .. } if !live(i) => vec![ConflictKind::CompedAfterRemoval(id)],
             // The first comp wins.
@@ -2296,6 +2349,8 @@ fn invariants_with(order: &Order, charged: bool) -> Result<(), TestCaseError> {
     if let Some(info) = order.info() {
         for line in order.lines() {
             prop_assert_eq!(line.item().unit_price.currency(), info.currency);
+            prop_assert_eq!(line.unit_price().currency(), info.currency);
+            prop_assert!(!line.unit_price().is_negative());
             prop_assert!(
                 line.modifiers().iter().all(|modifier| modifier.is_priced_in(info.currency))
             );
@@ -2380,7 +2435,7 @@ fn checks_hold_the_lines(order: &Order, charged: bool) -> Result<(), TestCaseErr
                 index: allocation.iter().position(|share| share.check == check).unwrap(),
             });
             prop_assert_eq!(&priced.share, &share);
-            prop_assert_eq!(priced.unit_price, line.item().unit_price);
+            prop_assert_eq!(priced.unit_price, line.unit_price());
             prop_assert_eq!(priced.quantity, line.quantity());
             prop_assert_eq!(priced.comped, line.comp().is_some());
             prop_assert_eq!(priced.discounts.len(), line.discounts().len());
@@ -2437,7 +2492,7 @@ fn basket_holds_the_live_lines(order: &Order) -> Result<(), TestCaseError> {
     let live: Vec<&Line> = order.live_lines().collect();
     prop_assert_eq!(basket.lines.len(), live.len());
     for (priced, line) in basket.lines.iter().zip(live) {
-        prop_assert_eq!(priced.unit_price, line.item().unit_price);
+        prop_assert_eq!(priced.unit_price, line.unit_price());
         prop_assert_eq!(priced.quantity, line.quantity());
         prop_assert_eq!(priced.tax_category, line.item().tax_category.cast());
         prop_assert_eq!(priced.comped, line.comp().is_some());
@@ -2672,6 +2727,16 @@ fn fold_discount() -> impl Strategy<Value = Id<Discount>> {
     (1_u64..=3).prop_map(|n| id(0xD0 + n))
 }
 
+/// One of the few lines priced again: at a price one is rung at, or another, or free; mostly
+/// in dollars.
+fn fold_repriced() -> impl Strategy<Value = LineRepriced> {
+    (fold_line(), fold_currency(), 0_u8..3).prop_map(|(line, currency, n)| LineRepriced {
+        line,
+        unit_price: Money::from_minor([0, 450, 725][usize::from(n)], currency),
+        reason: reason(n),
+    })
+}
+
 /// An event, and whether it was recorded at another location.
 fn any_fold_event() -> impl Strategy<Value = (bool, OrderEvent)> {
     let event = prop_oneof![
@@ -2695,6 +2760,7 @@ fn any_fold_event() -> impl Strategy<Value = (bool, OrderEvent)> {
         1 => any::<u8>().prop_map(|n| OrderEvent::Reopened { reason: reason(n) }),
         3 => fold_discount_applied().prop_map(OrderEvent::DiscountApplied),
         2 => fold_discount().prop_map(|discount| OrderEvent::DiscountRemoved { discount }),
+        2 => fold_repriced().prop_map(OrderEvent::LineRepriced),
     ];
     (prop::bool::weighted(0.08), event)
 }
@@ -2737,6 +2803,7 @@ fn any_closing_event() -> impl Strategy<Value = OrderEvent> {
         1 => Just(OrderEvent::CheckOpened { check: forgery() }),
         2 => fold_discount_applied().prop_map(OrderEvent::DiscountApplied),
         1 => fold_discount().prop_map(|discount| OrderEvent::DiscountRemoved { discount }),
+        2 => fold_repriced().prop_map(OrderEvent::LineRepriced),
     ]
 }
 

@@ -318,6 +318,50 @@ impl Register {
         .map(|ticket| (&ticket).into())
     }
 
+    /// Prices `line` of `order` again at `unit_price`, in the location's currency's minor units,
+    /// for `reason`, with an optional `note` (ADR-0030). A manager approves one beyond the
+    /// member's role.
+    ///
+    /// # Errors
+    /// As [`Register::apply_percent_discount`].
+    pub fn reprice_line(
+        &self,
+        order: String,
+        line: String,
+        unit_price: i64,
+        reason: String,
+        note: Option<String>,
+    ) -> Result<Ticket, KeelError> {
+        let (order, line) = (id(&order)?, id(&line)?);
+        let reason = self::reason(&reason, note)?;
+        self.with(|runtime| {
+            let price = Money::from_minor(unit_price, runtime.profile().data().currency);
+            runtime.reprice_line(order, line, price, reason)
+        })
+        .map(|ticket| (&ticket).into())
+    }
+
+    /// Sets `line`'s notes, or clears them when `notes` is `None`, while it waits to be fired.
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] if an identifier or the notes aren't valid; and as
+    /// [`Register::add_item`].
+    pub fn set_line_notes(
+        &self,
+        order: String,
+        line: String,
+        notes: Option<String>,
+    ) -> Result<Ticket, KeelError> {
+        let (order, line) = (id(&order)?, id(&line)?);
+        let notes = notes
+            .map(|notes| {
+                Note::new(&notes).map_err(|_| KeelError::invalid("the notes aren't valid"))
+            })
+            .transpose()?;
+        self.with(|runtime| runtime.set_line_notes(order, line, notes))
+            .map(|ticket| (&ticket).into())
+    }
+
     /// Takes `discount` off `order`.
     ///
     /// # Errors

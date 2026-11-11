@@ -2979,4 +2979,68 @@ BUGS = [
         "        let left = line.net.checked_add(order_share)?.checked_add(taken)?;",
         "        let left = line.gross.checked_add(order_share)?.checked_sub(order_share)?;",
     ),
+    # Prices set by hand (ADR-0030).
+    (
+        "reprice: a negative price is accepted",
+        "src/order/types.rs",
+        "        if self.unit_price.is_negative() {",
+        "        if false {",
+    ),
+    (
+        "reprice: a removed line is priced again",
+        "src/order/state.rs",
+        """        if !line.is_live() {
+            return self.conflict(meta, ConflictKind::RepricedAfterRemoval(id));""",
+        """        if !line.is_live() && false {
+            return self.conflict(meta, ConflictKind::RepricedAfterRemoval(id));""",
+    ),
+    (
+        "reprice: a foreign price applies",
+        "src/order/state.rs",
+        "        if repriced.unit_price.currency() != currency {",
+        "        if repriced.unit_price.currency() != currency && false {",
+    ),
+    (
+        "reprice: a frozen line's new price isn't reported",
+        "src/order/state.rs",
+        """        line.repriced = Some(repriced.clone());
+        if frozen {""",
+        """        line.repriced = Some(repriced.clone());
+        if frozen && false {""",
+    ),
+    (
+        "reprice: the first price set wins",
+        "src/order/state.rs",
+        "        line.repriced = Some(repriced.clone());",
+        "        line.repriced = line.repriced.take().or_else(|| Some(repriced.clone()));",
+    ),
+    (
+        "reprice: pricing ignores the price set",
+        "src/order/state.rs",
+        "        self.repriced.as_ref().map_or(self.item.unit_price, |repriced| repriced.unit_price)",
+        "        self.repriced.as_ref().map_or(self.item.unit_price, |_| self.item.unit_price)",
+    ),
+    (
+        "reprice: a frozen line is priced again by command",
+        "src/order/commands.rs",
+        """            return Err(CommandError::WrongCurrency);
+        }
+        self.check_not_frozen(line)?;
+        if repriced.unit_price == line.unit_price() {""",
+        """            return Err(CommandError::WrongCurrency);
+        }
+        if repriced.unit_price == line.unit_price() {""",
+    ),
+    (
+        "reprice: the same price is decided",
+        "src/order/commands.rs",
+        "        if repriced.unit_price == line.unit_price() {",
+        "        if repriced.unit_price == line.item().unit_price && false {",
+    ),
+    (
+        "reprice: a foreign price is decided",
+        "src/order/commands.rs",
+        "        if repriced.unit_price.currency() != info.currency {",
+        "        if repriced.unit_price.currency() != info.currency && false {",
+    ),
 ]

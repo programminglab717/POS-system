@@ -50,5 +50,5 @@ pub use staff::{APPROVAL_LIFE, FIRST_LOCK, LONGEST_LOCK, PIN_TRIES, QUIET};
 pub use sync::{ISLAND_AFTER, SyncStatus};
 pub use views::{
     Amount, CashPaid, GroupView, ItemView, MenuButton, MenuPage, MenuView, ModifierView, Ticket,
-    TicketDiscount, TicketLine, TicketModifier, TicketState, TicketTax,
+    TicketDiscount, TicketLine, TicketModifier, TicketRepriced, TicketState, TicketTax,
 };

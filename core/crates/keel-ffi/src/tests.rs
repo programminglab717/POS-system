@@ -448,6 +448,12 @@ fn a_ticket_crosses_field_for_field() {
                 percent: Some(1_000),
                 amount: amount(100),
             }],
+            repriced: Some(rt::TicketRepriced {
+                unit_price: amount(300),
+                rung: amount(325),
+                reason: keel_domain::codec::ReasonCode::new("price_match").unwrap(),
+            }),
+            notes: Some(keel_domain::codec::Note::new("no foam").unwrap()),
         }],
         discounts: vec![rt::TicketDiscount {
             discount: id(6),
@@ -486,6 +492,12 @@ fn a_ticket_crosses_field_for_field() {
                 percent_basis_points: Some(1_000),
                 amount: usd(100, "$1.00"),
             }],
+            repriced: Some(TicketRepriced {
+                unit_price: usd(300, "$3.00"),
+                rung: usd(325, "$3.25"),
+                reason: "price_match".into(),
+            }),
+            notes: Some("no foam".into()),
         }],
         discounts: vec![TicketDiscount {
             discount: demo_id(6),
