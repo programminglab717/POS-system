@@ -102,7 +102,7 @@ fn a_register_with_a_large_catalog_answers_in_time() {
     )
     .unwrap();
     let opened = started.elapsed();
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
 
     let (mut intents, mut payments, mut tickets, mut items) = (vec![], vec![], vec![], vec![]);
     let mut open: Vec<Id<Order>> = Vec::new();

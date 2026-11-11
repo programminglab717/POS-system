@@ -5,6 +5,7 @@ use keel_domain::order::{CommandError, Order};
 use keel_domain::payment::PaymentError;
 use keel_domain::profile::RingError;
 use keel_domain::schema::SchemaError;
+use keel_domain::staff::Action;
 use keel_events::envelope::{EnvelopeError, TeamMember};
 use keel_pricing::PricingError;
 use keel_store::StoreError;
@@ -25,6 +26,27 @@ pub enum RuntimeError {
     /// The profile has no such team member.
     #[error("{0} isn't on the team")]
     UnknownMember(Id<TeamMember>),
+    /// The PIN isn't the member's (ADR-0029).
+    #[error("that PIN isn't theirs")]
+    WrongPin,
+    /// Too many wrong PINs: PIN entry is locked for a while.
+    #[error("too many wrong PINs: try again in {seconds} s")]
+    LockedOut {
+        /// How many seconds more.
+        seconds: u64,
+    },
+    /// The action needs a manager's approval, which no one has given.
+    #[error("{} needs a manager's approval", .0.name())]
+    ApprovalRequired(Action),
+    /// The approval waiting can't approve this: the approver's role doesn't permit it, or it is
+    /// their own request.
+    #[error("{approver} can't approve {}", action.name())]
+    NotApprover {
+        /// Who approved.
+        approver: Id<TeamMember>,
+        /// What they can't approve.
+        action: Action,
+    },
     /// The store holds no such order.
     #[error("no order {0}")]
     UnknownOrder(Id<Order>),
@@ -99,6 +121,9 @@ pub enum RuntimeError {
     /// An event couldn't be encoded.
     #[error(transparent)]
     Schema(#[from] SchemaError),
+    /// A payload the runtime made breaks its schema's rules.
+    #[error(transparent)]
+    Payload(#[from] keel_domain::codec::PayloadError),
     /// A document couldn't be made or read.
     #[error(transparent)]
     Doc(#[from] keel_doc::DocError),

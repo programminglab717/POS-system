@@ -29,3 +29,9 @@ fun ComposeTestRule.tap(tag: String, wait: Long = 10_000) {
 fun ComposeTestRule.shown(tag: String): String = onAllNodes(hasTestTag(tag)).fetchSemanticsNodes()
     .flatMap { it.config.getOrElse(SemanticsProperties.Text) { emptyList() } }
     .joinToString()
+
+/** Types [pin] on the PIN pad, and enters it. */
+fun ComposeTestRule.enterPin(pin: String) {
+    for (digit in pin) tap("pin:$digit")
+    tap("pin:enter")
+}

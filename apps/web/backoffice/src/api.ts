@@ -65,6 +65,47 @@ export interface CatalogEdit {
   pages: Page[];
 }
 
+export interface ActionInfo {
+  name: string;
+  hasAmount: boolean;
+  hasPercent: boolean;
+}
+
+export interface Permission {
+  action: string;
+  /** In minor units of the location's currency; absent for no limit. */
+  mostAmount?: number;
+  /** In basis points; absent for no limit. */
+  mostPercent?: number;
+}
+
+export interface Role {
+  id: string;
+  name: string;
+  permissions: Permission[];
+}
+
+export interface StaffMember {
+  id: string;
+  name: string;
+  role?: string;
+  hasPin: boolean;
+}
+
+export interface Staff {
+  version: string;
+  actions: ActionInfo[];
+  roles: Role[];
+  team: StaffMember[];
+}
+
+export interface StaffEdit {
+  base?: string;
+  roles: Role[];
+  /** A member's new PIN, its digits; absent to keep the one they have. */
+  team: { id: string; name: string; role?: string; pin?: string }[];
+}
+
 export interface Device {
   id: string;
   name: string;
@@ -136,6 +177,18 @@ export class Api {
 
   publish(location: string, edit: CatalogEdit) {
     return this.call<{ version: string }>("PUT", `/api/locations/${location}/catalog`, edit);
+  }
+
+  staff(location: string) {
+    return this.call<Staff>("GET", `/api/locations/${location}/staff`);
+  }
+
+  checkStaff(location: string, edit: StaffEdit) {
+    return this.call<{ version: string }>("POST", `/api/locations/${location}/staff/check`, edit);
+  }
+
+  publishStaff(location: string, edit: StaffEdit) {
+    return this.call<{ version: string }>("PUT", `/api/locations/${location}/staff`, edit);
   }
 
   sales(location: string, from?: string, to?: string) {

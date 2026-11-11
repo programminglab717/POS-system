@@ -310,6 +310,79 @@ class RegisterModelTest {
         assertEquals("v3", model.state.value.profileVersion)
     }
 
+    @Test
+    fun a_member_with_a_pin_signs_in_once_it_is_typed() = runTest {
+        val fake = FakeTill().apply { pins = mapOf("alex" to "1234", "sam" to "2468") }
+        val till = object : Till by fake {
+            override fun team() = listOf(Member("alex", "Alex", "Manager", true), Member("sam", "Sam", "Cashier", true))
+        }
+        val model = model(till)
+        model.start()
+        testScheduler.advanceUntilIdle()
+        model.signIn(model.state.value.team[1])
+        assertEquals("sam", model.state.value.pinFor?.id, "the PIN pad, for Sam")
+        assertNull(fake.signedIn)
+        model.enterPin("1234")
+        testScheduler.advanceUntilIdle()
+        assertEquals("That PIN isn't right.", model.state.value.error)
+        assertEquals(Screen.SIGN_IN, model.state.value.screen)
+        assertEquals("sam", model.state.value.pinFor?.id, "still asking")
+        model.enterPin("2468")
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.REGISTER, model.state.value.screen)
+        assertNull(model.state.value.pinFor)
+        assertEquals("sam", fake.signedIn)
+        // Cancelled, no one is asked for.
+        model.signOut()
+        testScheduler.advanceUntilIdle()
+        model.signIn(model.state.value.team[0])
+        model.cancelPin()
+        assertNull(model.state.value.pinFor)
+    }
+
+    @Test
+    fun a_manager_approves_and_the_refused_intent_goes_through() = runTest {
+        val till = FakeTill().apply {
+            pins = mapOf("alex" to "1234", "sam" to "2468")
+            voidNeedsApproval = true
+        }
+        val model = model(till)
+        model.start()
+        testScheduler.advanceUntilIdle()
+        model.signIn(Member("sam", "Sam", "Cashier", hasPin = true))
+        model.enterPin("2468")
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.REGISTER, model.state.value.screen)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.abandon()
+        testScheduler.advanceUntilIdle()
+        val asked = model.state.value.approval
+        assertEquals("order.void", asked?.action)
+        assertEquals("Dropping it needs a manager.", asked?.reason)
+        assertNull(model.state.value.error, "an approval asked for, not an error")
+        assertNotNull(model.state.value.ticket, "the order is still there")
+        assertEquals(listOf("alex"), model.approvers().map { it.id }, "anyone but the cashier")
+        model.chooseApprover(model.approvers().first())
+        model.approve("0000")
+        testScheduler.advanceUntilIdle()
+        assertEquals("That PIN isn't right.", model.state.value.error)
+        assertNotNull(model.state.value.approval, "still asking")
+        model.approve("1234")
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.approval)
+        assertNull(model.state.value.ticket, "dropped once approved")
+        assertNull(model.state.value.error)
+        // Cancelled, the order stays.
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.abandon()
+        testScheduler.advanceUntilIdle()
+        model.cancelApproval()
+        assertNull(model.state.value.approval)
+        assertNotNull(model.state.value.ticket)
+    }
+
     /** Found in review: two taps before the screen showed the first counted from the same line. */
     @Test
     fun taps_queued_together_each_count_from_the_one_before() = runTest {

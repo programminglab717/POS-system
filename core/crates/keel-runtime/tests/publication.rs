@@ -197,7 +197,7 @@ fn three(cloud: &Dir, hub: &Dir, register: &Dir) -> Location {
         (REGISTER, open(register, REGISTER)),
     ]);
     let mut location = Location::start(nodes);
-    location.node(REGISTER).sign_in(id(0x501)).unwrap();
+    location.node(REGISTER).sign_in(id(0x501), "1234").unwrap();
     location
 }
 

@@ -179,13 +179,26 @@ impl Register {
         }))
     }
 
-    /// Signs `member` in: every event from now on records them.
+    /// Signs `member` in with their PIN: every event from now on records them. In a profile
+    /// without roles, members have no PIN, and sign in with an empty one (ADR-0029).
     ///
     /// # Errors
-    /// [`KeelError::UnknownMember`] if the team doesn't have them.
-    pub fn sign_in(&self, member: String) -> Result<(), KeelError> {
+    /// [`KeelError::UnknownMember`] if the team doesn't have them; [`KeelError::WrongPin`] if the
+    /// PIN isn't theirs; [`KeelError::LockedOut`] while PIN entry is locked by wrong PINs.
+    pub fn sign_in(&self, member: String, pin: String) -> Result<(), KeelError> {
         let member = id(&member)?;
-        self.with(|runtime| runtime.sign_in(member))
+        self.with(|runtime| runtime.sign_in(member, &pin))
+    }
+
+    /// `approver`'s approval, their PIN checked, for the next intent of the member signed in
+    /// that needs one, within a minute: ask for it when an intent answers
+    /// [`KeelError::ApprovalRequired`], then try the intent again.
+    ///
+    /// # Errors
+    /// [`KeelError::NotSignedIn`]; otherwise as [`Register::sign_in`].
+    pub fn approve(&self, approver: String, pin: String) -> Result<(), KeelError> {
+        let approver = id(&approver)?;
+        self.with(|runtime| runtime.approve(approver, &pin))
     }
 
     /// Signs the team member out.
@@ -430,10 +443,19 @@ impl Register {
     /// [`KeelError::Device`] if the register's lock was poisoned.
     pub fn team(&self) -> Result<Vec<Member>, KeelError> {
         self.with(|runtime| {
+            let profile = runtime.profile();
             Ok(runtime
                 .team()
                 .iter()
-                .map(|member| Member { id: member.id.to_string(), name: member.name.to_string() })
+                .map(|member| Member {
+                    id: member.id.to_string(),
+                    name: member.name.to_string(),
+                    role: member
+                        .role
+                        .and_then(|role| profile.role(role))
+                        .map(|role| role.name.to_string()),
+                    has_pin: member.pin.is_some(),
+                })
                 .collect())
         })
     }

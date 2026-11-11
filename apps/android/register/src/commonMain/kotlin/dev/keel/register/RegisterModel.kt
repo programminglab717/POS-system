@@ -34,6 +34,9 @@ data class Tender(
     val typed: Amount? = null,
 )
 
+/** A manager's approval the register asks for: the action, why, and the manager asked, once chosen. */
+data class Approval(val action: String, val reason: String, val approver: Member? = null)
+
 /** What the register's screens show. */
 data class RegisterState(
     val screen: Screen = Screen.SIGN_IN,
@@ -56,6 +59,10 @@ data class RegisterState(
     val jobs: List<PrintJob> = emptyList(),
     /** How replication stands, as last read, for a register joined to its network. */
     val sync: SyncInfo? = null,
+    /** The member whose PIN the register asks for, to sign them in. */
+    val pinFor: Member? = null,
+    /** The manager's approval the register asks for, for an intent refused without one. */
+    val approval: Approval? = null,
     /** The version of the profile the team and the menu were read from, once it is known. */
     val profileVersion: String? = null,
     /** The last refusal or failure, until the next intent. */
@@ -98,9 +105,54 @@ class RegisterModel(
         null
     }
 
-    /** Signs [member] in, and shows the menu. */
-    fun signIn(member: Member) = perform {
-        till.signIn(member.id)
+    /** Signs [member] in, asking for their PIN first if they have one, and shows the menu. */
+    fun signIn(member: Member) {
+        if (member.hasPin) {
+            mutable.update { it.copy(pinFor = member, error = null) }
+        } else {
+            perform { completeSignIn(member, "") }
+        }
+    }
+
+    /** The PIN typed for the member asked for: signs them in, or says it isn't theirs. */
+    fun enterPin(pin: String) {
+        val member = current.pinFor ?: return
+        perform { completeSignIn(member, pin) }
+    }
+
+    /** Back to the team, with no one asked for. */
+    fun cancelPin() = mutable.update { it.copy(pinFor = null, error = null) }
+
+    /** Who may be asked to approve [approval]: the team but the cashier. */
+    fun approvers(): List<Member> = current.team.filter { it.id != current.member?.id }
+
+    /** The manager asked to approve: the register asks for their PIN. */
+    fun chooseApprover(approver: Member) =
+        mutable.update { state -> state.copy(approval = state.approval?.copy(approver = approver), error = null) }
+
+    /** The PIN typed for the approver: approves, and tries the refused intent again. */
+    fun approve(pin: String) {
+        val approver = current.approval?.approver ?: return
+        val retry = pendingRetry ?: return
+        perform {
+            till.approve(approver.id, pin)
+            mutable.update { it.copy(approval = null) }
+            pendingRetry = null
+            retry()
+        }
+    }
+
+    /** No approval: the intent stays refused. */
+    fun cancelApproval() {
+        pendingRetry = null
+        mutable.update { it.copy(approval = null, error = null) }
+    }
+
+    /** The intent refused for want of an approval, to try again once one is given. */
+    private var pendingRetry: (() -> Unit)? = null
+
+    private fun completeSignIn(member: Member, pin: String) {
+        till.signIn(member.id, pin)
         // The version the menu is read at, read before it, so a publication taken after it reads
         // it again.
         val version = version()
@@ -108,7 +160,7 @@ class RegisterModel(
         mutable.update {
             it.copy(
                 screen = Screen.REGISTER, member = member, pages = pages, page = 0,
-                profileVersion = version,
+                profileVersion = version, pinFor = null,
             )
         }
     }
@@ -349,7 +401,14 @@ class RegisterModel(
             try {
                 withContext(worker) { intent() }
             } catch (refused: TillException) {
-                mutable.update { it.copy(loading = false, error = refused.message) }
+                val action = refused.approval
+                if (action != null) {
+                    // Asked again once a manager approves.
+                    pendingRetry = intent
+                    mutable.update { it.copy(loading = false, approval = Approval(action, refused.message.orEmpty())) }
+                } else {
+                    mutable.update { it.copy(loading = false, error = refused.message) }
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failed: Exception) {

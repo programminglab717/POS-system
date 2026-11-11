@@ -26,6 +26,7 @@ class TapToFrameTest {
     @Test
     fun a_tap_shows_its_line_within_the_budget() {
         compose.tap("member:Alex", wait = 20_000)
+        compose.enterPin("1234")
         // Bottled water, which has nothing to choose, on the Food page.
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("Food")).fetchSemanticsNodes().isNotEmpty() }
         compose.onAllNodes(hasText("Food"))[0].performClick()

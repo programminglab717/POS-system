@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.keel.register.Approval
 import dev.keel.register.JobKind
 import dev.keel.register.JobState
 import dev.keel.register.ModifierSheet
@@ -76,6 +77,10 @@ fun RegisterScreen(model: RegisterModel) {
         }
         state.sheet?.let { SheetDialog(it, model) }
         state.tender?.let { TenderDialog(it, model) }
+        state.pinFor?.let { member ->
+            PinDialog("${member.name}'s PIN", state.error, onEnter = model::enterPin, onCancel = model::cancelPin)
+        }
+        state.approval?.let { ApprovalDialog(it, state.error, model) }
     }
 }
 
@@ -241,6 +246,76 @@ private fun SheetDialog(sheet: ModifierSheet, model: RegisterModel) {
             Button(onClick = model::addFromSheet, enabled = sheet.complete, modifier = Modifier.testTag("sheet:add")) { Text("Add") }
         },
         dismissButton = { TextButton(onClick = model::closeSheet) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun PinDialog(title: String, error: String?, onEnter: (String) -> Unit, onCancel: () -> Unit) {
+    // The digits typed stay on this screen alone: a PIN is never in the register's state.
+    var typed by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text(
+                    "●".repeat(typed.length).ifEmpty { "Type the PIN" },
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.testTag("pin:typed"),
+                )
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("pin:error")) }
+                Spacer(Modifier.height(16.dp))
+                for (row in listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9))) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (digit in row) Key(digit.toString(), "pin:$digit") { if (typed.length < 8) typed += digit }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Key("⌫", "pin:erase") { typed = typed.dropLast(1) }
+                    Key("0", "pin:0") { if (typed.length < 8) typed += "0" }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onEnter(typed)
+                    typed = ""
+                },
+                enabled = typed.length >= 4,
+                modifier = Modifier.testTag("pin:enter"),
+            ) { Text("Enter") }
+        },
+        dismissButton = { TextButton(onClick = onCancel, modifier = Modifier.testTag("pin:cancel")) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ApprovalDialog(approval: Approval, error: String?, model: RegisterModel) {
+    val approver = approval.approver
+    if (approver != null) {
+        PinDialog("${approver.name}'s PIN to approve", error, onEnter = model::approve, onCancel = model::cancelApproval)
+        return
+    }
+    AlertDialog(
+        onDismissRequest = model::cancelApproval,
+        title = { Text("A manager's approval") },
+        text = {
+            Column {
+                Text(approval.reason, modifier = Modifier.testTag("approval:reason"))
+                Spacer(Modifier.height(16.dp))
+                Text("Who approves?", style = MaterialTheme.typography.titleMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (member in model.approvers()) {
+                        Button(onClick = { model.chooseApprover(member) }, modifier = Modifier.testTag("approver:${member.name}")) {
+                            Text(member.role?.let { "${member.name} ($it)" } ?: member.name)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = model::cancelApproval, modifier = Modifier.testTag("approval:cancel")) { Text("Cancel") } },
     )
 }
 

@@ -34,6 +34,7 @@ use keel_types::{Id, Locale, OsEntropy, SystemClock};
 pub mod api;
 pub mod catalog;
 pub mod reports;
+pub mod staff;
 
 /// A location's durable replica's runtime: the cloud device's.
 pub type CloudRuntime = Runtime<SoftwareSigner, OsEntropy, SystemClock, OsEntropy>;

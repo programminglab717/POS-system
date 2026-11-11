@@ -88,7 +88,7 @@ fn a_cash_sales_drawer_and_receipt_reach_the_printer() {
         Locale::EN_US,
     )
     .unwrap();
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     let order = runtime.start_order(Mode::Takeout).unwrap().order;
     let oat = [Choice::of(id(0x202))];
     runtime.add_item(order, id(0x403), &oat, NonZeroU32::MIN).unwrap();

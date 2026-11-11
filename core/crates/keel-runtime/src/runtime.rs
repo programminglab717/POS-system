@@ -13,6 +13,7 @@ use keel_domain::payment::{CashTendered, Payment, PaymentCaptured, PaymentComman
 use keel_domain::profile::{Choice, Member, Profile};
 use keel_domain::refs::Variant;
 use keel_domain::schema::DomainEvent;
+use keel_domain::staff::{Action, Granted, Request};
 use keel_events::envelope::{
     Actor, Aggregate as AggregateMarker, Correlation, Device, StreamKind, StreamRef, TeamMember,
 };
@@ -30,6 +31,7 @@ use keel_print::Outcome;
 use crate::error::RuntimeError;
 use crate::print::{self, Job, JobKind, JobView, PrintJob, Resolution};
 use crate::receipt::{self, Closing};
+use crate::staff::approved;
 use crate::ticket::{self, Cash, cash_due};
 use crate::views::{
     Amount, CashPaid, ItemView, MenuButton, MenuPage, MenuView, Ticket, group_views,
@@ -68,6 +70,10 @@ pub struct Runtime<S, E, C, I> {
     pub(crate) key: keel_events::keys::PublicKey,
     locale: Locale,
     pub(crate) member: Option<Id<TeamMember>>,
+    /// Wrong PINs, and the lock they put on PIN entry.
+    pub(crate) pins: crate::staff::PinGuard,
+    /// An approval waiting for the intent it is for.
+    pub(crate) pending: Option<crate::staff::Pending>,
     /// The printer jobs go to, once the shell sets one.
     printer: Option<PrinterProfile>,
     /// The job with the driver, if one is.
@@ -79,11 +85,14 @@ pub struct Runtime<S, E, C, I> {
 }
 
 /// What every event of one intent records besides its payload.
+#[derive(Clone)]
 pub(crate) struct Meta {
     pub(crate) now: Timestamp,
     pub(crate) business_date: BusinessDate,
     pub(crate) actor: Actor,
     pub(crate) correlation: Id<Correlation>,
+    /// The approval the intent's events name, if one approved it.
+    pub(crate) approval: Option<Id<keel_events::envelope::Event>>,
 }
 
 impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
@@ -141,6 +150,8 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             device: identity.device,
             locale,
             member: None,
+            pins: crate::staff::PinGuard::default(),
+            pending: None,
             printer: None,
             sending: None,
             key: public_key,
@@ -176,21 +187,6 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         &self.store
     }
 
-    /// Signs `member` in: the events of every intent from now on record them.
-    ///
-    /// # Errors
-    /// [`RuntimeError::UnknownMember`] if the profile's team doesn't have them.
-    pub fn sign_in(&mut self, member: Id<TeamMember>) -> Result<(), RuntimeError> {
-        self.profile.member(member).ok_or(RuntimeError::UnknownMember(member))?;
-        self.member = Some(member);
-        Ok(())
-    }
-
-    /// Signs the team member out: intents are refused until another signs in.
-    pub const fn sign_out(&mut self) {
-        self.member = None;
-    }
-
     /// The team member signed in.
     pub const fn signed_in(&self) -> Option<Id<TeamMember>> {
         self.member
@@ -211,6 +207,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             business_date: self.profile.business_day().business_date_of(now)?,
             actor: Actor::TeamMember(member),
             correlation: self.ids.generate(now)?,
+            approval: None,
         })
     }
 
@@ -288,30 +285,61 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         self.decide(order, OrderCommand::ChangeLine(change), &meta)
     }
 
-    /// Takes `line` off `order`.
+    /// Takes `line` off `order`: `line.remove`, which the member's role permits or a manager
+    /// approves (ADR-0029).
     ///
     /// # Errors
-    /// [`RuntimeError`] if no one is signed in, or the order refuses.
+    /// [`RuntimeError::ApprovalRequired`] or [`RuntimeError::NotApprover`] if it needs an approval
+    /// it doesn't have; [`RuntimeError`] if no one is signed in, or the order refuses.
     pub fn remove_line(
         &mut self,
         order: Id<Order>,
         line: Id<keel_domain::order::Line>,
     ) -> Result<Ticket, RuntimeError> {
+        let granted = self.gate(Request::of(Action::LineRemove), Some(order.cast()))?;
         let meta = self.meta()?;
-        self.decide(order, OrderCommand::RemoveLine(line), &meta)
+        let stream = self.approval_stream(granted.as_ref())?;
+        let ticket = self.decide_approved(
+            order,
+            OrderCommand::RemoveLine(line),
+            &meta,
+            granted.as_ref(),
+            stream,
+        )?;
+        self.spend(granted.as_ref());
+        Ok(ticket)
     }
 
-    /// Drops `order`: takes off every line it has, then abandons it, in one write.
+    /// A stream for the approval `granted`, if there is one.
+    fn approval_stream(
+        &mut self,
+        granted: Option<&Granted>,
+    ) -> Result<Option<Id<AggregateMarker>>, RuntimeError> {
+        granted.map(|_| self.ids.generate(self.clock.now())).transpose().map_err(RuntimeError::from)
+    }
+
+    /// Drops `order`: takes off every line it has, then abandons it, in one write. An order with
+    /// lines on it is voided, `order.void`, which the member's role permits or a manager approves
+    /// (ADR-0029); an empty one is dropped by whoever began it.
     ///
     /// # Errors
-    /// [`RuntimeError`] if no one is signed in, or the order refuses: it isn't open, or a line
-    /// was sent to be prepared.
+    /// [`RuntimeError::ApprovalRequired`] or [`RuntimeError::NotApprover`] if it needs an approval
+    /// it doesn't have; [`RuntimeError`] if no one is signed in, or the order refuses: it isn't
+    /// open, or a line was sent to be prepared.
     pub fn abandon(&mut self, order: Id<Order>) -> Result<Ticket, RuntimeError> {
+        let lines = self.store.load(Order::new(order))?.live_lines().count();
+        let granted = if lines > 0 {
+            self.gate(Request::of(Action::OrderVoid), Some(order.cast()))?
+        } else {
+            None
+        };
         let meta = self.meta()?;
+        let stream = self.approval_stream(granted.as_ref())?;
         let payments = self.payments(order)?;
         let (location, device) = (self.location(), self.device);
         let (profile, locale) = (&self.profile, self.locale);
-        self.store.write(|w| {
+        let ticket = self.store.write(|w| {
+            let meta = approved(w, granted.as_ref(), stream, &meta)?;
             let mut loaded = w.load(Order::new(order))?;
             known(&loaded)?;
             let live: Vec<_> = loaded.live_lines().map(keel_domain::order::Line::id).collect();
@@ -323,7 +351,9 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             let event = loaded.decide(location, device, OrderCommand::Abandon)?;
             append(w, order.cast(), &event, &meta)?;
             view(w, order, &payments, profile, locale)
-        })
+        })?;
+        self.spend(granted.as_ref());
+        Ok(ticket)
     }
 
     /// Takes `tendered` in cash for what `order` owes: the payment is initiated and captured,
@@ -432,10 +462,24 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         command: OrderCommand,
         meta: &Meta,
     ) -> Result<Ticket, RuntimeError> {
+        self.decide_approved(order, command, meta, None, None)
+    }
+
+    /// As [`Runtime::decide`], with the approval `granted`, if there is one, written in the same
+    /// write in `stream`, and named by the event.
+    fn decide_approved(
+        &mut self,
+        order: Id<Order>,
+        command: OrderCommand,
+        meta: &Meta,
+        granted: Option<&Granted>,
+        stream: Option<Id<AggregateMarker>>,
+    ) -> Result<Ticket, RuntimeError> {
         let payments = self.payments(order)?;
         let (location, device) = (self.location(), self.device);
         let (profile, locale) = (&self.profile, self.locale);
         self.store.write(|w| {
+            let meta = &approved(w, granted, stream, meta)?;
             let loaded = w.load(Order::new(order))?;
             known(&loaded)?;
             let event = loaded.decide(location, device, command)?;
@@ -728,12 +772,16 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     }
 
     /// The receipt the closed `order` printed when it closed, printed again marked "REPRINT"
-    /// above and below.
+    /// above and below: `receipt.reprint`, which the member's role permits or a manager approves
+    /// (ADR-0029).
     ///
     /// # Errors
+    /// [`RuntimeError::NotSignedIn`]; [`RuntimeError::ApprovalRequired`] or
+    /// [`RuntimeError::NotApprover`] if it needs an approval it doesn't have;
     /// [`RuntimeError::NoReceipt`] if the order printed no receipt, and [`RuntimeError::Store`]
     /// if the store can't be read or written.
     pub fn reprint(&mut self, order: Id<Order>) -> Result<Id<Job>, RuntimeError> {
+        let granted = self.gate(Request::of(Action::ReceiptReprint), Some(order.cast()))?;
         let mut original = None;
         for queued in self.store.effects()? {
             if !matches!(print::job_of(&queued), Some((_, JobKind::Receipt))) {
@@ -754,7 +802,17 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let now = self.clock.now();
         let job: Id<Job> = self.ids.generate(now)?;
         let effect = print::effect(job, JobKind::Receipt, &doc, Some(cause))?;
-        self.store.write(|w| w.enqueue(&effect, now))?;
+        // An approval is an event, so it waits for a settled log as every write does.
+        let meta = if granted.is_some() { Some(self.meta()?) } else { None };
+        let stream = self.approval_stream(granted.as_ref())?;
+        self.store.write(|w| -> Result<(), RuntimeError> {
+            if let Some(meta) = &meta {
+                approved(w, granted.as_ref(), stream, meta)?;
+            }
+            w.enqueue(&effect, now)?;
+            Ok(())
+        })?;
+        self.spend(granted.as_ref());
         Ok(job)
     }
 
@@ -817,7 +875,7 @@ pub(crate) fn append<D: DomainEvent, S: Signer, E: Entropy>(
         schema,
         business_date: meta.business_date,
         actor: meta.actor.clone(),
-        approval: None,
+        approval: meta.approval,
         causation: None,
         correlation: Some(meta.correlation),
         payload,

@@ -149,3 +149,39 @@ test("a catalog read before another was published is refused", async ({ page, re
   expect(refused.status()).toBe(422);
   expect((await refused.json()).error).toContain("isn't an identifier");
 });
+
+test("a cashier's role and PIN are changed, published, and taken by the register", async ({ page, request }) => {
+  await signIn(page);
+  await page.getByRole("tab", { name: "Staff" }).click();
+  const team = page.getByRole("table", { name: "Team" });
+  await expect(team.getByLabel("Member name")).toHaveCount(2);
+  await expect(page.getByLabel("Role of Sam")).toHaveValue(/0192f0c1-0000-7000-8000-000000000602/);
+  // A PIN is never read back: the API says only that one is set.
+  const headers = { Authorization: `Bearer ${token()}` };
+  const [location] = await (await request.get("/api/locations", { headers })).json();
+  const staff = await (await request.get(`/api/locations/${location.id}/staff`, { headers })).json();
+  expect(staff.team.map((member: { hasPin: boolean }) => member.hasPin)).toEqual([true, true]);
+  expect(JSON.stringify(staff)).not.toMatch(/salt|hash|"pin"/i);
+  // A cashier may now drop an order, and Sam has a new PIN.
+  const cashier = page.getByRole("article", { name: "Role Cashier" });
+  await cashier.getByLabel("Drop an order with items on it").check();
+  const pin = page.getByLabel("New PIN for Sam");
+  await pin.fill("12");
+  await expect(page.getByText("A PIN is 4 to 8 digits.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Publish" })).toBeDisabled();
+  await pin.fill("1357");
+  const before = registerVersion();
+  await page.getByRole("button", { name: "Check" }).click();
+  await expect(page.getByRole("status")).toHaveText("The staff pass every check.");
+  await page.getByRole("button", { name: "Publish" }).click();
+  await expect(page.getByRole("status")).toHaveText(/^Published version [0-9a-f]{12}\./);
+  await expect(cashier.getByLabel("Drop an order with items on it")).toBeChecked();
+  await expect(page.getByLabel("New PIN for Sam")).toHaveValue("");
+  await expect
+    .poll(() => registerVersion(), { timeout: 60_000, intervals: [250] })
+    .not.toBe(before);
+  // A member new to the team needs a PIN: the kernel says so.
+  await page.getByRole("button", { name: "Add member" }).click();
+  await page.getByRole("button", { name: "Check" }).click();
+  await expect(page.getByRole("status")).toContainText("a team member with no PIN");
+});

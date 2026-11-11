@@ -62,6 +62,7 @@ fn write(runtime: &mut TestRuntime, events: &[PublicationEvent]) {
         business_date: runtime.profile.business_day().business_date_of(now).unwrap(),
         actor: Actor::System(Component::new("cloud").unwrap()),
         correlation: runtime.ids.generate(now).unwrap(),
+        approval: None,
     };
     let stream = runtime.ids.generate(now).unwrap();
     runtime
@@ -123,14 +124,14 @@ fn a_publication_missing_a_chunk_is_never_taken() {
 fn a_member_the_new_team_doesnt_have_is_signed_out() {
     let scratch = Scratch::new();
     let mut runtime = cloud(&scratch);
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     let without: Profile = demo_with(|data| data.team.retain(|member| member.id != id(0x501)));
     write(&mut runtime, &publication::publish(&without).unwrap());
     assert!(runtime.take_publications().unwrap());
     assert_eq!(runtime.signed_in(), None);
     // One it still has stays signed in.
     let other = without.data().team[0].id;
-    runtime.sign_in(other).unwrap();
+    runtime.sign_in(other, "2468").unwrap();
     let espresso = demo_with(|data| {
         data.team.retain(|member| member.id != id(0x501));
         crate::tests::variant(data, 0x401).price = crate::tests::usd(410);

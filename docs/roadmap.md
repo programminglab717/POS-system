@@ -279,7 +279,8 @@ designed in an ADR of its own when it begins, built in slices, and reviewed:
 
 1. **Staff, roles and approvals**: PIN sign-in, roles and ABAC permissions with limits, manager
    approvals recorded as events, separation of duties (M-01). The gate every later step uses.
-   *Status: designed in [ADR-0029](./adr/0029-staff-roles-and-approvals.md).*
+   *Status: built 2026-11-11 ([ADR-0029](./adr/0029-staff-roles-and-approvals.md)), its review
+   next.*
 2. **Selling at the register**: discounts with reason codes and limits, split tender, notes,
    park and recall, open-price items (B-03…B-06, B-14).
 3. **Cash**: drawer sessions, paid-in and paid-out, no-sale, blind close with thresholds, and

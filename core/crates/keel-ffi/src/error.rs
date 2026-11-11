@@ -19,6 +19,30 @@ pub enum KeelError {
         /// The member asked for.
         member: String,
     },
+    /// The PIN isn't the member's (ADR-0029).
+    #[error("that PIN isn't theirs")]
+    WrongPin,
+    /// Too many wrong PINs on this register: PIN entry is locked for a while.
+    #[error("too many wrong PINs: try again in {seconds} s")]
+    LockedOut {
+        /// How many seconds more.
+        seconds: u64,
+    },
+    /// The action needs a manager's approval: ask one for their PIN, `approve`, and try again.
+    #[error("{action} needs a manager's approval")]
+    ApprovalRequired {
+        /// The action, as ADR-0029 names it, such as `order.void`.
+        action: String,
+    },
+    /// The approval given can't approve this: the approver's role doesn't permit it, or it is
+    /// their own request.
+    #[error("{approver} can't approve {action}")]
+    NotApprover {
+        /// Who approved.
+        approver: String,
+        /// What they can't approve.
+        action: String,
+    },
     /// The store holds no such order.
     #[error("no order {order}")]
     UnknownOrder {
@@ -137,6 +161,15 @@ impl From<RuntimeError> for KeelError {
             RuntimeError::UnknownOrder(order) => {
                 KeelError::UnknownOrder { order: order.to_string() }
             }
+            RuntimeError::WrongPin => KeelError::WrongPin,
+            RuntimeError::LockedOut { seconds } => KeelError::LockedOut { seconds },
+            RuntimeError::ApprovalRequired(action) => {
+                KeelError::ApprovalRequired { action: action.name().to_owned() }
+            }
+            RuntimeError::NotApprover { approver, action } => KeelError::NotApprover {
+                approver: approver.to_string(),
+                action: action.name().to_owned(),
+            },
             RuntimeError::Ring(_) => KeelError::Catalog { reason },
             RuntimeError::Order(_) | RuntimeError::Checkout(_) | RuntimeError::Payment(_) => {
                 KeelError::Refused { reason }

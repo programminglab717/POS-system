@@ -48,9 +48,24 @@ class FakeTill : Till {
 
     override fun team() = listOf(Member("alex", "Alex"), Member("sam", "Sam"))
 
-    override fun signIn(member: String) {
+    /** Each member's PIN, for a till whose team has them; none for the plain team. */
+    var pins: Map<String, String> = emptyMap()
+
+    /** Whether dropping an order with items on it needs a manager, as for a cashier. */
+    var voidNeedsApproval = false
+
+    /** The approver waiting, once one has approved. */
+    var approvedBy: String? = null
+
+    override fun signIn(member: String, pin: String) {
         if (team().none { it.id == member }) throw TillException("no such member")
+        if (pin != pins[member].orEmpty()) throw TillException("That PIN isn't right.")
         signedIn = member
+    }
+
+    override fun approve(approver: String, pin: String) {
+        if (pin != pins[approver].orEmpty()) throw TillException("That PIN isn't right.")
+        approvedBy = approver
     }
 
     override fun signOut() {
@@ -94,6 +109,10 @@ class FakeTill : Till {
     }
 
     override fun abandon(order: String): Ticket {
+        if (voidNeedsApproval && open(order).isNotEmpty()) {
+            if (approvedBy == null) throw TillException("Dropping it needs a manager.", approval = "order.void")
+            approvedBy = null
+        }
         open(order).clear()
         states[order] = OrderState.ABANDONED
         return ticket(order)

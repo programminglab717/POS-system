@@ -12,7 +12,13 @@ interface Till {
     fun team(): List<Member>
 
     /** Signs [member] in. */
-    fun signIn(member: String)
+    fun signIn(member: String, pin: String)
+
+    /**
+     * [approver]'s approval, their [pin] checked, for the next intent of the member signed in that
+     * needs one (ADR-0029): asked for when an intent is refused with [TillException.approval].
+     */
+    fun approve(approver: String, pin: String)
 
     /** Signs whoever is signed in out. */
     fun signOut()
@@ -123,7 +129,14 @@ interface PrinterSettings {
 }
 
 /** A team member who may sign in. */
-data class Member(val id: String, val name: String)
+data class Member(
+    val id: String,
+    val name: String,
+    /** Their role's name, such as "Manager"; none in a profile without roles. */
+    val role: String? = null,
+    /** Whether they sign in with a PIN: in a profile without roles, no one does. */
+    val hasPin: Boolean = false,
+)
 
 /** An amount in minor units, and how the locale shows it. */
 data class Amount(val minor: Long, val text: String)
@@ -203,4 +216,9 @@ data class TicketLine(
 data class Paid(val change: String, val ticket: Ticket)
 
 /** A refusal the cashier sees, in words for them. */
-class TillException(message: String, cause: Throwable? = null) : Exception(message, cause)
+class TillException(
+    message: String,
+    cause: Throwable? = null,
+    /** The action, such as `order.void`, if what was refused needs a manager's approval. */
+    val approval: String? = null,
+) : Exception(message, cause)

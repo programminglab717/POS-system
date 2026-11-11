@@ -151,7 +151,7 @@ fn a_sale_on_the_register_reaches_the_hub() {
     let (hub_dir, register_dir) = (dir("hub"), dir("register"));
     let mut hub = open(&hub_dir, HUB, 1);
     let mut register = open(&register_dir, REGISTER, 2);
-    register.sign_in(id(0x501)).unwrap();
+    register.sign_in(id(0x501), "1234").unwrap();
     let hub_frames = hub.start_sync(roster()).unwrap();
     let register_frames = register.start_sync(roster()).unwrap();
     // Until it hears from its peers, the register doesn't write.
@@ -224,7 +224,7 @@ fn settled(hub: TestRuntime, register: TestRuntime) -> Location {
     location.deliver();
     location.run(Duration::from_millis(250), 40);
     assert!(location.hub.sync_status().unwrap().unwrap().serving);
-    location.register.sign_in(id(0x501)).unwrap();
+    location.register.sign_in(id(0x501), "1234").unwrap();
     location
 }
 
@@ -269,7 +269,7 @@ fn a_clock_set_back_doesnt_silence_the_hub() {
 fn a_register_that_hears_no_one_sells_as_an_island() {
     let register_dir = dir("island");
     let mut register = open(&register_dir, REGISTER, 2);
-    register.sign_in(id(0x501)).unwrap();
+    register.sign_in(id(0x501), "1234").unwrap();
     let _ = register.start_sync(roster()).unwrap();
     register
         .clock()

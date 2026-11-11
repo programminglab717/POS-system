@@ -68,6 +68,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             business_date: profile.business_day().business_date_of(now)?,
             actor: Actor::System(Component::new("cloud")?),
             correlation: self.ids.generate(now)?,
+            approval: None,
         };
         let stream = self.ids.generate(now)?;
         self.store.write(|w| {

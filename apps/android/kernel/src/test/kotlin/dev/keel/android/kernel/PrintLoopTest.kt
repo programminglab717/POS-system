@@ -49,7 +49,7 @@ class PrintLoopTest {
                 locale = "en-US",
             )
             Register.open(config).use { register ->
-                register.signIn(id(0x501))
+                register.signIn(id(0x501), "1234")
                 val order = register.startOrder(Mode.TAKEOUT).order
                 register.addItem(order, id(0x409), emptyList(), 1u)
                 register.payCash(order, 1_000)

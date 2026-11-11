@@ -27,6 +27,7 @@ mod print;
 mod publication;
 mod receipt;
 mod runtime;
+mod staff;
 mod sync;
 mod ticket;
 mod views;
@@ -36,11 +37,14 @@ mod print_tests;
 #[cfg(test)]
 mod publication_tests;
 #[cfg(test)]
+mod staff_tests;
+#[cfg(test)]
 mod tests;
 
 pub use error::RuntimeError;
 pub use print::{DRAWER, Job, JobKind, JobState, JobView, PrintJob, RECEIPT, Resolution};
 pub use runtime::{CASH_OFFERS, Identity, Runtime};
+pub use staff::{APPROVAL_LIFE, FIRST_LOCK, LONGEST_LOCK, PIN_TRIES};
 pub use sync::{ISLAND_AFTER, SyncStatus};
 pub use views::{
     Amount, CashPaid, GroupView, ItemView, MenuButton, MenuPage, MenuView, ModifierView, Ticket,

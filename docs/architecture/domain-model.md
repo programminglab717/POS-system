@@ -984,7 +984,9 @@ One state machine covers goods that are **in someone else's custody**:
   discounts, a most percentage. Beyond a role, another member whose role permits it approves:
   never the one who asked. An approval is an `approval.granted` event, written with what it
   approves. A PIN is 4 to 8 digits, kept as its Argon2id hash. A profile without roles, format 1,
-  lets every member do everything with no PIN. Not yet: grants per location or revenue center,
+  lets every member do everything with no PIN. On a device, five wrong PINs lock PIN entry for
+  30 s, doubling to 15 minutes; an approval is a manager's PIN, held for the next intent that
+  needs it, for a minute. Not yet: grants per location or revenue center,
   time-of-day and own-records constraints, badges, and approvals on a manager's phone.
 - **Time and attendance**:
   - `TimeEntry` events cover clock in/out, breaks, job-code switches and declared cash tips.

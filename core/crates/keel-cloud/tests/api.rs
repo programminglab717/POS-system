@@ -293,7 +293,7 @@ fn two_sales(
     register_dir: &Dir,
 ) -> (Vec<i64>, keel_types::BusinessDate, keel_types::Id<keel_events::envelope::Device>) {
     let mut register = open(register_kit, register_dir);
-    register.sign_in(demo().unwrap().data().team[0].id).unwrap();
+    register.sign_in(demo().unwrap().data().team[0].id, "1234").unwrap();
     let first = register.start_sync(roster.clone()).unwrap();
     let net = Net::device(roster, register_kit.credentials()).unwrap();
     for frame in first {
@@ -415,4 +415,68 @@ async fn the_report_totals_are_the_register_s_tickets_and_replication_shows_who_
     assert_eq!(by_name("Front counter")["id"], json!(register_device.to_string()));
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     tokio::task::spawn_blocking(move || hub.join().unwrap()).await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn staff_are_read_with_no_pin_and_published_with_new_ones() {
+    let (listener, port) = bound();
+    let provisioned = location(7443, port);
+    let dir = dir("staff");
+    let app = cell(&provisioned, listener, &dir);
+    let base = format!("/api/locations/{}/staff", provisioned.roster.data().location);
+    let (status, read) = get(&app, &base).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(read["roles"].as_array().unwrap().len(), 2);
+    assert_eq!(read["actions"].as_array().unwrap().len(), 10);
+    assert_eq!(read["team"][1]["name"], json!("Sam"));
+    assert_eq!(read["team"][1]["hasPin"], json!(true));
+    // Nothing of a PIN: not its hash, nor its salt.
+    let text = read.to_string();
+    assert!(
+        !text.contains("salt") && !text.contains("hash") && !text.contains("\"pin\""),
+        "{text}"
+    );
+    // Sam's PIN changed.
+    let team: Vec<Value> = read["team"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| {
+            let mut edit =
+                json!({ "id": member["id"], "name": member["name"], "role": member["role"] });
+            if member["name"] == "Sam" {
+                edit["pin"] = json!("1357");
+            }
+            edit
+        })
+        .collect();
+    let edit = json!({ "base": read["version"], "roles": read["roles"], "team": team });
+    let (status, checked) =
+        call(&app, Method::POST, &format!("{base}/check"), Some(TOKEN), Some(edit.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{checked}");
+    tokio::time::sleep(keel_runtime::ISLAND_AFTER).await;
+    let (status, published) = call(&app, Method::PUT, &base, Some(TOKEN), Some(edit.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{published}");
+    // A salt drawn for each PIN: the check's version isn't the publication's.
+    assert_ne!(published["version"], checked["version"]);
+    let (_, again) = get(&app, &base).await;
+    assert_eq!(again["version"], published["version"]);
+    // Read before: refused.
+    let (status, _) = call(&app, Method::PUT, &base, Some(TOKEN), Some(edit)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // A PIN that isn't one, and an action that isn't one.
+    let mut bad = json!({ "base": again["version"], "roles": again["roles"], "team": [
+        { "id": again["team"][0]["id"], "name": "Alex", "role": again["team"][0]["role"], "pin": "12a4" },
+        { "id": again["team"][1]["id"], "name": "Sam", "role": again["team"][1]["role"] },
+    ] });
+    let (status, refused) =
+        call(&app, Method::POST, &format!("{base}/check"), Some(TOKEN), Some(bad.clone())).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(refused["error"].as_str().unwrap().contains("Alex's PIN"), "{refused}");
+    bad["team"][0].as_object_mut().unwrap().remove("pin");
+    bad["roles"][0]["permissions"][0]["action"] = json!("order.delete");
+    let (status, _) =
+        call(&app, Method::POST, &format!("{base}/check"), Some(TOKEN), Some(bad)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(call(&app, Method::GET, &base, None, None).await.0, StatusCode::UNAUTHORIZED);
 }

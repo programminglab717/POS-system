@@ -90,9 +90,24 @@ private fun printer(): Pair<Int, () -> ByteArray> {
 
 class RegisterTest {
     @Test
+    fun aCashierAsksAManagerToVoid() = withRegister { register ->
+        assertFailsWith<KeelException.WrongPin> { register.signIn(id(0x502), "1234") }
+        register.signIn(id(0x502), "2468")
+        val team = register.team()
+        assertEquals(listOf("Manager", "Cashier"), team.map { it.role })
+        assertEquals(listOf(true, true), team.map { it.hasPin })
+        val order = register.startOrder(Mode.TAKEOUT).order
+        register.addItem(order, id(0x401), emptyList(), 1u)
+        val refused = assertFailsWith<KeelException.ApprovalRequired> { register.abandon(order) }
+        assertEquals("order.void", refused.action)
+        register.approve(id(0x501), "1234")
+        assertEquals(TicketState.ABANDONED, register.abandon(order).state)
+    }
+
+    @Test
     fun aSaleRingsPaysAndPrints() = withRegister { register ->
         assertFailsWith<KeelException.NotSignedIn> { register.startOrder(Mode.TAKEOUT) }
-        register.signIn(id(0x501))
+        register.signIn(id(0x501), "1234")
         val menu = register.menu()
         assertEquals("Coffee", menu.pages[0].name)
         assertEquals("$5.25", menu.pages[0].buttons[2].price.text)
@@ -148,7 +163,7 @@ class RegisterTest {
 
     @Test
     fun badArgumentsAreRefused() = withRegister { register ->
-        register.signIn(id(0x501))
+        register.signIn(id(0x501), "1234")
         assertFailsWith<KeelException.InvalidArgument> { register.ticket("not an identifier") }
         assertFailsWith<KeelException.UnknownOrder> { register.ticket(id(0x999)) }
         val order = register.startOrder(Mode.DINE_IN).order

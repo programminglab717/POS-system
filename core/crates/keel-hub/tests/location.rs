@@ -114,7 +114,7 @@ fn a_sale_on_a_register_reaches_the_hub_over_the_network() {
     let hub = serve(hub, hub_net, Arc::clone(&stop));
 
     let mut register = open(&register_kit, &register_dir);
-    register.sign_in(demo().unwrap().data().team[0].id).unwrap();
+    register.sign_in(demo().unwrap().data().team[0].id, "1234").unwrap();
     let first = register.start_sync(roster.clone()).unwrap();
     let net = Net::device(roster, register_kit.credentials()).unwrap();
     for frame in first {

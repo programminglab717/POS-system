@@ -130,7 +130,7 @@ fn a_sale_reaches_the_cloud_and_the_register_hears_it_is_backed_up() {
     let hub = serve(hub, hub_net, Arc::clone(&stop));
 
     let mut register = open(&register_kit, &register_dir);
-    register.sign_in(demo().unwrap().data().team[0].id).unwrap();
+    register.sign_in(demo().unwrap().data().team[0].id, "1234").unwrap();
     let first = register.start_sync(roster.clone()).unwrap();
     let net = Net::device(roster, register_kit.credentials()).unwrap();
     for frame in first {

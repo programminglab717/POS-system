@@ -36,6 +36,7 @@ class SyncTest {
         }
         ActivityScenario.launch(MainActivity::class.java).use {
             compose.tap("member:Alex", wait = 30_000)
+            compose.enterPin("1234")
             compose.waitUntil(60_000) { compose.shown("sync") == "Synced" }
             check(!kit.exists()) { "the kit was imported and removed" }
             compose.tap("button:${demoId(0x402)}")

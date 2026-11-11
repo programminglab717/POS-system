@@ -85,7 +85,7 @@ fn open(scratch: &Scratch, now: Timestamp, opened: u64) -> TestRuntime {
         Locale::EN_US,
     )
     .unwrap();
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     runtime
 }
 

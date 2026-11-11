@@ -9,6 +9,8 @@
 //! | `GET /api/locations/{id}/catalog` | The catalog and menu ([`CatalogView`]). |
 //! | `POST /api/locations/{id}/catalog/check` | Checks a catalog ([`CatalogEdit`]) whole, publishing nothing: its version, or why not. |
 //! | `PUT /api/locations/{id}/catalog` | Publishes a catalog, whose `base` names the version it was read at: 409 if another was published since, 503 while the cell catches up with the location. |
+//! | `GET /api/locations/{id}/staff` | The roles and the team ([`StaffView`]); no PIN is ever read back. |
+//! | `POST /api/locations/{id}/staff/check`, `PUT /api/locations/{id}/staff` | Checks or publishes staff ([`StaffEdit`]), as the catalog's: a new PIN is hashed with a salt the cell draws. |
 //! | `GET /api/locations/{id}/reports/sales?from=&to=` | Sales over business days ([`SalesReport`](crate::reports::SalesReport)), today's by default. |
 //!
 //! Anything else is the back office's single-page app, from the directory the cell is given,
@@ -27,12 +29,13 @@ use axum::{Json, Router};
 use keel_domain::publication;
 use keel_events::envelope::Location as LocationRef;
 use keel_events::hash::sha256;
-use keel_types::{BusinessDate, Clock, Id};
+use keel_types::{BusinessDate, Clock, Id, OsEntropy};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::catalog::{self, CatalogEdit, CatalogView};
+use crate::staff::{self, StaffEdit, StaffView};
 use keel_runtime::RuntimeError;
 
 use crate::{CellError, CloudRuntime, Location, reports};
@@ -262,20 +265,35 @@ async fn publish_catalog(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let index = cell.location(&id)?;
     let Json(edit) = edit.map_err(|rejection| rejected(&rejection))?;
-    // Checked against the version it was read at, and published, in one job: nothing is
-    // published between the two.
-    let published = on(&cell, index, move |runtime| {
+    let base = edit.base.clone();
+    publish(&cell, index, base, move |profile| {
+        catalog::apply(profile, &edit).map_err(|error| ApiError::Invalid(error.to_string()))
+    })
+    .await
+}
+
+/// Publishes the profile `make` makes of the location's current one, once `base`, the version it
+/// was read at, is checked to be the current one: in one job, so nothing is published between
+/// the two.
+async fn publish(
+    cell: &Arc<Cell>,
+    index: usize,
+    base: Option<String>,
+    make: impl FnOnce(&keel_domain::profile::Profile) -> Result<keel_domain::profile::Profile, ApiError>
+    + Send
+    + 'static,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let published = on(cell, index, move |runtime| {
         let current = catalog::hex(runtime.profile_version());
         // The version it was read at is required: a write that names none would overwrite a
         // newer publication unseen. Found in review.
-        let base = edit.base.as_ref().ok_or_else(|| {
-            ApiError::Invalid("base, the version the catalog was read at, is required".into())
+        let base = base.ok_or_else(|| {
+            ApiError::Invalid("base, the version the profile was read at, is required".into())
         })?;
         if !base.eq_ignore_ascii_case(&current) {
             return Err(ApiError::Conflict(current));
         }
-        let profile = catalog::apply(runtime.profile(), &edit)
-            .map_err(|error| ApiError::Invalid(error.to_string()))?;
+        let profile = make(runtime.profile())?;
         runtime.publish_profile(&profile).map_err(|error| match error {
             RuntimeError::NotSettled => ApiError::Unavailable,
             RuntimeError::Publication(_) => ApiError::Invalid(error.to_string()),
@@ -284,6 +302,48 @@ async fn publish_catalog(
     })
     .await??;
     Ok(Json(json!({ "version": catalog::hex(published) })))
+}
+
+async fn read_staff(
+    State(cell): State<Arc<Cell>>,
+    Path(id): Path<String>,
+) -> Result<Json<StaffView>, ApiError> {
+    let index = cell.location(&id)?;
+    let view =
+        on(&cell, index, |runtime| staff::view(runtime.profile(), runtime.profile_version()))
+            .await?;
+    Ok(Json(view))
+}
+
+async fn check_staff(
+    State(cell): State<Arc<Cell>>,
+    Path(id): Path<String>,
+    edit: Result<Json<StaffEdit>, JsonRejection>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let index = cell.location(&id)?;
+    let Json(edit) = edit.map_err(|rejection| rejected(&rejection))?;
+    let checked = on(&cell, index, move |runtime| {
+        staff::apply(runtime.profile(), &edit, &mut OsEntropy)
+            .map(|profile| publication::version(&profile))
+    })
+    .await?;
+    let version = checked.map_err(|error| ApiError::Invalid(error.to_string()))?;
+    Ok(Json(json!({ "version": catalog::hex(version) })))
+}
+
+async fn publish_staff(
+    State(cell): State<Arc<Cell>>,
+    Path(id): Path<String>,
+    edit: Result<Json<StaffEdit>, JsonRejection>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let index = cell.location(&id)?;
+    let Json(edit) = edit.map_err(|rejection| rejected(&rejection))?;
+    let base = edit.base.clone();
+    publish(&cell, index, base, move |profile| {
+        staff::apply(profile, &edit, &mut OsEntropy)
+            .map_err(|error| ApiError::Invalid(error.to_string()))
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -329,6 +389,8 @@ pub fn router(cell: Arc<Cell>) -> Router {
         .route("/api/locations/{id}/replication", get(replication))
         .route("/api/locations/{id}/catalog", get(read_catalog).put(publish_catalog))
         .route("/api/locations/{id}/catalog/check", post(check_catalog))
+        .route("/api/locations/{id}/staff", get(read_staff).put(publish_staff))
+        .route("/api/locations/{id}/staff/check", post(check_staff))
         .route("/api/locations/{id}/reports/sales", get(sales))
         // Anything else under /api is no route, not the single-page app.
         .route("/api", any(no_route))

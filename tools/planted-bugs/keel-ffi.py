@@ -269,5 +269,16 @@ BUGS = [
         "    while false && took && turns < SYNC_TURNS && started.elapsed() < SYNC_BUDGET {",
         "unit",
     ),
+    (
+        "ffi: an approval asked for names no action",
+        "src/error.rs",
+        "                KeelError::ApprovalRequired { action: action.name().to_owned() }",
+        "                KeelError::ApprovalRequired { action: String::new() }",
+    ),
+    (
+        "ffi: a member's PIN isn't reported",
+        "src/register.rs",
+        "                    has_pin: member.pin.is_some(),",
+        "                    has_pin: false,",
+    ),
 ]
-

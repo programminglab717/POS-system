@@ -111,7 +111,7 @@ fn a_sale_that_owes_nothing_prints_its_receipt_and_opens_no_drawer() {
     let scratch = Scratch::new();
     let profile = crate::tests::demo_with(|data| crate::tests::variant(data, 0x409).price = usd(0));
     let mut runtime = crate::tests::register(&scratch, profile);
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     let order = runtime.start_order(Mode::Takeout).unwrap().order;
     runtime.add_item(order, id(0x409), &[], NonZeroU32::MIN).unwrap();
     runtime.pay_cash(order, usd(0)).unwrap();
@@ -250,7 +250,7 @@ fn a_reprint_is_the_receipt_as_it_closed_marked_above_and_below() {
     let original = runtime.print_jobs().unwrap()[1].job;
     // Reprinted later, by someone else, it still shows the cashier and time of the close.
     later(&mut runtime, Duration::from_secs(600));
-    runtime.sign_in(id(0x502)).unwrap();
+    runtime.sign_in(id(0x502), "2468").unwrap();
     let job = runtime.reprint(order).unwrap();
     let banner = crate::receipt::reprint_banner(Locale::EN_US);
     let mut expected = vec![banner.clone()];
@@ -271,7 +271,7 @@ fn a_reprint_is_the_receipt_as_it_closed_marked_above_and_below() {
 fn a_spanish_receipt_says_so_in_spanish() {
     let scratch = Scratch::new();
     let mut runtime = crate::tests::register_with_locale(&scratch, Locale::ES_US);
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     sale(&mut runtime);
     let job = runtime.print_jobs().unwrap()[1].job;
     let text = plain_text(&doc_of(&runtime, job), Columns::PAPER_80MM);
@@ -324,7 +324,7 @@ fn a_receipt_too_big_for_the_outbox_is_printed_short() {
         data.catalog.items[1].name = keel_domain::codec::Name::new(&"珈".repeat(190)).unwrap();
     });
     let mut runtime = crate::tests::register(&scratch, profile);
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     let order = runtime.start_order(Mode::Takeout).unwrap().order;
     for _ in 0..150 {
         runtime.add_item(order, id(0x403), &big_latte(), NonZeroU32::MIN).unwrap();
@@ -364,11 +364,14 @@ fn jobs_the_clock_left_behind_are_due_at_once() {
 fn reprints_are_recognised_in_any_language() {
     let scratch = Scratch::new();
     let mut runtime = crate::tests::register_with_locale(&scratch, Locale::ES_US);
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     let order = sale(&mut runtime);
     runtime.reprint(order).unwrap();
     drop(runtime);
     let mut runtime = crate::tests::register_with_locale(&scratch, Locale::EN_US);
+    // A reprint is someone's, as every action is (ADR-0029).
+    assert!(matches!(runtime.reprint(order), Err(RuntimeError::NotSignedIn)));
+    runtime.sign_in(id(0x502), "2468").unwrap();
     let job = runtime.reprint(order).unwrap();
     let banner = |text: &str| Block::text(text, keel_doc::Align::Center, keel_doc::Style::LARGE);
     let (english, spanish) = (banner("REPRINT"), banner("REIMPRESIÓN"));

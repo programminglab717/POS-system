@@ -1,6 +1,7 @@
 package dev.keel.android
 
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -35,6 +36,7 @@ class RegisterTest {
     fun a_latte_with_oat_milk_is_rung_paid_and_printed() {
         val (port, received) = printer(jobs = 2)
         compose.tap("member:Alex", wait = 20_000)
+        compose.enterPin("1234")
         compose.tap("printer")
         compose.waitFor("printer:host")
         compose.onNodeWithTag("printer:host").performTextReplacement("127.0.0.1")
@@ -54,6 +56,24 @@ class RegisterTest {
         compose.tap("orders")
         compose.waitFor("back")
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("Paid")).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    /**
+     * A cashier drops an order with an item on it, which needs a manager (ADR-0029): the register
+     * asks who approves, takes their PIN, and drops it.
+     */
+    @Test
+    fun a_cashier_drops_an_order_once_a_manager_approves() {
+        compose.tap("member:Sam", wait = 20_000)
+        compose.enterPin("2468")
+        compose.tap("button:${demoId(0x401)}")
+        compose.tap("sheet:add")
+        compose.tap("abandon")
+        compose.waitFor("approval:reason")
+        compose.tap("approver:Alex")
+        compose.enterPin("1234")
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("abandon")).fetchSemanticsNodes().isEmpty() }
+        compose.tap("sign-out")
     }
 
     /**

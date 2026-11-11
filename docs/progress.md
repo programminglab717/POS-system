@@ -7,9 +7,10 @@
 ## Where we are
 
 **The MVP, step 1 of 10:** staff, roles and approvals
-([ADR-0029](./adr/0029-staff-roles-and-approvals.md), proposed). Slice 1, the profile and the
-policy, is built: roles, permissions with limits, PIN hashes and approvals in the kernel. The
-runtime and the shells come next.
+([ADR-0029](./adr/0029-staff-roles-and-approvals.md), proposed). All three slices are built:
+roles, permissions with limits, PIN hashes and approvals in the kernel; PIN sign-in, a lockout
+and approvals in the runtime; a PIN pad and an approval sheet on the Android register; and staff
+and roles in the back office. The step's review is next.
 
 **Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
 ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
@@ -88,9 +89,10 @@ verified as it lands, then reviewed:
 
 1. **The profile and the policy** (built 2026-11-11): profile format 2, PINs, permissions, the
    policy's decisions, and `approval.granted`.
-2. **The runtime and the bindings**: PIN sign-in and lockout, approvals, the gated intents.
-3. **The shells**: the Android register's PIN pad and approval sheet, and the back office's
-   staff and roles.
+2. **The runtime and the bindings** (built 2026-11-11): PIN sign-in and lockout, approvals,
+   the gated intents.
+3. **The shells** (built 2026-11-11): the Android register's PIN pad and approval sheet, and the
+   back office's staff and roles.
 
 Built in slice 1:
 
@@ -122,6 +124,52 @@ Built in slice 1:
 - The dependency policy gains `argon2`, which builds for `wasm32`.
 - The workspace's tests, clippy with all features and none, the kernel crates for `wasm32`, and
   every planted bug's text.
+
+Built in slice 2:
+
+- **The runtime** (`keel-runtime`'s `staff`): `sign_in(member, pin)`; five wrong PINs in a row
+  lock PIN entry for 30 s, then twice as long after each further five, up to 15 minutes, a clock
+  set back leaving at most that; a right PIN starts the count again. `approve(approver, pin)`
+  holds an approval for 60 s, for the member signed in, dropped when anyone signs in or out.
+  Each gated intent asks `gate`: nothing if the member's role permits it, the approval to write
+  if one waits that permits it, `ApprovalRequired` or `NotApprover` otherwise. The approval is an
+  `approval.granted` event in the intent's write, its actor the member who asked, which the
+  intent's events name in their envelope; it is spent only by a write that succeeds. Gated now:
+  dropping an order with lines (`order.void`), taking a line off (`line.remove`), and printing a
+  receipt again (`receipt.reprint`, which now needs someone signed in).
+  - Known answers: only a member's own PIN signs them in; the lockout's 30 s, 60 s and 15-minute
+    cap, and a clock set back a day; a cashier's void refused, refused again on their own
+    approval and on a wrong PIN, done on a manager's, written once and named by the two events
+    it approved, spent, not needed for an empty order or by a manager; an approval expiring after
+    a minute, dropped by signing in or out, and surviving a refusal for another reason; line
+    removal and reprints gated by a stricter role; a profile without roles.
+  - Planted bugs: 12 new, all caught.
+- **The bindings**: `sign_in(member, pin)`, `approve(approver, pin)`, the errors `WrongPin`,
+  `LockedOut`, `ApprovalRequired` (naming the action) and `NotApprover`, and each member's role
+  and whether they have a PIN. Known answers in Rust and in the Kotlin library: a wrong PIN, a
+  void approved, the lockout.
+  - Planted bugs: 2 new, both caught.
+
+Built in slice 3:
+
+- **The Android register**: a PIN pad when a member with a PIN signs in, its digits never in the
+  register's state; and when an intent needs an approval, a sheet that asks who approves, then
+  their PIN, and tries the intent again. `RegisterModel` keeps the refused intent and runs it
+  once approved, or drops it on Cancel. The instrumented tests type the demo's PINs, and a new
+  one drops a cashier's order with a manager's approval on the device.
+  - Known answers: `RegisterModel`'s 16 JVM tests, 2 new: a wrong PIN and the right one; an
+    approval asked for, a wrong approver's PIN, the intent done once approved, and Cancel.
+- **The back office**: the cell's staff JSON (`keel-cloud`'s `staff`) and routes,
+  `GET /api/locations/{id}/staff`, `POST …/staff/check` and `PUT …/staff`, published as the
+  catalog is, against the version read. No PIN is ever read back: a member has one or not, and a
+  new PIN's digits are hashed by the cell with a salt it draws. A Staff tab edits the team, each
+  member's role and PIN, and the roles: each action, with its limits where it has them.
+  - Known answers: staff read and written back to the same profile; a new PIN hashed with a
+    fresh salt each time; a member new to the team refused without a PIN; refusals saying why;
+    no PIN without roles; the API's routes, with no PIN material in what they answer; and an
+    end-to-end test in Chromium, a cashier's role and PIN changed, a short PIN refused,
+    published, taken by the register, and a new member refused without a PIN.
+  - Planted bugs: 2 new, both caught.
 
 ## Completed
 

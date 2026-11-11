@@ -369,7 +369,7 @@ fn open(
         plan.clone(),
     )
     .unwrap();
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     runtime
 }
 

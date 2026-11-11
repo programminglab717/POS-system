@@ -11,10 +11,11 @@ BUGS = [
     # Signing in, and what every event records.
     (
         "runtime: anyone may sign in",
-        "src/runtime.rs",
-        """        self.profile.member(member).ok_or(RuntimeError::UnknownMember(member))?;
-        self.member = Some(member);""",
-        """        self.member = Some(member);""",
+        "src/staff.rs",
+        """        if self.profile.member(member).is_none() {
+            return Err(RuntimeError::UnknownMember(member));
+        }""",
+        "",
         # The property signs in only a member of the demo's team.
         "unit",
     ),
@@ -511,5 +512,72 @@ BUGS = [
         "src/publication.rs",
         "            self.published = Watch { cloud, looked: 0 };",
         "            self.published = Watch { cloud, looked: self.published.looked };",
+    ),
+    # Staff, roles and approvals (ADR-0029).
+    (
+        "runtime: PIN entry is never locked",
+        "src/staff.rs",
+        "        if let Some(seconds) = self.pins.locked(now) {",
+        "        if let Some(seconds) = self.pins.locked(now).filter(|_| false) {",
+    ),
+    (
+        "runtime: a right PIN doesn't start the count again",
+        "src/staff.rs",
+        "            self.pins.right();\n",
+        "",
+    ),
+    (
+        "runtime: every lock is as short as the first",
+        "src/staff.rs",
+        "            let lock = FIRST_LOCK.saturating_mul(1 << doublings).min(LONGEST_LOCK);",
+        "            let lock = FIRST_LOCK;",
+    ),
+    (
+        "runtime: a clock set back makes a lock longer than the longest",
+        "src/staff.rs",
+        "        let left = left.min(millis(LONGEST_LOCK));",
+        "",
+    ),
+    (
+        "runtime: an approval never expires",
+        "src/staff.rs",
+        "        (Some(pending.actor) == self.member && (0..=millis(APPROVAL_LIFE)).contains(&age))",
+        "        (Some(pending.actor) == self.member && (0..=i64::MAX).contains(&age))",
+    ),
+    (
+        "runtime: an approval outlives a sign-in",
+        "src/staff.rs",
+        "        self.member = Some(member);\n        self.pending = None;",
+        "        self.member = Some(member);",
+    ),
+    (
+        "runtime: an approval is never spent",
+        "src/staff.rs",
+        "        if granted.is_some() {\n            self.pending = None;",
+        "        if granted.is_some() {",
+    ),
+    (
+        "runtime: anyone's approval approves anything",
+        "src/staff.rs",
+        "        if !self.profile.may_approve(approver, member, &request) {",
+        "        if false {",
+    ),
+    (
+        "runtime: the approved events don't name their approval",
+        "src/staff.rs",
+        "        meta.approval = Some(approval);\n",
+        "        let _ = approval;\n",
+    ),
+    (
+        "runtime: dropping an empty order needs an approval",
+        "src/runtime.rs",
+        "        let granted = if lines > 0 {",
+        "        let granted = if lines > 0 || lines == 0 {",
+    ),
+    (
+        "runtime: anyone reprints, signed in or not",
+        "src/runtime.rs",
+        "        let granted = self.gate(Request::of(Action::ReceiptReprint), Some(order.cast()))?;",
+        "        let granted: Option<Granted> = None;",
     ),
 ]

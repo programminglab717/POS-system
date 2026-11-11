@@ -302,8 +302,13 @@ td {
   border-bottom: 1px solid var(--line);
 }
 
-.variants td {
+.variants td,
+.permissions td {
   border-bottom: none;
+}
+
+.permissions td {
+  padding: 2px 8px 2px 0;
 }
 
 th {

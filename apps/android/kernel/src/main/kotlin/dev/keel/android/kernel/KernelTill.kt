@@ -46,9 +46,11 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
         fun open(config: RegisterConfig): KernelTill = call { KernelTill(Register.open(config)) }
     }
 
-    override fun team(): List<Member> = call { register.team().map { Member(it.id, it.name) } }
+    override fun team(): List<Member> = call { register.team().map { Member(it.id, it.name, it.role, it.hasPin) } }
 
-    override fun signIn(member: String) = call { register.signIn(member) }
+    override fun signIn(member: String, pin: String) = call { register.signIn(member, pin) }
+
+    override fun approve(approver: String, pin: String) = call { register.approve(approver, pin) }
 
     override fun signOut() = call { register.signOut() }
 
@@ -174,7 +176,23 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
 private fun <T> call(body: () -> T): T = try {
     body()
 } catch (refused: KeelException) {
-    throw TillException(words(refused), refused)
+    val approval = (refused as? KeelException.ApprovalRequired)?.action
+    throw TillException(words(refused), refused, approval)
+}
+
+/** What an action of ADR-0029 is, in words for the cashier. */
+internal fun action(action: String): String = when (action) {
+    "order.void" -> "Dropping an order with items on it"
+    "line.remove" -> "Taking an item off"
+    "discount.apply" -> "That discount"
+    "price.override" -> "Changing a price"
+    "refund.issue" -> "That refund"
+    "drawer.no_sale" -> "Opening the drawer"
+    "drawer.variance" -> "Closing the drawer over or short"
+    "drawer.paid_out" -> "Paying out"
+    "receipt.reprint" -> "Printing a receipt again"
+    "item.availability" -> "Marking an item out"
+    else -> "That"
 }
 
 /** What the cashier is told for [refused]. */
@@ -182,6 +200,10 @@ internal fun words(refused: KeelException): String = when (refused) {
     is KeelException.NotSignedIn -> "No one is signed in."
     is KeelException.NotSettled -> "Waiting for the store's hub: try again in a moment."
     is KeelException.UnknownMember -> "That team member isn't on this register."
+    is KeelException.WrongPin -> "That PIN isn't right."
+    is KeelException.LockedOut -> "Too many wrong PINs: try again in ${refused.seconds} seconds."
+    is KeelException.ApprovalRequired -> "${action(refused.action)} needs a manager's approval."
+    is KeelException.NotApprover -> "That manager can't approve ${action(refused.action).lowercase()}."
     is KeelException.UnknownOrder -> "This register has no such order."
     is KeelException.NoReceipt -> "That order printed no receipt to print again."
     is KeelException.NotUnconfirmed -> "That job isn't waiting for a decision."

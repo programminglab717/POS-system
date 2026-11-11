@@ -158,12 +158,46 @@ fn printer() -> (u16, thread::JoinHandle<Vec<u8>>) {
 }
 
 #[test]
+fn a_cashier_signs_in_with_their_pin_and_a_manager_approves_a_void() {
+    let scratch = Scratch::new();
+    let register: Arc<Register> = Register::open(config(&scratch)).unwrap();
+    assert_eq!(register.sign_in(demo_id(0x502), "1234".into()), Err(KeelError::WrongPin));
+    assert_eq!(register.approve(demo_id(0x501), "1234".into()), Err(KeelError::NotSignedIn));
+    register.sign_in(demo_id(0x502), "2468".into()).unwrap();
+    let order = register.start_order(Mode::Takeout).unwrap().order;
+    register.add_item(order.clone(), demo_id(0x401), vec![], 1).unwrap();
+    assert_eq!(
+        register.abandon(order.clone()),
+        Err(KeelError::ApprovalRequired { action: "order.void".into() })
+    );
+    assert_eq!(
+        register
+            .approve(demo_id(0x502), "2468".into())
+            .and_then(|()| register.abandon(order.clone())),
+        Err(KeelError::NotApprover { approver: demo_id(0x502), action: "order.void".into() })
+    );
+    register.approve(demo_id(0x501), "1234".into()).unwrap();
+    assert_eq!(register.abandon(order).unwrap().state, TicketState::Abandoned);
+    // Five wrong PINs lock PIN entry for 30 s.
+    for _ in 0..5 {
+        assert_eq!(register.sign_in(demo_id(0x502), "0000".into()), Err(KeelError::WrongPin));
+    }
+    assert!(matches!(
+        register.sign_in(demo_id(0x502), "2468".into()),
+        Err(KeelError::LockedOut { seconds: 1..=30 })
+    ));
+}
+
+#[test]
 fn a_sale_rings_pays_and_prints_through_the_register() {
     let scratch = Scratch::new();
     let register: Arc<Register> = Register::open(config(&scratch)).unwrap();
     assert_eq!(register.start_order(Mode::Takeout), Err(KeelError::NotSignedIn));
-    assert!(matches!(register.sign_in(demo_id(0x599)), Err(KeelError::UnknownMember { .. })));
-    register.sign_in(demo_id(0x501)).unwrap();
+    assert!(matches!(
+        register.sign_in(demo_id(0x599), "1234".into()),
+        Err(KeelError::UnknownMember { .. })
+    ));
+    register.sign_in(demo_id(0x501), "1234".into()).unwrap();
     let menu = register.menu().unwrap();
     assert_eq!(menu.pages[0].name, "Coffee");
     assert_eq!(menu.pages[0].buttons[2].name, "Latte (Large)");
@@ -357,6 +391,16 @@ fn every_refusal_a_cashier_meets_has_a_variant() {
         (R::UnknownJob(id(4)), KeelError::UnknownJob { job: demo_id(4) }),
         (R::NotUnconfirmed(id(5)), KeelError::NotUnconfirmed { job: demo_id(5) }),
         (R::NoReceipt(id(6)), KeelError::NoReceipt { order: demo_id(6) }),
+        (R::WrongPin, KeelError::WrongPin),
+        (R::LockedOut { seconds: 30 }, KeelError::LockedOut { seconds: 30 }),
+        (
+            R::ApprovalRequired(keel_domain::staff::Action::OrderVoid),
+            KeelError::ApprovalRequired { action: "order.void".into() },
+        ),
+        (
+            R::NotApprover { approver: id(7), action: keel_domain::staff::Action::RefundIssue },
+            KeelError::NotApprover { approver: demo_id(7), action: "refund.issue".into() },
+        ),
     ];
     for (runtime, keel) in cases {
         assert_eq!(KeelError::from(runtime), keel);
@@ -507,7 +551,7 @@ fn every_job_enumeration_crosses_as_itself() {
 fn a_printer_without_a_cutter_gets_feeds_and_its_confirmation_is_the_jobs() {
     let scratch = Scratch::new();
     let register = Register::open(config(&scratch)).unwrap();
-    register.sign_in(demo_id(0x501)).unwrap();
+    register.sign_in(demo_id(0x501), "1234".into()).unwrap();
     let order = register.start_order(Mode::Takeout).unwrap().order;
     register.add_item(order.clone(), demo_id(0x401), vec![], 1).unwrap();
     register.pay_cash(order, 1_000).unwrap();
@@ -598,7 +642,7 @@ fn slow_printer(delay: std::time::Duration) -> (u16, thread::JoinHandle<()>) {
 fn print_tcp_waits_and_confirms_as_the_job_says() {
     let scratch = Scratch::new();
     let register = Register::open(config(&scratch)).unwrap();
-    register.sign_in(demo_id(0x501)).unwrap();
+    register.sign_in(demo_id(0x501), "1234".into()).unwrap();
     let order = register.start_order(Mode::Takeout).unwrap().order;
     register.add_item(order.clone(), demo_id(0x401), vec![], 1).unwrap();
     register.pay_cash(order, 1_000).unwrap();
@@ -637,7 +681,7 @@ fn a_new_device_opens_a_register_of_its_own() {
         ..config(&scratch)
     })
     .unwrap();
-    register.sign_in(domain::demo().unwrap().data().team[0].id.to_string()).unwrap();
+    register.sign_in(domain::demo().unwrap().data().team[0].id.to_string(), "1234".into()).unwrap();
     assert!(register.start_order(Mode::Takeout).is_ok());
 }
 
@@ -649,11 +693,21 @@ fn the_team_and_todays_orders_cross_the_boundary() {
     assert_eq!(
         team,
         vec![
-            Member { id: demo_id(0x501), name: "Alex".to_owned() },
-            Member { id: demo_id(0x502), name: "Sam".to_owned() },
+            Member {
+                id: demo_id(0x501),
+                name: "Alex".to_owned(),
+                role: Some("Manager".to_owned()),
+                has_pin: true,
+            },
+            Member {
+                id: demo_id(0x502),
+                name: "Sam".to_owned(),
+                role: Some("Cashier".to_owned()),
+                has_pin: true,
+            },
         ]
     );
-    register.sign_in(team[1].id.clone()).unwrap();
+    register.sign_in(team[1].id.clone(), "2468".into()).unwrap();
     let first = register.start_order(Mode::Takeout).unwrap();
     register.add_item(first.order.clone(), demo_id(0x409), vec![], 1).unwrap();
     register.pay_cash(first.order.clone(), 1_000).unwrap();
@@ -667,7 +721,7 @@ fn the_team_and_todays_orders_cross_the_boundary() {
 fn cash_offers_and_amounts_cross_the_boundary() {
     let scratch = Scratch::new();
     let register = Register::open(config(&scratch)).unwrap();
-    register.sign_in(demo_id(0x501)).unwrap();
+    register.sign_in(demo_id(0x501), "1234".into()).unwrap();
     let order = register.start_order(Mode::Takeout).unwrap().order;
     register.add_item(order.clone(), demo_id(0x409), vec![], 1).unwrap();
     let offers: Vec<(i64, String)> =
@@ -761,7 +815,7 @@ fn a_hub_and_a_register_sync_through_the_bindings() {
         let status = register.sync_status().unwrap().unwrap();
         status.settled && status.hub_reachable
     });
-    register.sign_in(demo_id(0x501)).unwrap();
+    register.sign_in(demo_id(0x501), "1234".into()).unwrap();
     let order = register.start_order(Mode::Takeout).unwrap().order;
     register.add_item(order.clone(), demo_id(0x409), vec![], 1).unwrap();
     register.pay_cash(order.clone(), 1_000).unwrap();

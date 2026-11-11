@@ -125,7 +125,7 @@ fn main() {
     // The register, on a thread of its own.
     let version_file = dir.join("register-version");
     let mut register = open(&register_kit, &dir.join("register"));
-    register.sign_in(demo().unwrap().data().team[0].id).unwrap();
+    register.sign_in(demo().unwrap().data().team[0].id, "1234").unwrap();
     let first = register.start_sync(roster.clone()).unwrap();
     let net = Net::device(roster, register_kit.credentials()).unwrap();
     for frame in first {

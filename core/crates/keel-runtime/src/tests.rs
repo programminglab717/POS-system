@@ -112,7 +112,7 @@ pub(crate) fn variant(data: &mut ProfileData, n: u64) -> &mut CatalogVariant {
 
 pub(crate) fn signed_in(scratch: &Scratch) -> TestRuntime {
     let mut runtime = register(scratch, demo().unwrap());
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     runtime
 }
 
@@ -141,8 +141,8 @@ fn nothing_happens_until_someone_signs_in() {
     let scratch = Scratch::new();
     let mut runtime = register(&scratch, demo().unwrap());
     assert!(matches!(runtime.start_order(Mode::Takeout), Err(RuntimeError::NotSignedIn)));
-    assert!(matches!(runtime.sign_in(id(0x5ff)), Err(RuntimeError::UnknownMember(_))));
-    runtime.sign_in(id(0x502)).unwrap();
+    assert!(matches!(runtime.sign_in(id(0x5ff), "1234"), Err(RuntimeError::UnknownMember(_))));
+    runtime.sign_in(id(0x502), "2468").unwrap();
     assert_eq!(runtime.signed_in(), Some(id(0x502)));
     assert!(runtime.start_order(Mode::Takeout).is_ok());
     runtime.sign_out();
@@ -153,7 +153,7 @@ fn nothing_happens_until_someone_signs_in() {
 fn an_order_belongs_to_this_device_and_the_member_signed_in() {
     let scratch = Scratch::new();
     let mut runtime = register(&scratch, demo().unwrap());
-    runtime.sign_in(id(0x502)).unwrap();
+    runtime.sign_in(id(0x502), "2468").unwrap();
     let order = runtime.start_order(Mode::DineIn).unwrap().order;
     let loaded = runtime.store().load(Order::new(order)).unwrap();
     let info = loaded.info().unwrap();
@@ -171,13 +171,13 @@ fn events_record_the_business_date_and_who_did_what() {
     // A second before 4 am in New York on 3 October is still the business of 2 October.
     let order = {
         let mut runtime = register_at(&scratch, demo().unwrap(), "2026-10-03T07:59:59Z");
-        runtime.sign_in(id(0x502)).unwrap();
+        runtime.sign_in(id(0x502), "2468").unwrap();
         let order = runtime.start_order(Mode::Takeout).unwrap().order;
         runtime.add_item(order, id(0x401), &[], one()).unwrap();
         order
     };
     let mut runtime = register_at(&scratch, demo().unwrap(), "2026-10-03T08:00:00Z");
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     runtime.pay_cash(order, usd(500)).unwrap();
 
     // The order is created and the line added; then the payment is started and captured, and
@@ -205,7 +205,7 @@ fn an_order_that_costs_nothing_closes_without_a_payment() {
     let scratch = Scratch::new();
     let profile = demo_with(|data| variant(data, 0x409).price = usd(0));
     let mut runtime = register(&scratch, profile);
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     let order = runtime.start_order(Mode::Takeout).unwrap().order;
     let ticket = runtime.add_item(order, id(0x409), &[], one()).unwrap();
     assert_eq!(
@@ -230,7 +230,7 @@ fn a_sale_that_cash_rounds_to_nothing_takes_nothing() {
             Some(RoundingRule::new(RoundingMode::HalfAwayFromZero, NonZeroU32::new(5).unwrap()));
     });
     let mut runtime = register(&scratch, profile);
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     let order = runtime.start_order(Mode::Takeout).unwrap().order;
     let ticket = runtime.add_item(order, id(0x40a), &[], one()).unwrap();
     assert_eq!((ticket.due.text.as_str(), ticket.cash_due.text.as_str()), ("$0.02", "$0.00"));
@@ -251,7 +251,7 @@ fn an_intent_whose_ticket_cant_be_priced_is_refused_whole() {
     // Bottled water at forty quadrillion dollars: one prices, three overflow.
     let profile = demo_with(|data| variant(data, 0x409).price = usd(4_000_000_000_000_000_000));
     let mut runtime = register(&scratch, profile);
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     let order = runtime.start_order(Mode::Takeout).unwrap().order;
     runtime.add_item(order, id(0x409), &[], one()).unwrap();
     let before = runtime.store().log(id(0xd1), 0, 100).unwrap().len();
@@ -279,7 +279,7 @@ fn a_paid_ticket_lists_its_taxes_in_the_locations_order() {
         });
     });
     let mut runtime = register(&scratch, profile);
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     let order = runtime.start_order(Mode::DineIn).unwrap().order;
     let open = runtime.add_item(order, id(0x403), &big_latte(), one()).unwrap();
     let taxes = |ticket: &Ticket| -> Vec<(String, String)> {
@@ -423,7 +423,7 @@ fn cash_is_rounded_as_the_location_rounds_it() {
     data.cash_rounding =
         Some(RoundingRule::new(RoundingMode::HalfAwayFromZero, NonZeroU32::new(5).unwrap()));
     let mut runtime = register(&scratch, Profile::new(data).unwrap());
-    runtime.sign_in(id(0x501)).unwrap();
+    runtime.sign_in(id(0x501), "1234").unwrap();
     let order = runtime.start_order(Mode::Takeout).unwrap().order;
     // An espresso, $3.25, with $0.29 tax: $3.54, or $3.55 in cash.
     let ticket = runtime.add_item(order, id(0x401), &[], one()).unwrap();

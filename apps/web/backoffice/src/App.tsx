@@ -3,8 +3,9 @@ import { Api, ApiError, type LocationInfo } from "./api";
 import { CatalogEditor } from "./CatalogEditor";
 import { Devices } from "./Devices";
 import { Reports } from "./Reports";
+import { StaffEditor } from "./Staff";
 
-type Tab = "catalog" | "reports" | "devices";
+type Tab = "catalog" | "staff" | "reports" | "devices";
 
 const TOKEN = "keel.token";
 
@@ -111,7 +112,7 @@ export function App() {
           </label>
         )}
         <nav className="tabs" role="tablist">
-          {(["catalog", "reports", "devices"] as const).map((name) => (
+          {(["catalog", "staff", "reports", "devices"] as const).map((name) => (
             <button
               key={name}
               role="tab"
@@ -139,6 +140,7 @@ export function App() {
       {current && (
         <main key={current.id}>
           {tab === "catalog" && <CatalogEditor api={api} location={current.id} />}
+          {tab === "staff" && <StaffEditor api={api} location={current.id} />}
           {tab === "reports" && <Reports api={api} location={current.id} />}
           {tab === "devices" && <Devices api={api} location={current.id} />}
         </main>

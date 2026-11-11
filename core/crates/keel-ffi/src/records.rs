@@ -671,6 +671,10 @@ pub struct Member {
     pub id: String,
     /// The name the register shows for them.
     pub name: String,
+    /// Their role's name, such as "Manager"; `None` in a profile without roles.
+    pub role: Option<String>,
+    /// Whether they sign in with a PIN: in a profile without roles, no one does.
+    pub has_pin: bool,
 }
 
 /// What a device joins its location's network with: its kit's roster and TLS credentials.

@@ -86,10 +86,10 @@ BUGS = [
         "        total = total.checked_add(ticket.subtotal.money)?;",
     ),
     (
-        "api: a catalog that names no base overwrites what it never read",
+        "api: a profile that names no base overwrites what it never read",
         "src/api.rs",
-        "        let base = edit.base.as_ref().ok_or_else(|| {\n            ApiError::Invalid(\"base, the version the catalog was read at, is required\".into())\n        })?;\n        if !base.eq_ignore_ascii_case(&current) {",
-        "        let base = edit.base.clone().unwrap_or_else(|| current.clone());\n        if !base.eq_ignore_ascii_case(&current) {",
+        "        let base = base.ok_or_else(|| {\n            ApiError::Invalid(\"base, the version the profile was read at, is required\".into())\n        })?;",
+        "        let base = base.unwrap_or_else(|| catalog::hex(runtime.profile_version()));",
     ),
     (
         "api: a base in capitals is another version",
@@ -120,5 +120,17 @@ BUGS = [
         "src/reports.rs",
         "                .entry((line.name.to_string(), line.quantity.unit().code()))",
         "                .entry((line.name.to_string(), \"ea\"))",
+    ),
+    (
+        "staff: a member who gives no PIN loses theirs",
+        "src/staff.rs",
+        "            None => profile.member(member_id).and_then(|kept| kept.pin),",
+        "            None => None,",
+    ),
+    (
+        "staff: every PIN is hashed with one salt",
+        "src/staff.rs",
+        "            Some(digits) => Some(PinHash::new(digits, salt(entropy)?).map_err(|error| {",
+        "            Some(digits) => Some(PinHash::new(digits, [0; 16]).map_err(|error| {",
     ),
 ]
