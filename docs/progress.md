@@ -116,7 +116,9 @@ Built in slice 3:
     the split; each check's receipt, its number and its payments; the order closing with the
     last; a line moved to a check of its own and back; splits of one way, more than twenty, or
     nothing, refused.
-  - Planted bugs: 8, and 9 of the earlier ones re-aimed at the rewritten ticket and cash paths.
+  - Planted bugs: 8, and 9 of the earlier ones re-aimed at the rewritten ticket and cash paths:
+    all 17 caught, once a check's receipt showing every payment of the order was: the test now
+    looks at the last check's receipt too, which the first's payments must stay off.
 - **`keel-ffi`**: the three intents, and a split order's checks crossed field for field.
 - **The Android register**: Split 2, 3 or 4; each check with its total and a Pay button; a line
   moved to another check or its own; the tender for a check pays all of it, or what was typed as

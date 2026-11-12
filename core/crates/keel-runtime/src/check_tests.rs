@@ -111,7 +111,12 @@ fn a_split_order_is_paid_check_by_check_and_closes_with_the_last() {
     assert_eq!(paid.ticket.paid.money, usd(707));
     assert_eq!(paid.ticket.due.money, usd(0));
     assert_eq!((drawers(&runtime), receipts(&runtime).len()), (4, 3));
-    assert!(receipts(&runtime)[2].contains("Check 3"));
+    // Each check's receipt shows its own payments, not the others'. Found by a planted bug: the
+    // last check's receipt listed the first's.
+    let last = &receipts(&runtime)[2];
+    assert!(last.contains("Check 3"), "{last}");
+    assert!(last.contains("Cash                                       $3.00"), "{last}");
+    assert!(!last.contains("$1.00") && !last.contains("$5.00"), "{last}");
 }
 
 #[test]
