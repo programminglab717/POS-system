@@ -58,7 +58,7 @@ BUGS = [
         })""",
         """                append(w, order.cast(), &event, meta)?;
             }
-            Ok(())
+            Ok::<(), RuntimeError>(())
         })?;
         self.ticket(order)""",
         # The property's orders always price: only an order that overflows shows it.

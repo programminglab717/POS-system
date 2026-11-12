@@ -1764,6 +1764,9 @@ fn a_discounts_effect_is_what_it_would_take() {
     // More than is left takes what is left: all of the line.
     assert_eq!(effect(amount_off(3, 1, usd(5_000))), both(900, 1_150, 10_000));
     assert_eq!(effect(amount_off(3, 1, usd(900))), both(900, 1_150, 10_000));
+    // $1.00 off line 2's $3.00 is a third of it, 33.34% rounded up; the order's 50% then takes
+    // $5.50 of the $11.00 left: $7.50 in all. Found by a planted bug: no share here had to round.
+    assert_eq!(effect(amount_off(3, 2, usd(100))), both(100, 750, 3_334));
     // On a comped line nothing is left, and nothing is taken.
     script.apply(&OrderEvent::LineComped { line: id(2), reason: reason("birthday") });
     let comped = script.order.discount_effect(&amount_off(3, 2, usd(100)), &rules).unwrap();

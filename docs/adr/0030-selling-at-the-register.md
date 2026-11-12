@@ -1,6 +1,6 @@
 # ADR-0030: Selling at the register: discounts and price overrides as order events, split checks and partial payments, and orders recalled across devices
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-11
 
 ## Context
@@ -43,9 +43,14 @@ What is built shapes it:
    or a check is, applies and is reported, since the closed checks' snapshots stand; taking off a
    discount never applied is reported, and one already taken off, as two devices may, is not.
 
-2. **A discount is gated as `discount.apply`**, with its percentage and the amount it takes off,
-   before tax, as the kernel prices it: "10% and $5" means a 10% discount that takes off $5 at
-   most. Taking one off is not gated.
+2. **A discount is gated as `discount.apply`**, asked for as what all the order's discounts
+   would take together before tax, and the share its scope's discounts would take together, of
+   the line, or of what the lines' own discounts leave of the order: percentages compound (two of
+   10% are 19%), and an amount counts as its share of what is left when it applies, rounded up.
+   So a role's "10% and $5" holds for the order's discounts however many there are. An amount
+   more than is left of its line is refused. Raising a discounted line's quantity is asked for as
+   a discount, for what all the discounts would then take. Taking one off is not gated. (As
+   built: first designed per discount, found in review to let discounts be stacked.)
 
 3. **A price override is an order event.** `order.line_repriced` v1, `{1: line, 2: unit price,
    3: reason code, 4: note}`: the line is priced at the new unit price, with its modifiers, from
@@ -90,6 +95,44 @@ What is built shapes it:
 9. **Out of scope**: automatic discounts and promotions; amount discounts on a whole order;
    custom items not in the catalog; an order's note and tags; card payments (step 7); refunds
    (step 4).
+
+## As built
+
+Built in four slices on 2026-11-11 and 2026-11-12, each verified as it landed, then reviewed:
+the kernel and the Android shell each by a reviewer who hadn't built them. What the review
+found, and what was done:
+
+- **Discounts stacked past a role's limits**, each within them alone: gated together now
+  (decision 2). An amount larger than its line took more as the line grew: refused. A discount
+  on a raised line took more with no approval: a raised line is asked for again.
+- **A price set in steps** was asked for one step at a time: asked for by how far it is from the
+  rung price, each extended as the order charges it; a raised line priced by hand is asked for
+  again.
+- **A change to a partly paid check** (a discount, a price, a line taken off or lowered) left the
+  customer owed change no one gave them: refused while a payment toward the check is taken.
+- **A split order emptied of its last open check** stayed open with nothing able to close it: it
+  closes once every check holding something is. An order whose lines all moved off its main
+  check listed no check and couldn't be paid: its check is listed, and `pay_cash` pays the one
+  check holding something, refusing an order split among several. A split order's reprint gave
+  its last check's receipt alone: every check's prints again.
+- **On the register**: a double tap put on two discounts; a take-over's refusal spoke of dropping
+  an order; Take over was offered with the hub up; orders parked before the day turned weren't
+  listed; a check's Pay used the check as last drawn; a line's buttons were squeezed off a phone.
+  Each is fixed.
+
+Gaps that remain:
+
+- A line both discounted and priced by hand, raised in quantity, is asked for as a price
+  override only.
+- An approval for a price names the order, not the line: one for $5.00 on one line could be spent
+  on another line's $5.00 of the same order.
+- What a discount on the whole order is asked for prices the order whole; a split order's checks
+  are charged each on its own, which can differ by a cent.
+- A partly paid check's lines are frozen until refunds come (step 4), even for a change that
+  wouldn't take it below what was paid.
+- In the fold, a discount refused for a removed line, another currency or an unknown line doesn't
+  use its identifier, so a later event naming it could apply: only replicas' conflicts make one.
+- A take-over records `hub_unreachable` always, as the register offers it only then.
 
 ## Consequences
 

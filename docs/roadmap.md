@@ -283,7 +283,7 @@ designed in an ADR of its own when it begins, built in slices, and reviewed:
    ([ADR-0029](./adr/0029-staff-roles-and-approvals.md)).*
 2. **Selling at the register**: discounts with reason codes and limits, split tender, notes,
    park and recall, open-price items (B-03…B-06, B-14). *Status: designed in
-   [ADR-0030](./adr/0030-selling-at-the-register.md); slice 1, discounts, built 2026-11-11.*
+   [ADR-0030](./adr/0030-selling-at-the-register.md); done 2026-11-12, reviewed.*
 3. **Cash**: drawer sessions, paid-in and paid-out, no-sale, blind close with thresholds, and
    X/Z reports from local data (N-01, N-02, O-02).
 4. **Returns and refunds**, linked to the original lines (B-09 basic, I-08).

@@ -35,6 +35,6 @@ supersedes the old one.
 | [0027](./0027-android-app.md) | The Android app: AGP 9.5 and Gradle 9.8, the kernel built with cargo-ndk, a register module in Kotlin alone, keys wrapped in the Keystore, built in parts | Accepted |
 | [0028](./0028-cloud-cell-v0.md) | The cloud cell v0: the cloud as each location's durable replica, catalogs published as chunked events, and a back office over the cell's API | Accepted |
 | [0029](./0029-staff-roles-and-approvals.md) | Staff, roles and approvals: PINs and roles in the profile, permissions with limits, and approvals as events | Accepted |
-| [0030](./0030-selling-at-the-register.md) | Selling at the register: discounts and price overrides as order events, split checks and partial payments, and orders recalled across devices | Proposed |
+| [0030](./0030-selling-at-the-register.md) | Selling at the register: discounts and price overrides as order events, split checks and partial payments, and orders recalled across devices | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

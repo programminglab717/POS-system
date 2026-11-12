@@ -2,20 +2,17 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-11-11.
+> Last updated: 2026-11-12.
 
 ## Where we are
 
-**The MVP, step 1 of 10, is done:** staff, roles and approvals
-([ADR-0029](./adr/0029-staff-roles-and-approvals.md), accepted after its review): roles,
-permissions with limits, PIN hashes and approvals in the kernel; PIN sign-in, a lockout and
-approvals bound to what was asked in the runtime; a PIN pad and an approval sheet on the Android
-register; and staff and roles in the back office.
-
-**Step 2, selling at the register, is being built**
-([ADR-0030](./adr/0030-selling-at-the-register.md), proposed): its first slice, discounts, has
-landed, its second, prices set by hand and notes, and its third, split checks and partial
-payments, and its fourth, park and recall across devices: the step's review is next.
+**The MVP, steps 1 and 2 of 10, are done.** Step 1, staff, roles and approvals
+([ADR-0029](./adr/0029-staff-roles-and-approvals.md)); step 2, selling at the register
+([ADR-0030](./adr/0030-selling-at-the-register.md), accepted after its review): discounts with
+reasons and limits, prices set by hand, line notes, split checks and partial cash payments, and
+orders parked on one register and recalled on another through the hub, in the kernel, the
+bindings and the Android register. Step 3, cash (drawer sessions, paid-in and paid-out, a blind
+close, X and Z reports), is next.
 
 **Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
 ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
@@ -86,9 +83,17 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
+The MVP's step 3, cash ([roadmap §8](./roadmap.md#the-mvps-build-steps)), is next: drawer
+sessions, paid-in and paid-out, no-sale, a blind close with thresholds, and X and Z reports from
+local data. It is designed in an ADR first.
+
+## Completed
+
+### Selling at the register: MVP step 2 (2026-11-11 to 2026-11-12)
+
 The MVP's step 2, selling at the register
-([ADR-0030](./adr/0030-selling-at-the-register.md), proposed), is built in four slices, each
-verified as it lands, then reviewed together:
+([ADR-0030](./adr/0030-selling-at-the-register.md), accepted after its review), was built in four
+slices, each verified as it landed, then reviewed together:
 
 1. **Discounts** (built 2026-11-11): the schemas, the fold and the baskets, the closing
    snapshot, the gate, the bindings, the Android register's discount sheet, and the receipt.
@@ -222,7 +227,27 @@ Built in slice 1:
   the Android register's JVM tests, the kernel's unit tests, the app and its instrumented tests
   built.
 
-## Completed
+The review, of the kernel and of the Android shell, each by a reviewer who hadn't built them,
+found:
+
+- **In the kernel**: discounts stacked past a role's limits, five of 10% taking 41% with no
+  approval, now gated together, compounded; an amount larger than its line, taking more as the
+  line grew, now refused; a raised discounted or priced line, and a price set in steps, now asked
+  for again, from the rung price; a change to a partly paid check, leaving change owed, now
+  refused; a split order emptied of its last open check stuck open for good, now closed; an order
+  whose lines had all left its main check unpayable, now listed and paid; a split order's
+  reprint missing all but its last check's receipt, now printing each.
+  - Tests: the known answers reworked for the new rule ($5.88; $6.68 at 14.77%; $11.48 at
+    43.34%), and one for each bypass and fix. Planted bugs: 14, and 9 re-aimed.
+- **On the Android register**: a double tap putting on two discounts; a take-over's refusal
+  speaking of dropping an order; Take over offered with the hub up; parked orders from earlier
+  days not listed; a check's Pay using the check as drawn; buttons squeezed off a phone; actions
+  offered that the kernel would refuse; an emulator test passing on a stale change. Each fixed;
+  model tests cover the double tap and the earlier day's order.
+- Gaps left, recorded in ADR-0030: a line both discounted and priced raised in quantity is asked
+  for as a price override only; a price's approval names the order, not the line; an order
+  discount is asked for as priced whole, which a split's checks can charge a cent differently; a
+  partly paid check's lines frozen until refunds come.
 
 ### Staff, roles and approvals: MVP step 1 (2026-11-11)
 
