@@ -134,7 +134,10 @@ pub(crate) fn ticket(
     }
     let state = TicketState::of(order.status());
     let mut ticket = view(order, &whole, state, paid, due, profile, locale)?;
-    if checks.len() > 1 {
+    // Listed whenever more than the main check is in play: found in review, an order whose lines
+    // had all moved off it listed no check to pay.
+    let main: Id<Check> = order.id().cast();
+    if checks.len() > 1 || checks.iter().any(|known| known.check != main) {
         ticket.checks = checks;
     }
     Ok(ticket)

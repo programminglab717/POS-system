@@ -77,8 +77,8 @@ pub struct Ticket {
     pub due: Amount,
     /// What it still owes in cash, rounded as the location rounds cash.
     pub cash_due: Amount,
-    /// Its checks, each with its own lines and amounts, when it is split among more than one
-    /// (ADR-0030); empty otherwise, and on a check's own ticket.
+    /// Its checks, each with its own lines and amounts, when more than its main check holds
+    /// something or is paid (ADR-0030); empty otherwise, and on a check's own ticket.
     pub checks: Vec<TicketCheck>,
     /// The device that owns it, which alone changes what it holds and costs (ADR-0021).
     pub owner: Option<Id<Device>>,

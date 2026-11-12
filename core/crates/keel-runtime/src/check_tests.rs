@@ -150,3 +150,54 @@ fn a_line_moves_to_a_check_of_its_own_and_back() {
     let empty = runtime.start_order(Mode::Takeout).unwrap().order;
     assert!(matches!(runtime.split_evenly(empty, 2), Err(RuntimeError::NothingToSplit)));
 }
+
+/// Found in review: an order whose lines had all moved off its main check listed no check to pay,
+/// and paying it refused; one split among checks paid through `pay_cash` paid only its first.
+#[test]
+fn an_order_is_paid_wherever_its_lines_went() {
+    let scratch = Scratch::new();
+    let mut runtime = register(&scratch, demo().unwrap());
+    let ticket = two_espressos(&mut runtime);
+    let (order, line) = (ticket.order, ticket.lines[0].line);
+    let ticket = runtime.move_line(order, line, None).unwrap();
+    assert_eq!(ticket.checks.len(), 1, "its one check, not the main one, listed");
+    assert_ne!(ticket.checks[0].check, order.cast());
+    let paid = runtime.pay_cash(order, usd(1_000)).unwrap();
+    assert_eq!(paid.ticket.state, TicketState::Closed);
+    // Split two ways, it is paid check by check.
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(order, id(0x401), &[], NonZeroU32::new(2).unwrap()).unwrap();
+    runtime.split_evenly(order, 2).unwrap();
+    assert!(matches!(runtime.pay_cash(order, usd(1_000)), Err(RuntimeError::Split)));
+}
+
+/// Found in review: a split order whose open check was emptied, the others paid, stayed open for
+/// good, as nothing could close it; and only its last check's receipt could be printed again.
+#[test]
+fn a_split_order_emptied_of_its_last_open_check_closes() {
+    let scratch = Scratch::new();
+    let mut runtime = register(&scratch, demo().unwrap());
+    let ticket = two_espressos(&mut runtime);
+    let order = ticket.order;
+    let ticket = runtime.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    let second = ticket.lines[1].line;
+    let ticket = runtime.move_line(order, second, None).unwrap();
+    runtime.pay_check_cash(order, ticket.checks[0].check, None, usd(1_000)).unwrap();
+    assert_eq!(runtime.ticket(order).unwrap().state, TicketState::Open);
+    // The cashier takes the second line off: the order is done, and closes.
+    let ticket = runtime.remove_line(order, second).unwrap();
+    assert_eq!(ticket.state, TicketState::Closed);
+    // A split order's every check's receipt prints again.
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(order, id(0x401), &[], NonZeroU32::new(2).unwrap()).unwrap();
+    let ticket = runtime.split_evenly(order, 2).unwrap();
+    for check in &ticket.checks {
+        runtime.pay_check_cash(order, check.check, None, usd(1_000)).unwrap();
+    }
+    let before = receipts(&runtime).len();
+    runtime.sign_in(id(0x501), "1234").unwrap();
+    runtime.reprint(order).unwrap();
+    let after = receipts(&runtime);
+    assert_eq!(after.len(), before + 2);
+    assert!(after[before].contains("Check 1") && after[before + 1].contains("Check 2"));
+}

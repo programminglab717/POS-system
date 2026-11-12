@@ -52,12 +52,13 @@ BUGS = [
     (
         "runtime: an intent's ticket is made after its write",
         "src/runtime.rs",
-        """            let event = loaded.decide(location, device, command)?;
-            append(w, order.cast(), &event, meta)?;
+        """                append(w, order.cast(), &event, meta)?;
+            }
             view(w, order, &payments, profile, locale)
         })""",
-        """            let event = loaded.decide(location, device, command)?;
-            append(w, order.cast(), &event, meta)
+        """                append(w, order.cast(), &event, meta)?;
+            }
+            Ok(())
         })?;
         self.ticket(order)""",
         # The property's orders always price: only an order that overflows shows it.
@@ -605,8 +606,10 @@ BUGS = [
     (
         "runtime: fewer of a line needs no approval",
         "src/runtime.rs",
-        "        let granted = if fewer {",
-        "        let granted = if fewer && false {",
+        """        let request = if fewer {
+            Some(Request::of(Action::LineRemove))""",
+        """        let request = if false {
+            Some(Request::of(Action::LineRemove))""",
     ),
     (
         "runtime: an approval is asked for a reprint that can't be",
@@ -630,14 +633,24 @@ BUGS = [
     (
         "discount: the gate is asked for no amount",
         "src/runtime.rs",
-        "            amount: Some(effect.taken),",
-        "            amount: None,",
+        """            amount: Some(effect.total),
+            percent: Some(effect.percent),
+        };
+        let granted""",
+        """            amount: None,
+            percent: Some(effect.percent),
+        };
+        let granted""",
     ),
     (
         "discount: the gate is asked for no percentage",
         "src/runtime.rs",
-        "            percent: Some(effect.percent),",
-        "            percent: None,",
+        """            percent: Some(effect.percent),
+        };
+        let granted""",
+        """            percent: None,
+        };
+        let granted""",
     ),
     (
         "discount: a discount isn't gated",
@@ -672,17 +685,15 @@ BUGS = [
     (
         "reprice: the gate is asked for the unit difference, not the line's",
         "src/runtime.rs",
-        "            .mul_decimal(now.quantity().to_decimal(), extension)?;",
-        "            .mul_decimal(Quantity::from_whole(1, Unit::Each)?.to_decimal(), extension)?;",
+        "        let difference = at(price)?.checked_sub(at(rung)?)?;",
+        "        let difference = price.checked_sub(rung)?;",
     ),
     (
         "reprice: a price set by hand isn't gated",
         "src/runtime.rs",
-        """            percent: None,
-        };
+        """            Request { action: Action::PriceOverride, amount: Some(amount), percent: None };
         let granted = self.gate(request, Some(order.cast()))?;""",
-        """            percent: None,
-        };
+        """            Request { action: Action::PriceOverride, amount: Some(amount), percent: None };
         let _ = request;
         let granted: Option<Granted> = None;""",
     ),
@@ -722,8 +733,8 @@ BUGS = [
     (
         "split: the order closes with its first check",
         "src/runtime.rs",
-        "                .all(|known| !known.is_open() || loaded.lines_on(known.id()).next().is_none());",
-        "                .any(|known| !known.is_open() || loaded.lines_on(known.id()).next().is_none());",
+        "            .all(|check| !check.is_open() || order.lines_on(check.id()).next().is_none())",
+        "            .any(|check| !check.is_open() || order.lines_on(check.id()).next().is_none())",
     ),
     (
         "split: no checks are opened for it",
@@ -779,5 +790,84 @@ BUGS = [
         "src/ticket.rs",
         "        owner: order.ownership().map(|ownership| ownership.device),",
         "        owner: None,",
+    ),
+    # Found in step 2's review (ADR-0030).
+    (
+        "review: an amount larger than its line is accepted",
+        "src/runtime.rs",
+        "            && effect.taken != amount",
+        "            && false",
+    ),
+    (
+        "review: a partly paid check takes a discount",
+        "src/runtime.rs",
+        "        self.check_unpaid(&loaded, touched(&loaded, applied.line))?;",
+        "",
+    ),
+    (
+        "review: a discount is asked for as it takes alone",
+        "src/runtime.rs",
+        """            amount: Some(effect.total),
+            percent: Some(effect.percent),
+        };
+        let granted = self.gate(request, Some(order.cast()))?;""",
+        """            amount: Some(effect.taken),
+            percent: Some(effect.percent),
+        };
+        let granted = self.gate(request, Some(order.cast()))?;""",
+    ),
+    (
+        "review: a price is asked for from the last one set",
+        "src/runtime.rs",
+        "        let amount = self.override_amount(unit_price, now.item().unit_price, now.quantity())?;",
+        "        let amount = self.override_amount(unit_price, now.unit_price(), now.quantity())?;",
+    ),
+    (
+        "review: more of a discounted line isn't asked for",
+        "src/runtime.rs",
+        "        } else if more && (!now.discounts().is_empty() || !loaded.discounts().is_empty()) {",
+        "        } else if false {",
+    ),
+    (
+        "review: more of a line priced by hand isn't asked for",
+        "src/runtime.rs",
+        "        } else if more && now.repriced().is_some() {",
+        "        } else if false {",
+    ),
+    (
+        "review: an emptied split order stays open",
+        "src/runtime.rs",
+        """            if finished(&loaded) {
+                let event = loaded.decide(location, device, OrderCommand::Close)?;
+                append(w, order.cast(), &event, meta)?;""",
+        """            if false {
+                let event = loaded.decide(location, device, OrderCommand::Close)?;
+                append(w, order.cast(), &event, meta)?;""",
+    ),
+    (
+        "review: pay_cash pays the main check",
+        "src/runtime.rs",
+        "            [only] => *only,",
+        "            [_] => order.cast(),",
+    ),
+    (
+        "review: a ticket lists no lone check but the main",
+        "src/ticket.rs",
+        "    if checks.len() > 1 || checks.iter().any(|known| known.check != main) {",
+        "    if checks.len() > 1 || main != main {",
+    ),
+    (
+        "review: a split order's reprint is its last check's alone",
+        "src/runtime.rs",
+        "            originals.retain(|(_, known)| *known != cause);",
+        "            originals.clear();",
+    ),
+    (
+        "review: a smaller line on a partly paid check is allowed",
+        "src/runtime.rs",
+        """        if fewer {
+            self.check_unpaid(&loaded, now.allocation().iter().map(|share| share.check))?;
+        }""",
+        "",
     ),
 ]

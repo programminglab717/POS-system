@@ -288,12 +288,37 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         // Fewer of a line takes some of it off: `line.remove`, as taking all of it off is. Found
         // in review: a line of ten could go to one with no approval.
         let loaded = self.store.load(Order::new(order))?;
-        let fewer =
-            loaded.line(line).is_some_and(|now| now.quantity().micros() > quantity.micros());
-        let granted = if fewer {
-            self.gate(Request::of(Action::LineRemove), Some(order.cast()))?
+        known(&loaded)?;
+        let now = loaded.line(line).ok_or(keel_domain::order::CommandError::UnknownLine(line))?;
+        let fewer = now.quantity().micros() > quantity.micros();
+        let more = now.quantity().micros() < quantity.micros();
+        if fewer {
+            self.check_unpaid(&loaded, now.allocation().iter().map(|share| share.check))?;
+        }
+        // More of a line priced by hand moves its price further from the rung one, and more of a
+        // discounted one takes more off: each is asked for as its own is. Found in review: a 10%
+        // on one latte became 10% of a hundred with no approval.
+        let request = if fewer {
+            Some(Request::of(Action::LineRemove))
+        } else if more && now.repriced().is_some() {
+            let amount = self.override_amount(now.unit_price(), now.item().unit_price, quantity)?;
+            Some(Request { action: Action::PriceOverride, amount: Some(amount), percent: None })
+        } else if more && (!now.discounts().is_empty() || !loaded.discounts().is_empty()) {
+            let rules = &self.profile.data().rules;
+            let effect = loaded
+                .quantity_effect(line, quantity, rules)?
+                .ok_or(RuntimeError::UnknownOrder(order))?;
+            Some(Request {
+                action: Action::DiscountApply,
+                amount: Some(effect.total),
+                percent: Some(effect.percent),
+            })
         } else {
             None
+        };
+        let granted = match request {
+            Some(request) => self.gate(request, Some(order.cast()))?,
+            None => None,
         };
         let meta = self.meta()?;
         let stream = self.approval_stream(granted.as_ref())?;
@@ -320,6 +345,11 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         order: Id<Order>,
         line: Id<keel_domain::order::Line>,
     ) -> Result<Ticket, RuntimeError> {
+        let loaded = self.store.load(Order::new(order))?;
+        known(&loaded)?;
+        if let Some(now) = loaded.line(line) {
+            self.check_unpaid(&loaded, now.allocation().iter().map(|share| share.check))?;
+        }
         let granted = self.gate(Request::of(Action::LineRemove), Some(order.cast()))?;
         let meta = self.meta()?;
         let stream = self.approval_stream(granted.as_ref())?;
@@ -335,14 +365,17 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     }
 
     /// Puts a discount on `line` of `order`, or on the whole order when `line` is `None`, for
-    /// `reason`: `discount.apply`, for its percentage and what it takes off before tax, which the
-    /// member's role permits or a manager approves (ADR-0029, ADR-0030). An amount off counts as
-    /// the percentage it takes of what is left of its line, rounded up.
+    /// `reason`: `discount.apply`, which the member's role permits or a manager approves
+    /// (ADR-0029, ADR-0030), asked for as what all the order's discounts would take together
+    /// before tax, and the share its scope's discounts would take together: so a role's limit
+    /// holds however many discounts there are (see [`keel_domain::order::DiscountEffect`]).
     ///
     /// # Errors
     /// [`RuntimeError::ApprovalRequired`] or [`RuntimeError::NotApprover`] if it needs an approval
-    /// it doesn't have; [`RuntimeError`] if no one is signed in, or the order refuses it: the
-    /// line isn't live or is on a closed check, a check is closed, or the discount is invalid.
+    /// it doesn't have; [`RuntimeError::DiscountTooLarge`] for an amount more than is left of its
+    /// line; [`RuntimeError::PartlyPaid`] if a check it touches has a payment taken toward it;
+    /// [`RuntimeError`] if no one is signed in, or the order refuses it: the line isn't live or
+    /// is on a closed check, a check is closed, or the discount is invalid.
     pub fn apply_discount(
         &mut self,
         order: Id<Order>,
@@ -360,9 +393,19 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let effect = loaded
             .discount_effect(&applied, &self.profile.data().rules)?
             .ok_or(RuntimeError::UnknownOrder(order))?;
+        // An amount takes no more than is left: one that took less now would take more as the
+        // line grew. Found in review: $500 off a $5.25 line took $210 once it was forty.
+        if let DiscountValue::Amount(amount) = applied.value
+            && effect.taken != amount
+        {
+            return Err(RuntimeError::DiscountTooLarge { left: effect.taken });
+        }
+        self.check_unpaid(&loaded, touched(&loaded, applied.line))?;
+        // Asked for as all the order's discounts take together, and its scope's share: so many
+        // discounts count as one. Found in review: five of 10% took 41% with no approval.
         let request = Request {
             action: Action::DiscountApply,
-            amount: Some(effect.taken),
+            amount: Some(effect.total),
             percent: Some(effect.percent),
         };
         let granted = self.gate(request, Some(order.cast()))?;
@@ -395,19 +438,12 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         // The order's own rules come before an approval is asked for one it would refuse.
         loaded.decide(self.location(), self.device, command.clone())?;
         let now = loaded.line(line).ok_or(RuntimeError::UnknownOrder(order))?;
-        let extension = self.profile.data().rules.extension;
-        let difference = unit_price
-            .checked_sub(now.unit_price())?
-            .mul_decimal(now.quantity().to_decimal(), extension)?;
-        let request = Request {
-            action: Action::PriceOverride,
-            amount: Some(if difference.is_negative() {
-                difference.checked_neg()?
-            } else {
-                difference
-            }),
-            percent: None,
-        };
+        self.check_unpaid(&loaded, now.allocation().iter().map(|share| share.check))?;
+        // How far the price is from the one it was rung at, not from the last one set: a price
+        // lowered step by step is asked for as all its steps. Found in review.
+        let amount = self.override_amount(unit_price, now.item().unit_price, now.quantity())?;
+        let request =
+            Request { action: Action::PriceOverride, amount: Some(amount), percent: None };
         let granted = self.gate(request, Some(order.cast()))?;
         let meta = self.meta()?;
         let stream = self.approval_stream(granted.as_ref())?;
@@ -497,25 +533,41 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         Ok(ticket)
     }
 
-    /// Takes `tendered` in cash for what `order` owes: [`Runtime::pay_check_cash`] for all its
-    /// main check owes. An order split among checks is paid check by check.
+    /// Takes `tendered` in cash for what `order` owes: [`Runtime::pay_check_cash`] for all the
+    /// one check that holds something owes, its main one or the one its lines went to.
     ///
     /// # Errors
-    /// As [`Runtime::pay_check_cash`].
+    /// [`RuntimeError::Split`] if more than one open check holds something: such an order is paid
+    /// check by check; and as [`Runtime::pay_check_cash`].
     pub fn pay_cash(
         &mut self,
         order: Id<Order>,
         tendered: Money,
     ) -> Result<CashPaid, RuntimeError> {
-        self.pay_check_cash(order, order.cast(), None, tendered)
+        // The one open check that holds something, wherever its lines went: found in review, an
+        // order whose lines had all moved off its main check couldn't be paid.
+        let loaded = self.store.load(Order::new(order))?;
+        known(&loaded)?;
+        let holding: Vec<Id<Check>> = loaded
+            .checks()
+            .iter()
+            .filter(|check| check.is_open() && loaded.lines_on(check.id()).next().is_some())
+            .map(Check::id)
+            .collect();
+        let check = match holding.as_slice() {
+            [] => order.cast(),
+            [only] => *only,
+            _ => return Err(RuntimeError::Split),
+        };
+        self.pay_check_cash(order, check, None, tendered)
     }
 
     /// Takes `tendered` in cash toward `check` of `order`: `part` of what it owes, or all of it,
     /// with the location's cash rounding, when `part` is `None` or all it owes. The payment is
     /// initiated and captured; once the check's payments cover it, it closes and its receipt
     /// prints; once every check with a live line has closed, so does the order: all in one
-    /// write. Nothing owed, the check closes with no payment. Answers with the change and the
-    /// order's ticket (ADR-0030).
+    /// write. A check that holds something and owes nothing closes with no payment. Answers with
+    /// the change and the order's ticket (ADR-0030).
     ///
     /// # Errors
     /// [`RuntimeError::TenderShort`] if `tendered` is less than what it pays,
@@ -603,11 +655,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             let closing = append(w, order.cast(), &closed, &meta)?;
             let loaded = w.load(Order::new(order))?;
             // The order closes with the last of its checks that hold something.
-            let finished = loaded
-                .checks()
-                .iter()
-                .all(|known| !known.is_open() || loaded.lines_on(known.id()).next().is_none());
-            if finished {
+            if finished(&loaded) {
                 let event = loaded.decide(location, device, OrderCommand::Close)?;
                 append(w, order.cast(), &event, &meta)?;
             }
@@ -626,7 +674,8 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// already, is answered with its ticket as it is.
     ///
     /// # Errors
-    /// [`RuntimeError`] if no one is signed in, or the order isn't open at the location.
+    /// [`RuntimeError`] if no one is signed in, or the order refuses: it isn't at this location,
+    /// or the hub's lease can't move on.
     pub fn recall(&mut self, order: Id<Order>) -> Result<Ticket, RuntimeError> {
         let meta = self.meta()?;
         let loaded = self.store.load(Order::new(order))?;
@@ -646,7 +695,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// # Errors
     /// [`RuntimeError::ApprovalRequired`] or [`RuntimeError::NotApprover`] if it needs an approval
     /// it doesn't have; [`RuntimeError`] if no one is signed in, or the order refuses: this
-    /// device owns it already, or it isn't open.
+    /// device owns it already, or it isn't at this location.
     pub fn take_over(&mut self, order: Id<Order>, reason: Reason) -> Result<Ticket, RuntimeError> {
         let loaded = self.store.load(Order::new(order))?;
         known(&loaded)?;
@@ -659,6 +708,41 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let ticket = self.decide_approved(order, command, &meta, granted.as_ref(), stream)?;
         self.spend(granted.as_ref());
         Ok(ticket)
+    }
+
+    /// How far `price` is from `rung` over `quantity`, as the order charges each: each extended and
+    /// rounded as the rules round, then the difference, by its size. Found in review: the
+    /// difference rounded once could cross a limit by a cent the order never charged.
+    fn override_amount(
+        &self,
+        price: Money,
+        rung: Money,
+        quantity: Quantity,
+    ) -> Result<Money, RuntimeError> {
+        let extension = self.profile.data().rules.extension;
+        let at = |unit: Money| unit.mul_decimal(quantity.to_decimal(), extension);
+        let difference = at(price)?.checked_sub(at(rung)?)?;
+        Ok(if difference.is_negative() { difference.checked_neg()? } else { difference })
+    }
+
+    /// Refuses a change to what `checks` charge while one of them, open, has a payment captured
+    /// toward it: the customer paid for what it was. Found in review: a discount after part of a
+    /// check was paid left the customer owed change no one gave them.
+    fn check_unpaid(
+        &self,
+        order: &Order,
+        checks: impl IntoIterator<Item = Id<Check>>,
+    ) -> Result<(), RuntimeError> {
+        let payments = self.payments(order.id())?;
+        let rules = &self.profile.data().rules;
+        let checkout = Checkout::new(order, payments.iter(), rules, self.profile.rules_version());
+        for check in checks {
+            let open = order.check(check).is_some_and(Check::is_open);
+            if open && !checkout.balance(check)?.captured.is_zero() {
+                return Err(RuntimeError::PartlyPaid(check));
+            }
+        }
+        Ok(())
     }
 
     /// The device this runtime is: the owner its orders name.
@@ -777,6 +861,13 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             known(&loaded)?;
             let event = loaded.decide(location, device, command)?;
             append(w, order.cast(), &event, meta)?;
+            // A split order whose open checks were emptied, every check holding something closed,
+            // closes. Found in review: it stayed open for good, nothing able to close it.
+            let loaded = w.load(Order::new(order))?;
+            if finished(&loaded) {
+                let event = loaded.decide(location, device, OrderCommand::Close)?;
+                append(w, order.cast(), &event, meta)?;
+            }
             view(w, order, &payments, profile, locale)
         })
     }
@@ -1076,7 +1167,10 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     pub fn reprint(&mut self, order: Id<Order>) -> Result<Id<Job>, RuntimeError> {
         // Someone is signed in first: whether a receipt exists is for them to learn.
         self.member.ok_or(RuntimeError::NotSignedIn)?;
-        let mut original = None;
+        // Each receipt the order printed: one for each check of a split order, each by the close
+        // that printed it, the last original of each. Found in review: only the last check's
+        // could be printed again.
+        let mut originals: Vec<(Doc, Id<keel_events::envelope::Event>)> = Vec::new();
         for queued in self.store.effects()? {
             if !matches!(print::job_of(&queued), Some((_, JobKind::Receipt))) {
                 continue;
@@ -1087,18 +1181,26 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 continue;
             }
             let doc = Doc::decode(&queued.effect.payload)?;
-            if !is_reprint(&doc) {
-                original = Some((doc, cause));
+            if is_reprint(&doc) {
+                continue;
             }
+            originals.retain(|(_, known)| *known != cause);
+            originals.push((doc, cause));
         }
-        let (doc, cause) = original.ok_or(RuntimeError::NoReceipt(order))?;
-        // Gated once there is something to print: an approval is never asked for, nor given, for
-        // a reprint that can't be. Found in review.
+        if originals.is_empty() {
+            return Err(RuntimeError::NoReceipt(order));
+        }
         let granted = self.gate(Request::of(Action::ReceiptReprint), Some(order.cast()))?;
-        let doc = self.as_reprint(&doc)?;
         let now = self.clock.now();
-        let job: Id<Job> = self.ids.generate(now)?;
-        let effect = print::effect(job, JobKind::Receipt, &doc, Some(cause))?;
+        let mut effects = Vec::with_capacity(originals.len());
+        let mut last = None;
+        for (doc, cause) in &originals {
+            let doc = self.as_reprint(doc)?;
+            let job: Id<Job> = self.ids.generate(now)?;
+            effects.push(print::effect(job, JobKind::Receipt, &doc, Some(*cause))?);
+            last = Some(job);
+        }
+        let job = last.ok_or(RuntimeError::NoReceipt(order))?;
         // An approval is an event, so it waits for a settled log as every write does.
         let meta = if granted.is_some() { Some(self.meta()?) } else { None };
         let stream = self.approval_stream(granted.as_ref())?;
@@ -1106,7 +1208,9 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             if let Some(meta) = &meta {
                 approved(w, granted.as_ref(), stream, meta)?;
             }
-            w.enqueue(&effect, now)?;
+            for effect in &effects {
+                w.enqueue(effect, now)?;
+            }
             Ok(())
         })?;
         self.spend(granted.as_ref());
@@ -1178,6 +1282,27 @@ pub(crate) fn append<D: DomainEvent, S: Signer, E: Entropy>(
         payload,
     };
     Ok(w.append(draft, meta.now)?.body().event_id)
+}
+
+/// The open checks of `order` a change to `line` touches, or to the whole order when it is
+/// `None`.
+fn touched(order: &Order, line: Option<Id<keel_domain::order::Line>>) -> Vec<Id<Check>> {
+    match line.and_then(|line| order.line(line)) {
+        Some(line) => line.allocation().iter().map(|share| share.check).collect(),
+        None => order.checks().iter().map(Check::id).collect(),
+    }
+}
+
+/// Whether `order`, active, is done: it has a closed check, and every check that holds a live
+/// line is closed.
+fn finished(order: &Order) -> bool {
+    *order.status() == keel_domain::order::OrderStatus::Active
+        && order.live_lines().next().is_some()
+        && order.checks().iter().any(|check| !check.is_open())
+        && order
+            .checks()
+            .iter()
+            .all(|check| !check.is_open() || order.lines_on(check.id()).next().is_none())
 }
 
 /// The receipt of a check just closed, to print: its job, the check, and who closed it when.

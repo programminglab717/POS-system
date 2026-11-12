@@ -2970,14 +2970,14 @@ BUGS = [
     (
         "discount: an amount's share rounds down",
         "src/order/basket.rs",
-        "scaled.checked_add(left)?.checked_sub(1)?.checked_div(left)",
-        "scaled.checked_div(left)",
+        "        .and_then(|scaled| scaled.checked_add(of)?.checked_sub(1)?.checked_div(of));",
+        "        .and_then(|scaled| scaled.checked_div(of));",
     ),
     (
         "discount: an amount's share is of the line's gross",
         "src/order/basket.rs",
-        "        let left = line.net.checked_add(order_share)?.checked_add(taken)?;",
-        "        let left = line.gross.checked_add(order_share)?.checked_sub(order_share)?;",
+        "            DiscountValue::Amount(_) if left > 0 => (left.saturating_sub(taken), left),",
+        "            DiscountValue::Amount(_) if left > 0 => (i128::from(base.minor()).saturating_sub(taken), i128::from(base.minor())),",
     ),
     # Prices set by hand (ADR-0030).
     (
@@ -3042,5 +3042,24 @@ BUGS = [
         "src/order/commands.rs",
         "        if repriced.unit_price.currency() != info.currency {",
         "        if repriced.unit_price.currency() != info.currency && false {",
+    ),
+    # Found in step 2's review: discounts gated together (ADR-0030).
+    (
+        "discount: a line's discounts count alone",
+        "src/order/basket.rs",
+        "        let mut values = self.line_values(at);",
+        "        let mut values = Vec::new();",
+    ),
+    (
+        "discount: the total leaves out the lines' discounts",
+        "src/order/basket.rs",
+        "    let total = Money::sum(currency, lines.chain(&totals.discounts).copied())?;",
+        "    let total = Money::sum(currency, lines.take(0).chain(&totals.discounts).copied())?;",
+    ),
+    (
+        "discount: percentages add instead of compounding",
+        "src/order/basket.rs",
+        "                (10_000_i128.saturating_sub(bp), 10_000)",
+        "                (10_000_i128.saturating_sub(bp.saturating_mul(i128::from(u8::try_from(values.len()).unwrap_or(1)))), 10_000)",
     ),
 ]

@@ -1749,34 +1749,30 @@ fn a_discounts_effect_is_what_it_would_take() {
     script.apply(&OrderEvent::DiscountApplied(percent_off(0xD1, Some(1), 1_000)));
     script.apply(&OrderEvent::DiscountApplied(percent_off(0xD2, None, 5_000)));
     let effect = |applied: DiscountApplied| script.order.discount_effect(&applied, &rules).unwrap();
-    // A percentage takes from what is left where it applies: after the line's 10%, and before
-    // the order's 50%, $9.00 of line 1 is left; on the order, after its 50%, $5.15 is.
-    assert_eq!(
-        effect(percent_off(3, Some(1), 2_000)),
-        Some(DiscountEffect { taken: usd(180), percent: 2_000 })
-    );
-    assert_eq!(
-        effect(percent_off(3, None, 1_000)),
-        Some(DiscountEffect { taken: usd(60), percent: 1_000 })
-    );
-    // An amount counts as its share of what is left of its line, rounded up: $1.00 of $9.00 is
-    // 11.12%; it never takes more than is left, which is all of it.
-    assert_eq!(
-        effect(amount_off(3, 1, usd(100))),
-        Some(DiscountEffect { taken: usd(100), percent: 1_112 })
-    );
-    assert_eq!(
-        effect(amount_off(3, 1, usd(5_000))),
-        Some(DiscountEffect { taken: usd(900), percent: 10_000 })
-    );
-    assert_eq!(
-        effect(amount_off(3, 1, usd(900))),
-        Some(DiscountEffect { taken: usd(900), percent: 10_000 })
-    );
-    // On a comped line nothing is left: nothing taken, and all of it.
+    let both = |taken, total, percent| {
+        Some(DiscountEffect { taken: usd(taken), total: usd(total), percent })
+    };
+    // Line 1's 10% takes $1.00 of $10.00; the order's 50% takes $6.00 of the $12.00 left.
+    // Another 20% on line 1 takes $1.80 of its $9.00: together with its 10%, 28% of the line,
+    // compounded (0.9 × 0.8 = 0.72 left). The order's 50% then takes $5.10: $7.90 in all.
+    assert_eq!(effect(percent_off(3, Some(1), 2_000)), both(180, 790, 2_800));
+    // Another 10% on the order takes $0.60 of the $6.00 its 50% leaves: 55% together.
+    assert_eq!(effect(percent_off(3, None, 1_000)), both(60, 760, 5_500));
+    // $1.00 off line 1 takes $1.00 of the $9.00 its 10% leaves: 20% of the line together
+    // (0.9 × 8/9 = 0.8 left), exactly.
+    assert_eq!(effect(amount_off(3, 1, usd(100))), both(100, 750, 2_000));
+    // More than is left takes what is left: all of the line.
+    assert_eq!(effect(amount_off(3, 1, usd(5_000))), both(900, 1_150, 10_000));
+    assert_eq!(effect(amount_off(3, 1, usd(900))), both(900, 1_150, 10_000));
+    // On a comped line nothing is left, and nothing is taken.
     script.apply(&OrderEvent::LineComped { line: id(2), reason: reason("birthday") });
     let comped = script.order.discount_effect(&amount_off(3, 2, usd(100)), &rules).unwrap();
-    assert_eq!(comped, Some(DiscountEffect { taken: usd(0), percent: 10_000 }));
+    assert_eq!(comped, both(0, 550, 0));
+    // Raised to three, line 1's 10% takes $3.00 of $30.00, and the order's 50% $13.50 of the
+    // $27.00 left: $16.50 in all, the line's share still 10%.
+    let three = Quantity::from_whole(3, Unit::Each).unwrap();
+    let raised = script.order.quantity_effect(id(1), three, &rules).unwrap();
+    assert_eq!(raised, both(0, 1_650, 1_000));
     // A line that isn't live has no effect to price.
     script.apply(&OrderEvent::LineRemoved { line: id(2) });
     assert_eq!(script.order.discount_effect(&amount_off(3, 2, usd(100)), &rules), Ok(None));

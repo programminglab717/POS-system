@@ -65,6 +65,20 @@ pub enum RuntimeError {
     /// The payment refused the change.
     #[error(transparent)]
     Payment(#[from] PaymentError),
+    /// A discount takes more than is left of its line: it would take more as the line grew. Found
+    /// in review (ADR-0030).
+    #[error("only {left} is left to take off")]
+    DiscountTooLarge {
+        /// What is left of the line.
+        left: Money,
+    },
+    /// A change to what a check charges while a payment toward it has been taken: the customer
+    /// paid for what it was. Found in review (ADR-0030).
+    #[error("check {0} is partly paid")]
+    PartlyPaid(Id<keel_domain::order::Check>),
+    /// An order split among checks is paid check by check (ADR-0030).
+    #[error("the order is split: pay it check by check")]
+    Split,
     /// An order is split among fewer than two checks, or more than the most, or has nothing to
     /// split (ADR-0030).
     #[error("nothing to split that way")]

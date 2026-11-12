@@ -62,21 +62,26 @@ impl Order {
     }
 }
 
-/// What a discount would take off an order before tax, as [`Order::discount_effect`] prices
-/// it, for the approval it may need (ADR-0030).
+/// What the order's discounts would take, with a discount applied or a line's quantity changed,
+/// for the approval it may need (ADR-0030).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiscountEffect {
-    /// What it would take.
+    /// What the discount itself would take: nothing, for a quantity changed.
     pub taken: Money,
-    /// Its percentage, in basis points: a percentage's own; an amount's share of what is left of
-    /// its line when it applies, rounded up, and all of it when nothing is left.
+    /// What all the order's discounts would take together, before tax.
+    pub total: Money,
+    /// The share its scope's discounts would take together, in basis points, rounded up: on a
+    /// line, of the line's gross less its comp; on the whole order, of what the lines' own
+    /// discounts leave. Percentages compound, as they apply: two of 10% are 19%; an amount
+    /// counts as its share of what is left when it applies. So a role's limit holds for the
+    /// discounts together, however many: stacked, they count as one. Found in review: five of
+    /// 10% each took 41% with no approval.
     pub percent: u32,
 }
 
 impl Order {
-    /// What `applied` would take off the order, priced by `rules`, after the discounts it has:
-    /// the discount's own part, before the whole order's discounts after it take their share.
-    /// `None` until the order is created, or for a line that isn't live.
+    /// What the order's discounts would take with `applied`, priced by `rules`, after the
+    /// discounts it has. `None` until the order is created, or for a line that isn't live.
     ///
     /// # Errors
     /// [`PricingError`] if the order, with the discount, can't be priced.
@@ -91,7 +96,10 @@ impl Order {
             basket.discounts.push(priced);
             let totals = keel_pricing::price(&basket, rules)?;
             let taken = totals.discounts.last().copied().unwrap_or(Money::zero(basket.currency));
-            return Ok(Some(DiscountEffect { taken, percent: percent_of(applied, taken, taken) }));
+            let mut values: Vec<DiscountValue> =
+                self.discounts().iter().map(|discount| discount.value).collect();
+            values.push(applied.value);
+            return effect(&totals, None, &values, taken).map(Some);
         };
         let Some(index) = self.live_lines().position(|line| line.id() == at) else {
             return Ok(None);
@@ -99,35 +107,114 @@ impl Order {
         let Some(line) = basket.lines.get_mut(index) else { return Ok(None) };
         line.discounts.push(priced);
         let totals = keel_pricing::price(&basket, rules)?;
-        let Some(line) = totals.lines.get(index) else { return Ok(None) };
-        let taken = line.discounts.last().copied().unwrap_or(Money::zero(basket.currency));
-        // What was left of the line when the discount applied: its net before the order's
-        // discounts, and before this one.
-        let order_share = Money::sum(basket.currency, line.order_discounts.iter().copied())?;
-        let left = line.net.checked_add(order_share)?.checked_add(taken)?;
-        Ok(Some(DiscountEffect { taken, percent: percent_of(applied, taken, left) }))
+        let Some(priced_line) = totals.lines.get(index) else { return Ok(None) };
+        let taken = priced_line.discounts.last().copied().unwrap_or(Money::zero(basket.currency));
+        let mut values = self.line_values(at);
+        values.push(applied.value);
+        effect(&totals, Some(index), &values, taken).map(Some)
+    }
+
+    /// What the order's discounts would take were `line` `quantity` of it, priced by `rules`:
+    /// for a line's quantity raised, which raises what its percentages and the order's take.
+    /// `None` until the order is created, or for a line that isn't live.
+    ///
+    /// # Errors
+    /// [`PricingError`] if the order, so changed, can't be priced.
+    pub fn quantity_effect(
+        &self,
+        line: Id<Line>,
+        quantity: keel_types::Quantity,
+        rules: &Rules,
+    ) -> Result<Option<DiscountEffect>, PricingError> {
+        let Some(mut basket) = self.basket() else { return Ok(None) };
+        let Some(index) = self.live_lines().position(|live| live.id() == line) else {
+            return Ok(None);
+        };
+        let Some(priced) = basket.lines.get_mut(index) else { return Ok(None) };
+        priced.quantity = quantity;
+        let totals = keel_pricing::price(&basket, rules)?;
+        let values = self.line_values(line);
+        effect(&totals, Some(index), &values, Money::zero(basket.currency)).map(Some)
+    }
+
+    /// What `line`'s discounts take, in the order they apply.
+    fn line_values(&self, line: Id<Line>) -> Vec<DiscountValue> {
+        self.line(line)
+            .map(|line| line.discounts().iter().map(|discount| discount.value).collect())
+            .unwrap_or_default()
     }
 }
 
-/// The percentage `applied` counts as: a percentage's own, or the share `taken` is of `left`,
-/// rounded up to the next basis point; all of it when nothing was left.
-fn percent_of(applied: &DiscountApplied, taken: Money, left: Money) -> u32 {
-    match applied.value {
-        DiscountValue::Percent(bp) => bp,
-        DiscountValue::Amount(_) => {
-            let (taken, left) = (i128::from(taken.minor()), i128::from(left.minor()));
-            if left <= 0 {
-                return MAX_DISCOUNT_PERCENT;
-            }
-            // |taken| ≤ left < 2^63, so taken × 10,000 + left fits an i128.
-            let share = taken
-                .checked_mul(10_000)
-                .and_then(|scaled| scaled.checked_add(left)?.checked_sub(1)?.checked_div(left));
-            share
-                .and_then(|share| u32::try_from(share).ok())
-                .map_or(MAX_DISCOUNT_PERCENT, |share| share.min(MAX_DISCOUNT_PERCENT))
+/// The effect `totals` price: all the discounts, and the share those of the scope take, the line
+/// at `scope` or the whole order, whose values are `values`, in the order they apply.
+fn effect(
+    totals: &keel_pricing::Totals,
+    scope: Option<usize>,
+    values: &[DiscountValue],
+    taken: Money,
+) -> Result<DiscountEffect, PricingError> {
+    let currency = totals.currency;
+    let lines = totals.lines.iter().flat_map(|line| &line.discounts);
+    let total = Money::sum(currency, lines.chain(&totals.discounts).copied())?;
+    let (scoped, base) = if let Some(line) = scope.and_then(|at| totals.lines.get(at)) {
+        (line.discounts.clone(), line.gross.checked_sub(line.comp)?)
+    } else {
+        let mut base = Money::zero(currency);
+        for line in &totals.lines {
+            let own = Money::sum(currency, line.discounts.iter().copied())?;
+            base = base.checked_add(line.gross.checked_sub(line.comp)?.checked_sub(own)?)?;
         }
+        (totals.discounts.clone(), base)
+    };
+    Ok(DiscountEffect { taken, total, percent: share(values, &scoped, base) })
+}
+
+/// The share discounts of `values`, which took `taken` each from `base` in turn, take together,
+/// in basis points, rounded up: what is left is what each leaves of what the ones before it
+/// left, exactly. Past what an `i128` holds, or with nothing to take from, all of it.
+fn share(values: &[DiscountValue], taken: &[Money], base: Money) -> u32 {
+    let all = MAX_DISCOUNT_PERCENT;
+    let mut left = i128::from(base.minor());
+    // What is left, as a fraction of the base: kept in lowest terms.
+    let (mut kept, mut of) = (1_i128, 1_i128);
+    for (value, taken) in values.iter().zip(taken) {
+        let taken = i128::from(taken.minor());
+        let (keep, from) = match *value {
+            DiscountValue::Percent(bp) => {
+                let bp = i128::from(bp);
+                (10_000_i128.saturating_sub(bp), 10_000)
+            }
+            DiscountValue::Amount(_) if left > 0 => (left.saturating_sub(taken), left),
+            DiscountValue::Amount(_) if taken > 0 => return all,
+            DiscountValue::Amount(_) => (1, 1),
+        };
+        let (Some(next_kept), Some(next_of)) = (kept.checked_mul(keep), of.checked_mul(from))
+        else {
+            return all;
+        };
+        let divisor = gcd(next_kept, next_of).max(1);
+        let (Some(reduced_kept), Some(reduced_of)) =
+            (next_kept.checked_div(divisor), next_of.checked_div(divisor))
+        else {
+            return all;
+        };
+        (kept, of) = (reduced_kept, reduced_of);
+        left = left.saturating_sub(taken);
     }
+    // (of − kept) / of, in basis points, rounded up.
+    let share = of
+        .checked_sub(kept)
+        .and_then(|gone| gone.checked_mul(10_000))
+        .and_then(|scaled| scaled.checked_add(of)?.checked_sub(1)?.checked_div(of));
+    share.and_then(|share| u32::try_from(share).ok()).map_or(all, |share| share.min(all))
+}
+
+fn gcd(a: i128, b: i128) -> i128 {
+    let (mut a, mut b) = (a.unsigned_abs(), b.unsigned_abs());
+    while let Some(rest) = a.checked_rem(b) {
+        (a, b) = (b, rest);
+    }
+    i128::try_from(a).unwrap_or(1)
 }
 
 /// A basket of `lines` for the order described by `info`, with the whole order's `discounts`.
