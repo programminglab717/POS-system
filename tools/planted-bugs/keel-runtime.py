@@ -749,4 +749,35 @@ BUGS = [
         "            if checkout.balance(check)?.due.is_positive() {",
         "            if false {",
     ),
+    # Park and recall (ADR-0030).
+    (
+        "recall: an order asked for already is asked for again",
+        "src/runtime.rs",
+        "        if ours || asked {",
+        "        if ours {",
+    ),
+    (
+        "recall: an order owned here is asked for",
+        "src/runtime.rs",
+        "        let ours = loaded.ownership().is_some_and(|ownership| ownership.device == self.device);",
+        "        let ours = false;",
+    ),
+    (
+        "recall: taking an order over isn't gated",
+        "src/runtime.rs",
+        """        let granted = self.gate(Request::of(Action::OrderVoid), Some(order.cast()))?;
+        let meta = self.meta()?;
+        let stream = self.approval_stream(granted.as_ref())?;
+        let ticket = self.decide_approved(order, command, &meta, granted.as_ref(), stream)?;""",
+        """        let granted: Option<Granted> = None;
+        let meta = self.meta()?;
+        let stream = self.approval_stream(granted.as_ref())?;
+        let ticket = self.decide_approved(order, command, &meta, granted.as_ref(), stream)?;""",
+    ),
+    (
+        "recall: a ticket names no owner",
+        "src/ticket.rs",
+        "        owner: order.ownership().map(|ownership| ownership.device),",
+        "        owner: None,",
+    ),
 ]

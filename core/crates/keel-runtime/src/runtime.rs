@@ -620,6 +620,52 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         })
     }
 
+    /// Recalls `order`, parked on another device, to this one (ADR-0030, decision 6): asks the hub
+    /// for it, from the lease this device saw. The hub answers through replication; once it
+    /// grants the order, this device owns it. An order this device owns, or has asked for
+    /// already, is answered with its ticket as it is.
+    ///
+    /// # Errors
+    /// [`RuntimeError`] if no one is signed in, or the order isn't open at the location.
+    pub fn recall(&mut self, order: Id<Order>) -> Result<Ticket, RuntimeError> {
+        let meta = self.meta()?;
+        let loaded = self.store.load(Order::new(order))?;
+        known(&loaded)?;
+        let ours = loaded.ownership().is_some_and(|ownership| ownership.device == self.device);
+        let asked = loaded.requests().iter().any(|request| request.device == self.device);
+        if ours || asked {
+            return ticket::ticket(&loaded, &self.payments(order)?, &self.profile, self.locale);
+        }
+        self.decide(order, OrderCommand::RequestOwnership, &meta)
+    }
+
+    /// Takes `order` from the device that owns it without the hub, on a manager's word, for
+    /// `reason` (ADR-0021, ADR-0030): for a device that can't reach the hub. Gated as
+    /// `order.void` is, which a manager approves; the order is flagged for reconciliation.
+    ///
+    /// # Errors
+    /// [`RuntimeError::ApprovalRequired`] or [`RuntimeError::NotApprover`] if it needs an approval
+    /// it doesn't have; [`RuntimeError`] if no one is signed in, or the order refuses: this
+    /// device owns it already, or it isn't open.
+    pub fn take_over(&mut self, order: Id<Order>, reason: Reason) -> Result<Ticket, RuntimeError> {
+        let loaded = self.store.load(Order::new(order))?;
+        known(&loaded)?;
+        let command = OrderCommand::OverrideOwnership(reason);
+        // The order's own rules come before an approval is asked for one it would refuse.
+        loaded.decide(self.location(), self.device, command.clone())?;
+        let granted = self.gate(Request::of(Action::OrderVoid), Some(order.cast()))?;
+        let meta = self.meta()?;
+        let stream = self.approval_stream(granted.as_ref())?;
+        let ticket = self.decide_approved(order, command, &meta, granted.as_ref(), stream)?;
+        self.spend(granted.as_ref());
+        Ok(ticket)
+    }
+
+    /// The device this runtime is: the owner its orders name.
+    pub fn device(&self) -> Id<Device> {
+        self.device
+    }
+
     /// Splits every live line of `order` evenly among `ways` checks: its open checks, in order,
     /// and as many new ones as it takes (ADR-0030). Each line goes in as many shares, so each
     /// check pays its part.

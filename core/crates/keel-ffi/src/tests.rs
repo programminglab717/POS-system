@@ -466,6 +466,8 @@ fn every_field() -> keel_runtime::Ticket {
         due: amount(590),
         cash_due: amount(590 + 5),
         checks: Vec::new(),
+        owner: Some(id(7)),
+        asking: vec![id(8), id(9)],
     }
 }
 
@@ -546,6 +548,8 @@ fn a_ticket_crosses_field_for_field() {
         due: usd(590, "$5.90"),
         cash_due: usd(595, "$5.95"),
         checks: Vec::new(),
+        owner: Some(demo_id(7)),
+        asking: vec![demo_id(8), demo_id(9)],
     };
     assert_eq!(crossed, expected);
     for (state, ffi) in [

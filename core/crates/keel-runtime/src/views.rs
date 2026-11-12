@@ -6,6 +6,7 @@ use keel_domain::codec::{Note, ReasonCode};
 use keel_domain::order::{Check, ChosenModifier, Discount, Line, Order, OrderStatus, Prefix};
 use keel_domain::profile::{CatalogGroup, Profile};
 use keel_domain::refs::{Modifier, ModifierGroup, Variant};
+use keel_events::envelope::Device;
 use keel_pricing::Tax;
 use keel_types::{Id, Locale, Money, Quantity};
 
@@ -79,6 +80,10 @@ pub struct Ticket {
     /// Its checks, each with its own lines and amounts, when it is split among more than one
     /// (ADR-0030); empty otherwise, and on a check's own ticket.
     pub checks: Vec<TicketCheck>,
+    /// The device that owns it, which alone changes what it holds and costs (ADR-0021).
+    pub owner: Option<Id<Device>>,
+    /// The devices that asked the hub for it, whose requests wait for an answer.
+    pub asking: Vec<Id<Device>>,
 }
 
 /// One check of a split order: its ticket holds the check's lines, each with the check's part

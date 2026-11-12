@@ -417,6 +417,36 @@ impl Register {
         .map(|paid| CashPaid { change: (&paid.change).into(), ticket: (&paid.ticket).into() })
     }
 
+    /// Recalls `order`, parked on another device, to this one: asks the hub for it (ADR-0030).
+    /// The ticket says the device owns it once the hub's answer has come back.
+    ///
+    /// # Errors
+    /// As [`Register::add_item`].
+    pub fn recall(&self, order: String) -> Result<Ticket, KeelError> {
+        let order = id(&order)?;
+        self.with(|runtime| runtime.recall(order)).map(|ticket| (&ticket).into())
+    }
+
+    /// Takes `order` from the device that owns it without the hub, on a manager's word, for
+    /// `reason`, with an optional `note` (ADR-0021): for when the hub can't be reached.
+    ///
+    /// # Errors
+    /// [`KeelError::ApprovalRequired`] if it needs an approval; and as [`Register::add_item`].
+    pub fn take_over(
+        &self,
+        order: String,
+        reason: String,
+        note: Option<String>,
+    ) -> Result<Ticket, KeelError> {
+        let (order, reason) = (id(&order)?, self::reason(&reason, note)?);
+        self.with(|runtime| runtime.take_over(order, reason)).map(|ticket| (&ticket).into())
+    }
+
+    /// The device this register is: the owner a ticket names when this register owns it.
+    pub fn device_id(&self) -> String {
+        self.device.to_string()
+    }
+
     /// Splits every live line of `order` evenly among `ways` checks, from 2 to 20 (ADR-0030).
     ///
     /// # Errors

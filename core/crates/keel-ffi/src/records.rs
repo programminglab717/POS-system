@@ -125,6 +125,10 @@ pub struct Ticket {
     /// Its checks, each with its own lines and amounts, when it is split among more than one;
     /// empty otherwise.
     pub checks: Vec<TicketCheck>,
+    /// The device that owns it, which alone changes it: compare `Register::device_id`.
+    pub owner: Option<String>,
+    /// The devices that asked the hub for it, whose requests wait for an answer.
+    pub asking: Vec<String>,
 }
 
 /// One check of a split order (ADR-0030): the check's lines, each with its part, and its
@@ -322,6 +326,8 @@ impl From<&runtime::Ticket> for Ticket {
             due: (&ticket.due).into(),
             cash_due: (&ticket.cash_due).into(),
             checks: ticket.checks.iter().map(TicketCheck::from).collect(),
+            owner: ticket.owner.map(|device| device.to_string()),
+            asking: ticket.asking.iter().map(ToString::to_string).collect(),
         }
     }
 }

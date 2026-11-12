@@ -369,3 +369,91 @@ fn a_hub_that_restarts_numbers_what_comes_after() {
     location.run(Duration::from_millis(250), 8);
     assert!(confirmed(&location), "the restarted hub numbers the next sale");
 }
+
+/// Pushes what each runtime wrote, and delivers it, and what it causes, until the wire is quiet.
+fn exchange(location: &mut Location) {
+    for _ in 0..4 {
+        let frames = location.hub.take_frames().unwrap();
+        location.send(HUB, frames);
+        let frames = location.register.take_frames().unwrap();
+        location.send(REGISTER, frames);
+        location.deliver();
+        location.run(Duration::from_millis(250), 2);
+    }
+}
+
+/// An order parked on one device is recalled on another (ADR-0030, decision 6): it asks the hub,
+/// and owns the order once the hub grants it; until then, only the owner changes it.
+#[test]
+fn an_order_parked_on_one_device_is_recalled_on_another_through_the_hub() {
+    let (hub_dir, register_dir) = (dir("park-hub"), dir("park-register"));
+    let mut location = settled(open(&hub_dir, HUB, 1), open(&register_dir, REGISTER, 2));
+    location.hub.sign_in(id(0x501), "1234").unwrap();
+    // Rung at the back office's device, and parked there.
+    let order = location.hub.start_order(Mode::Takeout).unwrap().order;
+    location.hub.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    exchange(&mut location);
+
+    // The register lists it, owned by the other device.
+    let open = location.register.open_orders().unwrap();
+    let parked = open.iter().find(|ticket| ticket.order == order).unwrap();
+    assert_eq!(parked.owner, Some(id(HUB)));
+    assert!(parked.asking.is_empty());
+    // Until it owns it, the register can't change what it holds.
+    let line = parked.lines[0].line;
+    assert!(matches!(
+        location.register.remove_line(order, line),
+        Err(RuntimeError::Order(keel_domain::order::CommandError::NotOwner(_)))
+    ));
+
+    // It recalls it: the request waits for the hub's answer, and asking again asks nothing more.
+    let asked = location.register.recall(order).unwrap();
+    assert_eq!(asked.asking, [id(REGISTER)]);
+    assert_eq!(location.register.recall(order).unwrap().asking, [id(REGISTER)]);
+    exchange(&mut location);
+
+    // Granted: the register owns it, and rings on it.
+    let recalled = location.register.ticket(order).unwrap();
+    assert_eq!(recalled.owner, Some(id(REGISTER)), "{recalled:?}");
+    assert!(recalled.asking.is_empty());
+    location.register.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    let paid = location.register.pay_cash(order, Money::from_minor(1_000, Currency::USD)).unwrap();
+    assert_eq!(paid.ticket.lines.len(), 2);
+    // Recalling an order it owns asks for nothing.
+    assert!(location.register.recall(order).is_ok());
+}
+
+/// A device that can't wait for the hub takes the order on a manager's word (ADR-0021): gated as
+/// a void is, and only from a device that doesn't own it already.
+#[test]
+fn an_order_is_taken_over_on_a_managers_word() {
+    let (hub_dir, register_dir) = (dir("take-hub"), dir("take-register"));
+    let mut location = settled(open(&hub_dir, HUB, 1), open(&register_dir, REGISTER, 2));
+    location.hub.sign_in(id(0x501), "1234").unwrap();
+    let order = location.hub.start_order(Mode::Takeout).unwrap().order;
+    location.hub.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    exchange(&mut location);
+    let reason = || keel_domain::order::Reason {
+        code: keel_domain::codec::ReasonCode::new("hub_unreachable").unwrap(),
+        note: None,
+    };
+    // Sam, a cashier, asks; Alex approves.
+    location.register.sign_in(id(0x502), "2468").unwrap();
+    assert!(matches!(
+        location.register.take_over(order, reason()),
+        Err(RuntimeError::ApprovalRequired(keel_domain::staff::Action::OrderVoid))
+    ));
+    location.register.approve(id(0x501), "1234").unwrap();
+    let taken = location.register.take_over(order, reason()).unwrap();
+    assert_eq!(taken.owner, Some(id(REGISTER)));
+    // Its own order is no order to take over, and asks for no approval.
+    assert!(matches!(location.register.take_over(order, reason()), Err(RuntimeError::Order(_))));
+    assert!(matches!(
+        location.register.approve(id(0x501), "1234"),
+        Err(RuntimeError::NothingToApprove)
+    ));
+    location.register.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    // The hub learns of it: the register owns the order there too.
+    exchange(&mut location);
+    assert_eq!(location.hub.ticket(order).unwrap().owner, Some(id(REGISTER)));
+}

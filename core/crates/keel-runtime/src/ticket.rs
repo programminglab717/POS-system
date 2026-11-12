@@ -209,6 +209,8 @@ fn view(
         due: amount(due),
         cash_due: amount(cash),
         checks: Vec::new(),
+        owner: order.ownership().map(|ownership| ownership.device),
+        asking: order.requests().iter().map(|request| request.device).collect(),
     })
 }
 
