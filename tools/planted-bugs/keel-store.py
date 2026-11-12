@@ -1581,4 +1581,16 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         "    let sums = match (money(8)?, money(9)?, money(10)?, money(11)?) {",
         "    let sums = match (money(8)?, money(10)?, money(9)?, money(11)?) {",
     ),
+    (
+        "drawers: a drawer's payments aren't kept",
+        "src/drawers.rs",
+        "        insert.execute(params![&payment.to_bytes()[..], session])?;",
+        "        let _ = (payment, &mut insert);",
+    ),
+    (
+        "drawers: payments are found by another day",
+        "src/store.rs",
+        "\"SELECT {PAYMENT_COLUMNS} FROM payments WHERE business_date = ?1 \\",
+        "\"SELECT {PAYMENT_COLUMNS} FROM payments WHERE business_date <= ?1 \\",
+    ),
 ]

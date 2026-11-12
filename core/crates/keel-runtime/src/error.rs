@@ -66,7 +66,7 @@ pub enum RuntimeError {
     #[error(transparent)]
     Payment(#[from] PaymentError),
     /// The device's drawer is open already: one at a time (ADR-0031).
-    #[error("the drawer is open already")]
+    #[error("a drawer is open: close it first")]
     DrawerOpen,
     /// The device has no drawer open.
     #[error("no drawer is open")]

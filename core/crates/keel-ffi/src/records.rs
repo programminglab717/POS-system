@@ -441,8 +441,8 @@ pub enum CashMovement {
     Drop,
 }
 
-/// The register's drawer session (ADR-0031): its float and what moved through it; once closed,
-/// what it should have held, what was counted, and the variance.
+/// The register's drawer session (ADR-0031): its float and how many no-sales; once closed, what
+/// moved through it, what it should have held, what was counted, and the variance.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct DrawerView {
     /// The session.
@@ -451,14 +451,14 @@ pub struct DrawerView {
     pub open: bool,
     /// The cash put in to begin.
     pub float: Amount,
-    /// What its cash sales left in it.
-    pub taken: Amount,
-    /// Cash paid in.
-    pub paid_in: Amount,
-    /// Cash paid out.
-    pub paid_out: Amount,
-    /// Cash dropped to the safe.
-    pub dropped: Amount,
+    /// Once closed: what its cash sales left in it. Blind while open, as the rest.
+    pub taken: Option<Amount>,
+    /// Once closed: cash paid in.
+    pub paid_in: Option<Amount>,
+    /// Once closed: cash paid out.
+    pub paid_out: Option<Amount>,
+    /// Once closed: cash dropped to the safe.
+    pub dropped: Option<Amount>,
     /// How many times it was opened with no sale.
     pub no_sales: u64,
     /// Once closed: what it should have held.
@@ -475,10 +475,10 @@ impl From<&runtime::DrawerView> for DrawerView {
             drawer: view.drawer.to_string(),
             open: view.open,
             float: (&view.float).into(),
-            taken: (&view.taken).into(),
-            paid_in: (&view.paid_in).into(),
-            paid_out: (&view.paid_out).into(),
-            dropped: (&view.dropped).into(),
+            taken: view.taken.as_ref().map(Amount::from),
+            paid_in: view.paid_in.as_ref().map(Amount::from),
+            paid_out: view.paid_out.as_ref().map(Amount::from),
+            dropped: view.dropped.as_ref().map(Amount::from),
             no_sales: view.no_sales,
             expected: view.expected.as_ref().map(Amount::from),
             counted: view.counted.as_ref().map(Amount::from),

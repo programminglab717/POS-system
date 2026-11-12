@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -185,12 +186,14 @@ private fun Register(state: RegisterState, model: RegisterModel) {
 
 @Composable
 private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Modifier) {
-    Column(modifier.fillMaxHeight().padding(16.dp)) {
+    // The whole pane scrolls: on a phone, its lines and buttons are taller than the screen.
+    // Found in CI's emulator: Drop order, Split and a line's buttons were out of reach.
+    Column(modifier.fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp)) {
         val ticket = state.ticket
         if (state.askDrawer) OpenDrawerBanner(model)
         Text("Order", style = MaterialTheme.typography.titleLarge)
-        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-            items(ticket?.lines.orEmpty(), key = { it.line }) { line ->
+        Column(Modifier.fillMaxWidth()) {
+            for (line in ticket?.lines.orEmpty()) key(line.line) {
                 Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("${line.quantity} × ${line.name}", Modifier.weight(1f))
@@ -298,8 +301,10 @@ private fun CashDialog(entry: CashEntry, error: String?, model: RegisterModel) {
         CashPurpose.PAID_OUT -> "Pay out"
         CashPurpose.DROP -> "Drop to the safe"
         CashPurpose.COUNT -> "Count the drawer"
+        CashPurpose.NO_SALE -> "Open with no sale"
     }
-    val moving = entry.purpose in setOf(CashPurpose.PAID_IN, CashPurpose.PAID_OUT, CashPurpose.DROP)
+    val noSale = entry.purpose == CashPurpose.NO_SALE
+    val moving = entry.purpose.moves || noSale
     AlertDialog(
         onDismissRequest = model::cancelCash,
         title = { Text(title) },
@@ -322,19 +327,21 @@ private fun CashDialog(entry: CashEntry, error: String?, model: RegisterModel) {
                     // Blind: what the drawer should hold isn't shown until the count is in.
                     Text("Count what is in the drawer, and type it.", style = MaterialTheme.typography.bodySmall)
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(entry.typed?.text ?: "Type an amount", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.testTag("cash:typed"))
-                for (row in listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9))) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        for (digit in row) Key(digit.toString(), "cash:digit:$digit") { model.typeCashDigit(digit) }
+                if (!noSale) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(entry.typed?.text ?: "Type an amount", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.testTag("cash:typed"))
+                    for (row in listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9))) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            for (digit in row) Key(digit.toString(), "cash:digit:$digit") { model.typeCashDigit(digit) }
+                        }
                     }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Key("⌫", "cash:erase") { model.eraseCashDigit() }
-                    Key("0", "cash:digit:0") { model.typeCashDigit(0) }
-                    Key("00", "cash:digit:00") {
-                        model.typeCashDigit(0)
-                        model.typeCashDigit(0)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Key("⌫", "cash:erase") { model.eraseCashDigit() }
+                        Key("0", "cash:digit:0") { model.typeCashDigit(0) }
+                        Key("00", "cash:digit:00") {
+                            model.typeCashDigit(0)
+                            model.typeCashDigit(0)
+                        }
                     }
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("cash:error")) }
@@ -342,7 +349,13 @@ private fun CashDialog(entry: CashEntry, error: String?, model: RegisterModel) {
         },
         confirmButton = {
             Button(onClick = model::confirmCash, modifier = Modifier.testTag("cash:confirm")) {
-                Text(if (entry.purpose == CashPurpose.COUNT) "Close the drawer" else "Done")
+                Text(
+                    when (entry.purpose) {
+                        CashPurpose.COUNT -> "Close the drawer"
+                        CashPurpose.NO_SALE -> "Open the drawer"
+                        else -> "Done"
+                    },
+                )
             }
         },
         dismissButton = { TextButton(onClick = model::cancelCash, modifier = Modifier.testTag("cash:cancel")) { Text("Cancel") } },
@@ -368,7 +381,7 @@ private fun DrawerPage(state: RegisterState, model: RegisterModel) {
                 OutlinedButton(onClick = { model.beginCash(CashPurpose.PAID_IN) }, modifier = Modifier.testTag("drawer:in")) { Text("Pay in") }
                 OutlinedButton(onClick = { model.beginCash(CashPurpose.PAID_OUT) }, modifier = Modifier.testTag("drawer:out")) { Text("Pay out") }
                 OutlinedButton(onClick = { model.beginCash(CashPurpose.DROP) }, modifier = Modifier.testTag("drawer:drop")) { Text("Drop") }
-                OutlinedButton(onClick = { model.noSale("change_for_customer") }, modifier = Modifier.testTag("drawer:no-sale")) { Text("No sale") }
+                OutlinedButton(onClick = { model.beginCash(CashPurpose.NO_SALE) }, modifier = Modifier.testTag("drawer:no-sale")) { Text("No sale") }
                 Button(onClick = { model.beginCash(CashPurpose.COUNT) }, modifier = Modifier.testTag("drawer:close")) { Text("Close the drawer") }
             }
         }
@@ -381,19 +394,28 @@ private fun DrawerPage(state: RegisterState, model: RegisterModel) {
         Text("Today's reports", style = MaterialTheme.typography.titleMedium)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { model.showReport(z = false) }, modifier = Modifier.testTag("report:x")) { Text("X report") }
-            OutlinedButton(onClick = { model.showReport(z = true) }, modifier = Modifier.testTag("report:z")) { Text("Z report") }
+            // The Z waits for the drawer to close: not offered until it is. Found in review.
+            OutlinedButton(onClick = { model.showReport(z = true) }, enabled = drawer == null, modifier = Modifier.testTag("report:z")) { Text("Z report") }
         }
         state.report?.let { report ->
             Text(if (report.z) "Z report, ${report.date}" else "X report, ${report.date}", style = MaterialTheme.typography.titleSmall)
             ReportRow("Orders", report.orders.toString())
             ReportRow("Gross", report.gross)
             ReportRow("Discounts", report.discounts)
+            ReportRow("Comps", report.comps)
             ReportRow("Net", report.net)
             ReportRow("Tax", report.tax)
             ReportRow("Total", report.total, Modifier.testTag("report:total"))
             for ((tender, amount) in report.tenders) ReportRow(tender, amount)
             ReportRow("Voided orders", report.voided.toString())
             report.withoutDrawer?.let { (words, amount) -> ReportRow(words, amount) }
+            // Each drawer of the day, with its over or short once counted. Found in review: only
+            // the printed report had them.
+            report.drawers.forEachIndexed { index, each ->
+                Text("Drawer ${index + 1}", style = MaterialTheme.typography.titleSmall)
+                DrawerFigures(each)
+                if (each.open) Text("Still open", style = MaterialTheme.typography.bodySmall)
+            }
             Button(onClick = { model.printReport(report.z) }, modifier = Modifier.testTag("report:print")) { Text("Print") }
         }
     }
@@ -401,11 +423,12 @@ private fun DrawerPage(state: RegisterState, model: RegisterModel) {
 
 @Composable
 private fun DrawerFigures(drawer: Drawer) {
+    // Blind while open: what moved through it shows once it is counted (ADR-0031).
     ReportRow("Float", drawer.float)
-    ReportRow("Cash sales", drawer.taken, Modifier.testTag(if (drawer.open) "drawer:taken" else "closed:taken"))
-    ReportRow("Paid in", drawer.paidIn)
-    ReportRow("Paid out", drawer.paidOut)
-    ReportRow("Dropped", drawer.dropped)
+    drawer.taken?.let { ReportRow("Cash sales", it, Modifier.testTag("closed:taken")) }
+    drawer.paidIn?.let { ReportRow("Paid in", it) }
+    drawer.paidOut?.let { ReportRow("Paid out", it) }
+    drawer.dropped?.let { ReportRow("Dropped", it) }
     ReportRow("No sales", drawer.noSales.toString())
     drawer.expected?.let { ReportRow("Expected", it) }
     drawer.counted?.let { ReportRow("Counted", it) }

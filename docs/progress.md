@@ -155,6 +155,33 @@ Built in slice 4:
 - **Verified**: `:register:jvmTest`, `:kernel:testDebugUnitTest`, `:app:assembleDebug` and
   `:app:assembleDebugAndroidTest`.
 
+The review (2026-11-12), the kernel and the Android shell each by a reviewer who hadn't built
+them; ADR-0031's As built lists what it found and what remains. Fixed, each with a test:
+
+- **The blind close**: an open session's view, on the register and on a report, has its float
+  and no-sales alone; the bindings' sums are optional, set once it is counted.
+- **Reports**: tenders are of every payment taken on the day, of any order, by the payment's own
+  business date, cash rounding included; which cash a drawer took is projected per payment
+  (`drawer_payments`, the `drawers` projection's version 2), so a session opened the day before
+  counts; a Z waits for every open session of the device; an order in another currency is left
+  out before it is priced. Known answers: an order rung one day and paid the next, $1.00 toward
+  an order still open, the drawer of the day before holding the day's cash, $3.54 rounded to
+  $3.55.
+- **The drawer at the register**: a session the register can't work here, as one opened before
+  the location's currency changed, is left open and another opened, and a drawer's refusal
+  never refuses a sale; amounts that overflow are refused by the commands and reported by the
+  fold as overflows.
+- **The Android register**: a movement of nothing refused before the kernel sees it; each
+  purpose's own reason, a no-sale's chosen; the count read once its digits are in, as the price
+  sheet's now; reports cleared when the drawer page shows again or cash moves; the Z not offered
+  with the drawer open; comps and each drawer on the report; the banner kept until a drawer
+  opens. The fake till refuses and gates as the kernel does. Model tests: a short close and a
+  no-sale each approved, a count tapped closed before its digits are in, a drop of nothing.
+- **CI's emulator job had failed since step 2**: the ticket pane didn't scroll on a phone, and
+  three tests tapped buttons below the screen. The pane scrolls; the tests scroll to what they
+  tap. Five of `keel-ffi`'s planted bugs, gone stale in step 2, failed CI's staleness check from
+  then on too: each is aimed again, and caught.
+
 ## Completed
 
 ### Selling at the register: MVP step 2 (2026-11-11 to 2026-11-12)

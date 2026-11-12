@@ -675,6 +675,36 @@ impl<S: Signer, E: Entropy> Store<S, E> {
         })
     }
 
+    /// The payments whose business date is `date`, of every order, the earliest first by the HLC
+    /// of their first event (ADR-0031).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn payments_on(&self, date: BusinessDate) -> Result<Vec<PaymentSummary>, StoreError> {
+        self.read(|db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT {PAYMENT_COLUMNS} FROM payments WHERE business_date = ?1 \
+                 ORDER BY first_hlc, payment_id"
+            ))?;
+            let rows = statement.query_map([date.to_string()], projection::payment_summary)?;
+            rows.map(|row| row?).collect()
+        })
+    }
+
+    /// Whether a drawer session took the cash of payment `payment` (ADR-0031).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn in_drawer(&self, payment: Id<Payment>) -> Result<bool, StoreError> {
+        self.read(|db| {
+            Ok(db.query_row(
+                "SELECT EXISTS (SELECT 1 FROM drawer_payments WHERE payment_id = ?1)",
+                [&payment.to_bytes()[..]],
+                |row| row.get(0),
+            )?)
+        })
+    }
+
     /// The drawer session `id`, as the `drawers` projection keeps it; `None` if the store holds
     /// no event of it (ADR-0031).
     ///

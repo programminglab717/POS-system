@@ -162,13 +162,10 @@ class RegisterTest {
     }
 
     /**
-     * A printer in the test's process that takes [jobs] connections, one after the other, each
-     * answered as a ready Epson that printed what it was sent; and what each brought, waited for.
-     */
-    /**
      * A manager opens the drawer with a $100.00 float, sells an espresso in the exact cash, $3.54,
      * and closes the drawer blind, counting $103.54: exact (ADR-0031). The day's X report reads.
-     * The drawer is left closed, as the other tests begin with none open.
+     * The drawer is left closed, as the other tests begin with none open; while it is open, the
+     * drawer page shows nothing from which what it holds is a sum.
      */
     @Test
     fun a_drawer_takes_a_cash_sale_and_closes_exactly() {
@@ -184,17 +181,24 @@ class RegisterTest {
         compose.tap("offer:0")
         compose.waitFor("change")
         compose.tap("drawer")
-        compose.waitUntil(10_000) { compose.shown("drawer:taken").contains("$3.54") }
+        compose.waitFor("drawer:close")
+        assertTrue(compose.onAllNodes(hasTestTag("closed:taken")).fetchSemanticsNodes().isEmpty(), "blind while open")
         compose.tap("drawer:close")
         for (digit in "10354") compose.tap("cash:digit:$digit")
+        compose.waitUntil(10_000) { compose.shown("cash:typed").contains("$103.54") }
         compose.tap("cash:confirm")
         compose.waitUntil(10_000) { compose.shown("closed:variance").contains("$0.00") }
+        compose.waitUntil(10_000) { compose.shown("closed:taken").contains("$3.54") }
         compose.tap("report:x")
         compose.waitFor("report:total")
         compose.tap("back")
         compose.tap("sign-out")
     }
 
+    /**
+     * A printer in the test's process that takes [jobs] connections, one after the other, each
+     * answered as a ready Epson that printed what it was sent; and what each brought, waited for.
+     */
     private fun printer(jobs: Int): Pair<Int, () -> List<ByteArray>> {
         val server = ServerSocket(0)
         val received = mutableListOf<ByteArray>()

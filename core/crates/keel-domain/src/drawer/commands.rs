@@ -5,8 +5,8 @@
 use keel_events::envelope::{Device, Location};
 use keel_types::{Currency, Id, Money};
 
-use super::events::{CashMoved, CashTaken, DrawerClosed, DrawerEvent};
-use super::state::Drawer;
+use super::events::{CashMoved, CashTaken, DrawerClosed, DrawerEvent, Movement};
+use super::state::{Drawer, Sums, held};
 use crate::codec::PayloadError;
 use crate::order::Reason;
 use crate::schema::{SchemaError, Unrecordable, check_recordable};
@@ -136,10 +136,17 @@ impl Drawer {
                 if self.payments().contains(&taken.payment) {
                     return Err(DrawerError::AlreadyTaken);
                 }
+                self.fits(taken.amount, |sums| &mut sums.taken)?;
                 DrawerEvent::CashTaken(taken)
             }
             DrawerCommand::MoveCash(moved) => {
                 in_currency(moved.amount)?;
+                let to: fn(&mut Sums) -> &mut Money = match moved.kind {
+                    Movement::PaidIn => |sums| &mut sums.paid_in,
+                    Movement::PaidOut => |sums| &mut sums.paid_out,
+                    Movement::Drop => |sums| &mut sums.dropped,
+                };
+                self.fits(moved.amount, to)?;
                 DrawerEvent::CashMoved(moved)
             }
             DrawerCommand::NoSale(reason) => DrawerEvent::NoSale { reason },
@@ -149,8 +156,24 @@ impl Drawer {
                     .expected()
                     .map_err(|_| DrawerError::Overflow)?
                     .ok_or(DrawerError::NotOpened)?;
-                DrawerEvent::Closed(DrawerClosed { counted, expected })
+                let closed = DrawerClosed { counted, expected };
+                closed.variance().ok_or(DrawerError::Overflow)?;
+                DrawerEvent::Closed(closed)
             }
         })
+    }
+
+    /// Refuses adding `amount` to the sum `to` picks if that sum, or what the session should
+    /// hold, would overflow: the fold wouldn't apply it, or the session couldn't close. Found in
+    /// review.
+    fn fits(&self, amount: Money, to: fn(&mut Sums) -> &mut Money) -> Result<(), DrawerError> {
+        let (Some(info), Some(sums)) = (self.info(), self.sums()) else {
+            return Err(DrawerError::NotOpened);
+        };
+        let mut after = *sums;
+        let sum = to(&mut after);
+        *sum = sum.checked_add(amount).map_err(|_| DrawerError::Overflow)?;
+        held(info.float, &after).map_err(|_| DrawerError::Overflow)?;
+        Ok(())
     }
 }

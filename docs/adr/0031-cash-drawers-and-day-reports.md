@@ -65,16 +65,19 @@ What is built shapes it:
 5. **The store projects drawers**: a `drawers` table, one row per session (device, its state,
    business date, float, cash taken, moved in and out, no-sales, expected, counted), so the
    runtime finds its device's open session and reports find a day's sessions without reading
-   every event. It is a projection, rebuilt from the events: no new store schema.
+   every event; and a `drawer_payments` table, one row per payment a session took, so a report
+   finds the cash no drawer took. It is a projection, rebuilt from the events: no new store
+   schema.
 
 6. **Reports from local data**, offline, for a business day, of every order the device holds:
-   orders closed and their total; gross, discounts and net before tax, and tax; each tender;
-   orders voided; each drawer session of the day, with its expected, counted and variance; and
-   cash taken with no drawer open.
+   orders closed and their total, of those rung on the day; gross, discounts, comps and net
+   before tax, and tax; each tender, of every payment taken on the day, whatever its order's
+   state; orders voided; each drawer session opened on the day, with its expected, counted and
+   variance once closed; and cash no drawer took.
    - **The drawer report** prints at the close.
    - **An X report** is the day so far, at any time, changing nothing.
-   - **A Z report** is the day's end: printed once every drawer session of the day on the device
-     is closed, marked as the Z. A numbered, recorded close of the day, as fiscal rules want it,
+   - **A Z report** is the day's end: printed once every drawer session on the device is
+     closed, whatever day it opened, marked as the Z. A numbered, recorded close of the day, as fiscal rules want it,
      waits for the fiscal work.
 
 7. **The shells**: the bindings take each intent and report; the Android register asks to open a
@@ -106,6 +109,52 @@ What is built shapes it:
 - Cash taken with no drawer open is only reported, until a profile can require a drawer.
 - A device's report covers the orders it holds: one that hasn't heard from another register
   since a sale leaves that sale out until it does.
+
+## As built
+
+Built in four slices on 2026-11-12, each verified as it landed, then reviewed: the kernel and the
+Android shell each by a reviewer who hadn't built them. What the review found, and what was done:
+
+- **The blind close wasn't blind**: the open drawer showed its float and every sum, from which
+  what it should hold is arithmetic. An open session's view, on the register and on a report,
+  now has its float and no-sales alone; what moved through it shows once it is counted.
+- **A drawer left open past the day's end** held the next day's cash, yet that day's Z passed,
+  calling the cash drawerless: a Z waits for every open session of the device, and which cash a
+  drawer took is projected per payment (`drawer_payments`, the projection's version 2).
+- **Payments went by their order's day, of closed orders only**: an order rung one day and paid
+  the next, or cash toward an order still open, was misreported or left out. Tenders are of
+  every payment taken on the day; sales are still by the day an order was rung. The cash
+  tender left out cash rounding, which the drawer counts: it is what the customer paid.
+- **A drawer's refusal refused the sale**, as one opened before the location's currency changed
+  would every cash sale, and its own close: such a session is left open for a person to look
+  at, the register opens another, and a refusal of the cash never refuses the sale.
+- **An order in another currency failed the report**: it is left out before it is priced.
+- **Amounts that overflow** were recorded, reported by the fold as another currency, and left a
+  session unable to close: the commands refuse them, and the fold reports an overflow.
+- **On the register**: a drop of nothing reached the kernel's refusal, with the keypad gone; a
+  drop nobody touched was recorded as change; a no-sale had no reason to choose; the count was
+  read at the tap, before the digits tapped before it were in, so a fast close could close
+  short; a report read earlier stayed on the page; the Z was offered with the drawer open, and
+  refused in the fake till's words, not the kernel's; comps and each drawer were missing from
+  the report on screen; a float cancelled stopped the register asking for one. The fake till
+  now gates a no-sale and a close as the kernel does. Each is fixed, with a test.
+- **CI's emulator tests had failed since step 2**: on a phone, the ticket pane didn't scroll, and
+  a line's buttons, Split and Drop order were below the screen, where a tap hit nothing. The
+  pane scrolls, and the tests scroll to what they tap.
+
+Gaps that remain:
+
+- **An X report shows the day's cash tender** while a drawer is open: with one drawer and every
+  sale in it, what it should hold is a sum away. Reports aren't gated by role yet.
+- **The approval prompt hints at the count**: a close asks for a manager only when it is over or
+  short beyond the role, and the approvers listed depend on its size. A cashier can cancel and
+  count again until no prompt shows; nothing records the attempt.
+- **Safe drops aren't gated**: a shortage can be recorded as a drop, which a safe count would
+  find, and safes are out of scope.
+- **Sales go by the day an order was rung**: an order rung before the day turned and closed after
+  changes a day already reported.
+- **Another register's cash** shows as taken with no drawer until its drawer's events arrive.
+- **The store check** compares the `drawers` table with a rebuild, not `drawer_payments`.
 
 ## Alternatives considered
 

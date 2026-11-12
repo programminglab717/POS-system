@@ -644,15 +644,18 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 let captured = append(w, payment.cast(), &event, &meta)?;
                 paid.push(w.load(Payment::new(payment))?);
                 // The cash goes into the device's open drawer, in the same write: the payment and
-                // the drawer agree, or neither is written (ADR-0031). With none open, the sale goes
-                // on, and the reports say so.
+                // the drawer agree, or neither is written (ADR-0031). With none open, or one that
+                // refuses it, as one in another currency once the location's changed, the sale
+                // goes on, and the reports say so: a sale never waits for a drawer. Found in
+                // review: a refusal refused the sale.
                 if let (Some(open), PaymentEvent::Captured(captured)) = (drawer_session, &event)
                     && let Some(amount) = captured.received().filter(|amount| amount.is_positive())
                 {
                     let session = w.load(Drawer::new(open))?;
                     let taken = DrawerCommand::TakeCash(CashTaken { payment, amount });
-                    let event = session.decide(location, device, taken)?;
-                    append(w, open.cast(), &event, &meta)?;
+                    if let Ok(event) = session.decide(location, device, taken) {
+                        append(w, open.cast(), &event, &meta)?;
+                    }
                 }
                 // The drawer opens when cash changed hands.
                 let kick = Doc::new(vec![Block::DrawerKick])?;

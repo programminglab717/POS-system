@@ -359,10 +359,11 @@ data class Paid(val change: String, val ticket: Ticket)
 data class Drawer(
     val open: Boolean,
     val float: String,
-    val taken: String,
-    val paidIn: String,
-    val paidOut: String,
-    val dropped: String,
+    /** What moved through it: null while it is open, as the close is blind (ADR-0031). */
+    val taken: String? = null,
+    val paidIn: String? = null,
+    val paidOut: String? = null,
+    val dropped: String? = null,
     val noSales: Long,
     val expected: String? = null,
     val counted: String? = null,
@@ -379,6 +380,7 @@ data class DayReport(
     val orders: Long,
     val gross: String,
     val discounts: String,
+    val comps: String,
     val net: String,
     val tax: String,
     val total: String,

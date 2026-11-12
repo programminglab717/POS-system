@@ -34,12 +34,27 @@ enum class Screen {
  */
 data class CashEntry(
     val purpose: CashPurpose,
-    val reason: String = CASH_REASONS.first().code,
+    val reason: String = purpose.reason,
     val typed: Amount? = null,
 )
 
-/** What an amount typed on the drawer screen is for. */
-enum class CashPurpose { FLOAT, PAID_IN, PAID_OUT, DROP, COUNT }
+/**
+ * What an amount typed on the drawer screen is for, or a no-sale, which has a reason and no
+ * amount; with the reason each starts with. Found in review: a drop nobody touched was recorded
+ * as change.
+ */
+enum class CashPurpose(val reason: String) {
+    FLOAT("change"),
+    PAID_IN("change"),
+    PAID_OUT("supplier"),
+    DROP("safe_drop"),
+    COUNT("change"),
+    NO_SALE("change_for_customer"),
+    ;
+
+    /** Whether it moves cash, which must be more than nothing. */
+    val moves: Boolean get() = this == PAID_IN || this == PAID_OUT || this == DROP
+}
 
 /**
  * Paying [order] in cash, or one [check] of it when it is split: what it owes, the amounts
@@ -245,15 +260,19 @@ class RegisterModel(
     /** Shows the drawer screen, and reads the drawer. */
     fun showDrawer() = perform {
         val drawer = till.drawer()
-        mutable.update { it.copy(screen = Screen.DRAWER, drawer = drawer, askDrawer = false) }
+        // A report read before is gone: read again, it says what is so now. Found in review.
+        mutable.update { it.copy(screen = Screen.DRAWER, drawer = drawer, askDrawer = false, report = null) }
     }
 
     /** Not now: the register stops asking to open the drawer until the next sign-in. */
     fun dismissDrawer() = mutable.update { it.copy(askDrawer = false) }
 
-    /** Begins typing an amount for [purpose]. */
+    /**
+     * Begins typing an amount for [purpose], or choosing a no-sale's reason. The register goes on
+     * asking to open the drawer until one opens. Found in review: a float cancelled stopped it.
+     */
     fun beginCash(purpose: CashPurpose) = mutable.update {
-        it.copy(cash = CashEntry(purpose), askDrawer = false, error = null)
+        it.copy(cash = CashEntry(purpose), error = null)
     }
 
     /** The reason for the movement being typed. */
@@ -281,30 +300,46 @@ class RegisterModel(
 
     /**
      * Does what the amount was typed for, nothing typed being zero: opens the drawer with it as
-     * the float, moves it, or closes the drawer with it as the count. Closed at the tap, as the
-     * other sheets are, and tried again as it was once a manager approves.
+     * the float, moves it, or closes the drawer with it as the count; or opens it with no sale.
+     * Read once the digits tapped before it are in: read at the tap, a count could close short.
+     * Closed then, as the other sheets are, and tried again as it was once a manager approves.
+     * Found in review.
      */
-    fun confirmCash() {
-        val entry = current.cash ?: return
+    fun confirmCash() = perform {
+        val entry = current.cash ?: return@perform
         val minor = entry.typed?.minor ?: 0
+        if (entry.purpose.moves && minor <= 0) {
+            // The drawer refuses moving nothing: the keypad stays, to type an amount.
+            mutable.update { it.copy(error = "Type an amount.") }
+            return@perform
+        }
         mutable.update { it.copy(cash = null) }
-        perform {
-            when (entry.purpose) {
-                CashPurpose.FLOAT -> mutable.update { it.copy(drawer = till.openDrawer(minor), closedDrawer = null) }
-                CashPurpose.PAID_IN -> mutable.update { it.copy(drawer = till.moveCash(CashMovement.PAID_IN, minor, entry.reason)) }
-                CashPurpose.PAID_OUT -> mutable.update { it.copy(drawer = till.moveCash(CashMovement.PAID_OUT, minor, entry.reason)) }
-                CashPurpose.DROP -> mutable.update { it.copy(drawer = till.moveCash(CashMovement.DROP, minor, entry.reason)) }
-                CashPurpose.COUNT -> {
-                    val closed = till.closeDrawer(minor)
-                    mutable.update { it.copy(drawer = null, closedDrawer = closed) }
-                }
+        perform { cash(entry, minor) }
+    }
+
+    private fun cash(entry: CashEntry, minor: Long) {
+        val drawer = when (entry.purpose) {
+            CashPurpose.FLOAT -> {
+                val opened = till.openDrawer(minor)
+                mutable.update { it.copy(closedDrawer = null, askDrawer = false) }
+                opened
+            }
+            CashPurpose.PAID_IN -> till.moveCash(CashMovement.PAID_IN, minor, entry.reason)
+            CashPurpose.PAID_OUT -> till.moveCash(CashMovement.PAID_OUT, minor, entry.reason)
+            CashPurpose.DROP -> till.moveCash(CashMovement.DROP, minor, entry.reason)
+            CashPurpose.NO_SALE -> till.noSale(entry.reason)
+            CashPurpose.COUNT -> {
+                val closed = till.closeDrawer(minor)
+                mutable.update { it.copy(drawer = null, closedDrawer = closed, report = null) }
+                return
             }
         }
+        mutable.update { it.copy(drawer = drawer, report = null) }
     }
 
     /** Opens the drawer with no sale, for [reason]. */
     fun noSale(reason: String) = perform {
-        mutable.update { it.copy(drawer = till.noSale(reason)) }
+        mutable.update { it.copy(drawer = till.noSale(reason), report = null) }
     }
 
     /** Reads today's X or Z report. */
@@ -492,11 +527,11 @@ class RegisterModel(
      * Prices the sheet's line at what was typed, nothing typed being free, and closes the sheet:
      * tried again as it was once a manager approves.
      */
-    fun setPrice() {
-        val sheet = current.price ?: return
-        val order = current.ticket?.order ?: return
+    fun setPrice() = perform {
+        // Read once the digits tapped before it are in, as the drawer's keypad is. Found in review.
+        val sheet = current.price ?: return@perform
+        val order = current.ticket?.order ?: return@perform
         val minor = sheet.typed?.minor ?: 0
-        // Closed at the tap, as the discount sheet is.
         mutable.update { it.copy(price = null) }
         perform { show(till.repriceLine(order, sheet.line.line, minor, sheet.reason)) }
     }

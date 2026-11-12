@@ -15,14 +15,27 @@ use crate::runtime::{Runtime, append};
 use crate::views::{Amount, DrawerView};
 
 impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
-    /// The device's open drawer session, if it has one.
+    /// The device's open drawer session, if it has one it can work here: one opened at another
+    /// location, or in another currency, as before the location's profile changed, would refuse
+    /// every cash sale and its own close. It is left open, for a person to look at, and another
+    /// can be opened. Found in review: the register was stuck.
     pub(crate) fn open_drawer_id(&self) -> Result<Option<Id<Drawer>>, RuntimeError> {
+        let (location, currency) = (self.location(), self.profile.data().currency);
         let open = self.store.drawers_of(self.device, DrawerState::Open)?;
-        Ok(open.last().map(|summary| summary.id))
+        Ok(open
+            .iter()
+            .rev()
+            .find(|summary| {
+                summary.info.as_ref().is_some_and(|info| {
+                    info.location == location && info.float.currency() == currency
+                })
+            })
+            .map(|summary| summary.id))
     }
 
-    /// The device's open drawer: its float, and what has moved through it, but not what it should
-    /// hold, which the close is blind to; `None` with no drawer open.
+    /// The device's open drawer: its float and how many no-sales, but neither what has moved
+    /// through it nor what it should hold, which the close is blind to; `None` with no drawer
+    /// open.
     ///
     /// # Errors
     /// [`RuntimeError`] if the store can't be read.
@@ -144,8 +157,8 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             self.gate(request, Some(open.cast()))?
         };
         // The report as the session closes, to print: the session, and its close.
-        let mut report = DrawerView::of(&session, self.locale).ok_or(RuntimeError::NoDrawer)?;
-        report.close(closed, variance, self.locale);
+        let report =
+            DrawerView::closing(&session, closed, self.locale).ok_or(RuntimeError::NoDrawer)?;
         let doc = drawer_report(&report, self.profile.data().name.as_str())?;
         let job: Id<Job> = self.ids.generate(self.clock.now())?;
         self.drawer_write(open, &event, granted, Some(&(job, JobKind::Receipt, doc)))
@@ -180,12 +193,14 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
 /// The drawer's report, as it prints at the close: its float, what moved through it, what it
 /// should have held, what was counted, and the variance.
 fn drawer_report(report: &DrawerView, location: &str) -> Result<Doc, RuntimeError> {
-    let row = |left: &str, amount: &Amount| Block::row(left, amount.text.clone());
+    let row = |left: &str, amount: &Option<Amount>| {
+        Block::row(left, amount.as_ref().map(|amount| amount.text.clone()).unwrap_or_default())
+    };
     let mut blocks = vec![
         Block::text(location, Align::Center, Style::LARGE),
         Block::text("DRAWER CLOSE", Align::Center, Style::default()),
         Block::Rule,
-        row("Float", &report.float),
+        Block::row("Float", report.float.text.clone()),
         row("Cash sales", &report.taken),
         row("Paid in", &report.paid_in),
         row("Paid out", &report.paid_out),
@@ -196,8 +211,8 @@ fn drawer_report(report: &DrawerView, location: &str) -> Result<Doc, RuntimeErro
     if let (Some(expected), Some(counted), Some(variance)) =
         (&report.expected, &report.counted, &report.variance)
     {
-        blocks.push(row("Expected", expected));
-        blocks.push(row("Counted", counted));
+        blocks.push(Block::row("Expected", expected.text.clone()));
+        blocks.push(Block::row("Counted", counted.text.clone()));
         let words = if variance.money.is_negative() {
             "SHORT"
         } else if variance.money.is_zero() {

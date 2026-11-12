@@ -201,8 +201,11 @@ fn payments_are_projected_and_found_by_their_order() {
     assert_eq!((summary.captured, summary.tip), (Some(usd(750)), Some(usd(100))));
     assert_eq!(summary.business_date, Some("2026-09-28".parse().unwrap()));
     assert_eq!((summary.conflicts, summary.unreadable, summary.events), (0, 0, 2));
-    assert_eq!(store.payments_of(order).unwrap(), [summary]);
+    assert_eq!(store.payments_of(order).unwrap(), core::slice::from_ref(&summary));
     assert!(store.payments_of(id(0x7001)).unwrap().is_empty());
+    // Found by its business date, whatever its order's (ADR-0031).
+    assert_eq!(store.payments_on("2026-09-28".parse().unwrap()).unwrap(), [summary]);
+    assert!(store.payments_on("2026-09-29".parse().unwrap()).unwrap().is_empty());
     // A capture before the initiation arrives leaves the payment uninitiated, with a conflict.
     let early: Id<Payment> = id(0x8001);
     append(&mut store, vec![payment_draft(early, &captured)], at(1));
@@ -437,6 +440,9 @@ fn drawers_are_projected_and_found_by_device_and_date() {
         reason: Reason { code: ReasonCode::new("supplier").unwrap(), note: None },
     });
     let events = append(&mut store, vec![draft(&opened), draft(&taken), draft(&paid_out)], at(0));
+    // The payment's cash is found in a drawer; another's isn't.
+    assert!(store.in_drawer(id(0x8000)).unwrap());
+    assert!(!store.in_drawer(id(0x8001)).unwrap());
     let summary = store.drawer(drawer).unwrap().unwrap();
     assert_eq!(summary.state, DrawerState::Open);
     let info = summary.info.as_ref().unwrap();
@@ -472,6 +478,7 @@ fn drawers_are_projected_and_found_by_device_and_date() {
     // Rebuilt from the events, it is the same.
     store.rebuild_projections().unwrap();
     assert_eq!(store.drawer(drawer).unwrap().unwrap().state, DrawerState::Closed);
+    assert!(store.in_drawer(id(0x8000)).unwrap());
     // Cash before the opening: unopened, with a conflict.
     let early: Id<Drawer> = id(0x9001);
     append(&mut store, vec![domain_draft(early.cast(), &taken)], at(2));

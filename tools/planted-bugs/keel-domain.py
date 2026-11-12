@@ -3090,8 +3090,8 @@ BUGS = [
     (
         "drawer: what is expected leaves out what was paid out",
         "src/drawer/state.rs",
-        "        Ok(Some(held.checked_sub(sums.paid_out)?.checked_sub(sums.dropped)?))",
-        "        Ok(Some(held.checked_sub(sums.dropped)?))",
+        "    held.checked_sub(sums.paid_out)?.checked_sub(sums.dropped)",
+        "    held.checked_sub(sums.dropped)",
     ),
     (
         "drawer: another device's event isn't reported",
@@ -3132,5 +3132,23 @@ BUGS = [
         "src/drawer/commands.rs",
         "                if self.payments().contains(&taken.payment) {",
         "                if false {",
+    ),
+    (
+        "drawer: cash that overflows what the drawer holds is recorded",
+        "src/drawer/commands.rs",
+        "        held(info.float, &after).map_err(|_| DrawerError::Overflow)?;\n",
+        "",
+    ),
+    (
+        "drawer: a close whose variance overflows is recorded",
+        "src/drawer/commands.rs",
+        "                closed.variance().ok_or(DrawerError::Overflow)?;\n",
+        "",
+    ),
+    (
+        "drawer: an overflow is reported as another currency",
+        "src/drawer/state.rs",
+        "            Some(Err(MoneyError::Overflow)) => self.conflict(meta, ConflictKind::Overflow),",
+        "            Some(Err(MoneyError::Overflow)) => self.conflict(meta, ConflictKind::CurrencyMismatch),",
     ),
 ]

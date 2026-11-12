@@ -1025,7 +1025,10 @@ One state machine covers goods that are **in someone else's custody**:
 - Built (ADR-0031): `drawer.opened` (the float), `drawer.cash_taken` (a cash payment's cash, in
   the same write as the payment), `drawer.cash_moved` (paid in, paid out or dropped, with a
   reason), `drawer.no_sale` and `drawer.closed` (the blind count and what was expected), each
-  v1; the store's `drawers` projection finds a device's open session and a day's sessions.
+  v1; the store's `drawers` projection finds a device's open session, a day's sessions, and
+  which payments' cash a session took. An open session shows its float alone: what moved
+  through it shows once it is counted. X and Z reports come from local data, a day's tenders by
+  the day each payment was taken.
 - Safe and bank-deposit tracking (bag numbers) reconcile against expected cash by business date.
 - Cash-recycler and dispenser integration reports counted denominations automatically.
 - Foreign-currency cash tenders are converted at a configured rate; change is given in the local

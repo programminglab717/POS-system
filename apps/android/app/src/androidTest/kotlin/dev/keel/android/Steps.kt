@@ -3,10 +3,12 @@ package dev.keel.android
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 
 /** The demo café's identifier ending in [n]. */
 fun demoId(n: Int) = "0192f0c1-0000-7000-8000-%012x".format(n)
@@ -20,10 +22,23 @@ fun ComposeTestRule.waitFor(tag: String, timeoutMillis: Long = 10_000) {
     }
 }
 
-/** Waits for the node tagged [tag], then taps it. */
+/**
+ * Waits for the node tagged [tag], scrolls it into view if it is in something that scrolls, then
+ * taps it. Found in CI's emulator: a tap on a button below a phone's screen hit nothing.
+ */
 fun ComposeTestRule.tap(tag: String, wait: Long = 10_000) {
     waitFor(tag, wait)
-    onNodeWithTag(tag).performClick()
+    scrolledTo(onNodeWithTag(tag)).performClick()
+}
+
+/** [node], scrolled into view if something it is in scrolls; as it is otherwise. */
+private fun scrolledTo(node: SemanticsNodeInteraction): SemanticsNodeInteraction {
+    try {
+        node.performScrollTo()
+    } catch (notScrolling: AssertionError) {
+        // Nothing it is in scrolls: it is where it is.
+    }
+    return node
 }
 
 /** The text of the nodes tagged [tag], joined. */
@@ -45,5 +60,5 @@ fun tagStarting(prefix: String) = SemanticsMatcher("test tag starting with $pref
 /** Waits for the first node whose tag starts with [prefix], then taps it. */
 fun ComposeTestRule.tapStarting(prefix: String, timeoutMillis: Long = 10_000) {
     waitUntil(timeoutMillis) { onAllNodes(tagStarting(prefix)).fetchSemanticsNodes().isNotEmpty() }
-    onAllNodes(tagStarting(prefix))[0].performClick()
+    scrolledTo(onAllNodes(tagStarting(prefix))[0]).performClick()
 }

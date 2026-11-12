@@ -13,6 +13,7 @@ use keel_domain::staff::Action;
 
 use crate::tests::{Scratch, TestRuntime, id, register, usd};
 use crate::{JobKind, RuntimeError};
+use keel_types::Money;
 
 fn reason(code: &str) -> Reason {
     Reason { code: ReasonCode::new(code).unwrap(), note: None }
@@ -54,8 +55,10 @@ fn a_drawer_counts_its_cash_from_its_float_to_its_blind_close() {
     espresso(&mut runtime, 1_000);
     espresso(&mut runtime, 354);
     let drawer = runtime.drawer().unwrap().unwrap();
-    assert_eq!(drawer.taken.money, usd(708));
-    assert_eq!(drawer.expected, None, "the close is blind: nothing says what it should hold");
+    // Blind: neither what it should hold, nor what moved through it, from which that is a sum.
+    // Found in review.
+    assert_eq!((drawer.taken, drawer.expected), (None, None));
+    assert_eq!(drawer.float.money, usd(15_000));
     // $20.00 paid in and $100.00 dropped need no one.
     runtime.pay_in(usd(2_000), reason("change_from_safe")).unwrap();
     runtime.drop_cash(usd(10_000), reason("safe_drop")).unwrap();
@@ -76,6 +79,8 @@ fn a_drawer_counts_its_cash_from_its_float_to_its_blind_close() {
     assert_eq!(closed.expected.as_ref().unwrap().money, usd(6_708));
     assert_eq!(closed.counted.as_ref().unwrap().money, usd(6_700));
     assert_eq!(closed.variance.as_ref().unwrap().money, usd(-8));
+    assert_eq!(closed.taken.as_ref().unwrap().money, usd(708));
+    assert_eq!(closed.dropped.as_ref().unwrap().money, usd(10_000));
     assert_eq!(runtime.drawer().unwrap(), None);
     // Its report prints.
     let reports = docs(&runtime, JobKind::Receipt);
@@ -178,7 +183,7 @@ fn a_days_reports_add_up_its_sales_tenders_and_drawers() {
     assert_eq!((x.tenders[0].payments, x.tenders[0].amount.money), (4, usd(1_344)));
     assert_eq!(x.voided, 1);
     assert_eq!(x.drawers.len(), 1);
-    assert_eq!(x.drawers[0].taken.money, usd(990));
+    assert_eq!(x.drawers[0].taken, None, "an open drawer is blind, on a report too");
     assert!(x.drawers[0].open);
     assert_eq!((x.payments_without_drawer, x.cash_without_drawer.money), (1, usd(354)));
     // The Z waits for the drawer to close.
@@ -187,6 +192,7 @@ fn a_days_reports_add_up_its_sales_tenders_and_drawers() {
     let z = runtime.day_report(today, ReportKind::Z).unwrap();
     assert_eq!(z.total.money, usd(1_344));
     assert_eq!(z.drawers[0].variance.as_ref().unwrap().money, usd(0));
+    assert_eq!(z.drawers[0].taken.as_ref().unwrap().money, usd(990));
     // Printed, it says so, and every figure.
     runtime.print_report(today, ReportKind::Z).unwrap();
     let printed = plain_text(docs(&runtime, JobKind::Receipt).last().unwrap(), Columns::PAPER_80MM);
@@ -212,7 +218,90 @@ fn a_drawer_takes_the_cash_as_rounded() {
     // An espresso, $3.54, is $3.55 in cash: the drawer holds the $3.55 the customer handed over
     // less their change.
     espresso(&mut runtime, 500);
-    assert_eq!(runtime.drawer().unwrap().unwrap().taken.money, usd(355));
     let closed = runtime.close_drawer(usd(10_355)).unwrap();
+    assert_eq!(closed.taken.unwrap().money, usd(355));
     assert_eq!(closed.variance.unwrap().money, usd(0));
+    // The cash tender is what the customer paid, rounded, as the drawer has it. Found in review.
+    let today = runtime.today().unwrap();
+    let x = runtime.day_report(today, crate::ReportKind::X).unwrap();
+    assert_eq!(x.tenders[0].amount.money, usd(355));
+}
+
+/// A day's report counts each payment on the day it was taken, of every order, closed or not;
+/// and a drawer left open past the day's end holds the next day's cash, so the next day's Z
+/// waits for it. Found in review: payments went by their order's day, of closed orders only, and
+/// the next day's Z passed with the drawer open, calling its cash drawerless.
+#[test]
+fn a_report_counts_each_payment_on_the_day_it_was_taken() {
+    use crate::ReportKind;
+    let scratch = Scratch::new();
+    let mut runtime = register(&scratch, demo().unwrap());
+    runtime.sign_in(id(0x501), "1234").unwrap();
+    let first = runtime.today().unwrap();
+    runtime.open_drawer(usd(10_000)).unwrap();
+    // Rung on the first day, paid on the next.
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    runtime.clock().set("2026-10-03T13:00:00Z".parse().unwrap());
+    let second = runtime.today().unwrap();
+    assert_ne!(first, second);
+    runtime.pay_cash(order, usd(1_000)).unwrap();
+    // $1.00 toward an order that stays open.
+    let open = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(open, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    runtime.pay_check_cash(open, open.cast(), Some(usd(100)), usd(100)).unwrap();
+    let x = runtime.day_report(second, ReportKind::X).unwrap();
+    assert_eq!(x.orders, 0, "the order closed was rung the day before");
+    assert_eq!((x.tenders[0].payments, x.tenders[0].amount.money), (2, usd(454)));
+    assert_eq!((x.payments_without_drawer, x.cash_without_drawer.money), (0, usd(0)));
+    assert!(x.drawers.is_empty(), "the drawer opened the day before");
+    let before = runtime.day_report(first, ReportKind::X).unwrap();
+    assert_eq!((before.orders, before.tenders.len(), before.drawers.len()), (1, 0, 1));
+    // The drawer opened the day before holds the day's cash: no Z until it closes.
+    assert!(matches!(runtime.day_report(second, ReportKind::Z), Err(RuntimeError::DrawerOpen)));
+    let closed = runtime.close_drawer(usd(10_454)).unwrap();
+    assert_eq!(closed.variance.unwrap().money, usd(0));
+    runtime.day_report(second, ReportKind::Z).unwrap();
+}
+
+/// A drawer opened before the location's profile changed its currency would refuse every cash
+/// sale: the sale goes on without it, the register opens another, and the first is left open,
+/// for a person to look at. Found in review: the register was stuck.
+#[test]
+fn a_drawer_the_register_cant_work_here_doesnt_stop_a_sale() {
+    use crate::ReportKind;
+    use keel_types::Currency;
+    let scratch = Scratch::new();
+    {
+        let mut runtime = register(&scratch, demo().unwrap());
+        runtime.sign_in(id(0x501), "1234").unwrap();
+        runtime.open_drawer(usd(10_000)).unwrap();
+    }
+    let cad = |minor| Money::from_minor(minor, Currency::CAD);
+    let moved = crate::tests::demo_with(|data| {
+        data.currency = Currency::CAD;
+        let cad = |money: Money| Money::from_minor(money.minor(), Currency::CAD);
+        for item in &mut data.catalog.items {
+            for variant in &mut item.variants {
+                variant.price = cad(variant.price);
+            }
+        }
+        for group in &mut data.catalog.groups {
+            for modifier in &mut group.modifiers {
+                modifier.price = cad(modifier.price);
+            }
+        }
+    });
+    let mut runtime = crate::tests::register_at(&scratch, moved, "2026-10-02T14:00:00Z");
+    runtime.sign_in(id(0x501), "1234").unwrap();
+    assert_eq!(runtime.drawer().unwrap(), None);
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    runtime.pay_cash(order, cad(1_000)).unwrap();
+    let today = runtime.today().unwrap();
+    let x = runtime.day_report(today, ReportKind::X).unwrap();
+    assert_eq!((x.payments_without_drawer, x.cash_without_drawer.money), (1, cad(354)));
+    runtime.open_drawer(cad(5_000)).unwrap();
+    let closed = runtime.close_drawer(cad(5_000)).unwrap();
+    assert_eq!(closed.variance.unwrap().money, cad(0));
 }

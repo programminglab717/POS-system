@@ -916,12 +916,10 @@ BUGS = [
         "            let size = variance;",
     ),
     (
-        "drawer: the open drawer shows what it should hold",
+        "drawer: the open drawer shows what it took",
         "src/views.rs",
-        """        if let Some(closed) = session.closed()
-            && let Some(variance) = closed.variance()""",
-        """        if let Some(closed) = session.closed().or(Some(&keel_domain::drawer::DrawerClosed { counted: sums.taken, expected: sums.taken }))
-            && let Some(variance) = closed.variance()""",
+        "            float: amount(info.float),\n            taken: None,",
+        "            float: amount(info.float),\n            taken: Some(amount(sums.taken)),",
     ),
     (
         "report: a Z prints with a drawer open",
@@ -932,16 +930,16 @@ BUGS = [
     (
         "report: discounts on the whole order aren't counted",
         "src/report.rs",
-        """                for discount in &ticket.discounts {
-                    discounts = discounts.checked_add(discount.amount.money)?;
-                }""",
+        """            for discount in &ticket.discounts {
+                discounts = discounts.checked_add(discount.amount.money)?;
+            }""",
         "",
     ),
     (
         "report: cash a drawer counted is reported as with no drawer",
         "src/report.rs",
-        "            if !counted.contains(&payment) {",
-        "            if true {",
+        "            if info.tender == Tender::Cash && !self.store.in_drawer(payment.id)? {",
+        "            if info.tender == Tender::Cash {",
     ),
     (
         "report: a dropped order with lines isn't voided",
@@ -952,10 +950,31 @@ BUGS = [
     (
         "report: another day's orders are counted",
         "src/report.rs",
-        """                if order.business_date != Some(date) {
-                    continue;
-                }
-                let ticket = self.ticket(order.id)?;""",
-        """                let ticket = self.ticket(order.id)?;""",
+        "            if order.business_date != Some(date)\n                ||",
+        "            if false\n                ||",
+    ),
+    (
+        "report: a Z passes with the day before's drawer open",
+        "src/report.rs",
+        "        if kind == ReportKind::Z && self.open_drawer_id()?.is_some() {",
+        "        if kind == ReportKind::Z && self.store.drawers_on(date)?.iter().any(|drawer| drawer.state == keel_store::DrawerState::Open) {",
+    ),
+    (
+        "report: payments toward an order still open aren't counted",
+        "src/report.rs",
+        "            let loaded = self.store.load(Payment::new(payment.id))?;",
+        "            if self.store.order(info.order)?.is_none_or(|order| order.state != OrderState::Closed) { continue; }\n            let loaded = self.store.load(Payment::new(payment.id))?;",
+    ),
+    (
+        "report: cash rounding is left out of the tenders",
+        "src/report.rs",
+        "            let Some(amount) = loaded.captured().and_then(|captured| captured.received()) else {",
+        "            let Some(amount) = loaded.captured().map(|captured| captured.amount) else {",
+    ),
+    (
+        "drawer: the register works a drawer of another currency",
+        "src/drawer.rs",
+        "                    info.location == location && info.float.currency() == currency",
+        "                    info.location == location",
     ),
 ]

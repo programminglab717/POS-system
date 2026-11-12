@@ -735,7 +735,7 @@ class RegisterModelTest {
         model.confirmCash()
         testScheduler.advanceUntilIdle()
         assertEquals("$100.00", model.state.value.drawer?.float)
-        assertEquals(false, model.state.value.askDrawer)
+        assertEquals(false, model.state.value.askDrawer, "asked until a drawer opens")
         // A sale in cash goes into it.
         model.tap(model.button("Tea"))
         testScheduler.advanceUntilIdle()
@@ -746,24 +746,31 @@ class RegisterModelTest {
         model.showDrawer()
         testScheduler.advanceUntilIdle()
         assertEquals(Screen.DRAWER, model.state.value.screen)
-        assertEquals("$3.00", model.state.value.drawer?.taken)
+        // Blind: neither what moved through it nor what it should hold. Found in review.
+        assertNull(model.state.value.drawer?.taken, "the close is blind")
         assertNull(model.state.value.drawer?.expected, "the close is blind")
-        // $5.00 dropped, then a blind count of $97.50: $0.50 short.
+        // A drop of nothing is refused before the kernel sees it; the keypad stays.
         model.beginCash(CashPurpose.DROP)
-        model.cashReason("safe_drop")
+        model.confirmCash()
+        testScheduler.advanceUntilIdle()
+        assertEquals("Type an amount.", model.state.value.error)
+        assertEquals(CashPurpose.DROP, model.state.value.cash?.purpose)
+        // $5.00 dropped, as a safe drop with no reason chosen. Found in review: it was change.
         for (digit in listOf(5, 0, 0)) model.typeCashDigit(digit)
         testScheduler.advanceUntilIdle()
         model.confirmCash()
         testScheduler.advanceUntilIdle()
-        assertEquals("$5.00", model.state.value.drawer?.dropped)
+        assertEquals("safe_drop", till.lastCashReason)
+        // A blind count of $97.50, its close tapped before the digits are in: the whole count
+        // closes the drawer, $0.50 short. Found in review: read at the tap, it could close short.
         model.beginCash(CashPurpose.COUNT)
         for (digit in listOf(9, 7, 5, 0)) model.typeCashDigit(digit)
-        testScheduler.advanceUntilIdle()
         model.confirmCash()
         testScheduler.advanceUntilIdle()
         assertNull(model.state.value.drawer)
         val closed = model.state.value.closedDrawer!!
         assertEquals(Triple("$98.00", "$97.50", "-$0.50"), Triple(closed.expected, closed.counted, closed.variance))
+        assertEquals(Pair("$3.00", "$5.00"), Pair(closed.taken, closed.dropped))
         // The Z report, once closed.
         model.showReport(z = true)
         testScheduler.advanceUntilIdle()
@@ -797,10 +804,68 @@ class RegisterModelTest {
         model.chooseApprover(model.approvers().single())
         model.approve("1234")
         testScheduler.advanceUntilIdle()
-        assertEquals("$2.00", model.state.value.drawer?.paidOut)
-        // The Z waits for the drawer to close.
+        assertNull(model.state.value.approval)
+        assertEquals("supplier", till.lastCashReason)
+        // The Z waits for the drawer to close, in the kernel's words.
         model.showReport(z = true)
         testScheduler.advanceUntilIdle()
-        assertEquals("Close the drawer first.", model.state.value.error)
+        assertEquals("a drawer is open: close it first", model.state.value.error)
+        model.beginCash(CashPurpose.COUNT)
+        model.confirmCash()
+        testScheduler.advanceUntilIdle()
+        assertEquals("$2.00", model.state.value.closedDrawer?.paidOut)
+    }
+
+    /**
+     * A close over or short beyond the cashier, and a no-sale, each wait for a manager, and go
+     * ahead as asked once one approves (ADR-0031). A report read before is gone once the drawer
+     * page shows again. Found in review: neither gate was tried, and a report stayed stale.
+     */
+    @Test
+    fun a_short_close_and_a_no_sale_wait_for_a_manager() = runTest {
+        val till = FakeTill().apply {
+            pins = mapOf("alex" to "1234")
+            varianceLimit = 500
+            noSaleNeedsApproval = true
+        }
+        val model = signedIn(object : Till by till {
+            override fun team() = listOf(Member("sam", "Sam"), Member("alex", "Alex", "Manager", true))
+        })
+        // A float cancelled: the register still asks for one.
+        model.beginCash(CashPurpose.FLOAT)
+        model.cancelCash()
+        assertEquals(true, model.state.value.askDrawer)
+        model.beginCash(CashPurpose.FLOAT)
+        for (digit in listOf(1, 0, 0, 0, 0)) model.typeCashDigit(digit)
+        model.confirmCash()
+        testScheduler.advanceUntilIdle()
+        model.showReport(z = false)
+        testScheduler.advanceUntilIdle()
+        assertNotNull(model.state.value.report)
+        model.showDrawer()
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.report, "read again, it says what is so now")
+        // A no-sale, for change for a customer, once a manager approves.
+        model.beginCash(CashPurpose.NO_SALE)
+        model.confirmCash()
+        testScheduler.advanceUntilIdle()
+        assertEquals("drawer.no_sale", model.state.value.approval?.action)
+        model.chooseApprover(model.approvers().single())
+        model.approve("1234")
+        testScheduler.advanceUntilIdle()
+        assertEquals(1L, model.state.value.drawer?.noSales)
+        assertEquals("change_for_customer", till.lastCashReason)
+        // $5.01 short of $100.00, beyond the cashier's $5.00: the same count, once approved.
+        model.beginCash(CashPurpose.COUNT)
+        for (digit in listOf(9, 4, 9, 9)) model.typeCashDigit(digit)
+        model.confirmCash()
+        testScheduler.advanceUntilIdle()
+        assertEquals("drawer.variance", model.state.value.approval?.action)
+        assertNotNull(model.state.value.drawer, "still open until a manager approves")
+        model.chooseApprover(model.approvers().single())
+        model.approve("1234")
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.drawer)
+        assertEquals("-$5.01", model.state.value.closedDrawer?.variance)
     }
 }

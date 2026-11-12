@@ -90,6 +90,9 @@ pub enum ConflictKind {
     AfterClose,
     /// The session was closed again; the second close wasn't applied.
     DuplicateClose,
+    /// An amount would overflow its sum; it wasn't applied. Found in review: it was reported as
+    /// in another currency.
+    Overflow,
 }
 
 impl Drawer {
@@ -149,8 +152,7 @@ impl Drawer {
     /// [`MoneyError`] if the amounts overflow.
     pub fn expected(&self) -> Result<Option<Money>, MoneyError> {
         let (Some(info), Some(sums)) = (&self.info, &self.sums) else { return Ok(None) };
-        let held = info.float.checked_add(sums.taken)?.checked_add(sums.paid_in)?;
-        Ok(Some(held.checked_sub(sums.paid_out)?.checked_sub(sums.dropped)?))
+        Ok(Some(held(info.float, sums)?))
     }
 
     /// Everything in its history that a person should look at.
@@ -173,10 +175,11 @@ impl Drawer {
             let sum = to(sums);
             sum.checked_add(amount).map(|added| *sum = added)
         });
-        if matches!(added, Some(Ok(()))) {
-            return true;
+        match added {
+            Some(Ok(())) => return true,
+            Some(Err(MoneyError::Overflow)) => self.conflict(meta, ConflictKind::Overflow),
+            _ => self.conflict(meta, ConflictKind::CurrencyMismatch),
         }
-        self.conflict(meta, ConflictKind::CurrencyMismatch);
         false
     }
 
@@ -222,6 +225,12 @@ impl Drawer {
         }
         self.closed = Some(*closed);
     }
+}
+
+/// What a session opened with `float` should hold once its cash came to `sums`.
+pub(super) fn held(float: Money, sums: &Sums) -> Result<Money, MoneyError> {
+    let held = float.checked_add(sums.taken)?.checked_add(sums.paid_in)?;
+    held.checked_sub(sums.paid_out)?.checked_sub(sums.dropped)
 }
 
 impl Aggregate for Drawer {

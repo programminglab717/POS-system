@@ -319,3 +319,43 @@ fn payloads_keep_their_rules() {
     let map = Value::Map(keel_events::cbor::Map::from_entries(entries).unwrap());
     assert!(DrawerEvent::from_value(&schema, &map).is_err());
 }
+
+/// Amounts that overflow: the fold reports them as such, and the commands refuse them before
+/// they're recorded. Found in review: the fold called them another currency, and a session
+/// holding one couldn't close.
+#[test]
+fn amounts_that_overflow_are_refused_and_reported() {
+    let mut script = Script::opened(usd(0));
+    script.apply(&taken(0xB1, usd(i64::MAX)));
+    let over = script.apply(&taken(0xB2, usd(1)));
+    assert_eq!(script.kinds(), [(over, ConflictKind::Overflow)]);
+    assert_eq!(script.drawer.sums().unwrap().taken, usd(i64::MAX));
+
+    let take =
+        |payment, amount| DrawerCommand::TakeCash(CashTaken { payment: id(payment), amount });
+    let paid_in = |amount| {
+        DrawerCommand::MoveCash(CashMoved { kind: Movement::PaidIn, amount, reason: reason("x") })
+    };
+    let mut device = Device1 { script: Script::new() };
+    device.run(DrawerCommand::Open { float: usd(100), currency: Currency::USD }).unwrap();
+    // $1.00 of float and the most there is would be more than the drawer could hold.
+    assert_eq!(device.run(take(0xB1, usd(i64::MAX))), Err(DrawerError::Overflow));
+    device.run(take(0xB1, usd(i64::MAX - 100))).unwrap();
+    assert_eq!(device.run(paid_in(usd(1))), Err(DrawerError::Overflow));
+    device.run(DrawerCommand::Close { counted: usd(0) }).unwrap();
+
+    // Dropped so far that a full count is more over than there is.
+    let mut device = Device1 { script: Script::new() };
+    device.run(DrawerCommand::Open { float: usd(0), currency: Currency::USD }).unwrap();
+    let drop = DrawerCommand::MoveCash(CashMoved {
+        kind: Movement::Drop,
+        amount: usd(i64::MAX),
+        reason: reason("x"),
+    });
+    device.run(drop).unwrap();
+    assert_eq!(
+        device.run(DrawerCommand::Close { counted: usd(i64::MAX) }),
+        Err(DrawerError::Overflow)
+    );
+    device.run(DrawerCommand::Close { counted: usd(0) }).unwrap();
+}

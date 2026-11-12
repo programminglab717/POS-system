@@ -1,5 +1,7 @@
 //! The `drawers` projection (ADR-0031): one row per drawer session, so a device finds its open
-//! session, and a day's report finds that day's sessions, without reading every event.
+//! session, and a day's report finds that day's sessions, without reading every event; and one
+//! row per payment whose cash a session took, so a report finds which cash no drawer counted,
+//! whatever day the session opened. Version 2 adds those; found in review.
 
 use keel_domain::aggregate::{Aggregate, fold};
 use keel_domain::drawer::{Drawer, DrawerClosed, DrawerInfo, Sums};
@@ -16,7 +18,7 @@ use crate::schema::{hlc, id};
 /// The `drawers` projection.
 pub(crate) const DRAWERS: Projection = Projection {
     name: "drawers",
-    version: 1,
+    version: 2,
     kind: "drawer",
     key: "drawer_id",
     order: "drawer_id",
@@ -45,8 +47,14 @@ pub(crate) const DRAWERS: Projection = Projection {
         ) STRICT;
         CREATE INDEX drawers_by_device ON drawers (device, state, first_hlc);
         CREATE INDEX drawers_by_date ON drawers (business_date, first_hlc);
+        CREATE TABLE drawer_payments (
+            payment_id BLOB NOT NULL CHECK (length(payment_id) = 16),
+            drawer_id BLOB NOT NULL CHECK (length(drawer_id) = 16),
+            PRIMARY KEY (payment_id, drawer_id)
+        ) STRICT;
+        CREATE INDEX drawer_payments_by_drawer ON drawer_payments (drawer_id);
     ",
-    drop: "DROP TABLE IF EXISTS drawers",
+    drop: "DROP TABLE IF EXISTS drawer_payments; DROP TABLE IF EXISTS drawers",
     project: project_drawer,
 };
 
@@ -161,6 +169,13 @@ fn project_drawer(
             &span.last[..],
         ],
     )?;
+    let session = &drawer.stream_id().to_bytes()[..];
+    db.execute("DELETE FROM drawer_payments WHERE drawer_id = ?1", [session])?;
+    let mut insert =
+        db.prepare("INSERT INTO drawer_payments (payment_id, drawer_id) VALUES (?1, ?2)")?;
+    for payment in drawer.payments() {
+        insert.execute(params![&payment.to_bytes()[..], session])?;
+    }
     Ok(())
 }
 

@@ -203,8 +203,9 @@ fn a_drawer_opens_takes_cash_and_closes_through_the_register() {
     let order = register.start_order(Mode::Takeout).unwrap().order;
     register.add_item(order.clone(), demo_id(0x401), vec![], 1).unwrap();
     register.pay_cash(order, 1_000).unwrap();
-    assert_eq!(register.drawer().unwrap().unwrap().taken.minor, 354);
-    assert_eq!(register.drawer().unwrap().unwrap().expected, None);
+    // Blind: neither what moved through it nor what it should hold.
+    let open = register.drawer().unwrap().unwrap();
+    assert_eq!((open.taken, open.expected, open.float.minor), (None, None, 10_000));
     assert_eq!(
         register.move_cash(CashMovement::PaidOut, 200, "supplier".into(), None),
         Err(KeelError::ApprovalRequired { action: "drawer.paid_out".into() })
@@ -215,12 +216,13 @@ fn a_drawer_opens_takes_cash_and_closes_through_the_register() {
     assert!(matches!(register.day_report(ReportKind::Z, None), Err(KeelError::Refused { .. })));
     let closed = register.close_drawer(10_154).unwrap();
     assert_eq!(closed.variance.map(|variance| variance.minor), Some(0));
+    assert_eq!(closed.taken.map(|taken| taken.minor), Some(354));
     let x = register.day_report(ReportKind::X, None).unwrap();
     assert_eq!((x.orders, x.total.minor), (1, 354));
     assert_eq!(x.tenders.len(), 1);
     assert_eq!(x.tenders[0].tender, "cash");
     assert_eq!(x.drawers.len(), 1);
-    assert_eq!(x.drawers[0].paid_out.minor, 200);
+    assert_eq!(x.drawers[0].paid_out.as_ref().map(|out| out.minor), Some(200));
     assert_eq!(register.day_report(ReportKind::Z, None).unwrap().kind, ReportKind::Z);
     register.print_report(ReportKind::Z, None).unwrap();
     assert!(matches!(

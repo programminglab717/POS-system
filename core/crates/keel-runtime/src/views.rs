@@ -122,8 +122,9 @@ pub struct TicketLine {
     pub notes: Option<Note>,
 }
 
-/// The device's drawer session (ADR-0031): its float and what moved through it; once closed,
-/// what it should have held, what was counted, and the variance.
+/// The device's drawer session (ADR-0031): its float and how many no-sales; once closed, what
+/// moved through it, what it should have held, what was counted, and the variance. Blind while
+/// open: with what moved through it, what it should hold is a sum away. Found in review.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DrawerView {
     /// The session.
@@ -132,14 +133,14 @@ pub struct DrawerView {
     pub open: bool,
     /// The cash put in to begin.
     pub float: Amount,
-    /// What its cash payments left in it.
-    pub taken: Amount,
-    /// Cash paid in.
-    pub paid_in: Amount,
-    /// Cash paid out.
-    pub paid_out: Amount,
-    /// Cash dropped to the safe.
-    pub dropped: Amount,
+    /// Once closed: what its cash payments left in it.
+    pub taken: Option<Amount>,
+    /// Once closed: cash paid in.
+    pub paid_in: Option<Amount>,
+    /// Once closed: cash paid out.
+    pub paid_out: Option<Amount>,
+    /// Once closed: cash dropped to the safe.
+    pub dropped: Option<Amount>,
     /// How many times it was opened with no sale.
     pub no_sales: u64,
     /// Once closed: what it should have held.
@@ -151,37 +152,51 @@ pub struct DrawerView {
 }
 
 impl DrawerView {
-    /// The view of `session`; `None` until it is opened.
+    /// The view of `session`, blind while it is open; `None` until it is opened.
     pub(crate) fn of(session: &Drawer, locale: Locale) -> Option<DrawerView> {
+        DrawerView::with(session, session.closed(), locale)
+    }
+
+    /// The view of `session` once `closed`, as it closes; `None` until it is opened, or if its
+    /// variance overflows, which a close the drawer accepted never does.
+    pub(crate) fn closing(
+        session: &Drawer,
+        closed: &DrawerClosed,
+        locale: Locale,
+    ) -> Option<DrawerView> {
+        closed.variance()?;
+        DrawerView::with(session, Some(closed), locale)
+    }
+
+    fn with(session: &Drawer, closed: Option<&DrawerClosed>, locale: Locale) -> Option<DrawerView> {
         let (info, sums) = (session.info()?, session.sums()?);
         let amount = |money: Money| Amount::new(money, locale);
         let mut view = DrawerView {
             drawer: session.id(),
-            open: session.is_open(),
+            open: true,
             float: amount(info.float),
-            taken: amount(sums.taken),
-            paid_in: amount(sums.paid_in),
-            paid_out: amount(sums.paid_out),
-            dropped: amount(sums.dropped),
+            taken: None,
+            paid_in: None,
+            paid_out: None,
+            dropped: None,
             no_sales: session.no_sales(),
             expected: None,
             counted: None,
             variance: None,
         };
-        if let Some(closed) = session.closed()
+        if let Some(closed) = closed
             && let Some(variance) = closed.variance()
         {
-            view.close(closed, variance, locale);
+            view.open = false;
+            view.taken = Some(amount(sums.taken));
+            view.paid_in = Some(amount(sums.paid_in));
+            view.paid_out = Some(amount(sums.paid_out));
+            view.dropped = Some(amount(sums.dropped));
+            view.expected = Some(amount(closed.expected));
+            view.counted = Some(amount(closed.counted));
+            view.variance = Some(amount(variance));
         }
         Some(view)
-    }
-
-    /// The view once `closed`, its variance `variance`.
-    pub(crate) fn close(&mut self, closed: &DrawerClosed, variance: Money, locale: Locale) {
-        self.open = false;
-        self.expected = Some(Amount::new(closed.expected, locale));
-        self.counted = Some(Amount::new(closed.counted, locale));
-        self.variance = Some(Amount::new(variance, locale));
     }
 }
 

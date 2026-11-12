@@ -90,7 +90,9 @@ class FakeTill : Till {
     }
 
     override fun approvers() =
-        if (voidNeedsApproval || discountLimit != null || priceNeedsApproval || paidOutLimit != null) {
+        if (voidNeedsApproval || discountLimit != null || priceNeedsApproval || paidOutLimit != null ||
+            noSaleNeedsApproval || varianceLimit != null
+        ) {
             listOf("alex")
         } else {
             emptyList()
@@ -262,14 +264,26 @@ class FakeTill : Till {
     private var drawerSales = 0L
     private var drawerNoSales = 0L
     var paidOutLimit: Long? = null
+
+    /** The reason the last movement or no-sale was recorded with. */
+    var lastCashReason: String? = null
+
+    /** Whether a no-sale needs a manager, as `drawer.no_sale` does for a role without it. */
+    var noSaleNeedsApproval = false
+
+    /** The most a close may be over or short without a manager, as `drawer.variance`; null for any. */
+    var varianceLimit: Long? = null
     val closedDrawers = mutableListOf<Drawer>()
 
     private fun drawerView(closedWith: Long? = null): Drawer {
         val float = drawerFloat ?: 0
         val expected = float + drawerSales + drawerIn - drawerOut - drawerDropped
+        // Blind while open, as the kernel's.
+        val shown = closedWith != null
         return Drawer(
-            open = closedWith == null, float = money(float), taken = money(drawerSales), paidIn = money(drawerIn),
-            paidOut = money(drawerOut), dropped = money(drawerDropped), noSales = drawerNoSales,
+            open = !shown, float = money(float), taken = money(drawerSales).takeIf { shown },
+            paidIn = money(drawerIn).takeIf { shown }, paidOut = money(drawerOut).takeIf { shown },
+            dropped = money(drawerDropped).takeIf { shown }, noSales = drawerNoSales,
             expected = closedWith?.let { money(expected) }, counted = closedWith?.let(::money),
             variance = closedWith?.let { money(it - expected) },
         )
@@ -286,6 +300,9 @@ class FakeTill : Till {
 
     override fun moveCash(movement: CashMovement, amountMinor: Long, reason: String): Drawer {
         if (drawerFloat == null) throw TillException("No drawer is open.")
+        // As the kernel's drawer: moving nothing, or less, is refused.
+        if (amountMinor <= 0) throw TillException("invalid event: an amount moved must be more than zero")
+        lastCashReason = reason
         when (movement) {
             CashMovement.PAID_IN -> drawerIn += amountMinor
             CashMovement.DROP -> drawerDropped += amountMinor
@@ -303,24 +320,36 @@ class FakeTill : Till {
 
     override fun noSale(reason: String): Drawer {
         if (drawerFloat == null) throw TillException("No drawer is open.")
+        if (noSaleNeedsApproval) {
+            if (approvedBy == null) throw TillException("A no-sale needs a manager's approval.", approval = "drawer.no_sale")
+            approvedBy = null
+        }
         drawerNoSales += 1
+        lastCashReason = reason
         return drawerView()
     }
 
     override fun closeDrawer(countedMinor: Long): Drawer {
         if (drawerFloat == null) throw TillException("No drawer is open.")
         val closed = drawerView(countedMinor)
+        val limit = varianceLimit
+        val variance = countedMinor - ((drawerFloat ?: 0) + drawerSales + drawerIn - drawerOut - drawerDropped)
+        if (limit != null && kotlin.math.abs(variance) > limit) {
+            if (approvedBy == null) throw TillException("Closing over or short needs a manager's approval.", approval = "drawer.variance")
+            approvedBy = null
+        }
         closedDrawers += closed
         drawerFloat = null
         return closed
     }
 
     override fun dayReport(z: Boolean): DayReport {
-        if (z && drawerFloat != null) throw TillException("Close the drawer first.")
+        // The kernel's words.
+        if (z && drawerFloat != null) throw TillException("a drawer is open: close it first")
         val paid = states.filterValues { it == OrderState.CLOSED }.keys
         return DayReport(
             z = z, date = "2026-11-12", orders = paid.size.toLong(), gross = money(0), discounts = money(0),
-            net = money(0), tax = money(0), total = money(0), tenders = emptyList(), voided = 0,
+            comps = money(0), net = money(0), tax = money(0), total = money(0), tenders = emptyList(), voided = 0,
             drawers = closedDrawers.toList() + listOfNotNull(drawer()),
         )
     }
