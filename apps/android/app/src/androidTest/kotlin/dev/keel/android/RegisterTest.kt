@@ -165,6 +165,36 @@ class RegisterTest {
      * A printer in the test's process that takes [jobs] connections, one after the other, each
      * answered as a ready Epson that printed what it was sent; and what each brought, waited for.
      */
+    /**
+     * A manager opens the drawer with a $100.00 float, sells an espresso in the exact cash, $3.54,
+     * and closes the drawer blind, counting $103.54: exact (ADR-0031). The day's X report reads.
+     * The drawer is left closed, as the other tests begin with none open.
+     */
+    @Test
+    fun a_drawer_takes_a_cash_sale_and_closes_exactly() {
+        compose.tap("member:Alex", wait = 20_000)
+        compose.enterPin("1234")
+        compose.tap("drawer:open")
+        for (digit in "10000") compose.tap("cash:digit:$digit")
+        compose.waitUntil(10_000) { compose.shown("cash:typed").contains("$100.00") }
+        compose.tap("cash:confirm")
+        compose.tap("button:${demoId(0x401)}")
+        compose.tap("sheet:add")
+        compose.tap("pay")
+        compose.tap("offer:0")
+        compose.waitFor("change")
+        compose.tap("drawer")
+        compose.waitUntil(10_000) { compose.shown("drawer:taken").contains("$3.54") }
+        compose.tap("drawer:close")
+        for (digit in "10354") compose.tap("cash:digit:$digit")
+        compose.tap("cash:confirm")
+        compose.waitUntil(10_000) { compose.shown("closed:variance").contains("$0.00") }
+        compose.tap("report:x")
+        compose.waitFor("report:total")
+        compose.tap("back")
+        compose.tap("sign-out")
+    }
+
     private fun printer(jobs: Int): Pair<Int, () -> List<ByteArray>> {
         val server = ServerSocket(0)
         val received = mutableListOf<ByteArray>()

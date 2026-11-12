@@ -12,8 +12,8 @@
 reasons and limits, prices set by hand, line notes, split checks and partial cash payments, and
 orders parked on one register and recalled on another through the hub, in the kernel, the
 bindings and the Android register. Step 3, cash ([ADR-0031](./adr/0031-cash-drawers-and-day-reports.md)), is being built: drawer
-sessions, the blind close and the X and Z reports have landed in the kernel; the Android
-register's drawer is next.
+sessions, the blind close and the X and Z reports have landed in the kernel and the Android
+register; its review is next.
 
 **Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
 ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
@@ -93,7 +93,8 @@ built in four slices, each verified as it lands, then reviewed together:
    drawer as it is taken, the gates, the drawer's report, the bindings.
 3. **X and Z reports** (built 2026-11-12): the runtime's reports and their printing, the
    bindings.
-4. **The shell**: the Android register's drawer. Next.
+4. **The shell** (built 2026-11-12): the Android register's drawer and reports. Then the
+   review: next.
 
 Built in slice 1:
 
@@ -135,6 +136,24 @@ Built in slices 2 and 3:
 - **`keel-ffi`**: the drawer's intents and view, the day report and its printing; a drawer
   opened, taking cash, paid out on approval, closed and reported through the register.
 - **Verified**: `cargo fmt`, clippy with all features and none, the docs, every workspace test.
+- **Planted bugs**: 13 in `keel-runtime`. Two went uncaught at first, each now caught by a test
+  of its own: the drawer taking a payment's amount rather than the cash received once rounded
+  ($3.54 is $3.55 in cash), and a short close asking for approval of its signed variance rather
+  than its size.
+
+Built in slice 4:
+
+- **The Android register**: after sign-in with no drawer open, a banner offers to open one with
+  a float, never in a sale's way; the drawer page shows what moved through the drawer, pays in,
+  pays out (a manager approving beyond the role), drops, opens with no sale, and closes blind
+  with a keypad count, then shows the close and its variance; today's X and Z reports read and
+  print. `KernelTill` maps the bindings; `FakeTill` keeps a drawer for the model's tests.
+  - Model tests: a drawer opened with a float, taking a cash sale and closed blind; a paid-out
+    beyond the cashier waiting for a manager.
+  - Instrumented test, for CI's emulator job: a $100.00 float, an espresso in exact cash, a
+    blind count of $103.54, exact, and the X report.
+- **Verified**: `:register:jvmTest`, `:kernel:testDebugUnitTest`, `:app:assembleDebug` and
+  `:app:assembleDebugAndroidTest`.
 
 ## Completed
 
