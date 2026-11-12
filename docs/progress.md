@@ -14,7 +14,8 @@ register; and staff and roles in the back office.
 
 **Step 2, selling at the register, is being built**
 ([ADR-0030](./adr/0030-selling-at-the-register.md), proposed): its first slice, discounts, has
-landed; price overrides and notes are next.
+landed, and its second, prices set by hand and notes; split checks and partial payments are
+next.
 
 **Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
 ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
@@ -114,11 +115,17 @@ Built in slice 2:
   line's notes. Tickets show a line's price as set, as rung, and why, and its notes.
   - Known answers: a cashier's $2.75 for two $3.25 espressos approved for $1.00; a manager's
     $3.00 alone; free, and less than free refused; the same price asking for no approval; notes
-    set, the same refused, cleared. Planted bugs: 3.
+    set, the same refused, cleared. Planted bugs: 3, every one caught; with slice 1's two
+    re-aimed, caught again.
+  - **The receipt** prints a line's notes under it, its line breaks as spaces. Known answer:
+    "one extra hot, no lid" under two espressos. Planted bugs: 1.
 - **`keel-ffi`**: both intents, and a line's price and notes crossed field for field.
 - **The Android register**: a price sheet (reasons, a price typed) and a notes sheet for each
   line; a line's price and notes on the ticket. Tests: the model's price approved by a manager,
   notes kept, unchanged and cleared; on an emulator, a cashier's price approved, then a note.
+- **Verified**: `cargo fmt`, clippy with all features and none, the docs, every workspace test,
+  the wasm32 build; the Android register's JVM tests, the kernel's unit tests, the app and its
+  instrumented tests built. The domain's 9 planted bugs and the runtime's 5, every one caught.
 
 Built in slice 1:
 

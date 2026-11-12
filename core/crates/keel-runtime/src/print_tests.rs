@@ -382,7 +382,7 @@ fn reprints_are_recognised_in_any_language() {
 
 /// Found building discounts: the receipt listed each line before its discounts and the subtotal
 /// after them, and nothing between. Each discount now shows, under its line or above the
-/// subtotal, as less (ADR-0030).
+/// subtotal, as less (ADR-0030); and a line's notes on a line of their own.
 #[test]
 fn a_receipt_shows_each_discount_as_less() {
     use keel_domain::codec::ReasonCode;
@@ -392,6 +392,8 @@ fn a_receipt_shows_each_discount_as_less() {
     let order = runtime.start_order(Mode::Takeout).unwrap().order;
     let ticket = runtime.add_item(order, id(0x401), &[], NonZeroU32::new(2).unwrap()).unwrap();
     let reason = || Reason { code: ReasonCode::new("loyalty").unwrap(), note: None };
+    let notes = keel_domain::codec::Note::new("one extra hot,\nno lid").unwrap();
+    runtime.set_line_notes(order, ticket.lines[0].line, Some(notes)).unwrap();
     let line = Some(ticket.lines[0].line);
     runtime.apply_discount(order, line, DiscountValue::Percent(1_000), reason()).unwrap();
     runtime.apply_discount(order, line, DiscountValue::Amount(usd(25)), reason()).unwrap();
@@ -405,6 +407,7 @@ fn a_receipt_shows_each_discount_as_less() {
     assert_eq!(
         &text[from..to],
         "2 × Espresso                               $6.50
+  \u{201c}one extra hot, no lid\u{201d}
   Discount 10%                            -$0.65
   Discount                                -$0.25
 ------------------------------------------------

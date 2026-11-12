@@ -201,6 +201,15 @@ fn lines(ticket: &Ticket, words: &Words, locale: Locale) -> Result<Vec<Block>, R
                 style: Style::default(),
             });
         }
+        // A line's notes, for the customer to check what was asked for, on one line of their own.
+        if let Some(notes) = &line.notes {
+            these.push(Block::Row {
+                left: format!("\u{201c}{}\u{201d}", notes.as_str().replace('\n', " ")),
+                right: String::new(),
+                indent: 2,
+                style: Style::default(),
+            });
+        }
         for discount in &line.discounts {
             these.push(discount_row(discount, words, locale, 2)?);
         }

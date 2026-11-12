@@ -694,4 +694,10 @@ BUGS = [
         loaded.decide(self.location(), self.device, command.clone())?;""",
         """        let command = OrderCommand::RepriceLine(repriced);""",
     ),
+    (
+        "notes: a receipt leaves out a line's notes",
+        "src/receipt.rs",
+        "        if let Some(notes) = &line.notes {",
+        "        if let Some(notes) = line.notes.as_ref().filter(|_| false) {",
+    ),
 ]
