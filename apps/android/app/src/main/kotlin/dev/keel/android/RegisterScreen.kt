@@ -192,7 +192,9 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                     line.repriced?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("repriced:${line.line}")) }
                     line.notes?.let { Text("“$it”", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("notes:${line.line}")) }
                     for (discount in line.discounts) DiscountRow(discount, model)
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // Wrapped, so every button stays reachable on a narrow pane. Found in review:
+                    // the later ones were squeezed to nothing on a phone.
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         if (line.count != null) {
                             TextButton(onClick = { model.fewer(line) }, modifier = Modifier.testTag("fewer:${line.line}")) { Text("−") }
                             TextButton(onClick = { model.more(line) }, modifier = Modifier.testTag("more:${line.line}")) { Text("+") }
@@ -203,7 +205,7 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                         TextButton(onClick = { model.openNotes(line) }, modifier = Modifier.testTag("note:${line.line}")) { Text("Note") }
                     }
                     // A line moves to a check of its own, or to another open check of a split order.
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         for (check in ticket?.checks.orEmpty().filter { it.open && it.lines.none { on -> on.line == line.line } }) {
                             TextButton(onClick = { model.moveLine(line, check.check) }, modifier = Modifier.testTag("move:${check.number}:${line.line}")) {
                                 Text("To check ${check.number}")
@@ -244,18 +246,21 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                     modifier = Modifier.fillMaxWidth().testTag("pay"),
                 ) { Text("Cash ${ticket.cashDue}") }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            // A paid check holds the split, and the whole order's discounts: neither is offered once
+            // one is. Found in review.
+            val anyPaid = ticket.checks.any { !it.open }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 for (ways in 2..4) {
                     OutlinedButton(
                         onClick = { model.split(ways) },
-                        enabled = ticket.lines.isNotEmpty(),
+                        enabled = ticket.lines.isNotEmpty() && !anyPaid,
                         modifier = Modifier.testTag("split:$ways"),
                     ) { Text("Split $ways") }
                 }
             }
             OutlinedButton(
                 onClick = { model.openDiscount() },
-                enabled = ticket.lines.isNotEmpty(),
+                enabled = ticket.lines.isNotEmpty() && !anyPaid,
                 modifier = Modifier.fillMaxWidth().testTag("discount:order"),
             ) { Text("Discount the order") }
             OutlinedButton(onClick = model::abandon, modifier = Modifier.fillMaxWidth().testTag("abandon")) { Text("Drop order") }
@@ -587,12 +592,15 @@ private fun Orders(state: RegisterState, model: RegisterModel) {
             TextButton(onClick = model::showRegister, modifier = Modifier.testTag("back")) { Text("Back") }
         }
         if (state.orders.isEmpty()) Text("None yet today.")
-        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("error")) }
         LazyColumn {
             items(state.orders.reversed(), key = { it.order }) { order ->
                 OrderRow(
                     order,
                     elsewhere = model.elsewhere(order),
+                    asked = model.askedHere(order),
+                    // Only a register that can't reach the hub takes an order on a manager's word
+                    // (ADR-0030, decision 6). Found in review: it was offered with the hub up.
+                    hubDown = state.sync?.hubReachable == false,
                     onOpen = { model.resume(order) },
                     onReprint = { model.reprint(order) },
                     onTakeOver = { model.takeOver(order) },
@@ -603,9 +611,17 @@ private fun Orders(state: RegisterState, model: RegisterModel) {
 }
 
 @Composable
-private fun OrderRow(order: Ticket, elsewhere: Boolean, onOpen: () -> Unit, onReprint: () -> Unit, onTakeOver: () -> Unit) {
+private fun OrderRow(
+    order: Ticket,
+    elsewhere: Boolean,
+    asked: Boolean,
+    hubDown: Boolean,
+    onOpen: () -> Unit,
+    onReprint: () -> Unit,
+    onTakeOver: () -> Unit,
+) {
     val state = if (order.state == OrderState.OPEN && elsewhere) {
-        if (order.asking.isEmpty()) "On another register" else "Asked for"
+        if (asked) "Asked for" else "On another register"
     } else {
         when (order.state) {
             OrderState.OPEN -> "Open"
@@ -629,7 +645,7 @@ private fun OrderRow(order: Ticket, elsewhere: Boolean, onOpen: () -> Unit, onRe
         }
         // Parked on another register: tapping it recalls it through the hub; a manager can take it
         // over when the hub can't be reached.
-        if (order.state == OrderState.OPEN && elsewhere) {
+        if (order.state == OrderState.OPEN && elsewhere && hubDown) {
             TextButton(onClick = onTakeOver, modifier = Modifier.testTag("take-over:${order.order}")) { Text("Take over") }
         }
     }

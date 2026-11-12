@@ -693,4 +693,33 @@ class RegisterModelTest {
         assertEquals(Screen.REGISTER, model.state.value.screen)
         assertEquals("here", model.state.value.ticket!!.owner)
     }
+
+    /** Found in review: a double tap of a percentage put on two discounts. */
+    @Test
+    fun a_double_tap_puts_on_one_discount() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.openDiscount(model.state.value.ticket!!.lines[0])
+        model.discountPercent(1_000)
+        model.discountPercent(1_000)
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, till.asked.size)
+        assertEquals(1, model.state.value.ticket!!.lines[0].discounts.size)
+    }
+
+    /** Found in review: an order parked before the day turned couldn't be recalled. */
+    @Test
+    fun an_open_order_from_an_earlier_day_is_listed() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        val order = model.state.value.ticket!!.order
+        till.earlier += order
+        model.showOrders()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(order), model.state.value.orders.map { it.order })
+    }
 }

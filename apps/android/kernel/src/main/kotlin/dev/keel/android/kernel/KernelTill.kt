@@ -152,12 +152,26 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
 
     override fun recall(order: String): Ticket = call { register.recall(order).toTicket() }
 
-    override fun takeOver(order: String): Ticket =
+    /**
+     * The runtime gates a take-over as `order.void` (ADR-0030), so its refusals name that action:
+     * told here as taking an order over. Found in review: they read as dropping an order.
+     */
+    override fun takeOver(order: String): Ticket = try {
         call { register.takeOver(order, "hub_unreachable", null).toTicket() }
+    } catch (refused: TillException) {
+        val words = when (refused.cause) {
+            is KeelException.ApprovalRequired -> "Taking an order over needs a manager's approval."
+            is KeelException.NotApprover -> "That manager can't approve taking an order over."
+            else -> throw refused
+        }
+        throw TillException(words, refused.cause, refused.approval)
+    }
 
     override fun deviceId(): String = register.deviceId()
 
     override fun ordersToday(): List<Ticket> = call { register.ordersToday().map { it.toTicket() } }
+
+    override fun openOrders(): List<Ticket> = call { register.openOrders().map { it.toTicket() } }
 
     override fun printJobs(): List<PrintJob> = call {
         register.printJobs().map { job ->

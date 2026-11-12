@@ -155,7 +155,9 @@ class RegisterTest {
         compose.waitUntil(10_000) { compose.shown("check:1").contains("(paid)") }
         compose.tap("pay:check:2")
         compose.tap("offer:0")
-        compose.waitFor("change")
+        // Closed with its last check: the register is ready for the next order. Found in review:
+        // waiting for the change passed on the first check's.
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("check:1")).fetchSemanticsNodes().isEmpty() }
         compose.tap("sign-out")
     }
 

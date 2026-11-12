@@ -104,6 +104,9 @@ interface Till {
     /** The orders begun today, whatever became of them, oldest first. */
     fun ordersToday(): List<Ticket>
 
+    /** The orders still open, from any day, oldest first: those parked on any register. */
+    fun openOrders(): List<Ticket> = emptyList()
+
     /** The print jobs queued, with the printer, and unconfirmed. */
     fun printJobs(): List<PrintJob>
 

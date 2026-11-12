@@ -46,6 +46,7 @@ class OpeningTill(open: () -> Till) : Till {
     override fun payCash(order: String, tenderedMinor: Long) = till.payCash(order, tenderedMinor)
     override fun ticket(order: String) = till.ticket(order)
     override fun ordersToday() = till.ordersToday()
+    override fun openOrders() = till.openOrders()
     override fun printJobs() = till.printJobs()
     override fun resolve(job: String, printed: Boolean) = till.resolve(job, printed)
     override fun reprint(order: String) = till.reprint(order)

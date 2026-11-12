@@ -111,6 +111,8 @@ data class RegisterState(
     val profileVersion: String? = null,
     /** The last refusal or failure, until the next intent. */
     val error: String? = null,
+    /** This register's device, once the till has said, to tell its orders from other registers'. */
+    val device: String? = null,
 )
 
 /**
@@ -137,7 +139,8 @@ class RegisterModel(
         val version = version()
         val team = till.team()
         val printer = settings?.load()
-        mutable.update { it.copy(loading = false, team = team, printer = printer, profileVersion = version) }
+        val device = till.deviceId().ifEmpty { null }
+        mutable.update { it.copy(loading = false, team = team, printer = printer, profileVersion = version, device = device) }
     }
 
     /** The version of the profile the till rings from, or null if it can't say. */
@@ -221,7 +224,7 @@ class RegisterModel(
         mutable.update {
             RegisterState(
                 loading = false, team = it.team, printer = it.printer, ticket = it.ticket, sync = it.sync,
-                profileVersion = it.profileVersion,
+                profileVersion = it.profileVersion, device = it.device,
             )
         }
     }
@@ -339,10 +342,10 @@ class RegisterModel(
     private fun discount(asked: DiscountAsked) {
         val sheet = current.discount ?: return
         val order = current.ticket?.order ?: return
-        perform {
-            show(till.applyDiscount(order, sheet.line?.line, asked, sheet.reason))
-            mutable.update { it.copy(discount = null) }
-        }
+        // Closed at the tap, so a second tap before the kernel answers finds nothing to apply.
+        // Found in review: a double tap of 10% put on two discounts.
+        mutable.update { it.copy(discount = null) }
+        perform { show(till.applyDiscount(order, sheet.line?.line, asked, sheet.reason)) }
     }
 
     /** Closes the discount sheet. */
@@ -388,10 +391,9 @@ class RegisterModel(
         val sheet = current.price ?: return
         val order = current.ticket?.order ?: return
         val minor = sheet.typed?.minor ?: 0
-        perform {
-            show(till.repriceLine(order, sheet.line.line, minor, sheet.reason))
-            mutable.update { it.copy(price = null) }
-        }
+        // Closed at the tap, as the discount sheet is.
+        mutable.update { it.copy(price = null) }
+        perform { show(till.repriceLine(order, sheet.line.line, minor, sheet.reason)) }
     }
 
     /** Closes the price sheet. */
@@ -408,14 +410,9 @@ class RegisterModel(
         val sheet = current.notes ?: return
         val order = current.ticket?.order ?: return
         val notes = text.trim().ifEmpty { null }
-        if (notes == sheet.line.notes) {
-            mutable.update { it.copy(notes = null) }
-            return
-        }
-        perform {
-            show(till.setNotes(order, sheet.line.line, notes))
-            mutable.update { it.copy(notes = null) }
-        }
+        mutable.update { it.copy(notes = null) }
+        if (notes == sheet.line.notes) return
+        perform { show(till.setNotes(order, sheet.line.line, notes)) }
     }
 
     /** Closes the notes sheet. */
@@ -436,8 +433,12 @@ class RegisterModel(
             val due = offers.firstOrNull() ?: till.amount(ticket.cashDueMinor)
             Tender(ticket.order, due, offers)
         } else {
-            val due = till.amount(check.cashDueMinor)
-            Tender(ticket.order, due, roundUp(check.cashDueMinor).map(till::amount), check = check)
+            // The check as the ticket has it now, after every intent queued before: not as it was
+            // drawn. Found in review.
+            val now = ticket.checks.firstOrNull { it.check == check.check } ?: return@perform
+            if (!now.open) return@perform
+            val due = till.amount(now.cashDueMinor)
+            Tender(ticket.order, due, roundUp(now.cashDueMinor).map(till::amount), check = now)
         }
         mutable.update { it.copy(tender = tender) }
     }
@@ -511,8 +512,18 @@ class RegisterModel(
 
     /** Shows today's orders. */
     fun showOrders() = perform {
-        val orders = till.ordersToday()
+        val orders = listed()
         mutable.update { it.copy(screen = Screen.ORDERS, orders = orders) }
+    }
+
+    /**
+     * Today's orders, and every order still open from an earlier day, as one parked on another
+     * register before the day turned. Found in review: those couldn't be recalled.
+     */
+    private fun listed(): List<Ticket> {
+        val today = till.ordersToday()
+        val earlier = till.openOrders().filter { open -> today.none { it.order == open.order } }
+        return earlier + today
     }
 
     /**
@@ -525,19 +536,25 @@ class RegisterModel(
         if (ticket.state != OrderState.OPEN) throw TillException("That order isn't open.")
         if (elsewhere(ticket)) {
             till.recall(ticket.order)
-            val orders = till.ordersToday()
+            val orders = listed()
             mutable.update { it.copy(orders = orders, error = "Asked the hub for that order: open it again once it's here.") }
             return@perform
         }
         mutable.update { it.copy(screen = Screen.REGISTER, ticket = ticket, change = null) }
     }
 
-    /** Whether [ticket] is owned by another device than this register. */
+    /**
+     * Whether [ticket] is owned by another device than this register: read from the state, not the
+     * till, so the screen asks the kernel nothing. Found in review.
+     */
     fun elsewhere(ticket: Ticket): Boolean {
         val owner = ticket.owner ?: return false
-        val me = till.deviceId()
-        return me.isNotEmpty() && owner != me
+        val me = current.device ?: return false
+        return owner != me
     }
+
+    /** Whether this register is among those that asked the hub for [ticket]. */
+    fun askedHere(ticket: Ticket): Boolean = current.device?.let { it in ticket.asking } ?: false
 
     /** Takes [order] over from its device on a manager's word, then takes it up. */
     fun takeOver(order: Ticket) = perform {
@@ -613,7 +630,7 @@ class RegisterModel(
             mutable.update {
                 RegisterState(
                     loading = false, team = team, printer = it.printer, ticket = it.ticket,
-                    sync = it.sync, profileVersion = version,
+                    sync = it.sync, profileVersion = version, device = it.device,
                 )
             }
             return@perform

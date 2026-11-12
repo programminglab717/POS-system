@@ -344,7 +344,12 @@ class FakeTill : Till {
         return lines to (left to onOrder)
     }
 
-    override fun ordersToday() = orders.keys.map(::ticket)
+    override fun ordersToday() = orders.keys.filter { it !in earlier }.map(::ticket)
+
+    /** Orders begun on an earlier day: open ones list only among the open orders. */
+    val earlier = mutableSetOf<String>()
+
+    override fun openOrders() = orders.keys.filter { states[it] == OrderState.OPEN }.map(::ticket)
 
     override fun printJobs() = jobs.toList()
 
