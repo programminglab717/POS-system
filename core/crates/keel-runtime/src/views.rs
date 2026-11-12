@@ -3,6 +3,7 @@
 
 use keel_domain::codec::Name;
 use keel_domain::codec::{Note, ReasonCode};
+use keel_domain::drawer::{Drawer, DrawerClosed};
 use keel_domain::order::{Check, ChosenModifier, Discount, Line, Order, OrderStatus, Prefix};
 use keel_domain::profile::{CatalogGroup, Profile};
 use keel_domain::refs::{Modifier, ModifierGroup, Variant};
@@ -119,6 +120,69 @@ pub struct TicketLine {
     pub repriced: Option<TicketRepriced>,
     /// Its notes, for the kitchen and the receipt.
     pub notes: Option<Note>,
+}
+
+/// The device's drawer session (ADR-0031): its float and what moved through it; once closed,
+/// what it should have held, what was counted, and the variance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrawerView {
+    /// The session.
+    pub drawer: Id<Drawer>,
+    /// Whether it is open.
+    pub open: bool,
+    /// The cash put in to begin.
+    pub float: Amount,
+    /// What its cash payments left in it.
+    pub taken: Amount,
+    /// Cash paid in.
+    pub paid_in: Amount,
+    /// Cash paid out.
+    pub paid_out: Amount,
+    /// Cash dropped to the safe.
+    pub dropped: Amount,
+    /// How many times it was opened with no sale.
+    pub no_sales: u64,
+    /// Once closed: what it should have held.
+    pub expected: Option<Amount>,
+    /// Once closed: what was counted.
+    pub counted: Option<Amount>,
+    /// Once closed: what was counted less what was expected, over when more than zero.
+    pub variance: Option<Amount>,
+}
+
+impl DrawerView {
+    /// The view of `session`; `None` until it is opened.
+    pub(crate) fn of(session: &Drawer, locale: Locale) -> Option<DrawerView> {
+        let (info, sums) = (session.info()?, session.sums()?);
+        let amount = |money: Money| Amount::new(money, locale);
+        let mut view = DrawerView {
+            drawer: session.id(),
+            open: session.is_open(),
+            float: amount(info.float),
+            taken: amount(sums.taken),
+            paid_in: amount(sums.paid_in),
+            paid_out: amount(sums.paid_out),
+            dropped: amount(sums.dropped),
+            no_sales: session.no_sales(),
+            expected: None,
+            counted: None,
+            variance: None,
+        };
+        if let Some(closed) = session.closed()
+            && let Some(variance) = closed.variance()
+        {
+            view.close(closed, variance, locale);
+        }
+        Some(view)
+    }
+
+    /// The view once `closed`, its variance `variance`.
+    pub(crate) fn close(&mut self, closed: &DrawerClosed, variance: Money, locale: Locale) {
+        self.open = false;
+        self.expected = Some(Amount::new(closed.expected, locale));
+        self.counted = Some(Amount::new(closed.counted, locale));
+        self.variance = Some(Amount::new(variance, locale));
+    }
 }
 
 /// A line's price as staff set it, and as it was rung.

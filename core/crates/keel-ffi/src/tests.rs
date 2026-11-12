@@ -189,6 +189,46 @@ fn a_cashier_signs_in_with_their_pin_and_a_manager_approves_a_void() {
     ));
 }
 
+/// The drawer and the day's report through the register (ADR-0031): a float, a cash sale, a
+/// paid-out a manager approves, a blind close, and the X and Z reports.
+#[test]
+fn a_drawer_opens_takes_cash_and_closes_through_the_register() {
+    let scratch = Scratch::new();
+    let register: Arc<Register> = Register::open(config(&scratch)).unwrap();
+    register.sign_in(demo_id(0x502), "2468".into()).unwrap();
+    assert_eq!(register.drawer().unwrap(), None);
+    let opened = register.open_drawer(10_000).unwrap();
+    assert!(opened.open);
+    assert!(matches!(register.open_drawer(10_000), Err(KeelError::Refused { .. })));
+    let order = register.start_order(Mode::Takeout).unwrap().order;
+    register.add_item(order.clone(), demo_id(0x401), vec![], 1).unwrap();
+    register.pay_cash(order, 1_000).unwrap();
+    assert_eq!(register.drawer().unwrap().unwrap().taken.minor, 354);
+    assert_eq!(register.drawer().unwrap().unwrap().expected, None);
+    assert_eq!(
+        register.move_cash(CashMovement::PaidOut, 200, "supplier".into(), None),
+        Err(KeelError::ApprovalRequired { action: "drawer.paid_out".into() })
+    );
+    register.approve(demo_id(0x501), "1234".into()).unwrap();
+    register.move_cash(CashMovement::PaidOut, 200, "supplier".into(), Some("milk".into())).unwrap();
+    // $100.00 + $3.54 − $2.00 = $101.54 expected; counted exactly.
+    assert!(matches!(register.day_report(ReportKind::Z, None), Err(KeelError::Refused { .. })));
+    let closed = register.close_drawer(10_154).unwrap();
+    assert_eq!(closed.variance.map(|variance| variance.minor), Some(0));
+    let x = register.day_report(ReportKind::X, None).unwrap();
+    assert_eq!((x.orders, x.total.minor), (1, 354));
+    assert_eq!(x.tenders.len(), 1);
+    assert_eq!(x.tenders[0].tender, "cash");
+    assert_eq!(x.drawers.len(), 1);
+    assert_eq!(x.drawers[0].paid_out.minor, 200);
+    assert_eq!(register.day_report(ReportKind::Z, None).unwrap().kind, ReportKind::Z);
+    register.print_report(ReportKind::Z, None).unwrap();
+    assert!(matches!(
+        register.day_report(ReportKind::X, Some("not a date".into())),
+        Err(KeelError::InvalidArgument { .. })
+    ));
+}
+
 #[test]
 fn a_sale_rings_pays_and_prints_through_the_register() {
     let scratch = Scratch::new();

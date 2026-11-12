@@ -457,7 +457,13 @@ fn drawers_are_projected_and_found_by_device_and_date() {
     assert!(store.drawers_on("2026-09-29".parse().unwrap()).unwrap().is_empty());
     // Closed, it is found closed, with its count.
     let closed = DrawerEvent::Closed(DrawerClosed { counted: usd(10_580), expected: usd(10_589) });
-    append(&mut store, vec![draft(&closed)], at(1));
+    // Closed after midnight, on the next business day: the session stays on the day it opened.
+    // Found by a planted bug: every event here was on one day.
+    let mut late = draft(&closed);
+    late.business_date = "2026-09-29".parse().unwrap();
+    append(&mut store, vec![late], at(1));
+    assert_eq!(store.drawers_on("2026-09-28".parse().unwrap()).unwrap().len(), 1);
+    assert!(store.drawers_on("2026-09-29".parse().unwrap()).unwrap().is_empty());
     let summary = store.drawer(drawer).unwrap().unwrap();
     assert_eq!(summary.state, DrawerState::Closed);
     assert_eq!(summary.closed.map(|close| close.variance()), Some(Some(usd(-9))));

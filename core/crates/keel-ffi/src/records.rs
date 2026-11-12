@@ -332,6 +332,161 @@ impl From<&runtime::Ticket> for Ticket {
     }
 }
 
+/// Which day report (ADR-0031): the day so far, or its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ReportKind {
+    /// The day so far, at any time.
+    X,
+    /// The day's end, once the register's drawers of the day are closed.
+    Z,
+}
+
+/// A business day's report, from what the register holds.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct DayReport {
+    /// X or Z.
+    pub kind: ReportKind,
+    /// The business day, `YYYY-MM-DD`.
+    pub date: String,
+    /// The orders closed.
+    pub orders: u64,
+    /// What their lines came to before discounts and comps.
+    pub gross: Amount,
+    /// What discounts took.
+    pub discounts: Amount,
+    /// What comps took.
+    pub comps: Amount,
+    /// What the lines were sold for, before tax.
+    pub net: Amount,
+    /// The tax charged.
+    pub tax: Amount,
+    /// What the orders came to.
+    pub total: Amount,
+    /// What each tender captured: `cash` or `card`, how many payments, how much.
+    pub tenders: Vec<TenderLine>,
+    /// The orders voided, or dropped once they had lines.
+    pub voided: u64,
+    /// Each drawer session of the day, of every register.
+    pub drawers: Vec<DrawerView>,
+    /// Cash captured with no drawer open.
+    pub cash_without_drawer: Amount,
+    /// How many cash payments were captured with no drawer open.
+    pub payments_without_drawer: u64,
+}
+
+/// What one tender captured on a day.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TenderLine {
+    /// `cash` or `card`.
+    pub tender: String,
+    /// How many payments.
+    pub payments: u64,
+    /// What they captured, tips included.
+    pub amount: Amount,
+}
+
+impl From<ReportKind> for runtime::ReportKind {
+    fn from(kind: ReportKind) -> runtime::ReportKind {
+        match kind {
+            ReportKind::X => runtime::ReportKind::X,
+            ReportKind::Z => runtime::ReportKind::Z,
+        }
+    }
+}
+
+impl From<&runtime::DayReport> for DayReport {
+    fn from(report: &runtime::DayReport) -> DayReport {
+        DayReport {
+            kind: match report.kind {
+                runtime::ReportKind::X => ReportKind::X,
+                runtime::ReportKind::Z => ReportKind::Z,
+            },
+            date: report.date.to_string(),
+            orders: report.orders,
+            gross: (&report.gross).into(),
+            discounts: (&report.discounts).into(),
+            comps: (&report.comps).into(),
+            net: (&report.net).into(),
+            tax: (&report.tax).into(),
+            total: (&report.total).into(),
+            tenders: report
+                .tenders
+                .iter()
+                .map(|line| TenderLine {
+                    tender: match line.tender {
+                        keel_domain::payment::Tender::Cash => "cash",
+                        keel_domain::payment::Tender::Card => "card",
+                    }
+                    .to_owned(),
+                    payments: line.payments,
+                    amount: (&line.amount).into(),
+                })
+                .collect(),
+            voided: report.voided,
+            drawers: report.drawers.iter().map(DrawerView::from).collect(),
+            cash_without_drawer: (&report.cash_without_drawer).into(),
+            payments_without_drawer: report.payments_without_drawer,
+        }
+    }
+}
+
+/// How cash moves in or out of a drawer other than by a sale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum CashMovement {
+    /// Cash put in.
+    PaidIn,
+    /// Cash taken out for an expense.
+    PaidOut,
+    /// Cash taken to the safe.
+    Drop,
+}
+
+/// The register's drawer session (ADR-0031): its float and what moved through it; once closed,
+/// what it should have held, what was counted, and the variance.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct DrawerView {
+    /// The session.
+    pub drawer: String,
+    /// Whether it is open.
+    pub open: bool,
+    /// The cash put in to begin.
+    pub float: Amount,
+    /// What its cash sales left in it.
+    pub taken: Amount,
+    /// Cash paid in.
+    pub paid_in: Amount,
+    /// Cash paid out.
+    pub paid_out: Amount,
+    /// Cash dropped to the safe.
+    pub dropped: Amount,
+    /// How many times it was opened with no sale.
+    pub no_sales: u64,
+    /// Once closed: what it should have held.
+    pub expected: Option<Amount>,
+    /// Once closed: what was counted.
+    pub counted: Option<Amount>,
+    /// Once closed: the count less what was expected, over when more than zero.
+    pub variance: Option<Amount>,
+}
+
+impl From<&runtime::DrawerView> for DrawerView {
+    fn from(view: &runtime::DrawerView) -> DrawerView {
+        DrawerView {
+            drawer: view.drawer.to_string(),
+            open: view.open,
+            float: (&view.float).into(),
+            taken: (&view.taken).into(),
+            paid_in: (&view.paid_in).into(),
+            paid_out: (&view.paid_out).into(),
+            dropped: (&view.dropped).into(),
+            no_sales: view.no_sales,
+            expected: view.expected.as_ref().map(Amount::from),
+            counted: view.counted.as_ref().map(Amount::from),
+            variance: view.variance.as_ref().map(Amount::from),
+        }
+    }
+}
+
 /// What paying cash did.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct CashPaid {

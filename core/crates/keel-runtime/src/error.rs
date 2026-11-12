@@ -65,6 +65,15 @@ pub enum RuntimeError {
     /// The payment refused the change.
     #[error(transparent)]
     Payment(#[from] PaymentError),
+    /// The device's drawer is open already: one at a time (ADR-0031).
+    #[error("the drawer is open already")]
+    DrawerOpen,
+    /// The device has no drawer open.
+    #[error("no drawer is open")]
+    NoDrawer,
+    /// The drawer refused the change.
+    #[error(transparent)]
+    Drawer(#[from] keel_domain::drawer::DrawerError),
     /// A discount takes more than is left of its line: it would take more as the line grew. Found
     /// in review (ADR-0030).
     #[error("only {left} is left to take off")]

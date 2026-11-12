@@ -870,4 +870,92 @@ BUGS = [
         }""",
         "",
     ),
+    # Drawers and day reports (ADR-0031).
+    (
+        "drawer: cash goes into no drawer",
+        "src/runtime.rs",
+        "                if let (Some(open), PaymentEvent::Captured(captured)) = (drawer_session, &event)",
+        "                if let (Some(open), PaymentEvent::Captured(captured)) = (None::<Id<Drawer>>, &event)",
+    ),
+    (
+        "drawer: the drawer counts the amount, not what the customer paid",
+        "src/runtime.rs",
+        "                    && let Some(amount) = captured.received().filter(|amount| amount.is_positive())",
+        "                    && let Some(amount) = Some(captured.amount).filter(|amount| amount.is_positive())",
+    ),
+    (
+        "drawer: a second drawer opens",
+        "src/drawer.rs",
+        """        if self.open_drawer_id()?.is_some() {
+            return Err(RuntimeError::DrawerOpen);
+        }""",
+        "",
+    ),
+    (
+        "drawer: a paid-out isn't gated",
+        "src/drawer.rs",
+        "        let granted = if kind == Movement::PaidOut {",
+        "        let granted = if false {",
+    ),
+    (
+        "drawer: a no-sale isn't gated",
+        "src/drawer.rs",
+        "        let granted = self.gate(Request::of(Action::DrawerNoSale), Some(open.cast()))?;",
+        "        let granted = None;",
+    ),
+    (
+        "drawer: a variance is asked for as nothing",
+        "src/drawer.rs",
+        "        let granted = if variance.is_zero() {",
+        "        let granted = if true {",
+    ),
+    (
+        "drawer: a short close is asked for as its sign",
+        "src/drawer.rs",
+        "            let size = if variance.is_negative() { variance.checked_neg()? } else { variance };",
+        "            let size = variance;",
+    ),
+    (
+        "drawer: the open drawer shows what it should hold",
+        "src/views.rs",
+        """        if let Some(closed) = session.closed()
+            && let Some(variance) = closed.variance()""",
+        """        if let Some(closed) = session.closed().or(Some(&keel_domain::drawer::DrawerClosed { counted: sums.taken, expected: sums.taken }))
+            && let Some(variance) = closed.variance()""",
+    ),
+    (
+        "report: a Z prints with a drawer open",
+        "src/report.rs",
+        "        if kind == ReportKind::Z",
+        "        if kind == ReportKind::Z && false",
+    ),
+    (
+        "report: discounts on the whole order aren't counted",
+        "src/report.rs",
+        """                for discount in &ticket.discounts {
+                    discounts = discounts.checked_add(discount.amount.money)?;
+                }""",
+        "",
+    ),
+    (
+        "report: cash a drawer counted is reported as with no drawer",
+        "src/report.rs",
+        "            if !counted.contains(&payment) {",
+        "            if true {",
+    ),
+    (
+        "report: a dropped order with lines isn't voided",
+        "src/report.rs",
+        "            if order.state == OrderState::Voided || !loaded.lines().is_empty() {",
+        "            if order.state == OrderState::Voided {",
+    ),
+    (
+        "report: another day's orders are counted",
+        "src/report.rs",
+        """                if order.business_date != Some(date) {
+                    continue;
+                }
+                let ticket = self.ticket(order.id)?;""",
+        """                let ticket = self.ticket(order.id)?;""",
+    ),
 ]

@@ -11,8 +11,9 @@
 ([ADR-0030](./adr/0030-selling-at-the-register.md), accepted after its review): discounts with
 reasons and limits, prices set by hand, line notes, split checks and partial cash payments, and
 orders parked on one register and recalled on another through the hub, in the kernel, the
-bindings and the Android register. Step 3, cash (drawer sessions, paid-in and paid-out, a blind
-close, X and Z reports), is next.
+bindings and the Android register. Step 3, cash ([ADR-0031](./adr/0031-cash-drawers-and-day-reports.md)), is being built: drawer
+sessions, the blind close and the X and Z reports have landed in the kernel; the Android
+register's drawer is next.
 
 **Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
 ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
@@ -83,9 +84,57 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
-The MVP's step 3, cash ([roadmap §8](./roadmap.md#the-mvps-build-steps)), is next: drawer
-sessions, paid-in and paid-out, no-sale, a blind close with thresholds, and X and Z reports from
-local data. It is designed in an ADR first.
+The MVP's step 3, cash ([ADR-0031](./adr/0031-cash-drawers-and-day-reports.md), proposed), is
+built in four slices, each verified as it lands, then reviewed together:
+
+1. **The drawer session** (built 2026-11-12): five v1 schemas, the fold, the commands, and the
+   store's `drawers` projection.
+2. **Drawers at the register** (built 2026-11-12): the runtime's intents, cash counted into the
+   drawer as it is taken, the gates, the drawer's report, the bindings.
+3. **X and Z reports** (built 2026-11-12): the runtime's reports and their printing, the
+   bindings.
+4. **The shell**: the Android register's drawer. Next.
+
+Built in slice 1:
+
+- **`keel-domain`'s `drawer`**: a single-writer aggregate. `drawer.opened` (a float of zero or
+  more), `drawer.cash_taken` (a payment's cash, more than zero), `drawer.cash_moved` (paid in,
+  paid out or dropped, with a reason), `drawer.no_sale`, and `drawer.closed` (the count, zero or
+  more, and what was expected), each v1. What it should hold is its float and the cash taken
+  and paid in, less what was paid out and dropped. The fold counts every cash: an event from
+  another device, or after the close, applies and is reported; cash taken twice for a payment,
+  an amount in another currency, an event before the opening or elsewhere, a second opening or
+  close, don't apply and are reported. Commands refuse each.
+  - Known answers: a session from $150.00 to an $0.39 short close; every conflict, each named;
+    every refusal; the five payloads pinned as `cbor2` encodes them; every rule a payload breaks.
+  - Properties: the fold against a model reading the events as queries over their positions;
+    the commands, faulty ones included, against a model of the rules; the payload model knows
+    the five schemas, changed on their own.
+  - Planted bugs: 11, every one caught.
+- **`keel-store`'s `drawers` projection**: a session's device, state, business date, float,
+  sums, no-sales and close, found by device and state and by date; rebuilt from the events, no
+  new store schema; the golden stores open and build it. Known answers, including a session
+  closed after midnight staying on the day it opened. Planted bugs: 3, one caught only once the
+  test closed a session on the next day.
+
+Built in slices 2 and 3:
+
+- **`keel-runtime`**: `open_drawer` (one at a time), `pay_in`, `pay_out` (gated as
+  `drawer.paid_out` for its amount), `drop_cash`, `no_sale` (gated as `drawer.no_sale`, which
+  kicks the drawer), and `close_drawer`, blind: what the drawer should hold isn't shown until
+  the count is recorded, and a variance is gated as `drawer.variance` for its size; its report
+  prints. Every cash payment's cash goes into the device's open drawer in the payment's write;
+  with none open, the sale goes on. `day_report` and `print_report`, X or Z, for a business day:
+  orders, gross, discounts, comps, net, tax and total, each tender, voids (orders voided, or
+  dropped once they had lines), each drawer session of the day, and cash with no drawer open; a
+  Z waits for the device's drawers of the day to close.
+  - Known answers: a $150.00 float, two cash sales, $20.00 in, $100.00 dropped, $4.00 and $6.00
+    out each approved, $67.08 expected, $0.08 short; a $5.01 short close waiting for a manager;
+    a no-sale gated and kicking the drawer; a day of four sales, two discounted ($13.44 in all),
+    one with no drawer open, and a void; the Z waiting for the close; the printed report.
+- **`keel-ffi`**: the drawer's intents and view, the day report and its printing; a drawer
+  opened, taking cash, paid out on approval, closed and reported through the register.
+- **Verified**: `cargo fmt`, clippy with all features and none, the docs, every workspace test.
 
 ## Completed
 

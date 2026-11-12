@@ -6,11 +6,14 @@ use std::path::Path;
 
 use keel_domain::checkout::Checkout;
 use keel_domain::codec::{Change, IdSet, Note, ProfileVersion};
+use keel_domain::drawer::{CashTaken, Drawer, DrawerCommand};
 use keel_domain::order::{
     Channel, Check, Discount, DiscountApplied, DiscountValue, LineAdded, LineChanged, LineRepriced,
     LinesAllocated, Mode, Order, OrderCommand, OrderCreated, Reason,
 };
-use keel_domain::payment::{CashTendered, Payment, PaymentCaptured, PaymentCommand, Tender};
+use keel_domain::payment::{
+    CashTendered, Payment, PaymentCaptured, PaymentCommand, PaymentEvent, Tender,
+};
 use keel_domain::profile::{Choice, Member, Profile};
 use keel_domain::refs::Variant;
 use keel_domain::schema::DomainEvent;
@@ -72,7 +75,7 @@ pub struct Runtime<S, E, C, I> {
     pub(crate) device: Id<Device>,
     /// The key the device signs with, which its roster must name.
     pub(crate) key: keel_events::keys::PublicKey,
-    locale: Locale,
+    pub(crate) locale: Locale,
     pub(crate) member: Option<Id<TeamMember>>,
     /// Wrong PINs, and the lock they put on PIN entry.
     pub(crate) pins: crate::staff::PinGuard,
@@ -201,7 +204,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
 
     /// What the events of an intent made now record: the business date, the team member signed
     /// in, and a correlation of their own.
-    fn meta(&mut self) -> Result<Meta, RuntimeError> {
+    pub(crate) fn meta(&mut self) -> Result<Meta, RuntimeError> {
         let member = self.member.ok_or(RuntimeError::NotSignedIn)?;
         // A device writes only once its log is settled, or it could fork it, unless it has waited
         // for that and must sell as an island (ADR-0019).
@@ -485,7 +488,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     }
 
     /// A stream for the approval `granted`, if there is one.
-    fn approval_stream(
+    pub(crate) fn approval_stream(
         &mut self,
         granted: Option<&Granted>,
     ) -> Result<Option<Id<AggregateMarker>>, RuntimeError> {
@@ -596,6 +599,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             self.member.and_then(|member| self.profile.member(member)).map(|m| m.name.clone());
         let closed_at = self.profile.business_day().local_time(meta.now)?;
         let payments = self.payments(order)?;
+        let drawer_session = self.open_drawer_id()?;
         let (location, device) = (self.location(), self.device);
         let (profile, locale) = (&self.profile, self.locale);
         self.store.write(|w| {
@@ -639,6 +643,17 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 let event = paying.decide(location, PaymentCommand::Capture(captured))?;
                 let captured = append(w, payment.cast(), &event, &meta)?;
                 paid.push(w.load(Payment::new(payment))?);
+                // The cash goes into the device's open drawer, in the same write: the payment and
+                // the drawer agree, or neither is written (ADR-0031). With none open, the sale goes
+                // on, and the reports say so.
+                if let (Some(open), PaymentEvent::Captured(captured)) = (drawer_session, &event)
+                    && let Some(amount) = captured.received().filter(|amount| amount.is_positive())
+                {
+                    let session = w.load(Drawer::new(open))?;
+                    let taken = DrawerCommand::TakeCash(CashTaken { payment, amount });
+                    let event = session.decide(location, device, taken)?;
+                    append(w, open.cast(), &event, &meta)?;
+                }
                 // The drawer opens when cash changed hands.
                 let kick = Doc::new(vec![Block::DrawerKick])?;
                 w.enqueue(
@@ -872,7 +887,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         })
     }
 
-    fn location(&self) -> Id<keel_events::envelope::Location> {
+    pub(crate) fn location(&self) -> Id<keel_events::envelope::Location> {
         self.profile.data().location
     }
 

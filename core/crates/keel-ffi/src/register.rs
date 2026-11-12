@@ -26,8 +26,9 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use crate::error::KeelError;
 use crate::records::{
-    Amount, CashPaid, Choice, Item, Job, Member, Menu, Mode, NewDevice, Outcome, PrintJob, Printer,
-    RegisterConfig, Resolution, SyncKit, SyncState, Ticket, Waits,
+    Amount, CashMovement, CashPaid, Choice, DayReport, DrawerView, Item, Job, Member, Menu, Mode,
+    NewDevice, Outcome, PrintJob, Printer, RegisterConfig, ReportKind, Resolution, SyncKit,
+    SyncState, Ticket, Waits,
 };
 
 /// The runtime as a device runs it: the system's clock and the operating system's randomness,
@@ -469,6 +470,124 @@ impl Register {
     ) -> Result<Ticket, KeelError> {
         let (order, line, to) = (id(&order)?, id(&line)?, to.as_deref().map(id).transpose()?);
         self.with(|runtime| runtime.move_line(order, line, to)).map(|ticket| (&ticket).into())
+    }
+
+    /// This register's open drawer, if one is open (ADR-0031): what it should hold is left out,
+    /// for the close is blind.
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read.
+    pub fn drawer(&self) -> Result<Option<DrawerView>, KeelError> {
+        self.with(|runtime| runtime.drawer()).map(|view| view.as_ref().map(DrawerView::from))
+    }
+
+    /// Opens this register's drawer with `float`, in the location's currency's minor units.
+    ///
+    /// # Errors
+    /// [`KeelError::Refused`] if a drawer is open already; and as [`Register::add_item`].
+    pub fn open_drawer(&self, float: i64) -> Result<DrawerView, KeelError> {
+        self.with(|runtime| {
+            let currency = runtime.profile().data().currency;
+            runtime.open_drawer(Money::from_minor(float, currency))
+        })
+        .map(|view| (&view).into())
+    }
+
+    /// Moves `amount`, in minor units, in or out of the drawer, for `reason`, with an optional
+    /// `note`: paid in, paid out (which a manager approves beyond the role), or dropped to the
+    /// safe.
+    ///
+    /// # Errors
+    /// [`KeelError::Refused`] with no drawer open; [`KeelError::ApprovalRequired`] if it needs an
+    /// approval; and as [`Register::add_item`].
+    pub fn move_cash(
+        &self,
+        movement: CashMovement,
+        amount: i64,
+        reason: String,
+        note: Option<String>,
+    ) -> Result<DrawerView, KeelError> {
+        let reason = self::reason(&reason, note)?;
+        self.with(|runtime| {
+            let amount = Money::from_minor(amount, runtime.profile().data().currency);
+            match movement {
+                CashMovement::PaidIn => runtime.pay_in(amount, reason),
+                CashMovement::PaidOut => runtime.pay_out(amount, reason),
+                CashMovement::Drop => runtime.drop_cash(amount, reason),
+            }
+        })
+        .map(|view| (&view).into())
+    }
+
+    /// Opens the drawer with no sale, for `reason`, with an optional `note`.
+    ///
+    /// # Errors
+    /// As [`Register::move_cash`].
+    pub fn no_sale(&self, reason: String, note: Option<String>) -> Result<DrawerView, KeelError> {
+        let reason = self::reason(&reason, note)?;
+        self.with(|runtime| runtime.no_sale(reason)).map(|view| (&view).into())
+    }
+
+    /// Closes the drawer with what was `counted`, in minor units, blind; its report prints.
+    ///
+    /// # Errors
+    /// As [`Register::move_cash`].
+    pub fn close_drawer(&self, counted: i64) -> Result<DrawerView, KeelError> {
+        self.with(|runtime| {
+            let counted = Money::from_minor(counted, runtime.profile().data().currency);
+            runtime.close_drawer(counted)
+        })
+        .map(|view| (&view).into())
+    }
+
+    /// The report of today's business day, or of `date` (`YYYY-MM-DD`) when given (ADR-0031).
+    ///
+    /// # Errors
+    /// [`KeelError::Refused`] for a Z report while this register's drawer of the day is open;
+    /// [`KeelError::InvalidArgument`] for a date that isn't one; [`KeelError::Device`] if the store
+    /// can't be read.
+    pub fn day_report(
+        &self,
+        kind: ReportKind,
+        date: Option<String>,
+    ) -> Result<DayReport, KeelError> {
+        let date = date
+            .map(|date| {
+                date.parse().map_err(|_| KeelError::invalid(format!("{date:?} isn't a date")))
+            })
+            .transpose()?;
+        self.with(|runtime| {
+            let date = match date {
+                Some(date) => date,
+                None => runtime.today()?,
+            };
+            runtime.day_report(date, kind.into())
+        })
+        .map(|report| (&report).into())
+    }
+
+    /// Prints the report of today's business day, or of `date` when given: its print job.
+    ///
+    /// # Errors
+    /// As [`Register::day_report`].
+    pub fn print_report(
+        &self,
+        kind: ReportKind,
+        date: Option<String>,
+    ) -> Result<String, KeelError> {
+        let date = date
+            .map(|date| {
+                date.parse().map_err(|_| KeelError::invalid(format!("{date:?} isn't a date")))
+            })
+            .transpose()?;
+        self.with(|runtime| {
+            let date = match date {
+                Some(date) => date,
+                None => runtime.today()?,
+            };
+            runtime.print_report(date, kind.into())
+        })
+        .map(|job| job.to_string())
     }
 
     /// The ticket of `order`.
