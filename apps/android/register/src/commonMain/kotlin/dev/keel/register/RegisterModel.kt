@@ -23,7 +23,23 @@ enum class Screen {
 
     /** The printer: its address, and its jobs. */
     PRINTER,
+
+    /** The drawer: its movements, its close, and the day's reports (ADR-0031). */
+    DRAWER,
 }
+
+/**
+ * What the drawer screen is typing an amount for: a float to open it, a movement, or the blind
+ * count to close it, in minor units, as a cash keypad types it.
+ */
+data class CashEntry(
+    val purpose: CashPurpose,
+    val reason: String = CASH_REASONS.first().code,
+    val typed: Amount? = null,
+)
+
+/** What an amount typed on the drawer screen is for. */
+enum class CashPurpose { FLOAT, PAID_IN, PAID_OUT, DROP, COUNT }
 
 /**
  * Paying [order] in cash, or one [check] of it when it is split: what it owes, the amounts
@@ -94,6 +110,16 @@ data class RegisterState(
     val price: PriceSheet? = null,
     /** The notes sheet open for a line, if any. */
     val notes: NotesSheet? = null,
+    /** This register's drawer as last read; null with none open. */
+    val drawer: Drawer? = null,
+    /** The last drawer closed, its report, until another opens. */
+    val closedDrawer: Drawer? = null,
+    /** An amount being typed on the drawer screen. */
+    val cash: CashEntry? = null,
+    /** The day's report, as last read. */
+    val report: DayReport? = null,
+    /** Whether the register asks to open the drawer: once someone signs in and none is open. */
+    val askDrawer: Boolean = false,
     /** The change handed back for the last order paid, until the next is begun. */
     val change: String? = null,
     val orders: List<Ticket> = emptyList(),
@@ -206,12 +232,91 @@ class RegisterModel(
         // it again.
         val version = version()
         val pages = till.menu()
+        // Once someone signs in, the register asks to open the drawer if none is open (ADR-0031).
+        val drawer = till.drawer()
         mutable.update {
             it.copy(
                 screen = Screen.REGISTER, member = member, pages = pages, page = 0,
-                profileVersion = version, pinFor = null,
+                profileVersion = version, pinFor = null, drawer = drawer, askDrawer = drawer == null,
             )
         }
+    }
+
+    /** Shows the drawer screen, and reads the drawer. */
+    fun showDrawer() = perform {
+        val drawer = till.drawer()
+        mutable.update { it.copy(screen = Screen.DRAWER, drawer = drawer, askDrawer = false) }
+    }
+
+    /** Not now: the register stops asking to open the drawer until the next sign-in. */
+    fun dismissDrawer() = mutable.update { it.copy(askDrawer = false) }
+
+    /** Begins typing an amount for [purpose]. */
+    fun beginCash(purpose: CashPurpose) = mutable.update {
+        it.copy(cash = CashEntry(purpose), askDrawer = false, error = null)
+    }
+
+    /** The reason for the movement being typed. */
+    fun cashReason(code: String) = mutable.update { state -> state.copy(cash = state.cash?.copy(reason = code)) }
+
+    /** Types [digit] into the amount, in minor units. */
+    fun typeCashDigit(digit: Int) = perform {
+        val entry = current.cash ?: return@perform
+        val typed = (entry.typed?.minor ?: 0) * 10 + digit.coerceIn(0, 9)
+        if (typed > MAX_TYPED) return@perform
+        val amount = till.amount(typed)
+        mutable.update { state -> state.copy(cash = state.cash?.copy(typed = amount)) }
+    }
+
+    /** Takes the last digit typed off the amount. */
+    fun eraseCashDigit() = perform {
+        val entry = current.cash ?: return@perform
+        val typed = (entry.typed?.minor ?: 0) / 10
+        val amount = if (typed == 0L) null else till.amount(typed)
+        mutable.update { state -> state.copy(cash = state.cash?.copy(typed = amount)) }
+    }
+
+    /** Closes the keypad without doing anything. */
+    fun cancelCash() = mutable.update { it.copy(cash = null) }
+
+    /**
+     * Does what the amount was typed for, nothing typed being zero: opens the drawer with it as
+     * the float, moves it, or closes the drawer with it as the count. Closed at the tap, as the
+     * other sheets are, and tried again as it was once a manager approves.
+     */
+    fun confirmCash() {
+        val entry = current.cash ?: return
+        val minor = entry.typed?.minor ?: 0
+        mutable.update { it.copy(cash = null) }
+        perform {
+            when (entry.purpose) {
+                CashPurpose.FLOAT -> mutable.update { it.copy(drawer = till.openDrawer(minor), closedDrawer = null) }
+                CashPurpose.PAID_IN -> mutable.update { it.copy(drawer = till.moveCash(CashMovement.PAID_IN, minor, entry.reason)) }
+                CashPurpose.PAID_OUT -> mutable.update { it.copy(drawer = till.moveCash(CashMovement.PAID_OUT, minor, entry.reason)) }
+                CashPurpose.DROP -> mutable.update { it.copy(drawer = till.moveCash(CashMovement.DROP, minor, entry.reason)) }
+                CashPurpose.COUNT -> {
+                    val closed = till.closeDrawer(minor)
+                    mutable.update { it.copy(drawer = null, closedDrawer = closed) }
+                }
+            }
+        }
+    }
+
+    /** Opens the drawer with no sale, for [reason]. */
+    fun noSale(reason: String) = perform {
+        mutable.update { it.copy(drawer = till.noSale(reason)) }
+    }
+
+    /** Reads today's X or Z report. */
+    fun showReport(z: Boolean) = perform {
+        mutable.update { it.copy(report = till.dayReport(z)) }
+    }
+
+    /** Prints today's X or Z report. */
+    fun printReport(z: Boolean) = perform {
+        till.printReport(z)
+        val jobs = till.printJobs()
+        mutable.update { it.copy(jobs = jobs) }
     }
 
     /**

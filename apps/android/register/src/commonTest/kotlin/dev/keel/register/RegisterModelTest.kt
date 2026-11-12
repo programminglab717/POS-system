@@ -722,4 +722,85 @@ class RegisterModelTest {
         testScheduler.advanceUntilIdle()
         assertEquals(listOf(order), model.state.value.orders.map { it.order })
     }
+
+    @Test
+    fun the_drawer_opens_with_a_float_takes_cash_and_closes_blind() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        assertEquals(true, model.state.value.askDrawer, "no drawer open: the register asks")
+        // A float of $100.00, typed.
+        model.beginCash(CashPurpose.FLOAT)
+        for (digit in listOf(1, 0, 0, 0, 0)) model.typeCashDigit(digit)
+        testScheduler.advanceUntilIdle()
+        model.confirmCash()
+        testScheduler.advanceUntilIdle()
+        assertEquals("$100.00", model.state.value.drawer?.float)
+        assertEquals(false, model.state.value.askDrawer)
+        // A sale in cash goes into it.
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.openTender()
+        testScheduler.advanceUntilIdle()
+        model.pay(model.state.value.tender!!.offers[0])
+        testScheduler.advanceUntilIdle()
+        model.showDrawer()
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.DRAWER, model.state.value.screen)
+        assertEquals("$3.00", model.state.value.drawer?.taken)
+        assertNull(model.state.value.drawer?.expected, "the close is blind")
+        // $5.00 dropped, then a blind count of $97.50: $0.50 short.
+        model.beginCash(CashPurpose.DROP)
+        model.cashReason("safe_drop")
+        for (digit in listOf(5, 0, 0)) model.typeCashDigit(digit)
+        testScheduler.advanceUntilIdle()
+        model.confirmCash()
+        testScheduler.advanceUntilIdle()
+        assertEquals("$5.00", model.state.value.drawer?.dropped)
+        model.beginCash(CashPurpose.COUNT)
+        for (digit in listOf(9, 7, 5, 0)) model.typeCashDigit(digit)
+        testScheduler.advanceUntilIdle()
+        model.confirmCash()
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.drawer)
+        val closed = model.state.value.closedDrawer!!
+        assertEquals(Triple("$98.00", "$97.50", "-$0.50"), Triple(closed.expected, closed.counted, closed.variance))
+        // The Z report, once closed.
+        model.showReport(z = true)
+        testScheduler.advanceUntilIdle()
+        assertEquals(true, model.state.value.report?.z)
+        assertEquals(1, model.state.value.report?.drawers?.size)
+        model.printReport(z = true)
+        testScheduler.advanceUntilIdle()
+        assertEquals(true, model.state.value.jobs.any { it.job == "report:z" })
+    }
+
+    @Test
+    fun a_paid_out_beyond_the_cashier_waits_for_a_manager_and_goes_out_as_asked() = runTest {
+        val till = FakeTill().apply {
+            pins = mapOf("alex" to "1234")
+            paidOutLimit = 0
+        }
+        val model = signedIn(object : Till by till {
+            override fun team() = listOf(Member("sam", "Sam"), Member("alex", "Alex", "Manager", true))
+        })
+        model.beginCash(CashPurpose.FLOAT)
+        model.confirmCash()
+        testScheduler.advanceUntilIdle()
+        assertEquals("$0.00", model.state.value.drawer?.float, "nothing typed is a float of nothing")
+        model.beginCash(CashPurpose.PAID_OUT)
+        model.cashReason("supplier")
+        for (digit in listOf(2, 0, 0)) model.typeCashDigit(digit)
+        testScheduler.advanceUntilIdle()
+        model.confirmCash()
+        testScheduler.advanceUntilIdle()
+        assertEquals("drawer.paid_out", model.state.value.approval?.action)
+        model.chooseApprover(model.approvers().single())
+        model.approve("1234")
+        testScheduler.advanceUntilIdle()
+        assertEquals("$2.00", model.state.value.drawer?.paidOut)
+        // The Z waits for the drawer to close.
+        model.showReport(z = true)
+        testScheduler.advanceUntilIdle()
+        assertEquals("Close the drawer first.", model.state.value.error)
+    }
 }

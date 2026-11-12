@@ -43,6 +43,12 @@ import dev.keel.kernel.TicketLine as KernelLine
 import dev.keel.kernel.TicketCheck as KernelCheck
 import dev.keel.register.TicketCheck
 import dev.keel.register.DiscountAsked
+import dev.keel.register.CashMovement
+import dev.keel.register.DayReport
+import dev.keel.register.Drawer
+import dev.keel.kernel.CashMovement as KernelMovement
+import dev.keel.kernel.DrawerView as KernelDrawer
+import dev.keel.kernel.ReportKind as KernelReportKind
 import dev.keel.register.TicketDiscount
 import dev.keel.register.percentWords
 import dev.keel.register.reasonWords
@@ -149,6 +155,48 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
         call { register.moveLine(order, line, to).toTicket() }
 
     override fun ticket(order: String): Ticket = call { register.ticket(order).toTicket() }
+
+    override fun drawer(): Drawer? = call { register.drawer()?.toDrawer() }
+
+    override fun openDrawer(floatMinor: Long): Drawer = call { register.openDrawer(floatMinor).toDrawer() }
+
+    override fun moveCash(movement: CashMovement, amountMinor: Long, reason: String): Drawer = call {
+        val kind = when (movement) {
+            CashMovement.PAID_IN -> KernelMovement.PAID_IN
+            CashMovement.PAID_OUT -> KernelMovement.PAID_OUT
+            CashMovement.DROP -> KernelMovement.DROP
+        }
+        register.moveCash(kind, amountMinor, reason, null).toDrawer()
+    }
+
+    override fun noSale(reason: String): Drawer = call { register.noSale(reason, null).toDrawer() }
+
+    override fun closeDrawer(countedMinor: Long): Drawer = call { register.closeDrawer(countedMinor).toDrawer() }
+
+    override fun dayReport(z: Boolean): DayReport = call {
+        val report = register.dayReport(if (z) KernelReportKind.Z else KernelReportKind.X, null)
+        DayReport(
+            z = z,
+            date = report.date,
+            orders = report.orders.toLong(),
+            gross = report.gross.text,
+            discounts = report.discounts.text,
+            net = report.net.text,
+            tax = report.tax.text,
+            total = report.total.text,
+            tenders = report.tenders.map { tender ->
+                val name = if (tender.tender == "cash") "Cash" else "Card"
+                "$name (${tender.payments})" to tender.amount.text
+            },
+            voided = report.voided.toLong(),
+            drawers = report.drawers.map { it.toDrawer() },
+            withoutDrawer = report.cashWithoutDrawer.takeIf { report.paymentsWithoutDrawer > 0uL }
+                ?.let { "Cash with no drawer (${report.paymentsWithoutDrawer})" to it.text },
+        )
+    }
+
+    override fun printReport(z: Boolean) =
+        call { register.printReport(if (z) KernelReportKind.Z else KernelReportKind.X, null) }.let { }
 
     override fun recall(order: String): Ticket = call { register.recall(order).toTicket() }
 
@@ -285,6 +333,19 @@ internal fun words(refused: KeelException): String = when (refused) {
 }
 
 private fun KernelAmount.toAmount() = Amount(minor, text)
+
+private fun KernelDrawer.toDrawer() = Drawer(
+    open = open,
+    float = float.text,
+    taken = taken.text,
+    paidIn = paidIn.text,
+    paidOut = paidOut.text,
+    dropped = dropped.text,
+    noSales = noSales.toLong(),
+    expected = expected?.text,
+    counted = counted?.text,
+    variance = variance?.text,
+)
 
 private const val MILLION = 1_000_000L
 

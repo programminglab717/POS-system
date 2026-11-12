@@ -90,7 +90,11 @@ class FakeTill : Till {
     }
 
     override fun approvers() =
-        if (voidNeedsApproval || discountLimit != null || priceNeedsApproval) listOf("alex") else emptyList()
+        if (voidNeedsApproval || discountLimit != null || priceNeedsApproval || paidOutLimit != null) {
+            listOf("alex")
+        } else {
+            emptyList()
+        }
 
     override fun approve(approver: String, pin: String) {
         if (pin != pins[approver].orEmpty()) throw TillException("That PIN isn't right.")
@@ -250,6 +254,82 @@ class FakeTill : Till {
         return ticket(order)
     }
 
+    /** The drawer: its float and movements in cents, and its close; and what pays out without a manager. */
+    private var drawerFloat: Long? = null
+    private var drawerIn = 0L
+    private var drawerOut = 0L
+    private var drawerDropped = 0L
+    private var drawerSales = 0L
+    private var drawerNoSales = 0L
+    var paidOutLimit: Long? = null
+    val closedDrawers = mutableListOf<Drawer>()
+
+    private fun drawerView(closedWith: Long? = null): Drawer {
+        val float = drawerFloat ?: 0
+        val expected = float + drawerSales + drawerIn - drawerOut - drawerDropped
+        return Drawer(
+            open = closedWith == null, float = money(float), taken = money(drawerSales), paidIn = money(drawerIn),
+            paidOut = money(drawerOut), dropped = money(drawerDropped), noSales = drawerNoSales,
+            expected = closedWith?.let { money(expected) }, counted = closedWith?.let(::money),
+            variance = closedWith?.let { money(it - expected) },
+        )
+    }
+
+    override fun drawer(): Drawer? = drawerFloat?.let { drawerView() }
+
+    override fun openDrawer(floatMinor: Long): Drawer {
+        if (drawerFloat != null) throw TillException("The drawer is open already.")
+        drawerFloat = floatMinor
+        drawerIn = 0; drawerOut = 0; drawerDropped = 0; drawerSales = 0; drawerNoSales = 0
+        return drawerView()
+    }
+
+    override fun moveCash(movement: CashMovement, amountMinor: Long, reason: String): Drawer {
+        if (drawerFloat == null) throw TillException("No drawer is open.")
+        when (movement) {
+            CashMovement.PAID_IN -> drawerIn += amountMinor
+            CashMovement.DROP -> drawerDropped += amountMinor
+            CashMovement.PAID_OUT -> {
+                val limit = paidOutLimit
+                if (limit != null && amountMinor > limit) {
+                    if (approvedBy == null) throw TillException("Paying out needs a manager's approval.", approval = "drawer.paid_out")
+                    approvedBy = null
+                }
+                drawerOut += amountMinor
+            }
+        }
+        return drawerView()
+    }
+
+    override fun noSale(reason: String): Drawer {
+        if (drawerFloat == null) throw TillException("No drawer is open.")
+        drawerNoSales += 1
+        return drawerView()
+    }
+
+    override fun closeDrawer(countedMinor: Long): Drawer {
+        if (drawerFloat == null) throw TillException("No drawer is open.")
+        val closed = drawerView(countedMinor)
+        closedDrawers += closed
+        drawerFloat = null
+        return closed
+    }
+
+    override fun dayReport(z: Boolean): DayReport {
+        if (z && drawerFloat != null) throw TillException("Close the drawer first.")
+        val paid = states.filterValues { it == OrderState.CLOSED }.keys
+        return DayReport(
+            z = z, date = "2026-11-12", orders = paid.size.toLong(), gross = money(0), discounts = money(0),
+            net = money(0), tax = money(0), total = money(0), tenders = emptyList(), voided = 0,
+            drawers = closedDrawers.toList() + listOfNotNull(drawer()),
+        )
+    }
+
+    override fun printReport(z: Boolean) {
+        dayReport(z)
+        jobs += PrintJob("report:${if (z) "z" else "x"}", JobKind.RECEIPT, JobState.QUEUED, 0)
+    }
+
     override fun abandon(order: String): Ticket {
         if (voidNeedsApproval && open(order).isNotEmpty()) {
             if (approvedBy == null) throw TillException("Dropping it needs a manager.", approval = "order.void")
@@ -270,6 +350,7 @@ class FakeTill : Till {
     override fun payCash(order: String, tenderedMinor: Long): Paid {
         val due = due(order)
         if (tenderedMinor < due) throw TillException("That's short: ${money(due)} is due.")
+        if (drawerFloat != null) drawerSales += due
         states[order] = OrderState.CLOSED
         jobs += PrintJob("drawer:$order", JobKind.DRAWER, JobState.QUEUED, 0)
         jobs += PrintJob("receipt:$order", JobKind.RECEIPT, JobState.QUEUED, 0)

@@ -98,6 +98,27 @@ interface Till {
     /** Takes [order] from the device that owns it without the hub, on a manager's word. */
     fun takeOver(order: String): Ticket
 
+    /** This register's open drawer, if one is open (ADR-0031). */
+    fun drawer(): Drawer? = null
+
+    /** Opens this register's drawer with [floatMinor] of the location's currency. */
+    fun openDrawer(floatMinor: Long): Drawer
+
+    /** Moves [amountMinor] in or out of the drawer, as [movement], for [reason]. */
+    fun moveCash(movement: CashMovement, amountMinor: Long, reason: String): Drawer
+
+    /** Opens the drawer with no sale, for [reason]. */
+    fun noSale(reason: String): Drawer
+
+    /** Closes the drawer with what was [countedMinor], blind: its report prints. */
+    fun closeDrawer(countedMinor: Long): Drawer
+
+    /** Today's X or Z report: Z once the drawers of the day are closed. */
+    fun dayReport(z: Boolean): DayReport
+
+    /** Prints today's X or Z report. */
+    fun printReport(z: Boolean)
+
     /** This register's device: the owner a ticket names when this register owns it. */
     fun deviceId(): String = ""
 
@@ -333,6 +354,50 @@ fun reasonWords(code: String): String =
 
 /** What paying cash did: the change to hand back, and the ticket afterwards. */
 data class Paid(val change: String, val ticket: Ticket)
+
+/** The register's drawer (ADR-0031): what moved through it; once closed, what it should have held, the count and the variance. */
+data class Drawer(
+    val open: Boolean,
+    val float: String,
+    val taken: String,
+    val paidIn: String,
+    val paidOut: String,
+    val dropped: String,
+    val noSales: Long,
+    val expected: String? = null,
+    val counted: String? = null,
+    val variance: String? = null,
+)
+
+/** How cash moves in or out of a drawer other than by a sale. */
+enum class CashMovement { PAID_IN, PAID_OUT, DROP }
+
+/** A business day's report, in words and amounts as the register shows them. */
+data class DayReport(
+    val z: Boolean,
+    val date: String,
+    val orders: Long,
+    val gross: String,
+    val discounts: String,
+    val net: String,
+    val tax: String,
+    val total: String,
+    /** Each tender: "Cash (3)" and what it took. */
+    val tenders: List<Pair<String, String>>,
+    val voided: Long,
+    val drawers: List<Drawer>,
+    /** Cash taken with no drawer open, if any: "Cash with no drawer (1)" and how much. */
+    val withoutDrawer: Pair<String, String>? = null,
+)
+
+/** The reasons the register offers for cash paid in or out, dropped, or a no-sale. */
+val CASH_REASONS = listOf(
+    DiscountReason("change", "Change"),
+    DiscountReason("supplier", "Supplier"),
+    DiscountReason("safe_drop", "Safe drop"),
+    DiscountReason("change_for_customer", "Change for a customer"),
+    DiscountReason("other", "Other"),
+)
 
 /** A refusal the cashier sees, in words for them. */
 class TillException(

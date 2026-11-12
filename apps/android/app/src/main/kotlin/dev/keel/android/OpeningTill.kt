@@ -1,6 +1,7 @@
 package dev.keel.android
 
 import dev.keel.register.Chosen
+import dev.keel.register.CashMovement
 import dev.keel.register.DiscountAsked
 import dev.keel.register.Till
 
@@ -38,6 +39,13 @@ class OpeningTill(open: () -> Till) : Till {
     override fun splitEvenly(order: String, ways: Int) = till.splitEvenly(order, ways)
     override fun moveLine(order: String, line: String, to: String?) = till.moveLine(order, line, to)
     override fun recall(order: String) = till.recall(order)
+    override fun drawer() = till.drawer()
+    override fun openDrawer(floatMinor: Long) = till.openDrawer(floatMinor)
+    override fun moveCash(movement: CashMovement, amountMinor: Long, reason: String) = till.moveCash(movement, amountMinor, reason)
+    override fun noSale(reason: String) = till.noSale(reason)
+    override fun closeDrawer(countedMinor: Long) = till.closeDrawer(countedMinor)
+    override fun dayReport(z: Boolean) = till.dayReport(z)
+    override fun printReport(z: Boolean) = till.printReport(z)
     override fun takeOver(order: String) = till.takeOver(order)
     override fun deviceId() = till.deviceId()
     override fun abandon(order: String) = till.abandon(order)
