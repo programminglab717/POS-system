@@ -6,14 +6,19 @@
 
 ## Where we are
 
-**The MVP, steps 1 and 2 of 10, are done.** Step 1, staff, roles and approvals
+**The MVP, steps 1 to 3 of 10, are done.** Step 1, staff, roles and approvals
 ([ADR-0029](./adr/0029-staff-roles-and-approvals.md)); step 2, selling at the register
-([ADR-0030](./adr/0030-selling-at-the-register.md), accepted after its review): discounts with
-reasons and limits, prices set by hand, line notes, split checks and partial cash payments, and
-orders parked on one register and recalled on another through the hub, in the kernel, the
-bindings and the Android register. Step 3, cash ([ADR-0031](./adr/0031-cash-drawers-and-day-reports.md)), is being built: drawer
-sessions, the blind close and the X and Z reports have landed in the kernel and the Android
-register; its review is next.
+([ADR-0030](./adr/0030-selling-at-the-register.md)): discounts with reasons and limits, prices
+set by hand, line notes, split checks and partial cash payments, and orders parked on one
+register and recalled on another through the hub; step 3, cash
+([ADR-0031](./adr/0031-cash-drawers-and-day-reports.md), accepted after its review): drawer
+sessions with a float, paid in, paid out, safe drops and no-sales, a blind close, and X and Z
+reports from local data. Each in the kernel, the bindings and the Android register. Step 4,
+returns and refunds, is next.
+
+**CI is out of minutes for the month**: the work since is verified here as CI would verify it,
+but for the app's instrumented tests, which need an emulator. Step 3 changed them, and fixed
+three that had failed in CI since step 2: they run when CI does.
 
 **Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
 ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
@@ -84,8 +89,18 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
-The MVP's step 3, cash ([ADR-0031](./adr/0031-cash-drawers-and-day-reports.md), proposed), is
-built in four slices, each verified as it lands, then reviewed together:
+The MVP's step 4, returns and refunds, linked to the original lines (B-09 basic, I-08): to be
+designed in an ADR, then built in slices.
+
+Waiting on CI's minutes: the Android app's instrumented tests, step 3's drawer test among them,
+and the three of step 2 the scrolling ticket pane should mend.
+
+## Completed
+
+### Cash: MVP step 3 (2026-11-12)
+
+The MVP's step 3, cash ([ADR-0031](./adr/0031-cash-drawers-and-day-reports.md), accepted after
+its review), was built in four slices, each verified as it landed, then reviewed together:
 
 1. **The drawer session** (built 2026-11-12): five v1 schemas, the fold, the commands, and the
    store's `drawers` projection.
@@ -93,8 +108,7 @@ built in four slices, each verified as it lands, then reviewed together:
    drawer as it is taken, the gates, the drawer's report, the bindings.
 3. **X and Z reports** (built 2026-11-12): the runtime's reports and their printing, the
    bindings.
-4. **The shell** (built 2026-11-12): the Android register's drawer and reports. Then the
-   review: next.
+4. **The shell** (built 2026-11-12): the Android register's drawer and reports.
 
 Built in slice 1:
 
@@ -181,8 +195,11 @@ them; ADR-0031's As built lists what it found and what remains. Fixed, each with
   three tests tapped buttons below the screen. The pane scrolls; the tests scroll to what they
   tap. Five of `keel-ffi`'s planted bugs, gone stale in step 2, failed CI's staleness check from
   then on too: each is aimed again, and caught.
-
-## Completed
+- **Verified**, as CI would, CI's minutes being spent: `cargo fmt`, clippy with all features and
+  none, the docs, every workspace test with the exhaustive sweeps, the wasm build, the planted
+  bugs' staleness check, the Kotlin bindings' tests, `:register:jvmTest`,
+  `:kernel:testDebugUnitTest` and the app's build with its instrumented tests. Those tests wait
+  for an emulator: none runs here.
 
 ### Selling at the register: MVP step 2 (2026-11-11 to 2026-11-12)
 

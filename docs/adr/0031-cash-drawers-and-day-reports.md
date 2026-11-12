@@ -1,6 +1,6 @@
 # ADR-0031: Cash: drawer sessions as single-writer aggregates, a blind close, and X and Z reports from local data
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-12
 
 ## Context
@@ -141,6 +141,12 @@ Android shell each by a reviewer who hadn't built them. What the review found, a
 - **CI's emulator tests had failed since step 2**: on a phone, the ticket pane didn't scroll, and
   a line's buttons, Split and Drop order were below the screen, where a tap hit nothing. The
   pane scrolls, and the tests scroll to what they tap.
+
+Verified here as CI would: formatting, both lint passes, the docs, every workspace test with the
+exhaustive sweeps, the wasm build, the planted bugs (every one aimed at the drawer and the
+reports caught), the Kotlin bindings' tests, the register's JVM tests and the app's build. The
+app's instrumented tests are built but not yet run on an emulator: CI's minutes for the month
+are spent. They run when CI does.
 
 Gaps that remain:
 
