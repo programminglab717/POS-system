@@ -285,7 +285,8 @@ designed in an ADR of its own when it begins, built in slices, and reviewed:
    park and recall, open-price items (B-03…B-06, B-14). *Status: designed in
    [ADR-0030](./adr/0030-selling-at-the-register.md); done 2026-11-12, reviewed.*
 3. **Cash**: drawer sessions, paid-in and paid-out, no-sale, blind close with thresholds, and
-   X/Z reports from local data (N-01, N-02, O-02).
+   X/Z reports from local data (N-01, N-02, O-02). *Status: designed in
+   [ADR-0031](./adr/0031-cash-drawers-and-day-reports.md).*
 4. **Returns and refunds**, linked to the original lines (B-09 basic, I-08).
 5. **Availability**: global 86 in-store, within 10 s (G-06).
 6. **The kitchen**: routing to stations, kitchen tickets and a KDS, ticket aging, fallbacks
