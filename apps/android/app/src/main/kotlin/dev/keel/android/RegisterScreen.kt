@@ -202,6 +202,17 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                         TextButton(onClick = { model.openPrice(line) }, modifier = Modifier.testTag("price:${line.line}")) { Text("Price") }
                         TextButton(onClick = { model.openNotes(line) }, modifier = Modifier.testTag("note:${line.line}")) { Text("Note") }
                     }
+                    // A line moves to a check of its own, or to another open check of a split order.
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        for (check in ticket?.checks.orEmpty().filter { it.open && it.lines.none { on -> on.line == line.line } }) {
+                            TextButton(onClick = { model.moveLine(line, check.check) }, modifier = Modifier.testTag("move:${check.number}:${line.line}")) {
+                                Text("To check ${check.number}")
+                            }
+                        }
+                        TextButton(onClick = { model.moveLine(line, null) }, modifier = Modifier.testTag("move:new:${line.line}")) {
+                            Text("Own check")
+                        }
+                    }
                 }
             }
         }
@@ -211,12 +222,37 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
             for (discount in ticket.discounts) DiscountRow(discount, model)
             ticket.tax?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             Text("Total ${ticket.total}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("total"))
+            // A split order is paid check by check.
+            for (check in ticket.checks) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Check ${check.number}: ${check.total}" + if (check.open) "" else " (paid)",
+                        Modifier.weight(1f).testTag("check:${check.number}"),
+                    )
+                    if (check.open) {
+                        TextButton(onClick = { model.openTender(check) }, modifier = Modifier.testTag("pay:check:${check.number}")) {
+                            Text("Pay ${check.cashDue}")
+                        }
+                    }
+                }
+            }
             Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = model::openTender,
-                enabled = ticket.lines.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth().testTag("pay"),
-            ) { Text("Cash ${ticket.cashDue}") }
+            if (ticket.checks.isEmpty()) {
+                Button(
+                    onClick = { model.openTender() },
+                    enabled = ticket.lines.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth().testTag("pay"),
+                ) { Text("Cash ${ticket.cashDue}") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                for (ways in 2..4) {
+                    OutlinedButton(
+                        onClick = { model.split(ways) },
+                        enabled = ticket.lines.isNotEmpty(),
+                        modifier = Modifier.testTag("split:$ways"),
+                    ) { Text("Split $ways") }
+                }
+            }
             OutlinedButton(
                 onClick = { model.openDiscount() },
                 enabled = ticket.lines.isNotEmpty(),
@@ -491,7 +527,7 @@ private fun ApprovalDialog(approval: Approval, error: String?, model: RegisterMo
 private fun TenderDialog(tender: Tender, model: RegisterModel) {
     AlertDialog(
         onDismissRequest = model::closeTender,
-        title = { Text("Cash: ${tender.due.text} due") },
+        title = { Text((tender.check?.let { "Check ${it.number}, cash: " } ?: "Cash: ") + "${tender.due.text} due") },
         text = {
             Column {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -522,8 +558,16 @@ private fun TenderDialog(tender: Tender, model: RegisterModel) {
         },
         confirmButton = {
             val typed = tender.typed
-            Button(onClick = { typed?.let(model::pay) }, enabled = typed != null, modifier = Modifier.testTag("tender:typed")) {
-                Text("Take ${typed?.text.orEmpty()}")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Part of a check: what was typed is paid toward it, in exact cash.
+                if (tender.check != null) {
+                    OutlinedButton(onClick = model::payPart, enabled = typed != null, modifier = Modifier.testTag("tender:part")) {
+                        Text("Pay ${typed?.text.orEmpty()} of it")
+                    }
+                }
+                Button(onClick = { typed?.let(model::pay) }, enabled = typed != null, modifier = Modifier.testTag("tender:typed")) {
+                    Text("Take ${typed?.text.orEmpty()}")
+                }
             }
         },
         dismissButton = { TextButton(onClick = model::closeTender) { Text("Cancel") } },

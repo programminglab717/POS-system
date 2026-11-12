@@ -586,4 +586,60 @@ class RegisterModelTest {
         testScheduler.advanceUntilIdle()
         assertNull(model.state.value.ticket!!.lines[0].notes)
     }
+
+    @Test
+    fun a_split_order_is_paid_check_by_check_part_by_part() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        model.tap(model.button("Scone"))
+        testScheduler.advanceUntilIdle()
+        model.split(2)
+        testScheduler.advanceUntilIdle()
+        val checks = model.state.value.ticket!!.checks
+        // $3.00 and $2.75 split two ways: $2.88 and $2.87.
+        assertEquals(listOf("$2.88", "$2.87"), checks.map { it.total })
+        // Part of the first, typed as a cash keypad types it, in exact cash.
+        model.openTender(checks[0])
+        testScheduler.advanceUntilIdle()
+        assertEquals("$2.88", model.state.value.tender?.due?.text)
+        model.typeDigit(1)
+        model.typeDigit(0)
+        model.typeDigit(0)
+        testScheduler.advanceUntilIdle()
+        model.payPart()
+        testScheduler.advanceUntilIdle()
+        val ticket = model.state.value.ticket!!
+        assertEquals("$1.88", ticket.checks[0].due, "the order stays, with what each check owes now")
+        assertEquals(OrderState.OPEN, ticket.state)
+        // The rest of the first, then the second: the order closes with the last.
+        model.openTender(ticket.checks[0])
+        testScheduler.advanceUntilIdle()
+        model.pay(model.state.value.tender!!.offers[0])
+        testScheduler.advanceUntilIdle()
+        assertEquals(false, model.state.value.ticket!!.checks[0].open)
+        model.openTender(model.state.value.ticket!!.checks[1])
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("$2.87", "$5.00", "$10.00", "$20.00"), model.state.value.tender!!.offers.map { it.text })
+        model.pay(model.state.value.tender!!.offers[1])
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.ticket, "paid in full: the next order begins")
+        assertEquals("$2.13", model.state.value.change)
+    }
+
+    @Test
+    fun a_line_moves_to_a_check_of_its_own() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        model.tap(model.button("Scone"))
+        testScheduler.advanceUntilIdle()
+        model.moveLine(model.state.value.ticket!!.lines[1], null)
+        testScheduler.advanceUntilIdle()
+        val checks = model.state.value.ticket!!.checks
+        assertEquals(listOf(listOf("tea"), listOf("scone")), checks.map { check -> check.lines.map { it.name } })
+        model.moveLine(model.state.value.ticket!!.lines[1], checks[0].check)
+        testScheduler.advanceUntilIdle()
+        assertEquals(emptyList(), model.state.value.ticket!!.checks, "back on one check: none listed")
+    }
 }

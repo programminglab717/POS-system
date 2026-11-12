@@ -15,7 +15,14 @@ class FakeTill : Till {
     /** The print jobs, as a printer that never answers leaves them. */
     val jobs = mutableListOf<PrintJob>()
 
+    /** Each order's checks: its own, first, and any opened since; and what each was paid. */
+    private val checks = mutableMapOf<String, MutableList<String>>()
+    private val checkPaid = mutableMapOf<String, Long>()
+    private val closedChecks = mutableSetOf<String>()
+
     private class Line(val id: String, val variant: String, var count: Int) {
+        /** The checks it is split evenly among; its order's own check when empty. */
+        var on: List<String> = emptyList()
         /** The price staff set, in cents, and why, if they did. */
         var price: Pair<Long, String>? = null
         var notes: String? = null
@@ -172,6 +179,50 @@ class FakeTill : Till {
 
     private fun unitPrice(line: Line) = line.price?.first ?: prices.getValue(line.variant)
 
+    override fun splitEvenly(order: String, ways: Int): Ticket {
+        val lines = open(order)
+        if (ways < 2 || lines.isEmpty()) throw TillException("Nothing to split that way.")
+        val known = checks.getOrPut(order) { mutableListOf(order) }
+        while (known.size < ways) known += "$order:check${known.size + 1}"
+        for (line in lines) line.on = known.take(ways)
+        return ticket(order)
+    }
+
+    override fun moveLine(order: String, line: String, to: String?): Ticket {
+        val found = open(order).singleOrNull { it.id == line } ?: throw TillException("no such line")
+        val known = checks.getOrPut(order) { mutableListOf(order) }
+        val target = to ?: "$order:check${known.size + 1}".also { known += it }
+        if (target !in known) throw TillException("no such check")
+        found.on = listOf(target)
+        return ticket(order)
+    }
+
+    override fun payCheckCash(order: String, check: String, partMinor: Long?, tenderedMinor: Long): Paid {
+        open(order)
+        val owed = checkDue(order, check)
+        val paying = partMinor ?: owed
+        if (paying <= 0 || paying > owed) throw TillException("That's more than the check owes.")
+        if (tenderedMinor < paying) throw TillException("That's short: ${money(paying)} is due.")
+        checkPaid[check] = (checkPaid[check] ?: 0) + paying
+        if (checkDue(order, check) == 0L) closedChecks += check
+        val holding = checks.getValue(order).filter { known -> lineParts(order).any { it.second == known } }
+        if (holding.all { it in closedChecks }) states[order] = OrderState.CLOSED
+        return Paid(money(tenderedMinor - paying), ticket(order))
+    }
+
+    /** Each line's part on each check it is on: the line's id, the check, and the part in cents. */
+    private fun lineParts(order: String): List<Triple<String, String, Long>> = orders.getValue(order).flatMap { line ->
+        val on = line.on.ifEmpty { listOf(order) }
+        val whole = unitPrice(line) * line.count
+        on.mapIndexed { index, check ->
+            Triple(line.id, check, whole / on.size + if (index == 0) whole % on.size else 0)
+        }
+    }
+
+    private fun checkTotal(order: String, check: String) = lineParts(order).filter { it.second == check }.sumOf { it.third }
+
+    private fun checkDue(order: String, check: String) = checkTotal(order, check) - (checkPaid[check] ?: 0)
+
     override fun abandon(order: String): Ticket {
         if (voidNeedsApproval && open(order).isNotEmpty()) {
             if (approvedBy == null) throw TillException("Dropping it needs a manager.", approval = "order.void")
@@ -218,7 +269,23 @@ class FakeTill : Till {
             cashDue = money(due),
             state = states.getValue(order),
             discounts = onOrder.second,
+            checks = checksOf(order),
         )
+    }
+
+    /** The order's checks, if it is split among more than one that hold something. */
+    private fun checksOf(order: String): List<TicketCheck> {
+        val parts = lineParts(order)
+        val holding = checks[order].orEmpty().filter { known -> parts.any { it.second == known } }
+        if (holding.size < 2) return emptyList()
+        return holding.mapIndexed { index, check ->
+            val lines = parts.filter { it.second == check }.map { (line, _, part) ->
+                val found = orders.getValue(order).single { it.id == line }
+                TicketLine(line, found.variant, found.count.toString(), money(part), found.count)
+            }
+            val due = checkDue(order, check)
+            TicketCheck(check, index + 1, check !in closedChecks, lines, money(checkTotal(order, check)), money(due), due, money(due))
+        }
     }
 
     /** Each line's net and discounts, and the whole order's net and discounts: each takes from what is left. */
@@ -269,7 +336,11 @@ class FakeTill : Till {
         return orders.getValue(order)
     }
 
-    private fun due(order: String) = if (states[order] == OrderState.OPEN) priced(order).second.first else 0L
+    private fun due(order: String) = if (states[order] == OrderState.OPEN) {
+        priced(order).second.first - checks[order].orEmpty().sumOf { checkPaid[it] ?: 0L }
+    } else {
+        0L
+    }
 
     private fun money(minor: Long) = (if (minor < 0) "-$" else "$") + kotlin.math.abs(minor) / 100 + "." +
         (kotlin.math.abs(minor) % 100).toString().padStart(2, '0')

@@ -25,13 +25,18 @@ enum class Screen {
     PRINTER,
 }
 
-/** Paying [order] in cash: what it owes, the amounts offered, and an amount the cashier types. */
+/**
+ * Paying [order] in cash, or one [check] of it when it is split: what it owes, the amounts
+ * offered, and an amount the cashier types, which is tendered for all of it, or paid as a part.
+ */
 data class Tender(
     val order: String,
     val due: Amount,
     val offers: List<Amount>,
     /** What the cashier has typed, in minor units, and how it shows. */
     val typed: Amount? = null,
+    /** The check paid, for a split order; null for the whole order. */
+    val check: TicketCheck? = null,
 )
 
 /**
@@ -423,12 +428,34 @@ class RegisterModel(
         mutable.update { it.copy(ticket = null, tender = null, discount = null, price = null, notes = null) }
     }
 
-    /** Opens the cash tender for the order being rung. */
-    fun openTender() = perform {
+    /** Opens the cash tender for the order being rung, or for its [check] when it is split. */
+    fun openTender(check: TicketCheck? = null) = perform {
         val ticket = current.ticket ?: return@perform
-        val offers = till.cashOffers(ticket.order)
-        val due = offers.firstOrNull() ?: till.amount(ticket.cashDueMinor)
-        mutable.update { it.copy(tender = Tender(ticket.order, due, offers)) }
+        val tender = if (check == null) {
+            val offers = till.cashOffers(ticket.order)
+            val due = offers.firstOrNull() ?: till.amount(ticket.cashDueMinor)
+            Tender(ticket.order, due, offers)
+        } else {
+            val due = till.amount(check.cashDueMinor)
+            Tender(ticket.order, due, roundUp(check.cashDueMinor).map(till::amount), check = check)
+        }
+        mutable.update { it.copy(tender = tender) }
+    }
+
+    /** What is due, then the next whole 5, 10 and 20 above it, as a cash drawer takes them. */
+    private fun roundUp(due: Long): List<Long> =
+        (listOf(due) + listOf(500L, 1_000L, 2_000L).map { (due / it + 1) * it }).distinct()
+
+    /** Splits the order being rung evenly among [ways] checks. */
+    fun split(ways: Int) = perform {
+        val ticket = current.ticket ?: return@perform
+        show(till.splitEvenly(ticket.order, ways))
+    }
+
+    /** Moves [line] to the check [to], or to a new one when it is null. */
+    fun moveLine(line: TicketLine, to: String?) = perform {
+        val (order, now) = current(line) ?: return@perform
+        show(till.moveLine(order, now.line, to))
     }
 
     /** Types [digit] into the tender's amount, in minor units, as a cash keypad does. */
@@ -451,12 +478,34 @@ class RegisterModel(
     /** Closes the tender without paying. */
     fun closeTender() = mutable.update { it.copy(tender = null) }
 
-    /** Pays the order with [tendered], and shows the change. */
+    /** Pays the order, or the tender's check, with [tendered], and shows the change. */
     fun pay(tendered: Amount) = perform {
         val tender = current.tender ?: return@perform
-        val paid = till.payCash(tender.order, tendered.minor)
+        val check = tender.check
+        val paid = if (check == null) {
+            till.payCash(tender.order, tendered.minor)
+        } else {
+            till.payCheckCash(tender.order, check.check, null, tendered.minor)
+        }
+        paid(paid)
+    }
+
+    /** Pays what was typed toward the tender's check, as a part of it, in exact cash. */
+    fun payPart() = perform {
+        val tender = current.tender ?: return@perform
+        val check = tender.check ?: return@perform
+        val typed = tender.typed ?: return@perform
+        paid(till.payCheckCash(tender.order, check.check, typed.minor, typed.minor))
+    }
+
+    /** Shows what paying did: an order still open stays on the screen, with what it owes now. */
+    private fun paid(paid: Paid) {
+        val open = paid.ticket.state == OrderState.OPEN
         mutable.update {
-            it.copy(ticket = null, tender = null, discount = null, price = null, notes = null, change = paid.change)
+            it.copy(
+                ticket = if (open) paid.ticket else null, tender = null, discount = null, price = null,
+                notes = null, change = paid.change,
+            )
         }
     }
 

@@ -76,6 +76,19 @@ interface Till {
     /** Pays [order] in cash, [tenderedMinor] in the location's minor units. */
     fun payCash(order: String, tenderedMinor: Long): Paid
 
+    /**
+     * Pays [check] of [order] in cash, [tenderedMinor] tendered: [partMinor] of what it owes, or
+     * all of it when that is null (ADR-0030). The check closes once paid, and the order with its
+     * last check.
+     */
+    fun payCheckCash(order: String, check: String, partMinor: Long?, tenderedMinor: Long): Paid
+
+    /** Splits [order]'s lines evenly among [ways] checks, and gives the ticket. */
+    fun splitEvenly(order: String, ways: Int): Ticket
+
+    /** Moves [line] of [order] to the check [to], or to a new one when it is null, and gives the ticket. */
+    fun moveLine(order: String, line: String, to: String?): Ticket
+
     /** [order]'s ticket. */
     fun ticket(order: String): Ticket
 
@@ -224,6 +237,21 @@ data class Ticket(
     val tax: String? = null,
     /** The discounts on the whole order. */
     val discounts: List<TicketDiscount> = emptyList(),
+    /** Its checks, when it is split among more than one. */
+    val checks: List<TicketCheck> = emptyList(),
+)
+
+/** One check of a split order: its lines, each with the check's part of it, and what it owes. */
+data class TicketCheck(
+    val check: String,
+    val number: Int,
+    val open: Boolean,
+    val lines: List<TicketLine>,
+    val total: String,
+    val due: String,
+    /** What it still owes in cash, in minor units, rounded as the location rounds cash. */
+    val cashDueMinor: Long,
+    val cashDue: String,
 )
 
 /** A line of a ticket: what it sells, how many, its modifiers in words, and its amount. */

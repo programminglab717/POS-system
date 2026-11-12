@@ -136,6 +136,30 @@ class RegisterTest {
     }
 
     /**
+     * Two espressos split two ways (ADR-0030): each check $3.25 with $0.29 of tax, paid one after
+     * the other, the order closing with the second.
+     */
+    @Test
+    fun a_split_order_is_paid_check_by_check() {
+        compose.tap("member:Alex", wait = 20_000)
+        compose.enterPin("1234")
+        compose.tap("button:${demoId(0x401)}")
+        compose.tap("sheet:add")
+        compose.tap("button:${demoId(0x401)}")
+        compose.tap("sheet:add")
+        compose.tap("split:2")
+        compose.waitFor("check:2")
+        compose.waitUntil(10_000) { compose.shown("check:1").contains("$3.54") }
+        compose.tap("pay:check:1")
+        compose.tap("offer:0")
+        compose.waitUntil(10_000) { compose.shown("check:1").contains("(paid)") }
+        compose.tap("pay:check:2")
+        compose.tap("offer:0")
+        compose.waitFor("change")
+        compose.tap("sign-out")
+    }
+
+    /**
      * A printer in the test's process that takes [jobs] connections, one after the other, each
      * answered as a ready Epson that printed what it was sent; and what each brought, waited for.
      */

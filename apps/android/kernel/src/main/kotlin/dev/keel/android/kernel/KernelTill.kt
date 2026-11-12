@@ -39,6 +39,9 @@ import dev.keel.kernel.Amount as KernelAmount
 import dev.keel.kernel.Ticket as KernelTicket
 import dev.keel.kernel.TicketModifier as KernelModifier
 import dev.keel.kernel.TicketDiscount as KernelDiscount
+import dev.keel.kernel.TicketLine as KernelLine
+import dev.keel.kernel.TicketCheck as KernelCheck
+import dev.keel.register.TicketCheck
 import dev.keel.register.DiscountAsked
 import dev.keel.register.TicketDiscount
 import dev.keel.register.percentWords
@@ -133,6 +136,17 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
         val paid = register.payCash(order, tenderedMinor)
         Paid(paid.change.text, paid.ticket.toTicket())
     }
+
+    override fun payCheckCash(order: String, check: String, partMinor: Long?, tenderedMinor: Long): Paid = call {
+        val paid = register.payCheckCash(order, check, partMinor, tenderedMinor)
+        Paid(paid.change.text, paid.ticket.toTicket())
+    }
+
+    override fun splitEvenly(order: String, ways: Int): Ticket =
+        call { register.splitEvenly(order, ways.coerceIn(0, 255).toUByte()).toTicket() }
+
+    override fun moveLine(order: String, line: String, to: String?): Ticket =
+        call { register.moveLine(order, line, to).toTicket() }
 
     override fun ticket(order: String): Ticket = call { register.ticket(order).toTicket() }
 
@@ -253,21 +267,33 @@ private fun KernelAmount.toAmount() = Amount(minor, text)
 
 private const val MILLION = 1_000_000L
 
+private fun KernelLine.toLine() = TicketLine(
+    line = line,
+    name = name,
+    quantity = quantityText,
+    amount = amount.text,
+    count = if (quantityMillionths % MILLION == 0L) (quantityMillionths / MILLION).toInt() else null,
+    modifiers = modifiers.map(::words),
+    discounts = discounts.map { it.toDiscount() },
+    repriced = repriced?.let { "${it.unitPrice.text} (was ${it.rung.text}), ${reasonWords(it.reason).lowercase()}" },
+    notes = notes,
+)
+
+private fun KernelCheck.toCheck() = TicketCheck(
+    check = check,
+    number = number.toInt(),
+    open = state == TicketState.OPEN,
+    lines = lines.map { it.toLine() },
+    total = total.text,
+    due = due.text,
+    cashDueMinor = cashDue.minor,
+    cashDue = cashDue.text,
+)
+
 private fun KernelTicket.toTicket() = Ticket(
     order = order,
-    lines = lines.map { line ->
-        TicketLine(
-            line = line.line,
-            name = line.name,
-            quantity = line.quantityText,
-            amount = line.amount.text,
-            count = if (line.quantityMillionths % MILLION == 0L) (line.quantityMillionths / MILLION).toInt() else null,
-            modifiers = line.modifiers.map(::words),
-            discounts = line.discounts.map { it.toDiscount() },
-            repriced = line.repriced?.let { "${it.unitPrice.text} (was ${it.rung.text}), ${reasonWords(it.reason).lowercase()}" },
-            notes = line.notes,
-        )
-    },
+    lines = lines.map { it.toLine() },
+    checks = checks.map { it.toCheck() },
     discounts = discounts.map { it.toDiscount() },
     total = total.text,
     cashDueMinor = cashDue.minor,

@@ -33,6 +33,10 @@ class OpeningTill(open: () -> Till) : Till {
     override fun repriceLine(order: String, line: String, unitPriceMinor: Long, reason: String) =
         till.repriceLine(order, line, unitPriceMinor, reason)
     override fun setNotes(order: String, line: String, notes: String?) = till.setNotes(order, line, notes)
+    override fun payCheckCash(order: String, check: String, partMinor: Long?, tenderedMinor: Long) =
+        till.payCheckCash(order, check, partMinor, tenderedMinor)
+    override fun splitEvenly(order: String, ways: Int) = till.splitEvenly(order, ways)
+    override fun moveLine(order: String, line: String, to: String?) = till.moveLine(order, line, to)
     override fun abandon(order: String) = till.abandon(order)
     override fun cashOffers(order: String) = till.cashOffers(order)
     override fun amount(minor: Long) = till.amount(minor)

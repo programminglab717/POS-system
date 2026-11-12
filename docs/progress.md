@@ -14,8 +14,8 @@ register; and staff and roles in the back office.
 
 **Step 2, selling at the register, is being built**
 ([ADR-0030](./adr/0030-selling-at-the-register.md), proposed): its first slice, discounts, has
-landed, and its second, prices set by hand and notes; split checks and partial payments are
-next.
+landed, its second, prices set by hand and notes, and its third, split checks and partial
+payments; park and recall across devices is next.
 
 **Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
 ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
@@ -94,8 +94,34 @@ verified as it lands, then reviewed together:
    snapshot, the gate, the bindings, the Android register's discount sheet, and the receipt.
 2. **Price overrides and notes** (built 2026-11-11): the schema, the fold, the gate, the notes
    intent, the bindings, and the Android register's price and notes sheets.
-3. **Split checks and partial payments**.
+3. **Split checks and partial payments** (built 2026-11-12): the runtime's splits, moves and
+   payments toward a check, tickets built check by check, a receipt per check, the bindings,
+   and the Android register's checks.
 4. **Park and recall across devices**, through the hub.
+
+Built in slice 3:
+
+- **`keel-runtime`**: `split_evenly`, every live line split evenly among two to twenty checks,
+  the order's open ones and as many new as it takes; `move_line`, a line moved whole to an open
+  check or a new one; `pay_check_cash`, cash toward one check, part of what it owes or all of
+  it with the location's cash rounding. A check closes once its payments cover it, and its
+  receipt prints as that check's ("Check 2"), with its own payments; the order closes with its
+  last check that holds something. `pay_cash` pays the main check whole. Tickets are built check
+  by check, from the snapshot of a closed one or by pricing an open one's basket, and the
+  order's amounts are the checks' added up, so they are what customers pay; a split order's
+  ticket lists each check with its own lines and amounts.
+  - Known answers: two $3.25 espressos three ways as $2.17, $2.17 and $2.16, $2.36, $2.36 and
+    $2.35 with tax, the order $7.07 where priced whole it would be $7.08; $1.00 of the first,
+    then the rest from $5.00, $3.64 back; more than a check owes refused; a closed check holding
+    the split; each check's receipt, its number and its payments; the order closing with the
+    last; a line moved to a check of its own and back; splits of one way, more than twenty, or
+    nothing, refused.
+  - Planted bugs: 8, and 9 of the earlier ones re-aimed at the rewritten ticket and cash paths.
+- **`keel-ffi`**: the three intents, and a split order's checks crossed field for field.
+- **The Android register**: Split 2, 3 or 4; each check with its total and a Pay button; a line
+  moved to another check or its own; the tender for a check pays all of it, or what was typed as
+  a part. Tests: the model's split paid part by part, then check by check, closing with the
+  last; a line moved and back; on an emulator, two espressos split two ways and paid.
 
 Built in slice 2:
 
