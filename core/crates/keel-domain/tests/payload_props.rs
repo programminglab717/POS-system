@@ -31,7 +31,7 @@ use keel_events::hash::EventHash;
 use keel_types::{Currency, Id, Money, Unit};
 use proptest::prelude::*;
 use support::{
-    any_captured, any_check_closed, any_event, any_line_added, any_line_changed,
+    any_captured, any_check_closed, any_drawer_event, any_event, any_line_added, any_line_changed,
     any_lines_allocated, any_ownership_event, any_payment_event, modifiers,
 };
 
@@ -40,6 +40,7 @@ use support::{
 enum Event {
     Order(OrderEvent),
     Payment(PaymentEvent),
+    Drawer(keel_domain::drawer::DrawerEvent),
     Sequence(SequenceEvent),
     Hub(HubEvent),
 }
@@ -49,6 +50,7 @@ impl Event {
         match self {
             Event::Order(event) => event.schema(),
             Event::Payment(event) => event.schema(),
+            Event::Drawer(event) => event.schema(),
             Event::Sequence(event) => event.schema(),
             Event::Hub(event) => event.schema(),
         }
@@ -58,6 +60,7 @@ impl Event {
         match self {
             Event::Order(event) => event.to_value(),
             Event::Payment(event) => event.to_value(),
+            Event::Drawer(event) => event.to_value(),
             Event::Sequence(event) => event.to_value(),
             Event::Hub(event) => event.to_value(),
         }
@@ -69,6 +72,8 @@ fn decode(schema: &SchemaRef, payload: &Value) -> Result<Value, DecodeError> {
     let name = schema.name.as_str();
     if name.starts_with("payment.") {
         PaymentEvent::from_value(schema, payload).map(|event| event.to_value())
+    } else if name.starts_with("drawer.") {
+        keel_domain::drawer::DrawerEvent::from_value(schema, payload).map(|event| event.to_value())
     } else if name.starts_with("sequence.") {
         SequenceEvent::from_value(schema, payload).map(|event| event.to_value())
     } else if name.starts_with("hub.") {
@@ -83,6 +88,7 @@ fn any_any_event() -> impl Strategy<Value = Event> {
     prop_oneof![
         3 => any_event().prop_map(Event::Order),
         1 => any_payment_event().prop_map(Event::Payment),
+        1 => any_drawer_event().prop_map(Event::Drawer).boxed(),
         1 => any_assigned().prop_map(|record| Event::Sequence(SequenceEvent::Assigned(record))),
         1 => any_claimed().prop_map(|claimed| Event::Hub(HubEvent::Claimed(claimed))),
     ]
@@ -139,6 +145,22 @@ enum Kind {
 use Kind::*;
 use Presence::{Clearable, Optional, Required};
 
+/// The documented keys of each drawer schema (ADR-0031), or `None` for another schema.
+fn drawer_rules(schema: &str) -> Option<Vec<(u64, Kind, Presence)>> {
+    Some(match schema {
+        "drawer.opened" => vec![(1, Money, Required)],
+        "drawer.cash_taken" => vec![(1, Id, Required), (2, Money, Required)],
+        "drawer.cash_moved" => DRAWER_MOVED.to_vec(),
+        "drawer.no_sale" => vec![(1, Reason, Required), (2, Note, Optional)],
+        "drawer.closed" => vec![(1, Money, Required), (2, Money, Required)],
+        _ => return None,
+    })
+}
+
+/// The keys of cash moved in or out of a drawer (ADR-0031).
+const DRAWER_MOVED: &[(u64, Kind, Presence)] =
+    &[(1, Code(2), Required), (2, Money, Required), (3, Reason, Required), (4, Note, Optional)];
+
 /// The keys of a line priced again (ADR-0030).
 const LINE_REPRICED: &[(u64, Kind, Presence)] =
     &[(1, Id, Required), (2, Money, Required), (3, Reason, Required), (4, Note, Optional)];
@@ -155,6 +177,9 @@ const DISCOUNT_APPLIED: &[(u64, Kind, Presence)] = &[
 
 /// The documented keys of each schema: the model.
 fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
+    if let Some(rules) = drawer_rules(schema) {
+        return rules;
+    }
     match schema {
         "order.created" => vec![
             (1, Code(7), Required),
@@ -603,6 +628,12 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
         }
         "order.check_closed" => snapshot_valid(map),
         "order.line_repriced" => money(get(2).unwrap()).unwrap().0 >= 0,
+        "drawer.opened" => money(get(1).unwrap()).unwrap().0 >= 0,
+        "drawer.cash_taken" | "drawer.cash_moved" => money(get(2).unwrap()).unwrap().0 > 0,
+        "drawer.closed" => {
+            let (counted, currency) = money(get(1).unwrap()).unwrap();
+            counted >= 0 && money(get(2).unwrap()).unwrap().1 == currency
+        }
         // A percentage or an amount, which only a line may take, and more than zero.
         "order.discount_applied" => match (get(3), get(4)) {
             (Some(_), None) => true,
@@ -1588,6 +1619,15 @@ proptest! {
         accepted_exactly_when_valid(&event, &change)?;
     }
 
+    /// The same for drawer sessions (ADR-0031), on their own, so that each of their fields is
+    /// changed often.
+    #[test]
+    fn changed_drawer_payloads_are_accepted_exactly_when_valid(
+        (event, change) in any_case(any_drawer_event().prop_map(Event::Drawer)),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
     /// The same for discounts (ADR-0030), on their own, so that each of their fields, and the
     /// rules across them, are tried often.
     #[test]
@@ -2017,7 +2057,7 @@ proptest! {
         let schema = schema_ref(&event);
         let newer = SchemaRef { name: schema.name.clone(), version: version.try_into().unwrap() };
         prop_assert_eq!(decode(&newer, &event.to_value()), Err(DecodeError::UnknownSchema));
-        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown"] {
+        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown", "drawer.unknown"] {
             let renamed = SchemaRef { name: SchemaName::new(name).unwrap(), version: schema.version };
             prop_assert_eq!(decode(&renamed, &event.to_value()), Err(DecodeError::UnknownSchema));
         }
@@ -2027,11 +2067,13 @@ proptest! {
         let as_payment = PaymentEvent::from_value(&schema, &payload).map(|_| ());
         let as_sequence = SequenceEvent::from_value(&schema, &payload).map(|_| ());
         let as_hub = HubEvent::from_value(&schema, &payload).map(|_| ());
+        let as_drawer = keel_domain::drawer::DrawerEvent::from_value(&schema, &payload).map(|_| ());
         let crossed = match &event {
-            Event::Order(_) => [as_payment, as_sequence, as_hub],
-            Event::Payment(_) => [as_order, as_sequence, as_hub],
-            Event::Sequence(_) => [as_order, as_payment, as_hub],
-            Event::Hub(_) => [as_order, as_payment, as_sequence],
+            Event::Order(_) => [as_payment, as_sequence, as_hub, as_drawer],
+            Event::Payment(_) => [as_order, as_sequence, as_hub, as_drawer],
+            Event::Sequence(_) => [as_order, as_payment, as_hub, as_drawer],
+            Event::Hub(_) => [as_order, as_payment, as_sequence, as_drawer],
+            Event::Drawer(_) => [as_order, as_payment, as_sequence, as_hub],
         };
         for decoded in crossed {
             prop_assert_eq!(decoded, Err(DecodeError::UnknownSchema));

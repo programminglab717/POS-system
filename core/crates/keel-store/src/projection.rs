@@ -52,15 +52,16 @@ pub(crate) struct Projection {
     /// The columns that order a stream's rows: with `key`, the table's primary key.
     pub(crate) order: &'static str,
     /// Creates its table.
-    create: &'static str,
+    pub(crate) create: &'static str,
     /// Drops its table.
-    drop: &'static str,
+    pub(crate) drop: &'static str,
     /// Replaces the row of a stream.
-    project: Project,
+    pub(crate) project: Project,
 }
 
 /// Every projection.
-pub(crate) const ALL: [Projection; 4] = [ORDERS, PAYMENTS, SEQUENCE, CLAIMS];
+pub(crate) const ALL: [Projection; 5] =
+    [ORDERS, PAYMENTS, SEQUENCE, CLAIMS, crate::drawers::DRAWERS];
 
 impl Projection {
     /// Replaces the rows of stream `id`, given its events in canonical order.
@@ -131,14 +132,14 @@ pub(crate) fn rebuild(db: &Connection, projection: &Projection) -> Result<(), St
 
 /// What every row records of its stream's events: how many, and the first and last HLCs in
 /// canonical order.
-struct Span {
-    events: i64,
-    first: [u8; 8],
-    last: [u8; 8],
+pub(crate) struct Span {
+    pub(crate) events: i64,
+    pub(crate) first: [u8; 8],
+    pub(crate) last: [u8; 8],
 }
 
 impl Span {
-    fn of(events: &[SignedEvent]) -> Result<Span, StoreError> {
+    pub(crate) fn of(events: &[SignedEvent]) -> Result<Span, StoreError> {
         let hlc_at =
             |event: Option<&SignedEvent>| hlc_bytes(event.map_or(Hlc::ZERO, |e| e.body().hlc));
         Ok(Span {
@@ -149,7 +150,7 @@ impl Span {
     }
 }
 
-fn count(n: usize) -> Result<i64, StoreError> {
+pub(crate) fn count(n: usize) -> Result<i64, StoreError> {
     i64::try_from(n).map_err(|_| StoreError::OutOfRange("a count"))
 }
 
@@ -159,14 +160,14 @@ fn code(code: Option<u64>) -> Result<Option<i64>, StoreError> {
 }
 
 /// The business date of the event `event`, one of `events`.
-fn business_date(events: &[SignedEvent], event: Id<Event>) -> Option<String> {
+pub(crate) fn business_date(events: &[SignedEvent], event: Id<Event>) -> Option<String> {
     events
         .iter()
         .find(|stored| stored.body().event_id == event)
         .map(|stored| stored.body().business_date.to_string())
 }
 
-fn bytes<T>(id: Option<Id<T>>) -> Option<Vec<u8>> {
+pub(crate) fn bytes<T>(id: Option<Id<T>>) -> Option<Vec<u8>> {
     id.map(|id| id.to_bytes().to_vec())
 }
 
@@ -659,14 +660,14 @@ fn read_payment(values: &[Value]) -> Result<PaymentSummary, StoreError> {
 // Reading columns.
 
 /// A row's values, read by column.
-struct Columns<'a>(&'a [Value]);
+pub(crate) struct Columns<'a>(pub(crate) &'a [Value]);
 
 impl Columns<'_> {
-    fn value(&self, column: usize) -> Result<&Value, StoreError> {
+    pub(crate) fn value(&self, column: usize) -> Result<&Value, StoreError> {
         self.0.get(column).ok_or(StoreError::Corrupt("a missing column"))
     }
 
-    fn optional_blob(&self, column: usize) -> Result<Option<Vec<u8>>, StoreError> {
+    pub(crate) fn optional_blob(&self, column: usize) -> Result<Option<Vec<u8>>, StoreError> {
         match self.value(column)? {
             Value::Null => Ok(None),
             Value::Blob(bytes) => Ok(Some(bytes.clone())),
@@ -674,15 +675,15 @@ impl Columns<'_> {
         }
     }
 
-    fn blob(&self, column: usize) -> Result<Vec<u8>, StoreError> {
+    pub(crate) fn blob(&self, column: usize) -> Result<Vec<u8>, StoreError> {
         self.optional_blob(column)?.ok_or(StoreError::Corrupt("a missing value"))
     }
 
-    fn optional_id<T>(&self, column: usize) -> Result<Option<Id<T>>, StoreError> {
+    pub(crate) fn optional_id<T>(&self, column: usize) -> Result<Option<Id<T>>, StoreError> {
         self.optional_blob(column)?.map(|bytes| id(&bytes)).transpose()
     }
 
-    fn optional_integer(&self, column: usize) -> Result<Option<i64>, StoreError> {
+    pub(crate) fn optional_integer(&self, column: usize) -> Result<Option<i64>, StoreError> {
         match self.value(column)? {
             Value::Null => Ok(None),
             Value::Integer(value) => Ok(Some(*value)),
@@ -690,28 +691,36 @@ impl Columns<'_> {
         }
     }
 
-    fn integer(&self, column: usize) -> Result<i64, StoreError> {
+    pub(crate) fn integer(&self, column: usize) -> Result<i64, StoreError> {
         self.optional_integer(column)?.ok_or(StoreError::Corrupt("a missing value"))
     }
 
-    fn unsigned(&self, column: usize) -> Result<u64, StoreError> {
+    pub(crate) fn unsigned(&self, column: usize) -> Result<u64, StoreError> {
         u64::try_from(self.integer(column)?).map_err(|_| StoreError::Corrupt("a negative count"))
     }
 
-    fn text(&self, column: usize) -> Result<String, StoreError> {
+    pub(crate) fn text(&self, column: usize) -> Result<String, StoreError> {
         match self.value(column)? {
             Value::Text(text) => Ok(text.clone()),
             _ => Err(StoreError::Corrupt("a column that should be text")),
         }
     }
 
-    fn optional_date(&self, column: usize) -> Result<Option<BusinessDate>, StoreError> {
+    pub(crate) fn optional_date(&self, column: usize) -> Result<Option<BusinessDate>, StoreError> {
         match self.value(column)? {
             Value::Null => Ok(None),
             Value::Text(text) => BusinessDate::from_str(text)
                 .map(Some)
                 .map_err(|_| StoreError::Corrupt("a business date")),
             _ => Err(StoreError::Corrupt("a column that should be a date")),
+        }
+    }
+
+    pub(crate) fn optional_text(&self, column: usize) -> Result<Option<String>, StoreError> {
+        match self.value(column)? {
+            Value::Null => Ok(None),
+            Value::Text(text) => Ok(Some(text.clone())),
+            _ => Err(StoreError::Corrupt("a column that should be text")),
         }
     }
 }

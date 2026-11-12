@@ -52,6 +52,7 @@
 //! OpenSSL's, so it isn't built for `wasm32`: browsers are clients, never replicas.
 
 mod check;
+mod drawers;
 mod error;
 mod faults;
 mod key;
@@ -69,6 +70,7 @@ mod write;
 mod tests;
 
 pub use check::Problem;
+pub use drawers::{DrawerState, DrawerSummary};
 pub use error::StoreError;
 pub use faults::{Faults, NoFaults, Point};
 pub use key::StoreKey;

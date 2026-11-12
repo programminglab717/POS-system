@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use keel_domain::aggregate::Aggregate;
+use keel_domain::drawer::Drawer;
 use keel_domain::hub::Term;
 use keel_domain::order::Order;
 use keel_domain::payment::Payment;
@@ -14,10 +15,11 @@ use keel_events::envelope::{Device, Event, Location, StreamRef};
 use keel_events::event::SignedEvent;
 use keel_events::keys::Signer;
 use keel_events::log::{LogConfig, LogHead, LogWriter};
-use keel_types::{Entropy, Hlc, Id, Timestamp};
+use keel_types::{BusinessDate, Entropy, Hlc, Id, Timestamp};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::check::{self, Problem};
+use crate::drawers::{self, DRAWER_COLUMNS, DrawerState, DrawerSummary};
 use crate::error::StoreError;
 use crate::faults::{Faults, NoFaults, Point, proceed};
 use crate::key::StoreKey;
@@ -669,6 +671,60 @@ impl<S: Signer, E: Entropy> Store<S, E> {
                  ORDER BY first_hlc, payment_id"
             ))?;
             let rows = statement.query_map([&order.to_bytes()[..]], projection::payment_summary)?;
+            rows.map(|row| row?).collect()
+        })
+    }
+
+    /// The drawer session `id`, as the `drawers` projection keeps it; `None` if the store holds
+    /// no event of it (ADR-0031).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn drawer(&self, id: Id<Drawer>) -> Result<Option<DrawerSummary>, StoreError> {
+        self.read(|db| {
+            db.query_row(
+                &format!("SELECT {DRAWER_COLUMNS} FROM drawers WHERE drawer_id = ?1"),
+                [&id.to_bytes()[..]],
+                drawers::drawer_summary,
+            )
+            .optional()?
+            .transpose()
+        })
+    }
+
+    /// The drawer sessions `device` opened that are in `state`, the earliest first.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn drawers_of(
+        &self,
+        device: Id<Device>,
+        state: DrawerState,
+    ) -> Result<Vec<DrawerSummary>, StoreError> {
+        self.read(|db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT {DRAWER_COLUMNS} FROM drawers WHERE device = ?1 AND state = ?2 \
+                 ORDER BY first_hlc, drawer_id"
+            ))?;
+            let rows = statement.query_map(
+                params![&device.to_bytes()[..], state.code()],
+                drawers::drawer_summary,
+            )?;
+            rows.map(|row| row?).collect()
+        })
+    }
+
+    /// The drawer sessions opened on business date `date`, of every device, the earliest first.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn drawers_on(&self, date: BusinessDate) -> Result<Vec<DrawerSummary>, StoreError> {
+        self.read(|db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT {DRAWER_COLUMNS} FROM drawers WHERE business_date = ?1 \
+                 ORDER BY first_hlc, drawer_id"
+            ))?;
+            let rows = statement.query_map([date.to_string()], drawers::drawer_summary)?;
             rows.map(|row| row?).collect()
         })
     }

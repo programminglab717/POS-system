@@ -431,3 +431,38 @@ pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
         ),
     ]
 }
+
+/// Any drawer event (ADR-0031): a float of zero or more, cash taken and moved of more than zero,
+/// a count of zero or more against any expected amount in its currency.
+pub(crate) fn any_drawer_event() -> BoxedStrategy<keel_domain::drawer::DrawerEvent> {
+    use keel_domain::drawer::{CashMoved, CashTaken, DrawerClosed, DrawerEvent, Movement};
+    let positive = |currency| {
+        prop_oneof![Just(1_i64), 1_i64..10_000, 1_i64..=i64::MAX]
+            .prop_map(move |minor| Money::from_minor(minor, currency))
+    };
+    let kind = prop::sample::select(vec![Movement::PaidIn, Movement::PaidOut, Movement::Drop]);
+    any_currency()
+        .prop_flat_map(move |currency| {
+            prop_oneof![
+                price(currency).prop_map(|float| DrawerEvent::Opened { float }),
+                (any_id(), positive(currency)).prop_map(
+                    |(payment, amount)| DrawerEvent::CashTaken(CashTaken { payment, amount })
+                ),
+                (kind.clone(), positive(currency), any_reason()).prop_map(
+                    |(kind, amount, reason)| {
+                        DrawerEvent::CashMoved(CashMoved { kind, amount, reason })
+                    }
+                ),
+                any_reason().prop_map(|reason| DrawerEvent::NoSale { reason }),
+                (price(currency), -1_000_000_i64..=1_000_000).prop_map(
+                    move |(counted, expected)| {
+                        DrawerEvent::Closed(DrawerClosed {
+                            counted,
+                            expected: Money::from_minor(expected, currency),
+                        })
+                    }
+                ),
+            ]
+        })
+        .boxed()
+}

@@ -1563,4 +1563,22 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         # The encryption tests open a store twice; nothing else reaches the lock.
         "unit",
     ),
+    (
+        "drawers: a closed session reads as open",
+        "src/drawers.rs",
+        "        } else if drawer.closed().is_some() {",
+        "        } else if false {",
+    ),
+    (
+        "drawers: a session is found on the wrong date",
+        "src/drawers.rs",
+        "            info.and_then(|info| business_date(events, info.opened_by)),",
+        "            info.and_then(|_| business_date(events, events.last()?.body().event_id)),",
+    ),
+    (
+        "drawers: paid out reads back as paid in",
+        "src/drawers.rs",
+        "    let sums = match (money(8)?, money(9)?, money(10)?, money(11)?) {",
+        "    let sums = match (money(8)?, money(10)?, money(9)?, money(11)?) {",
+    ),
 ]

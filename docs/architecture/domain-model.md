@@ -1022,6 +1022,10 @@ One state machine covers goods that are **in someone else's custody**:
   no-sale open (audited, with optional reason), mid-shift count, blind close count, and over/short.
 - Drawer sessions are **single-writer** (owned by the device the drawer is attached to), so they
   never conflict.
+- Built (ADR-0031): `drawer.opened` (the float), `drawer.cash_taken` (a cash payment's cash, in
+  the same write as the payment), `drawer.cash_moved` (paid in, paid out or dropped, with a
+  reason), `drawer.no_sale` and `drawer.closed` (the blind count and what was expected), each
+  v1; the store's `drawers` projection finds a device's open session and a day's sessions.
 - Safe and bank-deposit tracking (bag numbers) reconcile against expected cash by business date.
 - Cash-recycler and dispenser integration reports counted denominations automatically.
 - Foreign-currency cash tenders are converted at a configured rate; change is given in the local

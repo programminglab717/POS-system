@@ -34,6 +34,7 @@
 pub mod aggregate;
 pub mod checkout;
 pub mod codec;
+pub mod drawer;
 pub mod hub;
 pub mod order;
 pub mod payment;

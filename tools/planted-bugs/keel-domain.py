@@ -3062,4 +3062,75 @@ BUGS = [
         "                (10_000_i128.saturating_sub(bp), 10_000)",
         "                (10_000_i128.saturating_sub(bp.saturating_mul(i128::from(u8::try_from(values.len()).unwrap_or(1)))), 10_000)",
     ),
+    # Drawer sessions (ADR-0031).
+    (
+        "drawer: a negative float is accepted",
+        "src/drawer/events.rs",
+        "            DrawerEvent::Opened { float } if float.is_negative() => {",
+        "            DrawerEvent::Opened { float } if float.is_negative() && false => {",
+    ),
+    (
+        "drawer: a count in another currency than expected is accepted",
+        "src/drawer/events.rs",
+        "                if closed.counted.currency() != closed.expected.currency() =>",
+        "                if false =>",
+    ),
+    (
+        "drawer: a payment's cash counts twice",
+        "src/drawer/state.rs",
+        "        if self.payments.contains(&taken.payment) {",
+        "        if false {",
+    ),
+    (
+        "drawer: a drop adds to the drawer",
+        "src/drawer/state.rs",
+        "            Movement::Drop => |sums| &mut sums.dropped,",
+        "            Movement::Drop => |sums| &mut sums.paid_in,",
+    ),
+    (
+        "drawer: what is expected leaves out what was paid out",
+        "src/drawer/state.rs",
+        "        Ok(Some(held.checked_sub(sums.paid_out)?.checked_sub(sums.dropped)?))",
+        "        Ok(Some(held.checked_sub(sums.dropped)?))",
+    ),
+    (
+        "drawer: another device's event isn't reported",
+        "src/drawer/state.rs",
+        "        if meta.origin_device != info.device {",
+        "        if false {",
+    ),
+    (
+        "drawer: cash after the close isn't reported",
+        "src/drawer/state.rs",
+        "        if after && self.conflicts.len() == before {",
+        "        if false {",
+    ),
+    (
+        "drawer: a second close replaces the first",
+        "src/drawer/state.rs",
+        """        if self.closed.is_some() {
+            return self.conflict(meta, ConflictKind::DuplicateClose);
+        }""",
+        "",
+    ),
+    (
+        "drawer: another device writes the drawer",
+        "src/drawer/commands.rs",
+        "        if info.device != device {",
+        "        if false {",
+    ),
+    (
+        "drawer: a closed drawer takes cash",
+        "src/drawer/commands.rs",
+        """        if self.closed().is_some() {
+            return Err(DrawerError::Closed);
+        }""",
+        "",
+    ),
+    (
+        "drawer: a payment's cash is taken twice by command",
+        "src/drawer/commands.rs",
+        "                if self.payments().contains(&taken.payment) {",
+        "                if false {",
+    ),
 ]

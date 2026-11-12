@@ -418,3 +418,58 @@ const GOLDEN_PAYMENTS: &str = "Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 
     Blob([1, 160, 229, 79, 176, 0, 117, 219, 191, 218, 190, 134, 203, 190, 170, 17]) | \
     Text(\"2026-09-28\") | Null | Null | Integer(0) | Integer(0) | Integer(1) | \
     Blob([1, 160, 229, 79, 176, 0, 0, 4]) | Blob([1, 160, 229, 79, 176, 0, 0, 4])";
+
+/// A drawer session's events are projected (ADR-0031): found by its device and state, and by
+/// its business date.
+#[test]
+fn drawers_are_projected_and_found_by_device_and_date() {
+    use keel_domain::drawer::Drawer;
+    use keel_domain::drawer::{CashMoved, CashTaken, DrawerClosed, DrawerEvent, Movement, Sums};
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let drawer: Id<Drawer> = id(0x9000);
+    let draft = |event: &DrawerEvent| domain_draft(drawer.cast(), event);
+    let opened = DrawerEvent::Opened { float: usd(10_000) };
+    let taken = DrawerEvent::CashTaken(CashTaken { payment: id(0x8000), amount: usd(1_089) });
+    let paid_out = DrawerEvent::CashMoved(CashMoved {
+        kind: Movement::PaidOut,
+        amount: usd(500),
+        reason: Reason { code: ReasonCode::new("supplier").unwrap(), note: None },
+    });
+    let events = append(&mut store, vec![draft(&opened), draft(&taken), draft(&paid_out)], at(0));
+    let summary = store.drawer(drawer).unwrap().unwrap();
+    assert_eq!(summary.state, DrawerState::Open);
+    let info = summary.info.as_ref().unwrap();
+    assert_eq!((info.float, info.opened_by), (usd(10_000), events[0].body().event_id));
+    assert_eq!(
+        summary.sums,
+        Some(Sums { taken: usd(1_089), paid_in: usd(0), paid_out: usd(500), dropped: usd(0) })
+    );
+    assert_eq!(summary.business_date, Some("2026-09-28".parse().unwrap()));
+    let device = info.device;
+    assert_eq!(
+        store.drawers_of(device, DrawerState::Open).unwrap(),
+        core::slice::from_ref(&summary)
+    );
+    assert!(store.drawers_of(device, DrawerState::Closed).unwrap().is_empty());
+    assert!(store.drawers_of(id(0xd9), DrawerState::Open).unwrap().is_empty());
+    assert_eq!(store.drawers_on("2026-09-28".parse().unwrap()).unwrap(), [summary]);
+    assert!(store.drawers_on("2026-09-29".parse().unwrap()).unwrap().is_empty());
+    // Closed, it is found closed, with its count.
+    let closed = DrawerEvent::Closed(DrawerClosed { counted: usd(10_580), expected: usd(10_589) });
+    append(&mut store, vec![draft(&closed)], at(1));
+    let summary = store.drawer(drawer).unwrap().unwrap();
+    assert_eq!(summary.state, DrawerState::Closed);
+    assert_eq!(summary.closed.map(|close| close.variance()), Some(Some(usd(-9))));
+    assert!(store.drawers_of(device, DrawerState::Open).unwrap().is_empty());
+    assert_eq!(store.drawers_of(device, DrawerState::Closed).unwrap(), [summary]);
+    // Rebuilt from the events, it is the same.
+    store.rebuild_projections().unwrap();
+    assert_eq!(store.drawer(drawer).unwrap().unwrap().state, DrawerState::Closed);
+    // Cash before the opening: unopened, with a conflict.
+    let early: Id<Drawer> = id(0x9001);
+    append(&mut store, vec![domain_draft(early.cast(), &taken)], at(2));
+    let summary = store.drawer(early).unwrap().unwrap();
+    assert_eq!((summary.state, summary.info, summary.sums), (DrawerState::Unopened, None, None));
+    assert_eq!(summary.conflicts, 1);
+}
