@@ -131,7 +131,7 @@ fn cashiers_order(runtime: &mut TestRuntime) -> Order {
 }
 
 /// The approvals in the device's log, and how many events name each.
-fn approvals(runtime: &TestRuntime) -> Vec<(Granted, usize)> {
+pub(crate) fn approvals(runtime: &TestRuntime) -> Vec<(Granted, usize)> {
     let log = runtime.store().log(id::<Device>(0xd1), 0, 1_000).unwrap();
     log.iter()
         .filter(|event| event.body().stream.kind.as_str() == keel_domain::staff::STREAM)

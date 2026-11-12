@@ -103,6 +103,10 @@ fn a_close_over_or_short_beyond_the_role_waits_for_a_manager() {
     runtime.approve(id(0x501), "1234").unwrap();
     let closed = runtime.close_drawer(usd(9_499)).unwrap();
     assert_eq!(closed.variance.unwrap().money, usd(-501));
+    // The approval is for the size of the variance, whatever its sign.
+    let approvals = crate::staff_tests::approvals(&runtime);
+    let request = approvals.last().unwrap().0.request();
+    assert_eq!((request.action, request.amount), (Action::DrawerVariance, Some(usd(501))));
     // An exact close needs nothing.
     runtime.open_drawer(usd(10_000)).unwrap();
     let closed = runtime.close_drawer(usd(10_000)).unwrap();
@@ -193,4 +197,22 @@ fn a_days_reports_add_up_its_sales_tenders_and_drawers() {
     // Another day has nothing.
     let tomorrow = "2099-01-01".parse().unwrap();
     assert_eq!(runtime.day_report(tomorrow, ReportKind::X).unwrap().orders, 0);
+}
+
+#[test]
+fn a_drawer_takes_the_cash_as_rounded() {
+    use keel_types::{RoundingMode, RoundingRule};
+    let scratch = Scratch::new();
+    let mut data = demo().unwrap().data().clone();
+    data.cash_rounding =
+        Some(RoundingRule::new(RoundingMode::HalfAwayFromZero, NonZeroU32::new(5).unwrap()));
+    let mut runtime = register(&scratch, keel_domain::profile::Profile::new(data).unwrap());
+    runtime.sign_in(id(0x501), "1234").unwrap();
+    runtime.open_drawer(usd(10_000)).unwrap();
+    // An espresso, $3.54, is $3.55 in cash: the drawer holds the $3.55 the customer handed over
+    // less their change.
+    espresso(&mut runtime, 500);
+    assert_eq!(runtime.drawer().unwrap().unwrap().taken.money, usd(355));
+    let closed = runtime.close_drawer(usd(10_355)).unwrap();
+    assert_eq!(closed.variance.unwrap().money, usd(0));
 }
