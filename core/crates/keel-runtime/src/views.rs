@@ -3,7 +3,7 @@
 
 use keel_domain::codec::Name;
 use keel_domain::codec::{Note, ReasonCode};
-use keel_domain::order::{ChosenModifier, Discount, Line, Order, OrderStatus, Prefix};
+use keel_domain::order::{Check, ChosenModifier, Discount, Line, Order, OrderStatus, Prefix};
 use keel_domain::profile::{CatalogGroup, Profile};
 use keel_domain::refs::{Modifier, ModifierGroup, Variant};
 use keel_pricing::Tax;
@@ -76,6 +76,21 @@ pub struct Ticket {
     pub due: Amount,
     /// What it still owes in cash, rounded as the location rounds cash.
     pub cash_due: Amount,
+    /// Its checks, each with its own lines and amounts, when it is split among more than one
+    /// (ADR-0030); empty otherwise, and on a check's own ticket.
+    pub checks: Vec<TicketCheck>,
+}
+
+/// One check of a split order: its ticket holds the check's lines, each with the check's part
+/// of it, and the check's amounts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TicketCheck {
+    /// The check.
+    pub check: Id<Check>,
+    /// Its number in the order, from 1.
+    pub number: u32,
+    /// What it holds and owes.
+    pub ticket: Ticket,
 }
 
 /// A line of a ticket.

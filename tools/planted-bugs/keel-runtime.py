@@ -52,10 +52,12 @@ BUGS = [
     (
         "runtime: an intent's ticket is made after its write",
         "src/runtime.rs",
-        """            append(w, order.cast(), &event, meta)?;
+        """            let event = loaded.decide(location, device, command)?;
+            append(w, order.cast(), &event, meta)?;
             view(w, order, &payments, profile, locale)
         })""",
-        """            append(w, order.cast(), &event, meta)
+        """            let event = loaded.decide(location, device, command)?;
+            append(w, order.cast(), &event, meta)
         })?;
         self.ticket(order)""",
         # The property's orders always price: only an order that overflows shows it.
@@ -98,7 +100,7 @@ BUGS = [
         "runtime: a cash payment captures what is due after rounding",
         "src/runtime.rs",
         """                let captured = PaymentCaptured {
-                    amount: due,""",
+                    amount: applied,""",
         """                let captured = PaymentCaptured {
                     amount: cash.due,""",
     ),
@@ -112,10 +114,8 @@ BUGS = [
     (
         "runtime: an order with nothing due starts a payment",
         "src/runtime.rs",
-        """            if due.is_positive() {
-                let started =""",
-        """            if !due.is_negative() {
-                let started =""",
+        "            if applied.is_positive() || part.is_some() {",
+        "            if !applied.is_negative() || part.is_some() {",
         # The demo sells nothing for nothing, and checkout refuses an order with no lines either
         # way.
         "unit",
@@ -128,18 +128,19 @@ BUGS = [
         .lines()
         .iter()
         .filter_map(|line| {
-            let charge = closed.lines.iter().find(|charge| charge.line == line.id())?;""",
-        """    let lines = closed
+            let (_, gross, taken) =
+                charges.lines.iter().find(|(known, _, _)| *known == line.id())?;""",
+        """    let lines = charges
         .lines
         .iter()
-        .filter_map(|charge| {
-            let line = order.line(charge.line)?;""",
+        .filter_map(|(id, gross, taken)| {
+            let line = order.line(*id)?;""",
     ),
     (
         "runtime: a paid ticket lists its taxes by identifier",
         "src/ticket.rs",
-        """    charges.sort_by_key(|charge| {
-        rules.taxes.iter().position(|tax| tax.id == charge.tax).unwrap_or(usize::MAX)
+        """    taxes.sort_by_key(|(tax, _)| {
+        rules.taxes.iter().position(|known| known.id == *tax).unwrap_or(usize::MAX)
     });
 """,
         "",
@@ -153,20 +154,15 @@ BUGS = [
     (
         "runtime: a ticket lists taxes that taxed nothing",
         "src/ticket.rs",
-        """        .filter(|tax| tax.taxable.is_positive())
-        .map(|tax| TicketTax {""",
-        """        .map(|tax| TicketTax {""",
+        """            .filter(|tax| tax.taxable.is_positive())
+            .map(|tax| (tax.id, tax.tax))""",
+        """            .map(|tax| (tax.id, tax.tax))""",
     ),
     (
         "runtime: a ticket lists the lines taken off",
         "src/ticket.rs",
-        """    let lines = order
-        .live_lines()
-        .zip(&totals.lines)""",
-        """    let lines = order
-        .lines()
-        .iter()
-        .zip(&totals.lines)""",
+        "    let on: Vec<Id<Line>> = order.lines_on(check.id()).map(Line::id).collect();",
+        "    let on: Vec<Id<Line>> = order.lines().iter().map(Line::id).collect();",
     ),
     (
         "runtime: a modifier chosen under another shows at its parent's depth",
@@ -260,10 +256,14 @@ BUGS = [
     (
         "print: a sale that owes nothing opens the drawer",
         "src/runtime.rs",
-        """            if due.is_positive() {
-                let kick = Doc::new(vec![Block::DrawerKick])?;""",
-        """            if !due.is_negative() {
-                let kick = Doc::new(vec![Block::DrawerKick])?;""",
+        """            let mut paid = payments.clone();
+            if applied.is_positive() || part.is_some() {""",
+        """            let mut paid = payments.clone();
+            if applied.is_zero() {
+                let kick = Doc::new(vec![Block::DrawerKick])?;
+                w.enqueue(&print::effect(drawer, JobKind::Drawer, &kick, None)?, meta.now)?;
+            }
+            if applied.is_positive() || part.is_some() {""",
     ),
     (
         "print: printing a job again leaves it unconfirmed",
@@ -313,8 +313,8 @@ BUGS = [
     (
         "print: a receipt too big for the outbox fails the sale",
         "src/runtime.rs",
-        "                .filter(|doc| doc.encode().len() <= keel_store::MAX_PAYLOAD)",
-        "                .filter(|doc| !doc.blocks().is_empty())",
+        "        .filter(|doc| doc.encode().len() <= keel_store::MAX_PAYLOAD)",
+        "        .filter(|doc| !doc.blocks().is_empty())",
         "unit",
     ),
     (
@@ -699,5 +699,54 @@ BUGS = [
         "src/receipt.rs",
         "        if let Some(notes) = &line.notes {",
         "        if let Some(notes) = line.notes.as_ref().filter(|_| false) {",
+    ),
+    # Split checks and partial payments (ADR-0030).
+    (
+        "split: an order's ticket leaves out its checks' taxes",
+        "src/ticket.rs",
+        "        for (tax, amount) in other.taxes {",
+        "        for (tax, amount) in other.taxes.into_iter().take(0) {",
+    ),
+    (
+        "split: an order's ticket counts one check's amounts",
+        "src/ticket.rs",
+        "        self.total = self.total.checked_add(other.total)?;",
+        "        self.total = other.total;",
+    ),
+    (
+        "split: a part pays all the check owes",
+        "src/runtime.rs",
+        "                Some(part) => (part, Cash { due: part, rounding: Money::zero(currency) }),",
+        "                Some(_) => (due, cash_due(profile, due)?),",
+    ),
+    (
+        "split: the order closes with its first check",
+        "src/runtime.rs",
+        "                .all(|known| !known.is_open() || loaded.lines_on(known.id()).next().is_none());",
+        "                .any(|known| !known.is_open() || loaded.lines_on(known.id()).next().is_none());",
+    ),
+    (
+        "split: no checks are opened for it",
+        "src/runtime.rs",
+        "        let more = usize::from(ways).saturating_sub(open.len());",
+        "        let more = 0_usize;",
+    ),
+    (
+        "split: a check's receipt shows all the order's payments",
+        "src/runtime.rs",
+        "        .filter(|payment| payment.info().is_some_and(|info| info.check == check))",
+        "        .filter(|payment| payment.info().is_some())",
+    ),
+    (
+        "split: a check's receipt doesn't say which check",
+        "src/runtime.rs",
+        "        check: number,",
+        "        check: None,",
+    ),
+    (
+        "split: a part closes the check",
+        "src/runtime.rs",
+        "            if checkout.balance(check)?.due.is_positive() {",
+        "            if false {",
     ),
 ]

@@ -395,6 +395,52 @@ impl Register {
         .map(|paid| CashPaid { change: (&paid.change).into(), ticket: (&paid.ticket).into() })
     }
 
+    /// Takes `tendered` in cash toward `check` of `order`: `part` of what it owes, in the
+    /// location's currency's minor units, or all of it when `part` is `None` (ADR-0030). The
+    /// check closes once it is paid, and the order with its last check.
+    ///
+    /// # Errors
+    /// As [`Register::pay_cash`].
+    pub fn pay_check_cash(
+        &self,
+        order: String,
+        check: String,
+        part: Option<i64>,
+        tendered: i64,
+    ) -> Result<CashPaid, KeelError> {
+        let (order, check) = (id(&order)?, id(&check)?);
+        self.with(|runtime| {
+            let currency = runtime.profile().data().currency;
+            let part = part.map(|part| Money::from_minor(part, currency));
+            runtime.pay_check_cash(order, check, part, Money::from_minor(tendered, currency))
+        })
+        .map(|paid| CashPaid { change: (&paid.change).into(), ticket: (&paid.ticket).into() })
+    }
+
+    /// Splits every live line of `order` evenly among `ways` checks, from 2 to 20 (ADR-0030).
+    ///
+    /// # Errors
+    /// [`KeelError::Refused`] if it can't be split that way; and as [`Register::add_item`].
+    pub fn split_evenly(&self, order: String, ways: u8) -> Result<Ticket, KeelError> {
+        let order = id(&order)?;
+        self.with(|runtime| runtime.split_evenly(order, ways)).map(|ticket| (&ticket).into())
+    }
+
+    /// Moves `line` of `order`, whole, to the open check `to`, or to a new one when `to` is
+    /// `None` (ADR-0030).
+    ///
+    /// # Errors
+    /// As [`Register::add_item`].
+    pub fn move_line(
+        &self,
+        order: String,
+        line: String,
+        to: Option<String>,
+    ) -> Result<Ticket, KeelError> {
+        let (order, line, to) = (id(&order)?, id(&line)?, to.as_deref().map(id).transpose()?);
+        self.with(|runtime| runtime.move_line(order, line, to)).map(|ticket| (&ticket).into())
+    }
+
     /// The ticket of `order`.
     ///
     /// # Errors

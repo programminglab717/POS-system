@@ -1,18 +1,16 @@
 //! An order's ticket: its lines, what it costs and what it still owes.
 
 use keel_domain::checkout::Checkout;
-use keel_domain::order::{
-    Check, CheckClosed, DiscountApplied, DiscountValue, Line, Order, OrderStatus,
-};
+use keel_domain::order::{Check, DiscountApplied, DiscountValue, Line, Order, OrderStatus};
 use keel_domain::payment::Payment;
 use keel_domain::profile::Profile;
 use keel_pricing::{Rules, Tax, round_cash};
-use keel_types::{Id, Locale, Money};
+use keel_types::{Currency, Id, Locale, Money};
 
 use crate::error::RuntimeError;
 use crate::views::{
-    Amount, Ticket, TicketDiscount, TicketLine, TicketRepriced, TicketState, TicketTax,
-    ticket_modifiers,
+    Amount, Ticket, TicketCheck, TicketDiscount, TicketLine, TicketRepriced, TicketState,
+    TicketTax, ticket_modifiers,
 };
 
 /// What is due in cash, and the cash rounding in it.
@@ -42,124 +40,218 @@ pub(crate) fn cash_due(profile: &Profile, due: Money) -> Result<Cash, RuntimeErr
     })
 }
 
-/// What an order's lines were, or are, charged.
+/// What one check's lines were, or are, charged: each line's part, and what its discounts and
+/// the whole order's took of it.
 struct Charges {
-    lines: Vec<TicketLine>,
-    discounts: Vec<TicketDiscount>,
+    /// Each line on the check, in the order's order: the line, its part's gross before tax, and
+    /// what each of its discounts took of the part.
+    lines: Vec<(Id<Line>, Money, Vec<Money>)>,
+    /// What each of the whole order's discounts took of the check.
+    discounts: Vec<Money>,
     subtotal: Money,
-    taxes: Vec<TicketTax>,
+    /// Each tax with something to tax, and what it charged.
+    taxes: Vec<(Id<Tax>, Money)>,
     total: Money,
 }
 
-/// The ticket of `order`, created, whose payments are `payments`.
+impl Charges {
+    fn none(currency: Currency) -> Charges {
+        let zero = Money::zero(currency);
+        Charges {
+            lines: Vec::new(),
+            discounts: Vec::new(),
+            subtotal: zero,
+            taxes: Vec::new(),
+            total: zero,
+        }
+    }
+
+    /// These charges and `other`'s, added up: a line's parts, each discount's, each tax's.
+    fn add(mut self, other: Charges) -> Result<Charges, RuntimeError> {
+        for (line, gross, taken) in other.lines {
+            match self.lines.iter_mut().find(|(known, _, _)| *known == line) {
+                Some((_, sum, sums)) => {
+                    *sum = sum.checked_add(gross)?;
+                    for (sum, part) in sums.iter_mut().zip(&taken) {
+                        *sum = sum.checked_add(*part)?;
+                    }
+                }
+                None => self.lines.push((line, gross, taken)),
+            }
+        }
+        if self.discounts.is_empty() {
+            self.discounts = other.discounts;
+        } else {
+            for (sum, part) in self.discounts.iter_mut().zip(&other.discounts) {
+                *sum = sum.checked_add(*part)?;
+            }
+        }
+        for (tax, amount) in other.taxes {
+            match self.taxes.iter_mut().find(|(known, _)| *known == tax) {
+                Some((_, sum)) => *sum = sum.checked_add(amount)?,
+                None => self.taxes.push((tax, amount)),
+            }
+        }
+        self.subtotal = self.subtotal.checked_add(other.subtotal)?;
+        self.total = self.total.checked_add(other.total)?;
+        Ok(self)
+    }
+}
+
+/// The ticket of `order`, created, whose payments are `payments`: each check charged as its
+/// snapshot says if it is closed, or as pricing charges it now, and the order's amounts the
+/// checks' added up, so they are what the checks' customers pay. With more than one check, the
+/// ticket lists each, with its own lines and amounts (ADR-0030).
 pub(crate) fn ticket(
     order: &Order,
     payments: &[Payment],
     profile: &Profile,
     locale: Locale,
 ) -> Result<Ticket, RuntimeError> {
-    let rules = &profile.data().rules;
     let currency = profile.data().currency;
-    let check: Id<Check> = order.id().cast();
-    // A closed check's snapshot says what it was charged; an open one is priced as it stands.
-    let charges = match order.check(check).and_then(|check| check.closed()) {
-        Some(closed) => charged(order, closed, rules, locale)?,
-        None => priced(order, rules, locale)?,
-    };
-    let zero = Money::from_minor(0, currency);
-    let (paid, due) = match *order.status() {
+    let mut whole = Charges::none(currency);
+    let (mut paid, mut due) = (Money::zero(currency), Money::zero(currency));
+    let mut checks = Vec::new();
+    for check in order.checks() {
+        let charges = check_charges(order, check, &profile.data().rules)?;
+        let (check_paid, check_due) = balance(order, payments, profile, check.id())?;
+        paid = paid.checked_add(check_paid)?;
+        due = due.checked_add(check_due)?;
+        let shown = !charges.lines.is_empty() || !check.is_open();
+        if shown {
+            let state = match TicketState::of(order.status()) {
+                TicketState::Open if !check.is_open() => TicketState::Closed,
+                state => state,
+            };
+            let view = view(order, &charges, state, check_paid, check_due, profile, locale)?;
+            checks.push(TicketCheck {
+                check: check.id(),
+                number: check.number().get(),
+                ticket: view,
+            });
+        }
+        whole = whole.add(charges)?;
+    }
+    let state = TicketState::of(order.status());
+    let mut ticket = view(order, &whole, state, paid, due, profile, locale)?;
+    if checks.len() > 1 {
+        ticket.checks = checks;
+    }
+    Ok(ticket)
+}
+
+/// What a check's captured payments covered, and what it still owes; nothing for an order
+/// voided or abandoned.
+fn balance(
+    order: &Order,
+    payments: &[Payment],
+    profile: &Profile,
+    check: Id<Check>,
+) -> Result<(Money, Money), RuntimeError> {
+    let zero = Money::zero(profile.data().currency);
+    Ok(match *order.status() {
         OrderStatus::Active | OrderStatus::Closed => {
+            let rules = &profile.data().rules;
             let checkout = Checkout::new(order, payments, rules, profile.rules_version());
             let balance = checkout.balance(check)?;
             (balance.captured, balance.due)
         }
         OrderStatus::Voided(_) | OrderStatus::Abandoned => (zero, zero),
-    };
-    let cash = if due.is_positive() { cash_due(profile, due)?.due } else { due };
-    let amount = |money: Money| Amount::new(money, locale);
-    Ok(Ticket {
-        order: order.id(),
-        state: TicketState::of(order.status()),
-        lines: charges.lines,
-        discounts: charges.discounts,
-        subtotal: amount(charges.subtotal),
-        taxes: charges.taxes,
-        total: amount(charges.total),
-        paid: amount(paid),
-        due: amount(due),
-        cash_due: amount(cash),
     })
 }
 
-/// What a closed check's snapshot says its lines and taxes were charged.
-fn charged(
+/// A ticket's view of `charges`, for `order`'s lines.
+fn view(
     order: &Order,
-    closed: &CheckClosed,
-    rules: &Rules,
+    charges: &Charges,
+    state: TicketState,
+    paid: Money,
+    due: Money,
+    profile: &Profile,
     locale: Locale,
-) -> Result<Charges, RuntimeError> {
-    // In the order the lines were rung, as an open order's ticket lists them: the snapshot
-    // lists its lines by identifier. It says what each line came to, not what each discount
-    // took, so the discounts are priced again: a closed check's lines and the whole order's
-    // discounts can't change without a conflict, so they price as they did.
-    let basket = order.basket().ok_or(RuntimeError::UnknownOrder(order.id()))?;
-    let totals = keel_pricing::price(&basket, rules)?;
+) -> Result<Ticket, RuntimeError> {
+    let rules = &profile.data().rules;
+    let amount = |money: Money| Amount::new(money, locale);
+    // In the order the lines were rung: a snapshot lists its lines by identifier.
     let lines = order
         .lines()
         .iter()
         .filter_map(|line| {
-            let charge = closed.lines.iter().find(|charge| charge.line == line.id())?;
-            let taken = order
-                .live_lines()
-                .position(|live| live.id() == line.id())
-                .and_then(|at| totals.lines.get(at))
-                .map_or(&[][..], |line| line.discounts.as_slice());
-            Some(ticket_line(line, charge.gross, taken, locale))
+            let (_, gross, taken) =
+                charges.lines.iter().find(|(known, _, _)| *known == line.id())?;
+            Some(ticket_line(line, *gross, taken, locale))
         })
         .collect();
-    let subtotal =
-        Money::sum(closed.total.currency(), closed.lines.iter().map(|charge| charge.net))?;
-    // In the location's order of taxes, too, as an open order's ticket lists them: the snapshot
-    // lists them by identifier. A tax the rules no longer have goes last.
-    let mut charges: Vec<_> = closed.taxes.iter().collect();
-    charges.sort_by_key(|charge| {
-        rules.taxes.iter().position(|tax| tax.id == charge.tax).unwrap_or(usize::MAX)
+    // In the location's order of taxes: a snapshot lists them by identifier. A tax the rules no
+    // longer have goes last.
+    let mut taxes: Vec<&(Id<Tax>, Money)> = charges.taxes.iter().collect();
+    taxes.sort_by_key(|(tax, _)| {
+        rules.taxes.iter().position(|known| known.id == *tax).unwrap_or(usize::MAX)
     });
-    let taxes = charges
+    let taxes = taxes
         .into_iter()
-        .map(|charge| TicketTax {
-            tax: charge.tax,
-            name: tax_name(rules, charge.tax),
-            amount: Amount::new(charge.amount, locale),
+        .map(|&(tax, charged)| TicketTax {
+            tax,
+            name: tax_name(rules, tax),
+            amount: amount(charged),
         })
         .collect();
-    let discounts = ticket_discounts(order.discounts(), &totals.discounts, locale);
-    Ok(Charges { lines, discounts, subtotal, taxes, total: closed.total })
+    let cash = if due.is_positive() { cash_due(profile, due)?.due } else { due };
+    Ok(Ticket {
+        order: order.id(),
+        state,
+        lines,
+        discounts: ticket_discounts(order.discounts(), &charges.discounts, locale),
+        subtotal: amount(charges.subtotal),
+        taxes,
+        total: amount(charges.total),
+        paid: amount(paid),
+        due: amount(due),
+        cash_due: amount(cash),
+        checks: Vec::new(),
+    })
 }
 
-/// What pricing charges an open order's live lines and taxes.
-fn priced(order: &Order, rules: &Rules, locale: Locale) -> Result<Charges, RuntimeError> {
-    let basket = order.basket().ok_or(RuntimeError::UnknownOrder(order.id()))?;
+/// What `check` was charged, as its snapshot says, if it is closed, or else what pricing charges
+/// its basket now. A snapshot says what each line came to, not what each discount took, so the
+/// discounts are priced again: a closed check's lines and the whole order's discounts can't
+/// change without a conflict, so they price as they did.
+fn check_charges(order: &Order, check: &Check, rules: &Rules) -> Result<Charges, RuntimeError> {
+    let basket = order.check_basket(check.id()).ok_or(RuntimeError::UnknownOrder(order.id()))?;
     let totals = keel_pricing::price(&basket, rules)?;
-    let lines = order
-        .live_lines()
-        .zip(&totals.lines)
-        .map(|(line, line_totals)| {
-            ticket_line(line, line_totals.gross, &line_totals.discounts, locale)
-        })
-        .collect();
-    let taxes = totals
-        .taxes
-        .iter()
-        .filter(|tax| tax.taxable.is_positive())
-        .map(|tax| TicketTax {
-            tax: tax.id,
-            name: tax_name(rules, tax.id),
-            amount: Amount::new(tax.tax, locale),
-        })
-        .collect();
-    let discounts = ticket_discounts(order.discounts(), &totals.discounts, locale);
-    Ok(Charges { lines, discounts, subtotal: totals.net, taxes, total: totals.total })
+    let on: Vec<Id<Line>> = order.lines_on(check.id()).map(Line::id).collect();
+    let taken = |line: Id<Line>| {
+        on.iter()
+            .position(|known| *known == line)
+            .and_then(|at| totals.lines.get(at))
+            .map_or_else(Vec::new, |line| line.discounts.clone())
+    };
+    let Some(closed) = check.closed() else {
+        let lines = on
+            .iter()
+            .zip(&totals.lines)
+            .map(|(&line, line_totals)| (line, line_totals.gross, line_totals.discounts.clone()))
+            .collect();
+        let taxes = totals
+            .taxes
+            .iter()
+            .filter(|tax| tax.taxable.is_positive())
+            .map(|tax| (tax.id, tax.tax))
+            .collect();
+        return Ok(Charges {
+            lines,
+            discounts: totals.discounts.clone(),
+            subtotal: totals.net,
+            taxes,
+            total: totals.total,
+        });
+    };
+    let lines =
+        closed.lines.iter().map(|charge| (charge.line, charge.gross, taken(charge.line))).collect();
+    let subtotal =
+        Money::sum(closed.total.currency(), closed.lines.iter().map(|charge| charge.net))?;
+    let taxes = closed.taxes.iter().map(|charge| (charge.tax, charge.amount)).collect();
+    Ok(Charges { lines, discounts: totals.discounts, subtotal, taxes, total: closed.total })
 }
 
 /// The discounts `applied`, each with what it took, as `taken` gives them in the same order.

@@ -5,10 +5,10 @@ use core::time::Duration;
 use std::path::Path;
 
 use keel_domain::checkout::Checkout;
-use keel_domain::codec::{Change, Note, ProfileVersion};
+use keel_domain::codec::{Change, IdSet, Note, ProfileVersion};
 use keel_domain::order::{
     Channel, Check, Discount, DiscountApplied, DiscountValue, LineAdded, LineChanged, LineRepriced,
-    Mode, Order, OrderCommand, OrderCreated, Reason,
+    LinesAllocated, Mode, Order, OrderCommand, OrderCreated, Reason,
 };
 use keel_domain::payment::{CashTendered, Payment, PaymentCaptured, PaymentCommand, Tender};
 use keel_domain::profile::{Choice, Member, Profile};
@@ -40,6 +40,9 @@ use crate::views::{
 
 /// The most amounts [`Runtime::cash_offers`] offers.
 pub const CASH_OFFERS: usize = 5;
+
+/// The most checks an order is split evenly among at once (ADR-0030).
+pub const MOST_CHECKS: u8 = 20;
 /// How far ahead of the device's clock a received event's time may move it: a minute, as the
 /// simulator allows.
 const MAX_FORWARD_DRIFT: Duration = Duration::from_secs(60);
@@ -494,23 +497,41 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         Ok(ticket)
     }
 
-    /// Takes `tendered` in cash for what `order` owes: the payment is initiated and captured,
-    /// with the location's cash rounding, and the order's check and the order closed, all in
-    /// one write. Nothing owed, the order closes with no payment. Answers with the change and the
-    /// order's ticket.
+    /// Takes `tendered` in cash for what `order` owes: [`Runtime::pay_check_cash`] for all its
+    /// main check owes. An order split among checks is paid check by check.
     ///
     /// # Errors
-    /// [`RuntimeError::TenderShort`] if `tendered` is less than what is due in cash,
-    /// [`RuntimeError::WrongCurrency`] or [`RuntimeError::NegativeTender`] if it isn't cash at
-    /// the location, and [`RuntimeError`] if no one is signed in or the order can't be paid as it
-    /// stands.
+    /// As [`Runtime::pay_check_cash`].
     pub fn pay_cash(
         &mut self,
         order: Id<Order>,
         tendered: Money,
     ) -> Result<CashPaid, RuntimeError> {
+        self.pay_check_cash(order, order.cast(), None, tendered)
+    }
+
+    /// Takes `tendered` in cash toward `check` of `order`: `part` of what it owes, or all of it,
+    /// with the location's cash rounding, when `part` is `None` or all it owes. The payment is
+    /// initiated and captured; once the check's payments cover it, it closes and its receipt
+    /// prints; once every check with a live line has closed, so does the order: all in one
+    /// write. Nothing owed, the check closes with no payment. Answers with the change and the
+    /// order's ticket (ADR-0030).
+    ///
+    /// # Errors
+    /// [`RuntimeError::TenderShort`] if `tendered` is less than what it pays,
+    /// [`RuntimeError::WrongCurrency`] or [`RuntimeError::NegativeTender`] if it isn't cash at
+    /// the location, and [`RuntimeError`] if no one is signed in, the part is nothing or more
+    /// than the check owes, or the check can't be paid as it stands.
+    pub fn pay_check_cash(
+        &mut self,
+        order: Id<Order>,
+        check: Id<Check>,
+        part: Option<Money>,
+        tendered: Money,
+    ) -> Result<CashPaid, RuntimeError> {
         let meta = self.meta()?;
-        if tendered.currency() != self.profile.data().currency {
+        let currency = self.profile.data().currency;
+        if tendered.currency() != currency || part.is_some_and(|part| part.currency() != currency) {
             return Err(RuntimeError::WrongCurrency);
         }
         if tendered.is_negative() {
@@ -528,22 +549,33 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         self.store.write(|w| {
             let loaded = w.load(Order::new(order))?;
             known(&loaded)?;
-            let check: Id<Check> = order.cast();
             let rules = &profile.data().rules;
             let checkout = Checkout::new(&loaded, payments.iter(), rules, profile.rules_version());
             let due = checkout.balance(check)?.due;
-            let cash = if due.is_positive() { cash_due(profile, due)? } else { Cash::none(due) };
+            // A part that is all the check owes pays it as all of it does: rounded as cash is.
+            let part = part.filter(|part| *part != due);
+            let (applied, cash) = match part {
+                None if due.is_positive() => (due, cash_due(profile, due)?),
+                None => (due, Cash::none(due)),
+                Some(part) => (part, Cash { due: part, rounding: Money::zero(currency) }),
+            };
             if tendered.compare(cash.due)?.is_lt() {
                 return Err(RuntimeError::TenderShort { due: cash.due });
             }
             let change = tendered.checked_sub(cash.due)?;
             let mut paid = payments.clone();
-            if due.is_positive() {
-                let started =
-                    checkout.start_payment(location, device, payment, check, Tender::Cash, due)?;
+            if applied.is_positive() || part.is_some() {
+                let started = checkout.start_payment(
+                    location,
+                    device,
+                    payment,
+                    check,
+                    Tender::Cash,
+                    applied,
+                )?;
                 append(w, payment.cast(), &started, &meta)?;
                 let captured = PaymentCaptured {
-                    amount: due,
+                    amount: applied,
                     tip: None,
                     reference: None,
                     cash: Some(CashTendered {
@@ -553,42 +585,119 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 };
                 let paying = w.load(Payment::new(payment))?;
                 let event = paying.decide(location, PaymentCommand::Capture(captured))?;
-                append(w, payment.cast(), &event, &meta)?;
+                let captured = append(w, payment.cast(), &event, &meta)?;
                 paid.push(w.load(Payment::new(payment))?);
-            }
-            let checkout = Checkout::new(&loaded, paid.iter(), rules, profile.rules_version());
-            let closed = checkout.close_check(location, device, check)?;
-            append(w, order.cast(), &closed, &meta)?;
-            let loaded = w.load(Order::new(order))?;
-            let event = loaded.decide(location, device, OrderCommand::Close)?;
-            let closing = append(w, order.cast(), &event, &meta)?;
-            let ticket = ticket::ticket(&w.load(Order::new(order))?, &paid, profile, locale)?;
-            // The drawer opens when cash changed hands, then the receipt prints: one job after
-            // the other, in the order they are enqueued.
-            if due.is_positive() {
+                // The drawer opens when cash changed hands.
                 let kick = Doc::new(vec![Block::DrawerKick])?;
                 w.enqueue(
-                    &print::effect(drawer, JobKind::Drawer, &kick, Some(closing))?,
+                    &print::effect(drawer, JobKind::Drawer, &kick, Some(captured))?,
                     meta.now,
                 )?;
             }
-            let closing_info = Closing {
-                payments: &paid,
-                cashier: cashier.as_ref(),
-                at: closed_at,
-                reprint: false,
-            };
-            // Nothing about the receipt can refuse the sale: one that can't be made whole is made
-            // short.
-            let doc = receipt::receipt(&ticket, &closing_info, profile, locale)
-                .ok()
-                .filter(|doc| doc.encode().len() <= keel_store::MAX_PAYLOAD)
-                .map_or_else(|| receipt::short(&ticket, &closing_info, profile, locale), Ok)?;
-            w.enqueue(
-                &print::effect(receipt_job, JobKind::Receipt, &doc, Some(closing))?,
-                meta.now,
-            )?;
+            let checkout = Checkout::new(&loaded, paid.iter(), rules, profile.rules_version());
+            if checkout.balance(check)?.due.is_positive() {
+                let ticket = ticket::ticket(&loaded, &paid, profile, locale)?;
+                return Ok(CashPaid { change: Amount::new(change, locale), ticket });
+            }
+            let closed = checkout.close_check(location, device, check)?;
+            let closing = append(w, order.cast(), &closed, &meta)?;
+            let loaded = w.load(Order::new(order))?;
+            // The order closes with the last of its checks that hold something.
+            let finished = loaded
+                .checks()
+                .iter()
+                .all(|known| !known.is_open() || loaded.lines_on(known.id()).next().is_none());
+            if finished {
+                let event = loaded.decide(location, device, OrderCommand::Close)?;
+                append(w, order.cast(), &event, &meta)?;
+            }
+            let loaded = w.load(Order::new(order))?;
+            let ticket = ticket::ticket(&loaded, &paid, profile, locale)?;
+            let receipt =
+                CheckReceipt { job: receipt_job, check, cashier: cashier.as_ref(), at: closed_at };
+            enqueue_receipt(w, &ticket, &paid, &receipt, closing, profile, locale, meta.now)?;
             Ok(CashPaid { change: Amount::new(change, locale), ticket })
+        })
+    }
+
+    /// Splits every live line of `order` evenly among `ways` checks: its open checks, in order,
+    /// and as many new ones as it takes (ADR-0030). Each line goes in as many shares, so each
+    /// check pays its part.
+    ///
+    /// # Errors
+    /// [`RuntimeError::NothingToSplit`] if the order has no live line, or `ways` is less than 2
+    /// or more than [`MOST_CHECKS`]; [`RuntimeError`] if no one is signed in, or the order
+    /// refuses: a check is closed, or it is split that way already.
+    pub fn split_evenly(&mut self, order: Id<Order>, ways: u8) -> Result<Ticket, RuntimeError> {
+        let meta = self.meta()?;
+        if !(2..=MOST_CHECKS).contains(&ways) {
+            return Err(RuntimeError::NothingToSplit);
+        }
+        let loaded = self.store.load(Order::new(order))?;
+        known(&loaded)?;
+        let live: Vec<Id<keel_domain::order::Line>> =
+            loaded.live_lines().map(keel_domain::order::Line::id).collect();
+        let lines = IdSet::new(live).map_err(|_| RuntimeError::NothingToSplit)?;
+        let open: Vec<Id<Check>> =
+            loaded.checks().iter().filter(|check| check.is_open()).map(Check::id).collect();
+        let more = usize::from(ways).saturating_sub(open.len());
+        let mut minted = Vec::with_capacity(more);
+        for _ in 0..more {
+            minted.push(self.ids.generate(meta.now)?);
+        }
+        let targets: Vec<Id<Check>> =
+            open.into_iter().chain(minted.iter().copied()).take(usize::from(ways)).collect();
+        let checks = IdSet::new(targets).map_err(|_| RuntimeError::NothingToSplit)?;
+        let allocated = LinesAllocated::splitting(&lines, &checks);
+        self.allocate(order, &minted, allocated, &meta)
+    }
+
+    /// Moves `line` of `order`, whole, to `to`, an open check, or to a new check when `to` is
+    /// `None` (ADR-0030).
+    ///
+    /// # Errors
+    /// [`RuntimeError`] if no one is signed in, or the order refuses: the line isn't live or is
+    /// on a closed check, the check is unknown or closed, or the line is there already.
+    pub fn move_line(
+        &mut self,
+        order: Id<Order>,
+        line: Id<keel_domain::order::Line>,
+        to: Option<Id<Check>>,
+    ) -> Result<Ticket, RuntimeError> {
+        let meta = self.meta()?;
+        let minted: Vec<Id<Check>> = match to {
+            Some(_) => Vec::new(),
+            None => vec![self.ids.generate(meta.now)?],
+        };
+        let check =
+            to.or_else(|| minted.first().copied()).ok_or(RuntimeError::UnknownOrder(order))?;
+        let lines = IdSet::new([line]).map_err(|_| RuntimeError::UnknownOrder(order))?;
+        self.allocate(order, &minted, LinesAllocated::moving(&lines, check), &meta)
+    }
+
+    /// Opens the checks `opened`, then allocates `allocated`, in one write.
+    fn allocate(
+        &mut self,
+        order: Id<Order>,
+        opened: &[Id<Check>],
+        allocated: LinesAllocated,
+        meta: &Meta,
+    ) -> Result<Ticket, RuntimeError> {
+        let payments = self.payments(order)?;
+        let (location, device) = (self.location(), self.device);
+        let (profile, locale) = (&self.profile, self.locale);
+        self.store.write(|w| {
+            for &check in opened {
+                let loaded = w.load(Order::new(order))?;
+                known(&loaded)?;
+                let event = loaded.decide(location, device, OrderCommand::OpenCheck(check))?;
+                append(w, order.cast(), &event, meta)?;
+            }
+            let loaded = w.load(Order::new(order))?;
+            known(&loaded)?;
+            let event = loaded.decide(location, device, OrderCommand::AllocateLines(allocated))?;
+            append(w, order.cast(), &event, meta)?;
+            view(w, order, &payments, profile, locale)
         })
     }
 
@@ -1023,4 +1132,49 @@ pub(crate) fn append<D: DomainEvent, S: Signer, E: Entropy>(
         payload,
     };
     Ok(w.append(draft, meta.now)?.body().event_id)
+}
+
+/// The receipt of a check just closed, to print: its job, the check, and who closed it when.
+struct CheckReceipt<'a> {
+    job: Id<Job>,
+    check: Id<Check>,
+    cashier: Option<&'a keel_domain::codec::Name>,
+    at: keel_types::LocalTime,
+}
+
+/// Enqueues the receipt of `receipt.check`, which `closing` closed: the check's own, for a split
+/// order, with its number and its payments, or the order's. Nothing about it can refuse the
+/// sale: one that can't be made whole is made short.
+#[expect(clippy::too_many_arguments, reason = "a write's parts, gathered before it")]
+fn enqueue_receipt<S: Signer, E: Entropy>(
+    w: &mut Writing<'_, S, E>,
+    ticket: &Ticket,
+    paid: &[Payment],
+    receipt: &CheckReceipt<'_>,
+    closing: Id<keel_events::envelope::Event>,
+    profile: &Profile,
+    locale: Locale,
+    now: Timestamp,
+) -> Result<(), RuntimeError> {
+    let check = receipt.check;
+    let split = ticket.checks.iter().find(|known| known.check == check);
+    let (shown, number) = split.map_or((ticket, None), |known| (&known.ticket, Some(known.number)));
+    let on_check: Vec<Payment> = paid
+        .iter()
+        .filter(|payment| payment.info().is_some_and(|info| info.check == check))
+        .cloned()
+        .collect();
+    let closing_info = Closing {
+        payments: &on_check,
+        cashier: receipt.cashier,
+        at: receipt.at,
+        reprint: false,
+        check: number,
+    };
+    let doc = receipt::receipt(shown, &closing_info, profile, locale)
+        .ok()
+        .filter(|doc| doc.encode().len() <= keel_store::MAX_PAYLOAD)
+        .map_or_else(|| receipt::short(shown, &closing_info, profile, locale), Ok)?;
+    w.enqueue(&print::effect(receipt.job, JobKind::Receipt, &doc, Some(closing))?, now)?;
+    Ok(())
 }

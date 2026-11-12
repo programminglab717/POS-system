@@ -22,6 +22,7 @@ const MAX_LINES_BLOCKS: usize = 800;
 /// A receipt's words, in one language.
 struct Words {
     order: &'static str,
+    check: &'static str,
     cashier: &'static str,
     subtotal: &'static str,
     discount: &'static str,
@@ -39,6 +40,7 @@ struct Words {
 
 const ENGLISH: Words = Words {
     order: "Order",
+    check: "Check",
     cashier: "Cashier",
     subtotal: "Subtotal",
     discount: "Discount",
@@ -56,6 +58,7 @@ const ENGLISH: Words = Words {
 
 const SPANISH: Words = Words {
     order: "Orden",
+    check: "Cuenta",
     cashier: "Cajero",
     subtotal: "Subtotal",
     discount: "Descuento",
@@ -97,6 +100,8 @@ pub(crate) struct Closing<'a> {
     pub at: LocalTime,
     /// Whether this is a reprint.
     pub reprint: bool,
+    /// The check's number, for one check of a split order (ADR-0030).
+    pub check: Option<u32>,
 }
 
 /// The receipt of the closed order `ticket` shows.
@@ -121,6 +126,9 @@ pub(crate) fn receipt(
     let id = ticket.order.to_string();
     let short = id.get(id.len().saturating_sub(6)..).unwrap_or_default().to_uppercase();
     blocks.push(Block::row(format!("{} {short}", words.order), closing.at.to_string()));
+    if let Some(number) = closing.check {
+        blocks.push(Block::row(format!("{} {number}", words.check), ""));
+    }
     if let Some(cashier) = closing.cashier {
         blocks.push(Block::row(format!("{}: {cashier}", words.cashier), ""));
     }

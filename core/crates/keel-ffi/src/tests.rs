@@ -420,12 +420,10 @@ fn usd(minor: i64, text: &str) -> Amount {
     Amount { minor, currency: "USD".into(), text: text.into() }
 }
 
-/// Found in review: most conversions could lose or swap a field unnoticed. Every field of a
-/// ticket, each a different value, crosses as itself.
-#[test]
-fn a_ticket_crosses_field_for_field() {
+/// A runtime ticket with every field a different value.
+fn every_field() -> keel_runtime::Ticket {
     use keel_runtime as rt;
-    let ticket = rt::Ticket {
+    rt::Ticket {
         order: id(1),
         state: rt::TicketState::Voided,
         lines: vec![rt::TicketLine {
@@ -467,7 +465,43 @@ fn a_ticket_crosses_field_for_field() {
         paid: amount(500),
         due: amount(590),
         cash_due: amount(590 + 5),
+        checks: Vec::new(),
+    }
+}
+
+/// A split order's check crosses with its own fields, its state the check's (ADR-0030).
+#[test]
+fn a_split_orders_checks_cross_field_for_field() {
+    use keel_runtime as rt;
+    let ticket = every_field();
+    let crossed = Ticket::from(&ticket);
+    // A split order's check crosses with its own fields, its state the check's.
+    let check = rt::TicketCheck {
+        check: id(9),
+        number: 2,
+        ticket: rt::Ticket { state: rt::TicketState::Closed, ..ticket.clone() },
     };
+    let split = Ticket::from(&rt::Ticket { checks: vec![check], ..ticket.clone() });
+    let crossed_check = &split.checks[0];
+    assert_eq!(crossed_check.check, demo_id(9));
+    assert_eq!(crossed_check.number, 2);
+    assert_eq!(crossed_check.state, TicketState::Closed);
+    assert_eq!(crossed_check.lines, crossed.lines);
+    assert_eq!(crossed_check.discounts, crossed.discounts);
+    assert_eq!(crossed_check.taxes, crossed.taxes);
+    assert_eq!(
+        (&crossed_check.subtotal, &crossed_check.total, &crossed_check.paid),
+        (&crossed.subtotal, &crossed.total, &crossed.paid)
+    );
+    assert_eq!((&crossed_check.due, &crossed_check.cash_due), (&crossed.due, &crossed.cash_due));
+}
+
+/// Found in review: most conversions could lose or swap a field unnoticed. Every field of a
+/// ticket, each a different value, crosses as itself.
+#[test]
+fn a_ticket_crosses_field_for_field() {
+    use keel_runtime as rt;
+    let ticket = every_field();
     let crossed = Ticket::from(&ticket);
     let expected = Ticket {
         order: demo_id(1),
@@ -511,6 +545,7 @@ fn a_ticket_crosses_field_for_field() {
         paid: usd(500, "$5.00"),
         due: usd(590, "$5.90"),
         cash_due: usd(595, "$5.95"),
+        checks: Vec::new(),
     };
     assert_eq!(crossed, expected);
     for (state, ffi) in [

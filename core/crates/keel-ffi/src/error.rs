@@ -176,9 +176,10 @@ impl From<RuntimeError> for KeelError {
                 action: action.name().to_owned(),
             },
             RuntimeError::Ring(_) => KeelError::Catalog { reason },
-            RuntimeError::Order(_) | RuntimeError::Checkout(_) | RuntimeError::Payment(_) => {
-                KeelError::Refused { reason }
-            }
+            RuntimeError::Order(_)
+            | RuntimeError::Checkout(_)
+            | RuntimeError::Payment(_)
+            | RuntimeError::NothingToSplit => KeelError::Refused { reason },
             RuntimeError::TenderShort { due } => KeelError::TenderShort {
                 due: Amount {
                     minor: due.minor(),

@@ -122,6 +122,37 @@ pub struct Ticket {
     pub due: Amount,
     /// What it still owes in cash, rounded as the location rounds cash.
     pub cash_due: Amount,
+    /// Its checks, each with its own lines and amounts, when it is split among more than one;
+    /// empty otherwise.
+    pub checks: Vec<TicketCheck>,
+}
+
+/// One check of a split order (ADR-0030): the check's lines, each with its part, and its
+/// amounts.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TicketCheck {
+    /// The check: what `pay_check_cash` and `move_line` take.
+    pub check: String,
+    /// Its number in the order, from 1.
+    pub number: u32,
+    /// Open, or closed once paid.
+    pub state: TicketState,
+    /// Its lines, each with the check's part of it.
+    pub lines: Vec<TicketLine>,
+    /// What the whole order's discounts took of it.
+    pub discounts: Vec<TicketDiscount>,
+    /// Its lines' amounts before tax, less every discount.
+    pub subtotal: Amount,
+    /// Each tax with something to tax on it.
+    pub taxes: Vec<TicketTax>,
+    /// What it costs.
+    pub total: Amount,
+    /// What payments have covered.
+    pub paid: Amount,
+    /// What it still owes.
+    pub due: Amount,
+    /// What it still owes in cash, rounded as the location rounds cash.
+    pub cash_due: Amount,
 }
 
 /// A line of a ticket.
@@ -210,61 +241,87 @@ pub struct TicketTax {
     pub amount: Amount,
 }
 
-impl From<&runtime::Ticket> for Ticket {
-    fn from(ticket: &runtime::Ticket) -> Ticket {
-        Ticket {
-            order: ticket.order.to_string(),
-            state: match ticket.state {
-                runtime::TicketState::Open => TicketState::Open,
-                runtime::TicketState::Closed => TicketState::Closed,
-                runtime::TicketState::Voided => TicketState::Voided,
-                runtime::TicketState::Abandoned => TicketState::Abandoned,
-            },
-            lines: ticket
-                .lines
+impl From<runtime::TicketState> for TicketState {
+    fn from(state: runtime::TicketState) -> TicketState {
+        match state {
+            runtime::TicketState::Open => TicketState::Open,
+            runtime::TicketState::Closed => TicketState::Closed,
+            runtime::TicketState::Voided => TicketState::Voided,
+            runtime::TicketState::Abandoned => TicketState::Abandoned,
+        }
+    }
+}
+
+impl From<&runtime::TicketLine> for TicketLine {
+    fn from(line: &runtime::TicketLine) -> TicketLine {
+        TicketLine {
+            line: line.line.to_string(),
+            name: line.name.to_string(),
+            quantity_millionths: line.quantity.micros(),
+            quantity_text: line.quantity_text.clone(),
+            modifiers: line
+                .modifiers
                 .iter()
-                .map(|line| TicketLine {
-                    line: line.line.to_string(),
-                    name: line.name.to_string(),
-                    quantity_millionths: line.quantity.micros(),
-                    quantity_text: line.quantity_text.clone(),
-                    modifiers: line
-                        .modifiers
-                        .iter()
-                        .map(|modifier| TicketModifier {
-                            depth: modifier.depth,
-                            modifier: modifier.modifier.to_string(),
-                            prefix: modifier.prefix.into(),
-                            name: modifier.name.to_string(),
-                            quantity: modifier.quantity,
-                            price: (&modifier.price).into(),
-                        })
-                        .collect(),
-                    amount: (&line.amount).into(),
-                    discounts: line.discounts.iter().map(TicketDiscount::from).collect(),
-                    repriced: line.repriced.as_ref().map(|repriced| TicketRepriced {
-                        unit_price: (&repriced.unit_price).into(),
-                        rung: (&repriced.rung).into(),
-                        reason: repriced.reason.as_str().to_owned(),
-                    }),
-                    notes: line.notes.as_ref().map(|notes| notes.as_str().to_owned()),
+                .map(|modifier| TicketModifier {
+                    depth: modifier.depth,
+                    modifier: modifier.modifier.to_string(),
+                    prefix: modifier.prefix.into(),
+                    name: modifier.name.to_string(),
+                    quantity: modifier.quantity,
+                    price: (&modifier.price).into(),
                 })
                 .collect(),
+            amount: (&line.amount).into(),
+            discounts: line.discounts.iter().map(TicketDiscount::from).collect(),
+            repriced: line.repriced.as_ref().map(|repriced| TicketRepriced {
+                unit_price: (&repriced.unit_price).into(),
+                rung: (&repriced.rung).into(),
+                reason: repriced.reason.as_str().to_owned(),
+            }),
+            notes: line.notes.as_ref().map(|notes| notes.as_str().to_owned()),
+        }
+    }
+}
+
+impl From<&runtime::TicketTax> for TicketTax {
+    fn from(tax: &runtime::TicketTax) -> TicketTax {
+        TicketTax { tax: tax.tax.to_string(), name: tax.name.clone(), amount: (&tax.amount).into() }
+    }
+}
+
+impl From<&runtime::TicketCheck> for TicketCheck {
+    fn from(check: &runtime::TicketCheck) -> TicketCheck {
+        let ticket = &check.ticket;
+        TicketCheck {
+            check: check.check.to_string(),
+            number: check.number,
+            state: ticket.state.into(),
+            lines: ticket.lines.iter().map(TicketLine::from).collect(),
             discounts: ticket.discounts.iter().map(TicketDiscount::from).collect(),
             subtotal: (&ticket.subtotal).into(),
-            taxes: ticket
-                .taxes
-                .iter()
-                .map(|tax| TicketTax {
-                    tax: tax.tax.to_string(),
-                    name: tax.name.clone(),
-                    amount: (&tax.amount).into(),
-                })
-                .collect(),
+            taxes: ticket.taxes.iter().map(TicketTax::from).collect(),
             total: (&ticket.total).into(),
             paid: (&ticket.paid).into(),
             due: (&ticket.due).into(),
             cash_due: (&ticket.cash_due).into(),
+        }
+    }
+}
+
+impl From<&runtime::Ticket> for Ticket {
+    fn from(ticket: &runtime::Ticket) -> Ticket {
+        Ticket {
+            order: ticket.order.to_string(),
+            state: ticket.state.into(),
+            lines: ticket.lines.iter().map(TicketLine::from).collect(),
+            discounts: ticket.discounts.iter().map(TicketDiscount::from).collect(),
+            subtotal: (&ticket.subtotal).into(),
+            taxes: ticket.taxes.iter().map(TicketTax::from).collect(),
+            total: (&ticket.total).into(),
+            paid: (&ticket.paid).into(),
+            due: (&ticket.due).into(),
+            cash_due: (&ticket.cash_due).into(),
+            checks: ticket.checks.iter().map(TicketCheck::from).collect(),
         }
     }
 }

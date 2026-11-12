@@ -65,6 +65,10 @@ pub enum RuntimeError {
     /// The payment refused the change.
     #[error(transparent)]
     Payment(#[from] PaymentError),
+    /// An order is split among fewer than two checks, or more than the most, or has nothing to
+    /// split (ADR-0030).
+    #[error("nothing to split that way")]
+    NothingToSplit,
     /// The cash tendered is short of what is due.
     #[error("{due} is due")]
     TenderShort {

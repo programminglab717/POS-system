@@ -33,6 +33,8 @@ mod ticket;
 mod views;
 
 #[cfg(test)]
+mod check_tests;
+#[cfg(test)]
 mod discount_tests;
 #[cfg(test)]
 mod print_tests;
@@ -45,10 +47,11 @@ mod tests;
 
 pub use error::RuntimeError;
 pub use print::{DRAWER, Job, JobKind, JobState, JobView, PrintJob, RECEIPT, Resolution};
-pub use runtime::{CASH_OFFERS, Identity, Runtime};
+pub use runtime::{CASH_OFFERS, Identity, MOST_CHECKS, Runtime};
 pub use staff::{APPROVAL_LIFE, FIRST_LOCK, LONGEST_LOCK, PIN_TRIES, QUIET};
 pub use sync::{ISLAND_AFTER, SyncStatus};
 pub use views::{
     Amount, CashPaid, GroupView, ItemView, MenuButton, MenuPage, MenuView, ModifierView, Ticket,
-    TicketDiscount, TicketLine, TicketModifier, TicketRepriced, TicketState, TicketTax,
+    TicketCheck, TicketDiscount, TicketLine, TicketModifier, TicketRepriced, TicketState,
+    TicketTax,
 };
