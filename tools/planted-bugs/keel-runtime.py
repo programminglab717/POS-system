@@ -968,7 +968,7 @@ BUGS = [
     (
         "report: cash rounding is left out of the tenders",
         "src/report.rs",
-        "            let Some(amount) = loaded.captured().and_then(|captured| captured.received()) else {",
+        "            let Some(amount) = loaded.captured().and_then(PaymentCaptured::received) else {",
         "            let Some(amount) = loaded.captured().map(|captured| captured.amount) else {",
     ),
     (

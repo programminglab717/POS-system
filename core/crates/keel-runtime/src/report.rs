@@ -4,7 +4,7 @@
 
 use keel_doc::{Align, Block, Doc, Style};
 use keel_domain::drawer::Drawer;
-use keel_domain::payment::{Payment, Tender};
+use keel_domain::payment::{Payment, PaymentCaptured, Tender};
 use keel_events::keys::Signer;
 use keel_store::{OrderState, PaymentState};
 use keel_types::{BusinessDate, Clock, Entropy, Id, Money};
@@ -145,7 +145,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 continue;
             };
             let loaded = self.store.load(Payment::new(payment.id))?;
-            let Some(amount) = loaded.captured().and_then(|captured| captured.received()) else {
+            let Some(amount) = loaded.captured().and_then(PaymentCaptured::received) else {
                 continue;
             };
             if amount.currency() != currency {
