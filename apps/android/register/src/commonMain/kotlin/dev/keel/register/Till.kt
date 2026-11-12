@@ -92,6 +92,15 @@ interface Till {
     /** [order]'s ticket. */
     fun ticket(order: String): Ticket
 
+    /** Asks the hub for [order], parked on another device (ADR-0030), and gives its ticket. */
+    fun recall(order: String): Ticket
+
+    /** Takes [order] from the device that owns it without the hub, on a manager's word. */
+    fun takeOver(order: String): Ticket
+
+    /** This register's device: the owner a ticket names when this register owns it. */
+    fun deviceId(): String = ""
+
     /** The orders begun today, whatever became of them, oldest first. */
     fun ordersToday(): List<Ticket>
 
@@ -239,6 +248,10 @@ data class Ticket(
     val discounts: List<TicketDiscount> = emptyList(),
     /** Its checks, when it is split among more than one. */
     val checks: List<TicketCheck> = emptyList(),
+    /** The device that owns it; none for a till that doesn't say. */
+    val owner: String? = null,
+    /** The devices that asked the hub for it. */
+    val asking: List<String> = emptyList(),
 )
 
 /** One check of a split order: its lines, each with the check's part of it, and what it owes. */

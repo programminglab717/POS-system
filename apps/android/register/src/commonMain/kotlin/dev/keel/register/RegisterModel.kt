@@ -515,10 +515,33 @@ class RegisterModel(
         mutable.update { it.copy(screen = Screen.ORDERS, orders = orders) }
     }
 
-    /** Takes up [order] again, if it is open, on the register. */
+    /**
+     * Takes up [order] again, if it is open, on the register. One parked on another device is
+     * recalled: the register asks the hub for it, and takes it up once the hub grants it
+     * (ADR-0030); until then it stays in the list, waiting.
+     */
     fun resume(order: Ticket) = perform {
         val ticket = till.ticket(order.order)
         if (ticket.state != OrderState.OPEN) throw TillException("That order isn't open.")
+        if (elsewhere(ticket)) {
+            till.recall(ticket.order)
+            val orders = till.ordersToday()
+            mutable.update { it.copy(orders = orders, error = "Asked the hub for that order: open it again once it's here.") }
+            return@perform
+        }
+        mutable.update { it.copy(screen = Screen.REGISTER, ticket = ticket, change = null) }
+    }
+
+    /** Whether [ticket] is owned by another device than this register. */
+    fun elsewhere(ticket: Ticket): Boolean {
+        val owner = ticket.owner ?: return false
+        val me = till.deviceId()
+        return me.isNotEmpty() && owner != me
+    }
+
+    /** Takes [order] over from its device on a manager's word, then takes it up. */
+    fun takeOver(order: Ticket) = perform {
+        val ticket = till.takeOver(order.order)
         mutable.update { it.copy(screen = Screen.REGISTER, ticket = ticket, change = null) }
     }
 

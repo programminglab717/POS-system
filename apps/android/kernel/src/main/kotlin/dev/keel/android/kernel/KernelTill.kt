@@ -150,6 +150,13 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
 
     override fun ticket(order: String): Ticket = call { register.ticket(order).toTicket() }
 
+    override fun recall(order: String): Ticket = call { register.recall(order).toTicket() }
+
+    override fun takeOver(order: String): Ticket =
+        call { register.takeOver(order, "hub_unreachable", null).toTicket() }
+
+    override fun deviceId(): String = register.deviceId()
+
     override fun ordersToday(): List<Ticket> = call { register.ordersToday().map { it.toTicket() } }
 
     override fun printJobs(): List<PrintJob> = call {
@@ -294,6 +301,8 @@ private fun KernelTicket.toTicket() = Ticket(
     order = order,
     lines = lines.map { it.toLine() },
     checks = checks.map { it.toCheck() },
+    owner = owner,
+    asking = asking,
     discounts = discounts.map { it.toDiscount() },
     total = total.text,
     cashDueMinor = cashDue.minor,

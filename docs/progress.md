@@ -15,7 +15,7 @@ register; and staff and roles in the back office.
 **Step 2, selling at the register, is being built**
 ([ADR-0030](./adr/0030-selling-at-the-register.md), proposed): its first slice, discounts, has
 landed, its second, prices set by hand and notes, and its third, split checks and partial
-payments; park and recall across devices is next.
+payments, and its fourth, park and recall across devices: the step's review is next.
 
 **Phase 0 (Foundations) is built: all 8 steps**, each reviewed, its designs accepted, ADR-0012 to
 ADR-0028. What remains of it waits for the reference device, as do the performance budgets that
@@ -97,7 +97,26 @@ verified as it lands, then reviewed together:
 3. **Split checks and partial payments** (built 2026-11-12): the runtime's splits, moves and
    payments toward a check, tickets built check by check, a receipt per check, the bindings,
    and the Android register's checks.
-4. **Park and recall across devices**, through the hub.
+4. **Park and recall across devices**, through the hub (built 2026-11-12): tickets naming their
+   owner, the runtime's recall and take-over, the bindings, and the Android register's list.
+
+Built in slice 4:
+
+- **`keel-runtime`**: an open order stays parked on the device that owns it, and every device
+  lists the location's orders, each ticket naming its owner and the devices whose requests wait
+  for the hub. `recall` asks the hub for an order another device owns, and the device owns it
+  once the hub's grant comes back through replication; one owned here, or asked for already,
+  asks nothing. `take_over` takes an order without the hub on a manager's word, gated as
+  `order.void`; the domain flags it for reconciliation (ADR-0021).
+  - Tests, across a hub and a register replicating: an order rung on one, listed on the other
+    as the first's, refused changes there, recalled, granted, then rung on and paid; another
+    taken over once a manager approves, refused a second time with no approval asked, and the
+    hub learning of it. Planted bugs: 4.
+- **`keel-ffi`**: a ticket's owner and the devices asking, `recall`, `take_over`, and the
+  register's device identifier.
+- **The Android register**: today's orders show one parked on another register; opening it
+  recalls it, and it opens once the hub grants it; Take over asks a manager. Tests: the model's
+  recall, waiting then granted, and a take-over approved.
 
 Built in slice 3:
 

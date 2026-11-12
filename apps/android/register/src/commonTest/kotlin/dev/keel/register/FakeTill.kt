@@ -223,6 +223,33 @@ class FakeTill : Till {
 
     private fun checkDue(order: String, check: String) = checkTotal(order, check) - (checkPaid[check] ?: 0)
 
+    /** This till's device, and each order's owner and the devices that asked for it. */
+    var device = "here"
+    val owners = mutableMapOf<String, String>()
+    val askers = mutableMapOf<String, MutableList<String>>()
+
+    /** Whether the hub grants a recall at once, as one that answers quickly does. */
+    var hubAnswers = true
+
+    override fun deviceId() = device
+
+    override fun recall(order: String): Ticket {
+        if (owners[order] == device) return ticket(order)
+        if (hubAnswers) owners[order] = device else askers.getOrPut(order) { mutableListOf() } += device
+        return ticket(order)
+    }
+
+    override fun takeOver(order: String): Ticket {
+        if (owners[order] == device) throw TillException("This register has it already.")
+        if (voidNeedsApproval) {
+            if (approvedBy == null) throw TillException("Taking it over needs a manager.", approval = "order.void")
+            approvedBy = null
+        }
+        owners[order] = device
+        askers.remove(order)
+        return ticket(order)
+    }
+
     override fun abandon(order: String): Ticket {
         if (voidNeedsApproval && open(order).isNotEmpty()) {
             if (approvedBy == null) throw TillException("Dropping it needs a manager.", approval = "order.void")
@@ -270,6 +297,8 @@ class FakeTill : Till {
             state = states.getValue(order),
             discounts = onOrder.second,
             checks = checksOf(order),
+            owner = owners[order] ?: device,
+            asking = askers[order].orEmpty(),
         )
     }
 

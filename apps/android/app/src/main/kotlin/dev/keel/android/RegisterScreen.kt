@@ -587,21 +587,32 @@ private fun Orders(state: RegisterState, model: RegisterModel) {
             TextButton(onClick = model::showRegister, modifier = Modifier.testTag("back")) { Text("Back") }
         }
         if (state.orders.isEmpty()) Text("None yet today.")
+        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("error")) }
         LazyColumn {
             items(state.orders.reversed(), key = { it.order }) { order ->
-                OrderRow(order, onOpen = { model.resume(order) }, onReprint = { model.reprint(order) })
+                OrderRow(
+                    order,
+                    elsewhere = model.elsewhere(order),
+                    onOpen = { model.resume(order) },
+                    onReprint = { model.reprint(order) },
+                    onTakeOver = { model.takeOver(order) },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun OrderRow(order: Ticket, onOpen: () -> Unit, onReprint: () -> Unit) {
-    val state = when (order.state) {
-        OrderState.OPEN -> "Open"
-        OrderState.CLOSED -> "Paid"
-        OrderState.VOIDED -> "Voided"
-        OrderState.ABANDONED -> "Dropped"
+private fun OrderRow(order: Ticket, elsewhere: Boolean, onOpen: () -> Unit, onReprint: () -> Unit, onTakeOver: () -> Unit) {
+    val state = if (order.state == OrderState.OPEN && elsewhere) {
+        if (order.asking.isEmpty()) "On another register" else "Asked for"
+    } else {
+        when (order.state) {
+            OrderState.OPEN -> "Open"
+            OrderState.CLOSED -> "Paid"
+            OrderState.VOIDED -> "Voided"
+            OrderState.ABANDONED -> "Dropped"
+        }
     }
     Row(
         Modifier
@@ -615,6 +626,11 @@ private fun OrderRow(order: Ticket, onOpen: () -> Unit, onReprint: () -> Unit) {
         Text(order.total)
         if (order.state == OrderState.CLOSED) {
             TextButton(onClick = onReprint, modifier = Modifier.testTag("reprint:${order.order}")) { Text("Reprint") }
+        }
+        // Parked on another register: tapping it recalls it through the hub; a manager can take it
+        // over when the hub can't be reached.
+        if (order.state == OrderState.OPEN && elsewhere) {
+            TextButton(onClick = onTakeOver, modifier = Modifier.testTag("take-over:${order.order}")) { Text("Take over") }
         }
     }
     HorizontalDivider()

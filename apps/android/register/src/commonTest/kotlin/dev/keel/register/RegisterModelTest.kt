@@ -642,4 +642,55 @@ class RegisterModelTest {
         testScheduler.advanceUntilIdle()
         assertEquals(emptyList(), model.state.value.ticket!!.checks, "back on one check: none listed")
     }
+
+    @Test
+    fun an_order_parked_on_another_register_is_recalled_through_the_hub() = runTest {
+        val till = FakeTill().apply { hubAnswers = false }
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        val order = model.state.value.ticket!!.order
+        // Another register owns it.
+        till.owners[order] = "front"
+        model.showOrders()
+        testScheduler.advanceUntilIdle()
+        val parked = model.state.value.orders.single()
+        assertEquals(true, model.elsewhere(parked))
+        // Opening it asks the hub; it stays in the list until the hub grants it.
+        model.resume(parked)
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.ORDERS, model.state.value.screen)
+        assertEquals(listOf("here"), model.state.value.orders.single().asking)
+        // Granted, it opens on this register.
+        till.owners[order] = "here"
+        model.resume(model.state.value.orders.single())
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.REGISTER, model.state.value.screen)
+        assertEquals(order, model.state.value.ticket!!.order)
+    }
+
+    @Test
+    fun an_order_is_taken_over_once_a_manager_approves() = runTest {
+        val till = FakeTill().apply {
+            pins = mapOf("alex" to "1234")
+            voidNeedsApproval = true
+        }
+        val model = signedIn(object : Till by till {
+            override fun team() = listOf(Member("sam", "Sam"), Member("alex", "Alex", "Manager", true))
+        })
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        val order = model.state.value.ticket!!.order
+        till.owners[order] = "front"
+        model.showOrders()
+        testScheduler.advanceUntilIdle()
+        model.takeOver(model.state.value.orders.single())
+        testScheduler.advanceUntilIdle()
+        assertEquals("order.void", model.state.value.approval?.action)
+        model.chooseApprover(model.approvers().single())
+        model.approve("1234")
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.REGISTER, model.state.value.screen)
+        assertEquals("here", model.state.value.ticket!!.owner)
+    }
 }
