@@ -55,6 +55,12 @@ data class KdsState(
     /** Whether the stations are being chosen. */
     val choosing: Boolean = false,
     val bumping: Set<String> = emptySet(),
+    /** Whether the last bumped is being recalled: a second press recalls nothing more. */
+    val recalling: Boolean = false,
+    /** Whether the last read of its tickets failed: their ages stand still until one works. */
+    val stale: Boolean = false,
+    /** Whether a read is under way: the next second's waits for it. */
+    val reading: Boolean = false,
 ) {
     /** The ticket selected, if any is shown. */
     val selectedTicket: KdsTicket? get() = view.tickets.getOrNull(selected)
@@ -657,13 +663,21 @@ class RegisterModel(
 
     /** Reads the kitchen screen again; the shell calls it every second, as tickets age. */
     fun refreshKitchen() = scope.launch {
-        if (current.kds == null) return@launch
+        // One read at a time: on a busy kitchen they don't pile up on the worker ahead of bumps.
+        // Found in review.
+        val kds = current.kds ?: return@launch
+        if (kds.reading) return@launch
+        mutable.update { state -> state.copy(kds = state.kds?.copy(reading = true)) }
         try {
             withContext(worker) { readKitchen() }
+            mutable.update { state -> state.copy(kds = state.kds?.copy(stale = false)) }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            // Read again at the next second.
+            // Read again at the next second; meanwhile the screen says its ages stand still.
+            mutable.update { state -> state.copy(kds = state.kds?.copy(stale = true)) }
+        } finally {
+            mutable.update { state -> state.copy(kds = state.kds?.copy(reading = false)) }
         }
     }
 
@@ -685,13 +699,15 @@ class RegisterModel(
         val kds = current.kds ?: return
         if (ticket.ticket in kds.bumping) return
         mutable.update { state -> state.copy(kds = state.kds?.copy(bumping = state.kds.bumping + ticket.ticket), error = null) }
+        // Bumping until the screen shows it gone. Found in review: its button came back before
+        // the read did, and a second press bumped it again, refused.
         perform {
             try {
                 till.bump(ticket.ticket)
+                readKitchen()
             } finally {
                 mutable.update { state -> state.copy(kds = state.kds?.copy(bumping = state.kds.bumping - ticket.ticket)) }
             }
-            readKitchen()
         }
     }
 
@@ -716,10 +732,25 @@ class RegisterModel(
     }
 
     /** Brings back the ticket bumped last: a bump bar's recall key. */
-    fun recallLast() = perform {
-        val last = current.kds?.view?.lastBumped ?: throw TillException("Nothing was bumped today.")
-        till.recallTicket(last)
-        readKitchen()
+    fun recallLast() {
+        val kds = current.kds ?: return
+        // Once until the screen shows it back. Found in review: a second press recalled the
+        // ticket bumped before it too.
+        if (kds.recalling) return
+        val last = kds.view.lastBumped
+        if (last == null) {
+            mutable.update { it.copy(error = "Nothing was bumped today.") }
+            return
+        }
+        mutable.update { state -> state.copy(kds = state.kds?.copy(recalling = true), error = null) }
+        perform {
+            try {
+                till.recallTicket(last)
+                readKitchen()
+            } finally {
+                mutable.update { state -> state.copy(kds = state.kds?.copy(recalling = false)) }
+            }
+        }
     }
 
     /** Opens or closes the choice of stations. */
@@ -853,9 +884,13 @@ class RegisterModel(
     /** Closes the price sheet. */
     fun closePrice() = mutable.update { it.copy(price = null) }
 
-    /** Opens the notes sheet for [line]. */
+    /** Opens the notes sheet for [line]; one sent to the kitchen keeps the notes it was sent with. */
     fun openNotes(line: TicketLine) {
         if (current.ticket == null) return
+        if (line.sent) {
+            mutable.update { it.copy(error = "${line.name} was sent to the kitchen with its notes.") }
+            return
+        }
         mutable.update { it.copy(notes = NotesSheet(line), error = null) }
     }
 
@@ -1234,12 +1269,20 @@ class RegisterModel(
      */
     private fun catalogChanged(version: String) = perform {
         val team = till.team()
+        // The kitchen's stations, read again: a publication may add a kitchen, or change it.
+        // Found in review: they were lost, or never read.
+        val stations = till.kitchenStations()
+        val known = stations.map { it.station }.toSet()
+        val kds = current.kds?.let { open ->
+            val kept = open.stations.intersect(known).ifEmpty { known }
+            if (known.isEmpty()) null else open.copy(stations = kept)
+        }
         val member = current.member
         if (member != null && team.none { it.id == member.id }) {
             mutable.update {
                 RegisterState(
                     loading = false, team = team, printer = it.printer, ticket = it.ticket,
-                    sync = it.sync, profileVersion = version, device = it.device,
+                    sync = it.sync, profileVersion = version, device = it.device, stations = stations,
                 )
             }
             return@perform
@@ -1248,7 +1291,9 @@ class RegisterModel(
         mutable.update {
             it.copy(
                 team = team, pages = pages, page = it.page.coerceIn(0, (pages.size - 1).coerceAtLeast(0)),
-                profileVersion = version,
+                profileVersion = version, stations = stations,
+                kds = if (it.kds != null) kds else null,
+                screen = if (it.screen == Screen.KITCHEN && kds == null) Screen.SIGN_IN else it.screen,
             )
         }
         // The new catalog's items, on the open sheets too. Found in review.

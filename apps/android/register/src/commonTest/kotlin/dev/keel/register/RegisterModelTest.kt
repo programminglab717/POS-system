@@ -1432,4 +1432,101 @@ class RegisterModelTest {
         assertEquals("This location has no kitchen.", register.state.value.error)
         assertEquals(Screen.SIGN_IN, register.state.value.screen)
     }
+
+    /** Found in review: a press while the bump's read ran bumped the ticket again, refused. */
+    @Test
+    fun a_ticket_is_bumped_once_even_while_its_bump_is_read() = runTest {
+        val fake = FakeTill()
+        var model: RegisterModel? = null
+        var pressDuringRead = false
+        val till = object : Till by fake {
+            override fun kitchenScreen(stations: List<String>): KitchenView {
+                if (pressDuringRead) {
+                    pressDuringRead = false
+                    model!!.bumpSelected()
+                }
+                return fake.kitchenScreen(stations)
+            }
+        }
+        model = signedIn(till)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.send()
+        testScheduler.advanceUntilIdle()
+        model.signOut()
+        testScheduler.advanceUntilIdle()
+        model.openKitchen()
+        testScheduler.advanceUntilIdle()
+        pressDuringRead = true
+        model.bumpSelected()
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, fake.bumpCalls)
+        assertNull(model.state.value.error)
+    }
+
+    /** Found in review: a second press of Recall brought back the ticket bumped before it too. */
+    @Test
+    fun recall_brings_back_one_ticket_however_fast_it_is_pressed() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.send()
+        testScheduler.advanceUntilIdle()
+        model.signOut()
+        testScheduler.advanceUntilIdle()
+        model.openKitchen()
+        testScheduler.advanceUntilIdle()
+        val both = model.state.value.kds!!.view.tickets
+        model.bump(both[0])
+        testScheduler.advanceUntilIdle()
+        model.bump(both[1])
+        testScheduler.advanceUntilIdle()
+        assertEquals(emptyList(), model.state.value.kds!!.view.tickets)
+        model.recallLast()
+        model.recallLast()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(both[1].ticket), model.state.value.kds!!.view.tickets.map { it.ticket })
+    }
+
+    /** Found in review: a publication that signed the cashier out lost the kitchen's stations. */
+    @Test
+    fun a_publication_keeps_the_kitchen_and_reads_it_again() = runTest {
+        val fake = FakeTill()
+        var version = "v1"
+        var team = fake.team()
+        val till = object : Till by fake {
+            override fun profileVersion() = version
+            override fun team() = team
+        }
+        val model = signedIn(till)
+        assertEquals(3, model.state.value.stations.size)
+        // A publication without the cashier: signed out, the kitchen kept.
+        team = listOf(Member("sam", "Sam"))
+        version = "v2"
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.SIGN_IN, model.state.value.screen)
+        assertEquals(3, model.state.value.stations.size)
+        // One that drops the kitchen: read again, and gone.
+        fake.stations = emptyList()
+        version = "v3"
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(0, model.state.value.stations.size)
+    }
+
+    /** Found in review: a sent line's notes could be changed, which the kernel refuses. */
+    @Test
+    fun a_sent_lines_notes_stay_as_they_were_sent() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.send()
+        testScheduler.advanceUntilIdle()
+        model.openNotes(model.state.value.ticket!!.lines[0])
+        assertNull(model.state.value.notes)
+        assertEquals("tea was sent to the kitchen with its notes.", model.state.value.error)
+    }
 }

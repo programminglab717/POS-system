@@ -132,6 +132,9 @@ private fun SignIn(state: RegisterState, model: RegisterModel) {
         if (state.stations.isNotEmpty()) {
             TextButton(onClick = model::openKitchen, modifier = Modifier.testTag("kitchen")) { Text("Kitchen display") }
         }
+        for (alert in state.alerts) {
+            Text(alert.words, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelLarge)
+        }
         Spacer(Modifier.height(24.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             for (member in state.team) {
@@ -287,7 +290,10 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                         }
                         TextButton(onClick = { model.openDiscount(line) }, modifier = Modifier.testTag("discount:${line.line}")) { Text("Discount") }
                         TextButton(onClick = { model.openPrice(line) }, modifier = Modifier.testTag("price:${line.line}")) { Text("Price") }
-                        TextButton(onClick = { model.openNotes(line) }, modifier = Modifier.testTag("note:${line.line}")) { Text("Note") }
+                        // A sent line went to the kitchen with its notes. Found in review.
+                        if (!line.sent) {
+                            TextButton(onClick = { model.openNotes(line) }, modifier = Modifier.testTag("note:${line.line}")) { Text("Note") }
+                        }
                     }
                     // A line moves to a check of its own, or to another open check of a split order.
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {

@@ -239,15 +239,20 @@ class FakeTill : Till {
 
     override fun send(order: String): Ticket {
         check(signedIn != null) { "no one signed in" }
-        if (stations.isEmpty()) return ticket(order)
-        val pending = open(order).filter { !it.sent && !it.voided }
-        if (pending.isEmpty()) return ticket(order)
+        fire(order)
+        return ticket(order)
+    }
+
+    /** Fires what of [order] is pending, as sending or paying does: the fake fires it all. */
+    private fun fire(order: String) {
+        if (stations.isEmpty()) return
+        val pending = orders.getValue(order).filter { !it.sent && !it.voided }
+        if (pending.isEmpty()) return
         pending.forEach { it.sent = true }
         for (station in stations) {
             val lines = pending.filter { station.expo || stationOf(it.variant) == station.station }.map { it.id }
             if (lines.isNotEmpty()) tickets += FakeTicket("ticket${tickets.size + 1}", station.station, order, lines)
         }
-        return ticket(order)
     }
 
     override fun voidLine(order: String, line: String, reason: String): Ticket {
@@ -331,6 +336,7 @@ class FakeTill : Till {
 
     override fun setNotes(order: String, line: String, notes: String?): Ticket {
         val found = open(order).singleOrNull { it.id == line } ?: throw TillException("no such line")
+        if (found.sent) throw TillException("line $line isn't waiting to be fired")
         if (found.notes == notes) throw TillException("Those are its notes already.")
         found.notes = notes
         return ticket(order)
@@ -358,6 +364,7 @@ class FakeTill : Till {
 
     override fun payCheckCash(order: String, check: String, partMinor: Long?, tenderedMinor: Long): Paid {
         open(order)
+        fire(order)
         val owed = checkDue(order, check)
         val paying = partMinor ?: owed
         if (paying <= 0 || paying > owed) throw TillException("That's more than the check owes.")
@@ -372,7 +379,7 @@ class FakeTill : Till {
     /** Each line's part on each check it is on: the line's id, the check, and the part in cents. */
     private fun lineParts(order: String): List<Triple<String, String, Long>> = orders.getValue(order).flatMap { line ->
         val on = line.on.ifEmpty { listOf(order) }
-        val whole = unitPrice(line) * line.count
+        val whole = if (line.voided) 0L else unitPrice(line) * line.count
         on.mapIndexed { index, check ->
             Triple(line.id, check, whole / on.size + if (index == 0) whole % on.size else 0)
         }
@@ -521,7 +528,7 @@ class FakeTill : Till {
         }
         // An order with lines sent to the kitchen is voided, not abandoned, as the kernel does.
         val sent = open(order).any { it.sent }
-        open(order).clear()
+        if (sent) open(order).forEach { it.voided = true } else open(order).clear()
         states[order] = if (sent) OrderState.VOIDED else OrderState.ABANDONED
         return ticket(order)
     }
@@ -534,6 +541,7 @@ class FakeTill : Till {
     override fun amount(minor: Long) = Amount(minor, money(minor))
 
     override fun payCash(order: String, tenderedMinor: Long): Paid {
+        fire(order)
         val due = due(order)
         if (tenderedMinor < due) throw TillException("That's short: ${money(due)} is due.")
         if (drawerFloat != null) drawerSales += due
@@ -595,7 +603,8 @@ class FakeTill : Till {
         fun words(off: Off) = reasonWords(off.reason) +
             ((off.asked as? DiscountAsked.Percent)?.let { " " + percentWords(it.basisPoints) } ?: "")
         val lines = orders.getValue(order).associate { line ->
-            var left = unitPrice(line) * line.count
+            // A voided line is charged nothing, as the kernel has it.
+            var left = if (line.voided) 0L else unitPrice(line) * line.count
             val taken = offs.filter { it.line == line.id }.map { off ->
                 val amount = take(left, off)
                 left -= amount

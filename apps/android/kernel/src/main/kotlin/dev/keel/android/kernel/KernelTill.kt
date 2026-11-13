@@ -220,12 +220,12 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
 
     override fun kitchenAlerts(): List<KitchenAlert> = call {
         register.kitchenAlerts().map { alert ->
-            val where = when (alert.to) {
-                Rerouted.STATION_PRINTER -> "printed at its printer"
-                Rerouted.FALLBACK_PRINTER -> "printed at the kitchen's fallback printer"
-                Rerouted.NOWHERE -> "and there's no printer to print it"
+            val words = when (alert.to) {
+                Rerouted.STATION_PRINTER -> "${alert.station}'s screen didn't show order ${alert.code}: printed at its printer."
+                Rerouted.FALLBACK_PRINTER -> "${alert.station}'s screen didn't show order ${alert.code}: printed at the kitchen's fallback printer."
+                Rerouted.NOWHERE -> "${alert.station}'s screen didn't show order ${alert.code}, and there's no printer to print it."
             }
-            KitchenAlert(alert.ticket, alert.station, alert.code, "${alert.station}'s screen didn't show order ${alert.code}: $where.")
+            KitchenAlert(alert.ticket, alert.station, alert.code, words)
         }
     }
 

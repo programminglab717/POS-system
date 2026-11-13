@@ -62,8 +62,11 @@ fun KitchenPage(state: RegisterState, model: RegisterModel) {
             .focusable()
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                // A key held down bumps or recalls once: its repeats do nothing. Tab is left to
+                // move between the screen's buttons. Found in review.
+                if (event.nativeKeyEvent.repeatCount > 0) return@onPreviewKeyEvent true
                 when (event.key) {
-                    Key.DirectionRight, Key.DirectionDown, Key.Tab -> model.select(1)
+                    Key.DirectionRight, Key.DirectionDown -> model.select(1)
                     Key.DirectionLeft, Key.DirectionUp -> model.select(-1)
                     Key.Enter, Key.NumPadEnter, Key.Spacebar -> model.bumpSelected()
                     Key.R, Key.Backspace -> model.recallLast()
@@ -91,6 +94,17 @@ fun KitchenPage(state: RegisterState, model: RegisterModel) {
                     )
                 }
             }
+        }
+        if (kds.stale) {
+            Text(
+                "Can't read the tickets: their ages are standing still. Trying again.",
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.testTag("kitchen:stale"),
+            )
+        }
+        // Tickets no screen showed in time, which every device tells its staff (ADR-0034).
+        for (alert in state.alerts) {
+            Text(alert.words, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelLarge)
         }
         // Each station's day so far: how many it bumped, and its average time.
         Text(
@@ -175,7 +189,7 @@ private fun ItemRows(item: KdsItem) {
                 fontWeight = FontWeight.Bold,
                 textDecoration = struck,
             )
-            if (item.void) Text("VOID", color = scheme.error, fontWeight = FontWeight.Bold, modifier = Modifier.testTag("void:${item.line}"))
+            if (item.void) Text("VOID", color = scheme.error, fontWeight = FontWeight.Bold, modifier = Modifier.testTag("voided:${item.line}"))
             item.ready?.let { made -> Text(if (made) "✓ made" else "waiting", style = MaterialTheme.typography.labelMedium) }
         }
         item.componentOf?.let { Text("for $it", style = MaterialTheme.typography.labelMedium) }
