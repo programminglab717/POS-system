@@ -95,7 +95,14 @@ Step 6 was built in four slices, each ending with a review
 ## Current slice
 
 The MVP's step 6, the kitchen: routing to stations, kitchen tickets and a KDS, ticket aging,
-fallbacks (D-01…D-03, D-06, D-07, D-11). Next: its design.
+fallbacks (D-01…D-03, D-06, D-07, D-11) ([ADR-0034](./adr/0034-the-kitchen.md), proposed), is
+built in three slices, each verified as it lands, then reviewed together:
+
+1. **The domain and the store**: profile format 3 (stations, routes, allergens), routing, the
+   kitchen ticket aggregate and its five schemas, the projection. Next.
+2. **The register and the kitchen**: firing, the tickets, voids and their slips, the KDS's
+   queries and intents, the fallback print jobs and the kitchen ticket's document, the bindings.
+3. **The shell**: the Android register's Send and voids, and the app as a KDS.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3, 4 and 5's among them, and
 the three of step 2 the scrolling ticket pane should mend.
