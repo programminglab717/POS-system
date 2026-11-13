@@ -464,7 +464,7 @@ fn a_store_opened_again_shows_the_same_tickets() {
 fn the_menu_shows_each_page_with_prices_and_what_must_be_chosen() {
     let scratch = Scratch::new();
     let runtime = register(&scratch, demo().unwrap());
-    let menu = runtime.menu();
+    let menu = runtime.menu().unwrap();
     let pages: Vec<(&str, usize)> =
         menu.pages.iter().map(|page| (page.name.as_str(), page.buttons.len())).collect();
     assert_eq!(pages, [("Coffee", 6), ("Food", 3), ("Retail", 1)]);

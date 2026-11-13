@@ -91,7 +91,7 @@ class FakeTill : Till {
 
     override fun approvers() =
         if (voidNeedsApproval || discountLimit != null || priceNeedsApproval || paidOutLimit != null ||
-            noSaleNeedsApproval || varianceLimit != null || refundLimit != null
+            noSaleNeedsApproval || varianceLimit != null || refundLimit != null || markNeedsApproval
         ) {
             listOf("alex")
         } else {
@@ -107,12 +107,65 @@ class FakeTill : Till {
         signedIn = null
     }
 
+    /** What is sold out, each with when it is back: null until put back (ADR-0033). */
+    val sold = mutableMapOf<String, String?>()
+
+    /** Moves with every change of what is sold out, as the kernel's version does. */
+    var availability = 0L
+
+    /** Whether an 86 needs a manager, as for a cashier whose role doesn't permit it. */
+    var markNeedsApproval = false
+
+    /** Where an 86 for the day ends, as the kernel says it. */
+    var endOfDay = "2026-10-03 04:00"
+
+    private val names = mapOf(
+        "latte" to "Latte", "tea" to "Tea", "scone" to "Scone", "whole" to "Whole", "oat" to "Oat",
+        "shot" to "Shot", "vanilla" to "Vanilla", "caramel" to "Caramel", "double" to "Double",
+    )
+
+    private val modifierIds = setOf("whole", "oat", "shot", "vanilla", "caramel", "double")
+
     override fun menu() = listOf(
         MenuPage("Drinks", listOf(MenuButton("latte", "Latte", "$4.50", choices = true, required = true), MenuButton("tea", "Tea", "$3.00"))),
         MenuPage("Food", listOf(MenuButton("scone", "Scone", "$2.75"))),
-    )
+    ).map { page ->
+        page.copy(buttons = page.buttons.map { it.copy(soldOut = it.variant in sold, backAt = sold[it.variant]) })
+    }
 
-    override fun item(variant: String): Item = if (variant == "latte") latte else throw TillException("no choices")
+    override fun item(variant: String): Item {
+        if (variant != "latte") throw TillException("no choices")
+        return latte.copy(
+            groups = latte.groups.map { group ->
+                group.copy(modifiers = group.modifiers.map { it.copy(soldOut = it.modifier in sold, backAt = sold[it.modifier]) })
+            },
+        )
+    }
+
+    override fun eightySix(item: String, modifier: Boolean, untilPutBack: Boolean) {
+        check(signedIn != null) { "no one signed in" }
+        val known = if (modifier) item in modifierIds else item in prices
+        if (!known) throw TillException("the catalog has no item $item")
+        val back = if (untilPutBack) null else endOfDay
+        if (item in sold && sold[item] == back) throw TillException("the item is already sold out until then, or already on sale")
+        if (markNeedsApproval && approvedBy == null) throw TillException("Marking an item out needs a manager's approval.", approval = "item.availability")
+        approvedBy = null
+        sold[item] = back
+        availability += 1
+    }
+
+    override fun putBack(item: String, modifier: Boolean) {
+        check(signedIn != null) { "no one signed in" }
+        if (item !in sold) throw TillException("the item is already sold out until then, or already on sale")
+        if (markNeedsApproval && approvedBy == null) throw TillException("Marking an item out needs a manager's approval.", approval = "item.availability")
+        approvedBy = null
+        sold -= item
+        availability += 1
+    }
+
+    override fun soldOut() = sold.keys.sorted().map { SoldOutItem(it, it in modifierIds, names.getValue(it), sold[it]) }
+
+    override fun availabilityVersion(): Long? = availability
 
     override fun startOrder(): Ticket {
         check(signedIn != null) { "no one signed in" }
@@ -124,6 +177,10 @@ class FakeTill : Till {
 
     override fun addItem(order: String, variant: String, choices: List<Chosen>, quantity: Int): Ticket {
         prices[variant] ?: throw TillException("not on the menu")
+        // The kernel refuses what is sold out, the item or a modifier chosen (ADR-0033).
+        (listOf(variant) + choices.map { it.modifier }).firstOrNull { it in sold }?.let {
+            throw TillException("${names.getValue(it)} is sold out")
+        }
         if (variant == "latte" && choices.none { it.modifier == "whole" || it.modifier == "oat" }) {
             throw TillException("choose a milk")
         }

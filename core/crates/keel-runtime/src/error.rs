@@ -80,6 +80,15 @@ pub enum RuntimeError {
         "the order wasn't paid in cash alone, as far as this register knows: a card's is refunded to the card, which isn't built yet"
     )]
     CardRefund,
+    /// The catalog has no such item, variant or modifier (ADR-0033).
+    #[error("the catalog has no item {0}")]
+    UnknownItem(String),
+    /// An item, or a modifier chosen, is sold out (ADR-0033).
+    #[error("{0} is sold out")]
+    SoldOut(String),
+    /// An item's availability refused the change (ADR-0033).
+    #[error(transparent)]
+    Availability(#[from] keel_domain::availability::AvailabilityError),
     /// The order changed while the intent was being made: look at it again (ADR-0032).
     #[error("the order changed meanwhile: look at it again")]
     OrderChanged,

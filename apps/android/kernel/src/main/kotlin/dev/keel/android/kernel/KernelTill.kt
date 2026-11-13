@@ -1,6 +1,9 @@
 package dev.keel.android.kernel
 
 import dev.keel.kernel.Choice
+import dev.keel.kernel.ItemKind
+import dev.keel.kernel.Until
+import dev.keel.register.SoldOutItem
 import dev.keel.kernel.KeelException
 import dev.keel.kernel.Mode
 import dev.keel.kernel.Prefix
@@ -79,7 +82,7 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
         register.menu().pages.map { page ->
             MenuPage(
                 page.name,
-                page.buttons.map { MenuButton(it.variant, it.name, it.price.text, it.choices, it.required) },
+                page.buttons.map { MenuButton(it.variant, it.name, it.price.text, it.choices, it.required, it.soldOut, it.backAt) },
             )
         }
     }
@@ -99,12 +102,27 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
                     group.max.toInt(),
                     group.free.toInt(),
                     group.repeat,
-                    group.modifiers.map { Modifier(it.modifier, it.name, it.price.text) },
+                    group.modifiers.map { Modifier(it.modifier, it.name, it.price.text, it.soldOut, it.backAt) },
                     group.depth.toInt(),
                 )
             },
         )
     }
+
+    override fun eightySix(item: String, modifier: Boolean, untilPutBack: Boolean) = call {
+        val until = if (untilPutBack) Until.PutBack else Until.EndOfDay
+        register.eightySix(item, kind(modifier), until, null, null)
+    }
+
+    override fun putBack(item: String, modifier: Boolean) = call { register.putBack(item, kind(modifier)) }
+
+    override fun soldOut(): List<SoldOutItem> = call {
+        register.soldOut().map { SoldOutItem(it.item, it.kind == ItemKind.MODIFIER, it.name, it.backAt) }
+    }
+
+    override fun availabilityVersion(): Long? = call { register.availabilityVersion().toLong() }
+
+    private fun kind(modifier: Boolean) = if (modifier) ItemKind.MODIFIER else ItemKind.VARIANT
 
     override fun startOrder(): Ticket = call { register.startOrder(Mode.TAKEOUT).toTicket() }
 

@@ -77,7 +77,7 @@ pub use catalog::{
 pub use demo::demo;
 
 use crate::codec::{CatalogVersion, Field, Fields, Name, PayloadError, Record, RulesVersion};
-use crate::refs::{ModifierGroup, Role as RoleRef, Variant};
+use crate::refs::{Modifier, ModifierGroup, Role as RoleRef, Variant};
 use crate::staff::{PinHash, Request, Role};
 use catalog::{Index, full_name};
 
@@ -375,6 +375,12 @@ impl Profile {
     /// The modifier group `group`.
     pub fn group(&self, group: Id<ModifierGroup>) -> Option<&CatalogGroup> {
         self.data.catalog.groups.get(*self.index.groups.get(&group)?)
+    }
+
+    /// The modifier `modifier`, of whichever group holds it.
+    pub fn modifier(&self, modifier: Id<Modifier>) -> Option<&CatalogModifier> {
+        let &(group, at) = self.index.modifiers.get(&modifier)?;
+        self.data.catalog.groups.get(group)?.modifiers.get(at)
     }
 
     /// The team member `member`, if the team has them.

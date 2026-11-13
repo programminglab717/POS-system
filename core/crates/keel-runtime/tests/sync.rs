@@ -457,3 +457,57 @@ fn an_order_is_taken_over_on_a_managers_word() {
     exchange(&mut location);
     assert_eq!(location.hub.ticket(order).unwrap().owner, Some(id(REGISTER)));
 }
+
+/// An 86 reaches every device of the location within 10 s (ADR-0033, decision 7; G-06): made on
+/// one, it is sold out on the other once the frames that tick carries arrive, with no push from
+/// the shell; a register polls its availability every 2 s, so it shows once heard, within 2 s.
+#[test]
+fn an_86_reaches_the_other_device_within_10_seconds() {
+    use keel_runtime::{ItemRef, Until};
+    let (hub_dir, register_dir) = (dir("86-hub"), dir("86-register"));
+    let mut location = settled(open(&hub_dir, HUB, 1), open(&register_dir, REGISTER, 2));
+    location.hub.sign_in(id(0x501), "1234").unwrap();
+    let espresso = ItemRef::Variant(id(0x401));
+    let step = Duration::from_millis(250);
+    // Polled every step, as the shell does every 2 s: how long until `heard` holds.
+    let until_heard = |location: &mut Location, heard: &dyn Fn(&Location) -> bool| {
+        let mut waited = Duration::ZERO;
+        while !heard(location) {
+            assert!(waited < Duration::from_secs(8), "not heard after {waited:?}");
+            location.run(step, 1);
+            waited += step;
+        }
+        waited
+    };
+    let sold_out = |runtime: &TestRuntime| !runtime.sold_out().unwrap().is_empty();
+
+    // Made on the hub, heard by the register.
+    location.hub.eighty_six(espresso, Until::EndOfDay, None).unwrap();
+    let waited = until_heard(&mut location, &|location| sold_out(&location.register));
+    assert!(waited + Duration::from_secs(2) <= Duration::from_secs(10), "{waited:?}");
+    assert_eq!(location.register.availability_version().unwrap(), 1);
+    let order = location.register.start_order(Mode::Takeout).unwrap().order;
+    assert!(matches!(
+        location.register.add_item(order, id(0x401), &[], NonZeroU32::MIN),
+        Err(RuntimeError::SoldOut(_))
+    ));
+
+    // Put back on the register, heard by the hub.
+    location.register.put_back(espresso).unwrap();
+    let waited = until_heard(&mut location, &|location| !sold_out(&location.hub));
+    assert!(waited + Duration::from_secs(2) <= Duration::from_secs(10), "{waited:?}");
+    location.register.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+
+    // Changed on both at once: each device ends with the same, the later by HLC.
+    location.hub.eighty_six(espresso, Until::PutBack, None).unwrap();
+    location.register.clock().advance(Duration::from_millis(1)).unwrap();
+    location.register.eighty_six(espresso, Until::EndOfDay, None).unwrap();
+    location.run(step, 32);
+    let hub = location.hub.sold_out().unwrap();
+    assert_eq!(hub, location.register.sold_out().unwrap());
+    assert_eq!(hub.len(), 1);
+    assert_eq!(
+        location.hub.availability_version().unwrap(),
+        location.register.availability_version().unwrap()
+    );
+}

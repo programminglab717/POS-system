@@ -113,6 +113,16 @@ data class PriceSheet(
 /** The notes sheet: [line]'s notes, as they are when it opens. */
 data class NotesSheet(val line: TicketLine)
 
+/**
+ * The 86 sheet for a menu button (ADR-0033): its variant, and the modifiers its item offers, each
+ * 86'd for the day or until put back, or put back; [working] while a change is being made.
+ */
+data class MarkSheet(
+    val button: MenuButton,
+    val modifiers: List<Modifier> = emptyList(),
+    val working: Boolean = false,
+)
+
 /** A manager's approval the register asks for: the action, why, and the manager asked, once chosen. */
 data class Approval(
     val action: String,
@@ -172,6 +182,14 @@ data class RegisterState(
     val approval: Approval? = null,
     /** The version of the profile the team and the menu were read from, once it is known. */
     val profileVersion: String? = null,
+    /** What is sold out now, as last read (ADR-0033). */
+    val soldOut: List<SoldOutItem> = emptyList(),
+    /** The availability version the menu and [soldOut] were read at. */
+    val availabilityVersion: Long? = null,
+    /** Whether a tap on the menu 86s its item, or puts it back, instead of ringing it. */
+    val marking: Boolean = false,
+    /** The 86 sheet open for a button, if any. */
+    val mark: MarkSheet? = null,
     /** The last refusal or failure, until the next intent. */
     val error: String? = null,
     /** This register's device, once the till has said, to tell its orders from other registers'. */
@@ -268,16 +286,96 @@ class RegisterModel(
         // The version the menu is read at, read before it, so a publication taken after it reads
         // it again.
         val version = version()
+        // The availability version too, read before what it covers.
+        val availability = availability()
         val pages = till.menu()
+        val soldOut = till.soldOut()
         // Once someone signs in, the register asks to open the drawer if none is open (ADR-0031).
         val drawer = till.drawer()
         mutable.update {
             it.copy(
                 screen = Screen.REGISTER, member = member, pages = pages, page = 0,
                 profileVersion = version, pinFor = null, drawer = drawer, askDrawer = drawer == null,
+                soldOut = soldOut, availabilityVersion = availability,
             )
         }
     }
+
+    /** The till's availability version, or null if it can't say. */
+    private fun availability(): Long? = try {
+        till.availabilityVersion()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * Reads what is sold out again, and the menu, the modifier sheet and the 86 sheet with it:
+     * after an 86 here, or when another register's arrives (ADR-0033). A choice on the open sheet
+     * of a modifier now sold out is dropped.
+     */
+    private fun readAvailability() {
+        if (current.member == null) return
+        val availability = availability()
+        val pages = till.menu()
+        val soldOut = till.soldOut()
+        val sheet = current.sheet?.let { open -> open.refreshed(till.item(open.item.variant)) }
+        val mark = current.mark?.let { open -> marked(open.button.variant, pages) }
+        mutable.update {
+            it.copy(
+                pages = pages, page = it.page.coerceIn(0, (pages.size - 1).coerceAtLeast(0)), soldOut = soldOut,
+                availabilityVersion = availability,
+                sheet = if (it.sheet != null) sheet else null,
+                mark = if (it.mark != null) mark?.copy(working = false) else null,
+            )
+        }
+    }
+
+    /** The 86 sheet for [variant], as [pages] show it: none if the menu no longer has it. */
+    private fun marked(variant: String, pages: List<MenuPage>): MarkSheet? {
+        val button = pages.flatMap { it.buttons }.firstOrNull { it.variant == variant } ?: return null
+        val modifiers = if (button.choices) {
+            till.item(variant).groups.flatMap { it.modifiers }.distinctBy { it.modifier }
+        } else {
+            emptyList()
+        }
+        return MarkSheet(button, modifiers)
+    }
+
+    /** Taps on the menu 86 their items, or ring them again. */
+    fun toggleMarking() = mutable.update { it.copy(marking = !it.marking, mark = null, error = null) }
+
+    /**
+     * 86s [item], the sheet's variant or, if [modifier], one of its modifiers, for the rest of the
+     * day or [untilPutBack] (ADR-0033); tried again as it was once a manager approves.
+     */
+    fun eightySix(item: String, modifier: Boolean, untilPutBack: Boolean) =
+        changeAvailability { till.eightySix(item, modifier, untilPutBack) }
+
+    /** Puts [item], the sheet's variant or, if [modifier], one of its modifiers, back on sale. */
+    fun putBack(item: String, modifier: Boolean) = changeAvailability { till.putBack(item, modifier) }
+
+    /**
+     * Makes [change] once, the sheet marked working until it is done, so a second tap changes
+     * nothing more; and reads what is sold out again.
+     */
+    private fun changeAvailability(change: () -> Unit) {
+        val sheet = current.mark ?: return
+        if (sheet.working) return
+        mutable.update { it.copy(mark = sheet.copy(working = true), error = null) }
+        perform {
+            try {
+                change()
+            } finally {
+                mutable.update { state -> state.copy(mark = state.mark?.copy(working = false)) }
+            }
+            readAvailability()
+        }
+    }
+
+    /** Closes the 86 sheet. */
+    fun closeMark() = mutable.update { it.copy(mark = null) }
 
     /** Shows the drawer screen, and reads the drawer. */
     fun showDrawer() = perform {
@@ -396,8 +494,17 @@ class RegisterModel(
         state.copy(page = index.coerceIn(0, (state.pages.size - 1).coerceAtLeast(0)))
     }
 
-    /** Rings [button]'s item, or opens its modifier sheet if it has modifiers to choose. */
+    /**
+     * Rings [button]'s item, or opens its modifier sheet if it has modifiers to choose; while
+     * marking, opens its 86 sheet instead. An item sold out isn't rung (ADR-0033).
+     */
     fun tap(button: MenuButton) = perform {
+        if (current.marking) {
+            val sheet = marked(button.variant, current.pages) ?: return@perform
+            mutable.update { it.copy(mark = sheet) }
+            return@perform
+        }
+        if (button.soldOut) throw TillException("${button.name} is sold out ${backWords(button.backAt)}.")
         if (button.choices) {
             val item = till.item(button.variant)
             mutable.update { it.copy(sheet = ModifierSheet(item)) }
@@ -899,6 +1006,19 @@ class RegisterModel(
         // that took a publication as it joined, after its cashier signed in, kept the old menu.
         val version = withContext(worker) { version() }
         if (version != null && version != current.profileVersion) catalogChanged(version)
+        // What is sold out, read again whenever it moves: an 86 on another register, or one whose
+        // time has passed, which moves no version (ADR-0033).
+        if (current.member == null) return@launch
+        val moved = try {
+            withContext(worker) {
+                till.availabilityVersion() != current.availabilityVersion || till.soldOut() != current.soldOut
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
+        if (moved) perform { readAvailability() }
     }
 
     /**

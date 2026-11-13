@@ -22,6 +22,7 @@
 //!
 //! Like `keel-store`, which it holds, this crate isn't built for `wasm32`.
 
+mod availability;
 mod drawer;
 mod error;
 mod print;
@@ -35,6 +36,8 @@ mod sync;
 mod ticket;
 mod views;
 
+#[cfg(test)]
+mod availability_tests;
 #[cfg(test)]
 mod check_tests;
 #[cfg(test)]
@@ -52,6 +55,7 @@ mod staff_tests;
 #[cfg(test)]
 mod tests;
 
+pub use availability::{ItemRef, SoldOut, Until};
 pub use error::RuntimeError;
 pub use print::{DRAWER, Job, JobKind, JobState, JobView, PrintJob, RECEIPT, Resolution};
 pub use report::{DayReport, ReportKind, TenderLine};
@@ -61,6 +65,6 @@ pub use staff::{APPROVAL_LIFE, FIRST_LOCK, LONGEST_LOCK, PIN_TRIES, QUIET};
 pub use sync::{ISLAND_AFTER, SyncStatus};
 pub use views::{
     Amount, CashPaid, DrawerView, GroupView, ItemView, MenuButton, MenuPage, MenuView,
-    ModifierView, Ticket, TicketCheck, TicketDiscount, TicketLine, TicketModifier, TicketRepriced,
-    TicketState, TicketTax,
+    ModifierView, SoldOutUntil, Ticket, TicketCheck, TicketDiscount, TicketLine, TicketModifier,
+    TicketRepriced, TicketState, TicketTax,
 };

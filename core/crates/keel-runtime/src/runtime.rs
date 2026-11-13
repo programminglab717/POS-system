@@ -265,6 +265,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     ) -> Result<Ticket, RuntimeError> {
         let meta = self.meta()?;
         let rung = self.profile.ring(variant, choices)?;
+        self.check_on_sale(variant, choices)?;
         let added = LineAdded {
             line: self.ids.generate(meta.now)?,
             item: rung.item,
@@ -982,9 +983,13 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         &self.profile.data().team
     }
 
-    /// The menu, as the register shows it.
-    pub fn menu(&self) -> MenuView {
+    /// The menu, as the register shows it, with what is sold out now (ADR-0033).
+    ///
+    /// # Errors
+    /// [`RuntimeError`] if the store can't be read.
+    pub fn menu(&self) -> Result<MenuView, RuntimeError> {
         let profile = &self.profile;
+        let sold_out = self.sold_out_map()?;
         let pages = profile
             .data()
             .menu
@@ -1005,12 +1010,16 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                             price: Amount::new(entry.price, self.locale),
                             choices: !item.groups.is_empty(),
                             required: groups().any(|group| group.min > 0),
+                            sold_out: sold_out
+                                .get(&variant.cast())
+                                .copied()
+                                .map(crate::views::SoldOutUntil),
                         })
                     })
                     .collect(),
             })
             .collect();
-        MenuView { pages }
+        Ok(MenuView { pages })
     }
 
     /// `variant`, with the modifier groups offered for it.
@@ -1026,7 +1035,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             variant,
             name: profile.variant_name(variant).ok_or_else(unknown)?.clone(),
             price: Amount::new(entry.price, self.locale),
-            groups: group_views(profile, &item.groups, self.locale),
+            groups: group_views(profile, &item.groups, self.locale, &self.sold_out_map()?),
         })
     }
 }

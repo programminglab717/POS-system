@@ -26,9 +26,9 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use crate::error::KeelError;
 use crate::records::{
-    Amount, CashMovement, CashPaid, Choice, DayReport, DrawerView, Item, Job, Member, Menu, Mode,
-    NewDevice, Outcome, PrintJob, Printer, Refunded, RegisterConfig, ReportKind, Resolution,
-    ReturnLine, Returnable, SyncKit, SyncState, Ticket, Waits,
+    Amount, CashMovement, CashPaid, Choice, DayReport, DrawerView, Item, ItemKind, Job, Member,
+    Menu, Mode, NewDevice, Outcome, PrintJob, Printer, Refunded, RegisterConfig, ReportKind,
+    Resolution, ReturnLine, Returnable, SoldOut, SyncKit, SyncState, Ticket, Until, Waits,
 };
 
 /// The runtime as a device runs it: the system's clock and the operating system's randomness,
@@ -66,6 +66,14 @@ fn reason(code: &str, note: Option<String>) -> Result<Reason, KeelError> {
         .map(|note| Note::new(&note).map_err(|_| KeelError::invalid("the note isn't valid")))
         .transpose()?;
     Ok(Reason { code, note })
+}
+
+/// `item`, a variant or a modifier as `kind` says.
+fn item_ref(item: &str, kind: ItemKind) -> Result<keel_runtime::ItemRef, KeelError> {
+    Ok(match kind {
+        ItemKind::Variant => keel_runtime::ItemRef::Variant(id(item)?),
+        ItemKind::Modifier => keel_runtime::ItemRef::Modifier(id(item)?),
+    })
 }
 
 /// The longest [`Register::sync_step`] waits for the network.
@@ -850,7 +858,7 @@ impl Register {
     /// # Errors
     /// [`KeelError::Device`] if the register's lock was poisoned.
     pub fn menu(&self) -> Result<Menu, KeelError> {
-        self.with(|runtime| Ok(runtime.menu())).map(|menu| (&menu).into())
+        self.with(|runtime| runtime.menu()).map(|menu| (&menu).into())
     }
 
     /// `variant`, with its modifier groups.
@@ -860,6 +868,68 @@ impl Register {
     pub fn item(&self, variant: String) -> Result<Item, KeelError> {
         let variant = id(&variant)?;
         self.with(|runtime| runtime.item(variant)).map(|item| (&item).into())
+    }
+
+    /// 86s `item`, a variant or a modifier as `kind` says, `until` the business day ends, a time
+    /// or it is put back, for an optional `reason` and `note` (ADR-0033): the register refuses
+    /// ringing it until then, and every device of the location hears of it.
+    ///
+    /// # Errors
+    /// [`KeelError::ApprovalRequired`] if the member's role doesn't permit it;
+    /// [`KeelError::Catalog`] if the catalog has no such item; [`KeelError::Refused`] if it is
+    /// sold out until then already, or the time isn't after now; [`KeelError::InvalidArgument`]
+    /// for an identifier, a reason or a time that isn't one, or a note with no reason.
+    pub fn eighty_six(
+        &self,
+        item: String,
+        kind: ItemKind,
+        until: Until,
+        reason: Option<String>,
+        note: Option<String>,
+    ) -> Result<(), KeelError> {
+        let item = item_ref(&item, kind)?;
+        let until = match until {
+            Until::EndOfDay => keel_runtime::Until::EndOfDay,
+            Until::PutBack => keel_runtime::Until::PutBack,
+            Until::Time { micros } => keel_runtime::Until::Time(
+                keel_types::Timestamp::from_micros(micros)
+                    .map_err(|_| KeelError::invalid("the time is out of range"))?,
+            ),
+        };
+        let reason = match (reason, note) {
+            (Some(code), note) => Some(self::reason(&code, note)?),
+            (None, None) => None,
+            (None, Some(_)) => return Err(KeelError::invalid("a note needs a reason")),
+        };
+        self.with(|runtime| runtime.eighty_six(item, until, reason))
+    }
+
+    /// Puts `item` back on sale (ADR-0033).
+    ///
+    /// # Errors
+    /// As [`Register::eighty_six`]; [`KeelError::Refused`] if it is on sale already.
+    pub fn put_back(&self, item: String, kind: ItemKind) -> Result<(), KeelError> {
+        let item = item_ref(&item, kind)?;
+        self.with(|runtime| runtime.put_back(item))
+    }
+
+    /// The items sold out now, each with when it is back (ADR-0033).
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read.
+    pub fn sold_out(&self) -> Result<Vec<SoldOut>, KeelError> {
+        self.with(|runtime| runtime.sold_out())
+            .map(|sold_out| sold_out.iter().map(SoldOut::from).collect())
+    }
+
+    /// A number that moves whenever an item's availability changes, here or heard from another
+    /// device: the shell reads the menu again when it does (ADR-0033). An 86 whose time passes
+    /// doesn't move it: the shell reads the menu again at the times [`Register::sold_out`] gives.
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read.
+    pub fn availability_version(&self) -> Result<u64, KeelError> {
+        self.with(|runtime| runtime.availability_version())
     }
 
     /// Sets the printer jobs go to.

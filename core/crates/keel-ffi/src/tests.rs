@@ -623,7 +623,9 @@ fn an_items_groups_cross_field_for_field() {
             modifier: demo_id(0x205),
             name: "Shot".into(),
             prefix: Prefix::Extra,
-            price: usd(95, "$0.95")
+            price: usd(95, "$0.95"),
+            sold_out: false,
+            back_at: None,
         }
     );
     assert_eq!(item.groups[0].modifiers[1].price, usd(75, "$0.75"));
@@ -1123,4 +1125,70 @@ fn espressos_are_returned_through_the_register() {
     assert_eq!(report.refunds.len(), 1);
     assert_eq!((report.refunds[0].payments, report.refunds[0].amount.minor), (2, 1_062));
     assert_eq!(report.refunds_without_drawer, 2);
+}
+
+#[test]
+fn an_item_is_86d_and_put_back_through_the_register() {
+    let scratch = Scratch::new();
+    let register: Arc<Register> = Register::open(config(&scratch)).unwrap();
+    let espresso = || demo_id(0x401);
+    let eighty_six = |until| register.eighty_six(espresso(), ItemKind::Variant, until, None, None);
+    assert_eq!(eighty_six(Until::EndOfDay), Err(KeelError::NotSignedIn));
+    register.sign_in(demo_id(0x502), "2468".into()).unwrap();
+    assert_eq!(register.availability_version().unwrap(), 0);
+    let button = |register: &Register| register.menu().unwrap().pages[0].buttons[0].clone();
+    assert_eq!((button(&register).sold_out, button(&register).back_at), (false, None));
+
+    eighty_six(Until::EndOfDay).unwrap();
+    assert_eq!(register.availability_version().unwrap(), 1);
+    let sold_out = register.sold_out().unwrap();
+    assert_eq!(sold_out.len(), 1);
+    assert_eq!((sold_out[0].item.clone(), sold_out[0].kind), (espresso(), ItemKind::Variant));
+    assert_eq!(sold_out[0].name, "Espresso");
+    let back_at = sold_out[0].back_at.clone().unwrap();
+    // As `2026-10-03 04:00`: the business day ends at 4 am.
+    assert_eq!((back_at.len(), &back_at[10..]), (16, " 04:00"), "{back_at}");
+    assert!(button(&register).sold_out);
+    assert_eq!(button(&register).back_at, Some(back_at));
+    let order = register.start_order(Mode::Takeout).unwrap().order;
+    assert_eq!(
+        register.add_item(order.clone(), espresso(), vec![], 1),
+        Err(KeelError::Refused { reason: "Espresso is sold out".into() })
+    );
+    // Already sold out until then; a time already past; a time out of range.
+    assert!(matches!(eighty_six(Until::EndOfDay), Err(KeelError::Refused { .. })));
+    assert!(matches!(eighty_six(Until::Time { micros: 0 }), Err(KeelError::Refused { .. })));
+    let far = eighty_six(Until::Time { micros: i64::MAX });
+    assert!(matches!(far, Err(KeelError::InvalidArgument { .. })), "{far:?}");
+    // Until put back, for a reason: sold out with no time it is back.
+    let reason = Some("ran_out".to_owned());
+    register.eighty_six(espresso(), ItemKind::Variant, Until::PutBack, reason, None).unwrap();
+    assert_eq!(register.sold_out().unwrap()[0].back_at, None);
+    assert_eq!((button(&register).sold_out, button(&register).back_at), (true, None));
+    // A note needs a reason; an item the catalog lacks, or of the other kind, isn't one.
+    let noted =
+        register.eighty_six(espresso(), ItemKind::Variant, Until::EndOfDay, None, Some("x".into()));
+    assert!(matches!(noted, Err(KeelError::InvalidArgument { .. })), "{noted:?}");
+    let unknown = register.put_back(demo_id(0x4ff), ItemKind::Variant);
+    assert!(matches!(unknown, Err(KeelError::Catalog { .. })), "{unknown:?}");
+    let wrong = register.put_back(espresso(), ItemKind::Modifier);
+    assert!(matches!(wrong, Err(KeelError::Catalog { .. })), "{wrong:?}");
+
+    register.put_back(espresso(), ItemKind::Variant).unwrap();
+    assert!(register.sold_out().unwrap().is_empty());
+    assert!(!button(&register).sold_out);
+    assert!(matches!(
+        register.put_back(espresso(), ItemKind::Variant),
+        Err(KeelError::Refused { .. })
+    ));
+    register.add_item(order, espresso(), vec![], 1).unwrap();
+
+    // Oat milk, in the latte's sheet.
+    register.eighty_six(demo_id(0x202), ItemKind::Modifier, Until::EndOfDay, None, None).unwrap();
+    let milk = &register.item(demo_id(0x403)).unwrap().groups[0];
+    let flags: Vec<bool> = milk.modifiers.iter().map(|option| option.sold_out).collect();
+    assert_eq!(flags, [false, true, false, false]);
+    assert!(milk.modifiers[1].back_at.is_some());
+    assert_eq!(register.sold_out().unwrap()[0].kind, ItemKind::Modifier);
+    assert_eq!(register.availability_version().unwrap(), 4);
 }

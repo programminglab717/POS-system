@@ -45,7 +45,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material3.ButtonDefaults
 import dev.keel.register.Approval
+import dev.keel.register.MarkSheet
+import dev.keel.register.backWords
 import dev.keel.register.CASH_REASONS
 import dev.keel.register.CashEntry
 import dev.keel.register.CashPurpose
@@ -95,6 +98,7 @@ fun RegisterScreen(model: RegisterModel) {
             }
         }
         state.sheet?.let { SheetDialog(it, model) }
+        state.mark?.let { MarkDialog(it, model) }
         state.tender?.let { TenderDialog(it, model) }
         state.discount?.let { DiscountDialog(it, state.error, model) }
         state.price?.let { PriceDialog(it, state.error, model) }
@@ -148,6 +152,10 @@ private fun Register(state: RegisterState, model: RegisterModel) {
                     }
                     Text(words, style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("sync"))
                 }
+                // 86: a tap on the menu marks its item out, or puts it back (ADR-0033).
+                TextButton(onClick = model::toggleMarking, modifier = Modifier.testTag("mark")) {
+                    Text(if (state.marking) "Done marking" else "86")
+                }
                 TextButton(onClick = model::showOrders, modifier = Modifier.testTag("orders")) { Text("Today's orders") }
                 TextButton(onClick = model::showDrawer, modifier = Modifier.testTag("drawer")) { Text("Drawer") }
                 TextButton(onClick = model::showPrinter, modifier = Modifier.testTag("printer")) { Text("Printer") }
@@ -160,6 +168,21 @@ private fun Register(state: RegisterState, model: RegisterModel) {
                     }
                 }
             }
+            if (state.marking) {
+                Text(
+                    "Tap an item to 86 it, or to put it back.",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+            if (state.soldOut.isNotEmpty()) {
+                Text(
+                    "Sold out: " + state.soldOut.joinToString { "${it.name} (${backWords(it.backAt)})" },
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp).testTag("sold-out"),
+                )
+            }
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 140.dp),
                 modifier = Modifier.fillMaxSize().padding(8.dp),
@@ -169,14 +192,29 @@ private fun Register(state: RegisterState, model: RegisterModel) {
                 // Keyed by place: a page may hold a variant twice. Found in review: keyed by the
                 // variant, such a page crashed the register.
                 itemsIndexed(state.pages.getOrNull(state.page)?.buttons.orEmpty(), key = { index, _ -> index }) { _, button ->
+                    // A sold-out item stays on the menu, greyed: tapped, the register says so, and
+                    // while marking it is put back.
+                    val colors = if (button.soldOut) {
+                        ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        ButtonDefaults.buttonColors()
+                    }
                     Button(
                         onClick = { model.tap(button) },
+                        colors = colors,
                         modifier = Modifier.height(88.dp).testTag("button:${button.variant}"),
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(button.name)
                             Text(
-                                button.price + if (button.required) " •" else "",
+                                if (button.soldOut) {
+                                    "Sold out ${backWords(button.backAt)}"
+                                } else {
+                                    button.price + if (button.required) " •" else ""
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                             )
                         }
@@ -617,7 +655,12 @@ private fun SheetDialog(sheet: ModifierSheet, model: RegisterModel) {
                             FilterChip(
                                 selected = count > 0,
                                 onClick = { model.choose(index, option.modifier) },
-                                label = { Text(option.name + (if (count > 1) " ×$count" else "") + " " + option.price) },
+                                // Sold out, it isn't chosen (ADR-0033).
+                                enabled = !option.soldOut || count > 0,
+                                label = {
+                                    val price = if (option.soldOut) "sold out" else option.price
+                                    Text(option.name + (if (count > 1) " ×$count" else "") + " " + price)
+                                },
                                 modifier = Modifier.testTag("modifier:${option.modifier}"),
                             )
                         }
@@ -636,6 +679,50 @@ private fun SheetDialog(sheet: ModifierSheet, model: RegisterModel) {
         },
         dismissButton = { TextButton(onClick = model::closeSheet) { Text("Cancel") } },
     )
+}
+
+/** The 86 sheet (ADR-0033): the item, and each modifier it offers, 86'd for the day or until put back, or put back. */
+@Composable
+private fun MarkDialog(sheet: MarkSheet, model: RegisterModel) {
+    AlertDialog(
+        onDismissRequest = model::closeMark,
+        title = { Text("86: ${sheet.button.name}") },
+        text = {
+            Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+                MarkRow(sheet.button.variant, sheet.button.name, false, sheet.button.soldOut, sheet.button.backAt, sheet.working, model)
+                if (sheet.modifiers.isNotEmpty()) {
+                    Text("Its modifiers", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+                }
+                for (option in sheet.modifiers) {
+                    MarkRow(option.modifier, option.name, true, option.soldOut, option.backAt, sheet.working, model)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = model::closeMark, modifier = Modifier.testTag("mark:done")) { Text("Done") } },
+    )
+}
+
+@Composable
+private fun MarkRow(id: String, name: String, modifier: Boolean, soldOut: Boolean, backAt: String?, working: Boolean, model: RegisterModel) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(name)
+            if (soldOut) Text("Sold out ${backWords(backAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+        }
+        if (soldOut) {
+            OutlinedButton(onClick = { model.putBack(id, modifier) }, enabled = !working, modifier = Modifier.testTag("mark:$id:put-back")) {
+                Text("Put back")
+            }
+        } else {
+            OutlinedButton(onClick = { model.eightySix(id, modifier, untilPutBack = false) }, enabled = !working, modifier = Modifier.testTag("mark:$id:day")) {
+                Text("86 today")
+            }
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(onClick = { model.eightySix(id, modifier, untilPutBack = true) }, enabled = !working, modifier = Modifier.testTag("mark:$id:back")) {
+                Text("Until put back")
+            }
+        }
+    }
 }
 
 @Composable

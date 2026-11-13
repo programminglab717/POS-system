@@ -1024,4 +1024,122 @@ class RegisterModelTest {
         assertEquals("order2", model.state.value.returning?.returnable?.order)
         assertNull(model.state.value.matches)
     }
+
+    @Test
+    fun an_item_86d_from_the_menu_isnt_rung_until_it_is_put_back() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        assertEquals(emptyList(), model.state.value.soldOut)
+        model.toggleMarking()
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        assertEquals("tea", model.state.value.mark?.button?.variant)
+        assertEquals(emptyList(), model.state.value.mark?.modifiers, "tea offers no modifiers")
+        // Two quick taps make one 86.
+        model.eightySix("tea", modifier = false, untilPutBack = false)
+        model.eightySix("tea", modifier = false, untilPutBack = false)
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.error)
+        assertEquals(1L, till.availability)
+        assertEquals(listOf(SoldOutItem("tea", false, "Tea", "2026-10-03 04:00")), model.state.value.soldOut)
+        assertEquals(true, model.button("Tea").soldOut)
+        assertEquals(true, model.state.value.mark?.button?.soldOut, "the sheet shows it sold out")
+        assertEquals(false, model.state.value.mark?.working)
+        // Ringing it is refused at once, with no order begun.
+        model.toggleMarking()
+        assertNull(model.state.value.mark)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        assertEquals("Tea is sold out until 04:00.", model.state.value.error)
+        assertNull(model.state.value.ticket)
+        assertEquals(emptyList(), till.rung)
+        // Put back, it rings.
+        model.toggleMarking()
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.putBack("tea", modifier = false)
+        testScheduler.advanceUntilIdle()
+        assertEquals(emptyList(), model.state.value.soldOut)
+        assertEquals(false, model.button("Tea").soldOut)
+        model.closeMark()
+        model.toggleMarking()
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("tea"), till.rung.map { it.first })
+    }
+
+    @Test
+    fun an_items_86_sheet_lists_its_modifiers_each_86d_on_its_own() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.toggleMarking()
+        model.tap(model.button("Latte"))
+        testScheduler.advanceUntilIdle()
+        val sheet = assertNotNull(model.state.value.mark)
+        assertEquals(listOf("whole", "oat", "shot", "vanilla", "caramel", "double"), sheet.modifiers.map { it.modifier })
+        assertNull(model.state.value.sheet, "no modifier sheet while marking")
+        model.eightySix("oat", modifier = true, untilPutBack = true)
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(SoldOutItem("oat", true, "Oat", null)), model.state.value.soldOut)
+        val oat = model.state.value.mark?.modifiers?.single { it.modifier == "oat" }
+        assertEquals(true, oat?.soldOut)
+        assertEquals(null, oat?.backAt)
+        assertEquals(false, model.button("Latte").soldOut, "the latte itself is on sale")
+        assertEquals("until put back", backWords(null))
+    }
+
+    @Test
+    fun an_86_from_another_register_reaches_the_menu_and_the_open_sheet() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.button("Latte"))
+        testScheduler.advanceUntilIdle()
+        val milk = model.state.value.sheet!!.shown.first()
+        model.choose(milk.index, "oat")
+        // Another register 86s oat milk, and the scone; this one hears of it.
+        till.sold["oat"] = "2026-10-03 04:00"
+        till.sold["scone"] = null
+        till.availability += 2
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        val sheet = assertNotNull(model.state.value.sheet)
+        assertEquals(0, sheet.count(milk.index, "oat"), "a choice now sold out is dropped")
+        assertEquals(false, sheet.complete)
+        model.choose(milk.index, "oat")
+        assertEquals(0, model.state.value.sheet!!.count(milk.index, "oat"), "and can't be chosen again")
+        model.choose(milk.index, "whole")
+        assertEquals(true, model.state.value.sheet!!.complete)
+        assertEquals(true, model.button("Scone").soldOut)
+        assertEquals(2, model.state.value.soldOut.size)
+        // Its time passes, which moves no version: read again all the same.
+        till.sold.remove("oat")
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("scone"), model.state.value.soldOut.map { it.item })
+        assertEquals(false, model.state.value.sheet!!.item.groups.first().modifiers.single { it.modifier == "oat" }.soldOut)
+    }
+
+    @Test
+    fun an_86_beyond_the_cashiers_role_asks_a_manager() = runTest {
+        val till = FakeTill().apply { markNeedsApproval = true }
+        val model = signedIn(till)
+        model.toggleMarking()
+        model.tap(model.button("Scone"))
+        testScheduler.advanceUntilIdle()
+        model.eightySix("scone", modifier = false, untilPutBack = false)
+        testScheduler.advanceUntilIdle()
+        assertEquals("item.availability", model.state.value.approval?.action)
+        assertEquals(false, model.state.value.mark?.working, "the sheet can be tapped again")
+        assertEquals(emptyList(), model.state.value.soldOut)
+        model.chooseApprover(model.approvers().first())
+        model.approve("")
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.approval)
+        assertEquals(listOf("scone"), model.state.value.soldOut.map { it.item })
+        // Refused by the item's own rules: it is sold out already.
+        till.approvedBy = "alex"
+        model.eightySix("scone", modifier = false, untilPutBack = false)
+        testScheduler.advanceUntilIdle()
+        assertEquals("the item is already sold out until then, or already on sale", model.state.value.error)
+    }
 }

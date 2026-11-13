@@ -62,6 +62,11 @@ class OpeningTill(open: () -> Till) : Till {
     override fun printJobs() = till.printJobs()
     override fun resolve(job: String, printed: Boolean) = till.resolve(job, printed)
     override fun reprint(order: String) = till.reprint(order)
+    override fun eightySix(item: String, modifier: Boolean, untilPutBack: Boolean) =
+        till.eightySix(item, modifier, untilPutBack)
+    override fun putBack(item: String, modifier: Boolean) = till.putBack(item, modifier)
+    override fun soldOut() = till.soldOut()
+    override fun availabilityVersion() = openedTill?.availabilityVersion()
     override fun syncState() = openedTill?.syncState()
 
     override fun profileVersion() = openedTill?.profileVersion()

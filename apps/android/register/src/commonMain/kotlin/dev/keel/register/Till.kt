@@ -152,6 +152,25 @@ interface Till {
     /** Prints the receipt of the closed [order] again, marked as a reprint. */
     fun reprint(order: String)
 
+    /**
+     * 86s [item], a variant or, if [modifier], a modifier (ADR-0033): for the rest of the business
+     * day, or until it is put back if [untilPutBack]. No register of the store rings it until then.
+     * One beyond the cashier's role is refused with [TillException.approval].
+     */
+    fun eightySix(item: String, modifier: Boolean, untilPutBack: Boolean)
+
+    /** Puts [item], a variant or, if [modifier], a modifier, back on sale. */
+    fun putBack(item: String, modifier: Boolean)
+
+    /** What is sold out now, each with when it is back. */
+    fun soldOut(): List<SoldOutItem>
+
+    /**
+     * A number that moves whenever an item's availability changes, here or on another register:
+     * when it does, the menu is read again. Null for a till that can't say.
+     */
+    fun availabilityVersion(): Long?
+
     /** How replication with the location stands, for a register joined to its network. */
     fun syncState(): SyncInfo? = null
 
@@ -235,7 +254,23 @@ data class MenuButton(
     val price: String,
     val choices: Boolean = false,
     val required: Boolean = false,
+    /** Whether it is sold out (ADR-0033): the register doesn't ring it. */
+    val soldOut: Boolean = false,
+    /** When it is back on sale, in the store's time, as `2026-10-03 04:00`; none until put back. */
+    val backAt: String? = null,
 )
+
+/** An item sold out (ADR-0033): a variant or a modifier, its name, and when it is back. */
+data class SoldOutItem(
+    val item: String,
+    val modifier: Boolean,
+    val name: String,
+    /** When it is back on sale, as [MenuButton.backAt] is; none until it is put back. */
+    val backAt: String? = null,
+)
+
+/** When an item sold out is back, in words: "until 04:00" today's, or "until put back". */
+fun backWords(backAt: String?): String = backAt?.let { "until ${it.substringAfter(' ')}" } ?: "until put back"
 
 /** An item's variant and the modifier groups offered for it, as the modifier sheet shows them. */
 data class Item(val variant: String, val name: String, val price: String, val groups: List<Group>)
@@ -258,7 +293,15 @@ data class Group(
 )
 
 /** A modifier a group offers, and the price of one application. */
-data class Modifier(val modifier: String, val name: String, val price: String)
+data class Modifier(
+    val modifier: String,
+    val name: String,
+    val price: String,
+    /** Whether it is sold out (ADR-0033): the sheet doesn't let it be chosen. */
+    val soldOut: Boolean = false,
+    /** When it is back on sale, as [MenuButton.backAt] is. */
+    val backAt: String? = null,
+)
 
 /**
  * A cashier's choice of a modifier, flattened as the kernel takes them: a choice under a modifier

@@ -540,6 +540,19 @@ pub struct MenuButton {
     pub choices: bool,
     /// Whether some of them must be chosen.
     pub required: bool,
+    /// Whether it is sold out now (ADR-0033): the register doesn't ring it.
+    pub sold_out: bool,
+    /// When it is back on sale, in the location's time, as `2026-10-03 04:00`: none while it is
+    /// on sale, or sold out until it is put back.
+    pub back_at: Option<String>,
+}
+
+/// Whether an item sold out is, and when it is back, as the bindings show it.
+fn sold_out(until: Option<runtime::SoldOutUntil>) -> (bool, Option<String>) {
+    match until {
+        None => (false, None),
+        Some(runtime::SoldOutUntil(back)) => (true, back.map(|back| back.to_string())),
+    }
 }
 
 impl From<&runtime::MenuView> for Menu {
@@ -553,12 +566,17 @@ impl From<&runtime::MenuView> for Menu {
                     buttons: page
                         .buttons
                         .iter()
-                        .map(|button| MenuButton {
-                            variant: button.variant.to_string(),
-                            name: button.name.to_string(),
-                            price: (&button.price).into(),
-                            choices: button.choices,
-                            required: button.required,
+                        .map(|button| {
+                            let (sold_out, back_at) = sold_out(button.sold_out);
+                            MenuButton {
+                                variant: button.variant.to_string(),
+                                name: button.name.to_string(),
+                                price: (&button.price).into(),
+                                choices: button.choices,
+                                required: button.required,
+                                sold_out,
+                                back_at,
+                            }
                         })
                         .collect(),
                 })
@@ -615,6 +633,10 @@ pub struct ModifierOption {
     pub prefix: Prefix,
     /// The price of one application.
     pub price: Amount,
+    /// Whether it is sold out now (ADR-0033): the register doesn't ring a line that chooses it.
+    pub sold_out: bool,
+    /// When it is back on sale, as [`MenuButton::back_at`] is.
+    pub back_at: Option<String>,
 }
 
 impl From<&runtime::ItemView> for Item {
@@ -645,11 +667,16 @@ fn flatten(groups: &[runtime::GroupView], under: Option<&str>, depth: u8, out: &
             modifiers: group
                 .modifiers
                 .iter()
-                .map(|modifier| ModifierOption {
-                    modifier: modifier.modifier.to_string(),
-                    name: modifier.name.to_string(),
-                    prefix: modifier.prefix.into(),
-                    price: (&modifier.price).into(),
+                .map(|modifier| {
+                    let (sold_out, back_at) = sold_out(modifier.sold_out);
+                    ModifierOption {
+                        modifier: modifier.modifier.to_string(),
+                        name: modifier.name.to_string(),
+                        prefix: modifier.prefix.into(),
+                        price: (&modifier.price).into(),
+                        sold_out,
+                        back_at,
+                    }
                 })
                 .collect(),
         });
@@ -1103,6 +1130,57 @@ impl From<&runtime::Refunded> for Refunded {
                 .collect(),
             amount: (&refunded.amount).into(),
             handed: (&refunded.handed).into(),
+        }
+    }
+}
+
+/// What kind of item an 86 names (ADR-0033).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ItemKind {
+    /// A variant: a button on the menu.
+    Variant,
+    /// A modifier: an option in an item's groups.
+    Modifier,
+}
+
+/// How long an 86 lasts (ADR-0033).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum Until {
+    /// The rest of the business day: back on sale when the next begins.
+    EndOfDay,
+    /// Until it is put back.
+    PutBack,
+    /// Until a time, in microseconds since the Unix epoch.
+    Time {
+        /// The time.
+        micros: i64,
+    },
+}
+
+/// An item sold out now (ADR-0033).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SoldOut {
+    /// The variant or the modifier.
+    pub item: String,
+    /// Which it is.
+    pub kind: ItemKind,
+    /// Its name.
+    pub name: String,
+    /// When it is back on sale, as [`MenuButton::back_at`] is.
+    pub back_at: Option<String>,
+}
+
+impl From<&runtime::SoldOut> for SoldOut {
+    fn from(sold_out: &runtime::SoldOut) -> SoldOut {
+        let (item, kind) = match sold_out.item {
+            runtime::ItemRef::Variant(variant) => (variant.to_string(), ItemKind::Variant),
+            runtime::ItemRef::Modifier(modifier) => (modifier.to_string(), ItemKind::Modifier),
+        };
+        SoldOut {
+            item,
+            kind,
+            name: sold_out.name.to_string(),
+            back_at: sold_out.until.map(|until| until.to_string()),
         }
     }
 }

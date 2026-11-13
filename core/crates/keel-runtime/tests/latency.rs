@@ -140,7 +140,7 @@ fn a_register_with_a_large_catalog_answers_in_time() {
         }
     }
     let started = Instant::now();
-    let menu = runtime.menu();
+    let menu = runtime.menu().unwrap();
     let menu_time = started.elapsed();
     // Today's orders read every order of each state: what a day of 500 sales costs.
     let started = Instant::now();

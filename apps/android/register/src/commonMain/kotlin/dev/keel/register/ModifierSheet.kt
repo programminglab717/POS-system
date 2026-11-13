@@ -70,6 +70,8 @@ data class ModifierSheet(
         val slot = Slot(group, modifier)
         val current = counts[slot] ?: 0
         val room = chosenIn(group) < offered.max
+        // A modifier sold out isn't chosen; one chosen before it sold out can be cleared.
+        if (current == 0 && offered.modifiers.any { it.modifier == modifier && it.soldOut }) return this
         return when {
             offered.max == 1 && current > 0 -> without(slot)
             offered.max == 1 -> offered.modifiers.fold(this) { sheet, other -> sheet.without(Slot(group, other.modifier)) }.with(slot, 1)
@@ -78,6 +80,21 @@ data class ModifierSheet(
             room -> with(slot, 1)
             else -> this
         }
+    }
+
+    /**
+     * The sheet for [item] read again, as what is sold out changed (ADR-0033): what was chosen
+     * stays, but for a modifier sold out now, and what is under it. An item whose groups changed
+     * starts again.
+     */
+    fun refreshed(item: Item): ModifierSheet {
+        fun shape(of: Item) = of.groups.map { group -> Triple(group.group, group.under, group.modifiers.map { it.modifier }) }
+        if (shape(item) != shape(this.item)) return ModifierSheet(item, quantity = quantity)
+        var sheet = copy(item = item)
+        for (slot in counts.keys) {
+            if (item.groups[slot.group].modifiers.any { it.modifier == slot.modifier && it.soldOut }) sheet = sheet.without(slot)
+        }
+        return sheet
     }
 
     /** The sheet with [quantity] of the item, at least 1. */

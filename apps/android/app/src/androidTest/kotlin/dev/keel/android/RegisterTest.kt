@@ -60,6 +60,37 @@ class RegisterTest {
     }
 
     /**
+     * A cashier 86s the bottled water until it is put back (ADR-0033): the menu shows it sold out,
+     * ringing it is refused, and once put back it is on sale again. Put back at the end, as the
+     * app's store outlives the test.
+     */
+    @Test
+    fun a_cashier_86s_an_item_and_puts_it_back() {
+        val water = demoId(0x409)
+        compose.tap("member:Sam", wait = 20_000)
+        compose.enterPin("2468")
+        compose.tap("mark")
+        compose.tap("button:$water")
+        compose.tap("mark:$water:back")
+        compose.waitFor("mark:$water:put-back")
+        compose.tap("mark:done")
+        compose.tap("mark")
+        compose.waitFor("sold-out")
+        assertTrue(compose.shown("sold-out").contains("Bottled water (until put back)"), compose.shown("sold-out"))
+        compose.tap("button:$water")
+        compose.waitFor("error")
+        assertTrue(compose.shown("error").contains("sold out"), compose.shown("error"))
+        compose.tap("mark")
+        compose.tap("button:$water")
+        compose.tap("mark:$water:put-back")
+        compose.waitFor("mark:$water:day")
+        compose.tap("mark:done")
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("sold-out")).fetchSemanticsNodes().isEmpty() }
+        compose.tap("mark")
+        compose.tap("sign-out")
+    }
+
+    /**
      * A cashier drops an order with an item on it, which needs a manager (ADR-0029): the register
      * asks who approves, takes their PIN, and drops it.
      */

@@ -9,7 +9,7 @@ use keel_domain::profile::{CatalogGroup, Profile};
 use keel_domain::refs::{Modifier, ModifierGroup, Variant};
 use keel_events::envelope::Device;
 use keel_pricing::Tax;
-use keel_types::{Id, Locale, Money, Quantity};
+use keel_types::{Id, LocalTime, Locale, Money, Quantity};
 
 /// An amount, and how the locale shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -305,7 +305,18 @@ pub struct MenuButton {
     pub choices: bool,
     /// Whether some of them must be chosen: the register asks before it rings.
     pub required: bool,
+    /// Whether it is sold out now, and if so when it is back (ADR-0033).
+    pub sold_out: Option<SoldOutUntil>,
 }
+
+/// An item sold out: when it is back on sale, in the location's time; `None` until it is put
+/// back (ADR-0033).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoldOutUntil(pub Option<LocalTime>);
+
+/// The items sold out now, by identifier, each with when it is back.
+pub(crate) type SoldOutMap =
+    std::collections::BTreeMap<Id<keel_domain::availability::Availability>, Option<LocalTime>>;
 
 /// An item's variant, with the modifier groups offered for it: what the register asks for
 /// before it rings.
@@ -353,6 +364,8 @@ pub struct ModifierView {
     pub price: Amount,
     /// The groups offered under it.
     pub groups: Vec<GroupView>,
+    /// Whether it is sold out now, and if so when it is back (ADR-0033).
+    pub sold_out: Option<SoldOutUntil>,
 }
 
 /// The views of the groups `groups` of `profile`.
@@ -360,6 +373,7 @@ pub(crate) fn group_views(
     profile: &Profile,
     groups: &[Id<ModifierGroup>],
     locale: Locale,
+    sold_out: &SoldOutMap,
 ) -> Vec<GroupView> {
     groups
         .iter()
@@ -379,7 +393,8 @@ pub(crate) fn group_views(
                     name: modifier.name.clone(),
                     prefix: modifier.prefix,
                     price: Amount::new(modifier.price, locale),
-                    groups: group_views(profile, &modifier.groups, locale),
+                    groups: group_views(profile, &modifier.groups, locale, sold_out),
+                    sold_out: sold_out.get(&modifier.id.cast()).copied().map(SoldOutUntil),
                 })
                 .collect(),
         })

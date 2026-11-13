@@ -137,10 +137,10 @@ BUGS = [
     (
         "ffi: an option's prefix is lost",
         "src/records.rs",
-        """                    prefix: modifier.prefix.into(),
-                    price: (&modifier.price).into(),""",
-        """                    prefix: Prefix::Plain,
-                    price: (&modifier.price).into(),""",
+        """                        prefix: modifier.prefix.into(),
+                        price: (&modifier.price).into(),""",
+        """                        prefix: Prefix::Plain,
+                        price: (&modifier.price).into(),""",
         "unit",
     ),
     (
@@ -286,5 +286,35 @@ BUGS = [
         "src/register.rs",
         "            .approvers()\n            .iter()",
         "            .team()\n            .iter()\n            .map(|member| member.id)\n            .collect::<Vec<_>>()\n            .iter()",
+    ),
+    (
+        "ffi: a sold-out button shows on sale",
+        "src/records.rs",
+        "        Some(runtime::SoldOutUntil(back)) => (true, back.map(|back| back.to_string())),",
+        "        Some(runtime::SoldOutUntil(back)) => (false, back.map(|back| back.to_string())),",
+    ),
+    (
+        "ffi: an 86 until put back lasts the day",
+        "src/register.rs",
+        "            Until::PutBack => keel_runtime::Until::PutBack,",
+        "            Until::PutBack => keel_runtime::Until::EndOfDay,",
+    ),
+    (
+        "ffi: a note with no reason is dropped",
+        "src/register.rs",
+        "            (None, Some(_)) => return Err(KeelError::invalid(\"a note needs a reason\")),",
+        "            (None, Some(_)) => None,",
+    ),
+    (
+        "ffi: a modifier is 86'd as a variant",
+        "src/register.rs",
+        "        ItemKind::Modifier => keel_runtime::ItemRef::Modifier(id(item)?),",
+        "        ItemKind::Modifier => keel_runtime::ItemRef::Variant(id(item)?),",
+    ),
+    (
+        "ffi: ringing a sold-out item is a device error",
+        "src/error.rs",
+        "            | RuntimeError::SoldOut(_)\n",
+        "",
     ),
 ]

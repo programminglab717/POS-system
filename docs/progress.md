@@ -97,9 +97,9 @@ lands, then reviewed together:
 
 1. **The domain and the store** (built 2026-11-13): `availability.changed`, its fold and
    commands, the projection.
-2. **The register**: the runtime's 86 and un-86, the menu's availability, the refusal when
-   ringing, the bindings, the propagation test. Next.
-3. **The shell**: the Android register's 86.
+2. **The register** (built 2026-11-13): the runtime's 86 and un-86, the menu's availability,
+   the refusal when ringing, the bindings, the propagation test.
+3. **The shell** (built 2026-11-13): the Android register's 86. Next: the review.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 and 4's among them, and
 the three of step 2 the scrolling ticket pane should mend.
@@ -120,6 +120,47 @@ Built in slice 1:
 - **`keel-store`'s `availability` projection**: each item's standing change, the items sold out
   at a time, and a version (the number of availability events) that moves with every change,
   whatever its HLC; rebuilt from the events, no new store schema.
+
+Built in slice 2:
+
+- **`keel-runtime`'s availability**: `eighty_six` until the business day ends (the next day's
+  start, by the profile's cutoff), a time, or put back, and `put_back`, each gated as
+  `item.availability`, decided before an approval is asked and again inside the write;
+  `sold_out` with when each is back, in the location's time; `availability_version`. Ringing
+  refuses a sold-out item, or a modifier chosen at any depth; a line rung before stays. The menu's
+  buttons and the modifier sheet's options say what is sold out, and until when.
+  `Profile::modifier` finds a modifier in any group.
+  - Known answers: an 86 for the day refusing a ring until 4 am and not a minute later, with no
+    event; until put back, a week on; until a time, and one already past; oat milk 86'd in the
+    sheet, a latte rung before it staying; ketchup under a hash brown under a sandwich; the gate
+    with and without the role, its approval spent; an item the catalog lacks, or of the other
+    kind.
+  - Propagation (`tests/sync.rs`): an 86 on the hub is sold out on the register 1 s later in the
+    runtime's time, with no push from the shell, and a put-back on the register reaches the hub as
+    fast; a shell polling every 2 s shows it within 3 s, inside G-06's 10. 86s made on both at
+    once end the same on both.
+  - 12 planted bugs, all caught.
+- **The bindings**: `eighty_six` (variant or modifier; for the day, until put back, or until a
+  time; an optional reason and note), `put_back`, `sold_out` and `availability_version`; the
+  menu's buttons and the sheet's options carry `sold_out` and `back_at`. Sold out and refused
+  changes are `Refused`, an unknown item `Catalog`. Known answers through the register object;
+  5 planted bugs, all caught.
+
+Built in slice 3:
+
+- **The Android register**: an 86 button turns menu taps into marking: a tap opens the item's 86
+  sheet, the variant and each modifier its item offers, 86'd today or until put back, or put
+  back, once per tap however fast. Sold-out buttons are greyed with when they are back, a line
+  above the menu lists what is sold out, and a tap on one is refused at once, no order begun. The
+  modifier sheet disables a sold-out modifier, and drops one chosen when another register's 86
+  arrives. The model reads the availability version and what is sold out every 2 s, with the
+  sync status, and reads the menu, the open sheet and the 86 sheet again when either moved: an
+  86 whose time passes moves no version, so the list is compared too. An 86 beyond the role asks
+  a manager.
+  - Model tests against the fake till, which refuses and reports as the kernel does: an 86 and a
+    put-back from the menu, a double tap, the 86 sheet's modifiers, another register's 86 reaching
+    the menu and the open sheet, an 86 expiring, the approval. An instrumented test 86s the
+    bottled water until put back and puts it back; it waits for an emulator.
 
 ## Completed
 

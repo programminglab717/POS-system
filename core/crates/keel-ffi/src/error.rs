@@ -175,7 +175,7 @@ impl From<RuntimeError> for KeelError {
                 approver: approver.to_string(),
                 action: action.name().to_owned(),
             },
-            RuntimeError::Ring(_) => KeelError::Catalog { reason },
+            RuntimeError::Ring(_) | RuntimeError::UnknownItem(_) => KeelError::Catalog { reason },
             RuntimeError::Order(_)
             | RuntimeError::Checkout(_)
             | RuntimeError::Payment(_)
@@ -188,7 +188,9 @@ impl From<RuntimeError> for KeelError {
             | RuntimeError::Drawer(_)
             | RuntimeError::CardRefund
             | RuntimeError::OrderChanged
-            | RuntimeError::Refund(_) => KeelError::Refused { reason },
+            | RuntimeError::Refund(_)
+            | RuntimeError::SoldOut(_)
+            | RuntimeError::Availability(_) => KeelError::Refused { reason },
             RuntimeError::TenderShort { due } => KeelError::TenderShort {
                 due: Amount {
                     minor: due.minor(),

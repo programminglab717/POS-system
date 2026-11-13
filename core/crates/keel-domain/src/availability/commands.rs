@@ -28,7 +28,7 @@ pub enum AvailabilityError {
     #[error("the item is another kind than its availability")]
     WrongKind,
     /// The item is already so: on sale, or sold out until the same time.
-    #[error("the item is already so")]
+    #[error("the item is already sold out until then, or already on sale")]
     NoChange,
     /// An 86 until a time that isn't after now.
     #[error("an 86 ends after it is made")]
