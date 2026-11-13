@@ -494,6 +494,7 @@ fn every_field() -> keel_runtime::Ticket {
                 reason: keel_domain::codec::ReasonCode::new("price_match").unwrap(),
             }),
             notes: Some(keel_domain::codec::Note::new("no foam").unwrap()),
+            sent: true,
         }],
         discounts: vec![rt::TicketDiscount {
             discount: id(6),
@@ -576,6 +577,7 @@ fn a_ticket_crosses_field_for_field() {
                 reason: "price_match".into(),
             }),
             notes: Some("no foam".into()),
+            sent: true,
         }],
         discounts: vec![TicketDiscount {
             discount: demo_id(6),
@@ -1191,4 +1193,94 @@ fn an_item_is_86d_and_put_back_through_the_register() {
     assert!(milk.modifiers[1].back_at.is_some());
     assert_eq!(register.sold_out().unwrap()[0].kind, ItemKind::Modifier);
     assert_eq!(register.availability_version().unwrap(), 4);
+}
+
+#[test]
+fn an_order_is_sent_to_the_kitchen_and_its_tickets_bumped_through_the_register() {
+    let scratch = Scratch::new();
+    let register: Arc<Register> = Register::open(config(&scratch)).unwrap();
+    register.sign_in(demo_id(0x502), "2468".into()).unwrap();
+    let stations = register.kitchen_stations();
+    assert_eq!(
+        stations.iter().map(|s| (s.name.as_str(), s.expo, s.screen)).collect::<Vec<_>>(),
+        [("Bar", false, true), ("Kitchen", false, true), ("Expo", true, true)]
+    );
+    let order = register.start_order(Mode::DineIn).unwrap().order;
+    let latte = vec![choice(0x202, 1, None), choice(0x205, 2, None)];
+    register.add_item(order.clone(), demo_id(0x403), latte, 1).unwrap();
+    let bagel = vec![choice(0x20b, 1, None)];
+    let ticket = register.add_item(order.clone(), demo_id(0x407), bagel, 1).unwrap();
+    assert!(ticket.lines.iter().all(|line| !line.sent));
+    let unsent =
+        register.void_line(order.clone(), ticket.lines[0].line.clone(), "customer".into(), None);
+    assert!(matches!(unsent, Err(KeelError::Refused { .. })), "{unsent:?}");
+    let sent = register.send(order.clone()).unwrap();
+    assert!(sent.lines.iter().all(|line| line.sent));
+    let bar = register.kitchen_screen(vec![demo_id(0x701)]).unwrap();
+    assert_eq!(bar.tickets.len(), 1);
+    let shown = &bar.tickets[0];
+    assert_eq!(
+        (shown.station_name.as_str(), shown.mode, shown.aging),
+        ("Bar", Mode::DineIn, Aging::Fresh)
+    );
+    assert_eq!(shown.code, order[order.len() - 6..].to_uppercase());
+    let item = &shown.items[0];
+    assert_eq!((item.name.as_str(), item.quantity.as_str()), ("Latte (Large)", "1 x"));
+    assert_eq!(item.allergens, ["milk"]);
+    assert_eq!(
+        item.modifiers
+            .iter()
+            .map(|m| (m.name.as_str(), m.prefix, m.quantity, m.depth))
+            .collect::<Vec<_>>(),
+        [("Oat milk", Prefix::Plain, 1, 1), ("Shot", Prefix::Extra, 2, 1)]
+    );
+    // Expo sees both, neither made yet; the bar bumps the latte, signed out.
+    let expo = register.kitchen_screen(vec![demo_id(0x703)]).unwrap();
+    assert_eq!(
+        expo.tickets[0].items.iter().map(|i| i.ready).collect::<Vec<_>>(),
+        [Some(false), Some(false)]
+    );
+    let version = register.kitchen_version().unwrap();
+    register.sign_out().unwrap();
+    register.bump(shown.ticket.clone()).unwrap();
+    assert!(register.kitchen_version().unwrap() > version);
+    assert!(matches!(register.bump(shown.ticket.clone()), Err(KeelError::Refused { .. })));
+    let bar = register.kitchen_screen(vec![demo_id(0x701)]).unwrap();
+    assert!(bar.tickets.is_empty());
+    assert_eq!(bar.last_bumped.as_deref(), Some(shown.ticket.as_str()));
+    assert_eq!(bar.times[0].bumped, 1);
+    register.recall_ticket(shown.ticket.clone()).unwrap();
+    assert_eq!(register.kitchen_screen(vec![demo_id(0x701)]).unwrap().tickets.len(), 1);
+    // Voided, the bar's screen strikes it through.
+    register.sign_in(demo_id(0x502), "2468".into()).unwrap();
+    register.void_line(order, sent.lines[0].line.clone(), "customer".into(), None).unwrap();
+    assert!(register.kitchen_screen(vec![demo_id(0x701)]).unwrap().tickets[0].items[0].void);
+    assert!(register.kitchen_alerts().unwrap().is_empty());
+    let unknown = register.kitchen_screen(vec!["not an id".into()]);
+    assert!(matches!(unknown, Err(KeelError::InvalidArgument { .. })));
+}
+
+#[test]
+fn a_kitchen_job_names_its_printer() {
+    let scratch = Scratch::new();
+    let mut data = domain::demo().unwrap().data().clone();
+    let kitchen = data.kitchen.as_mut().unwrap();
+    kitchen.stations[1].screen = false;
+    kitchen.stations[1].printer = Some(domain::Printer {
+        host: "10.0.0.22".into(),
+        port: core::num::NonZeroU16::new(9100).unwrap(),
+    });
+    let config = RegisterConfig {
+        profile: domain::Profile::new(data).unwrap().encode(),
+        ..config(&scratch)
+    };
+    let register: Arc<Register> = Register::open(config).unwrap();
+    register.sign_in(demo_id(0x502), "2468".into()).unwrap();
+    let order = register.start_order(Mode::DineIn).unwrap().order;
+    register.add_item(order.clone(), demo_id(0x407), vec![choice(0x20b, 1, None)], 1).unwrap();
+    register.send(order).unwrap();
+    // Handed over with no printer of the register's own set, to the kitchen's.
+    let job = register.next_print_job().unwrap().unwrap();
+    assert_eq!(job.kind, JobKind::Kitchen);
+    assert_eq!((job.host.as_deref(), job.port), (Some("10.0.0.22"), Some(9100)));
 }

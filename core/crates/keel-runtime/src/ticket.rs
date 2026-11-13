@@ -298,6 +298,7 @@ fn ticket_line(line: &Line, gross: Money, taken: &[Money], locale: Locale) -> Ti
             reason: repriced.reason.code.clone(),
         }),
         notes: line.notes().cloned(),
+        sent: line.was_fired(),
     }
 }
 

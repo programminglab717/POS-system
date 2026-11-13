@@ -21,6 +21,9 @@ class FakeTill : Till {
     private val closedChecks = mutableSetOf<String>()
 
     private class Line(val id: String, val variant: String, var count: Int) {
+        /** Sent to the kitchen, and voided since, as the kernel keeps them. */
+        var sent = false
+        var voided = false
         /** The checks it is split evenly among; its order's own check when empty. */
         var on: List<String> = emptyList()
         /** The price staff set, in cents, and why, if they did. */
@@ -91,7 +94,8 @@ class FakeTill : Till {
 
     override fun approvers() =
         if (voidNeedsApproval || discountLimit != null || priceNeedsApproval || paidOutLimit != null ||
-            noSaleNeedsApproval || varianceLimit != null || refundLimit != null || markNeedsApproval
+            noSaleNeedsApproval || varianceLimit != null || refundLimit != null || markNeedsApproval ||
+            lineVoidNeedsApproval
         ) {
             listOf("alex")
         } else {
@@ -193,14 +197,104 @@ class FakeTill : Till {
     }
 
     override fun changeQuantity(order: String, line: String, quantity: Int): Ticket {
-        open(order).single { it.id == line }.count = quantity
+        val found = open(order).single { it.id == line }
+        if (found.sent) throw TillException("line $line isn't waiting to be fired")
+        found.count = quantity
         return ticket(order)
     }
 
     override fun removeLine(order: String, line: String): Ticket {
+        if (open(order).any { it.id == line && it.sent }) throw TillException("line $line isn't waiting to be fired")
         open(order).removeAll { it.id == line }
         return ticket(order)
     }
+
+    // The kitchen (ADR-0034): the bar makes lattes and tea, the kitchen scones, expo everything.
+
+    /** The kitchen's stations; none for a till of a location without one. */
+    var stations = listOf(
+        KitchenStation("bar", "Bar"),
+        KitchenStation("kitchen", "Kitchen"),
+        KitchenStation("expo", "Expo", expo = true),
+    )
+
+    /** Whether voiding a sent line needs a manager, as for a cashier whose role doesn't take lines off. */
+    var lineVoidNeedsApproval = false
+
+    private class FakeTicket(val id: String, val station: String, val order: String, val lines: List<String>) {
+        var bumped = false
+        var bumpedAt = 0
+    }
+
+    private val tickets = mutableListOf<FakeTicket>()
+    private var bumps = 0
+
+    /** The tickets no screen showed in time, for the till to report. */
+    val alerts = mutableListOf<KitchenAlert>()
+
+    /** How many times a ticket was bumped: by the screen, through this till. */
+    var bumpCalls = 0
+
+    private fun stationOf(variant: String) = if (variant == "scone") "kitchen" else "bar"
+
+    override fun send(order: String): Ticket {
+        check(signedIn != null) { "no one signed in" }
+        if (stations.isEmpty()) return ticket(order)
+        val pending = open(order).filter { !it.sent && !it.voided }
+        if (pending.isEmpty()) return ticket(order)
+        pending.forEach { it.sent = true }
+        for (station in stations) {
+            val lines = pending.filter { station.expo || stationOf(it.variant) == station.station }.map { it.id }
+            if (lines.isNotEmpty()) tickets += FakeTicket("ticket${tickets.size + 1}", station.station, order, lines)
+        }
+        return ticket(order)
+    }
+
+    override fun voidLine(order: String, line: String, reason: String): Ticket {
+        check(signedIn != null) { "no one signed in" }
+        val found = orders.getValue(order).singleOrNull { it.id == line } ?: throw TillException("no such line")
+        if (!found.sent || found.voided) throw TillException("line $line isn't fired")
+        if (lineVoidNeedsApproval && approvedBy == null) throw TillException("Taking an item off needs a manager's approval.", approval = "line.remove")
+        approvedBy = null
+        found.voided = true
+        return ticket(order)
+    }
+
+    override fun kitchenStations() = stations
+
+    override fun kitchenScreen(stations: List<String>): KitchenView {
+        val shown = tickets.filter { it.station in stations && !it.bumped }.map { ticket ->
+            val station = this.stations.single { it.station == ticket.station }
+            KdsTicket(
+                ticket = ticket.id, station = ticket.station, stationName = station.name, code = ticket.order.uppercase(),
+                mode = "To go", sentAt = "09:00", ageSeconds = 0, aging = Aging.FRESH,
+                items = ticket.lines.map { id ->
+                    val line = orders.getValue(ticket.order).single { it.id == id }
+                    val made = if (!station.expo) null else tickets.filter { it.order == ticket.order && it.station != "expo" && id in it.lines }.all { it.bumped }
+                    KdsItem(id, names.getValue(line.variant), "${line.count} x", void = line.voided, ready = made)
+                },
+            )
+        }
+        val last = tickets.filter { it.station in stations && it.bumped }.maxByOrNull { it.bumpedAt }?.id
+        return KitchenView(shown, last, stations.map { id -> StationTime(id, id, tickets.count { it.station == id && it.bumped }, null) })
+    }
+
+    override fun bump(ticket: String) {
+        bumpCalls += 1
+        val found = tickets.singleOrNull { it.id == ticket } ?: throw TillException("the ticket hasn't been sent")
+        if (found.bumped) throw TillException("the ticket is bumped already")
+        bumps += 1
+        found.bumped = true
+        found.bumpedAt = bumps
+    }
+
+    override fun recallTicket(ticket: String) {
+        val found = tickets.singleOrNull { it.id == ticket } ?: throw TillException("the ticket hasn't been sent")
+        if (!found.bumped) throw TillException("the ticket isn't bumped")
+        found.bumped = false
+    }
+
+    override fun kitchenAlerts(): List<KitchenAlert> = alerts.toList()
 
     override fun applyDiscount(order: String, line: String?, discount: DiscountAsked, reason: String): Ticket {
         open(order)
@@ -425,8 +519,10 @@ class FakeTill : Till {
             if (approvedBy == null) throw TillException("Dropping it needs a manager.", approval = "order.void")
             approvedBy = null
         }
+        // An order with lines sent to the kitchen is voided, not abandoned, as the kernel does.
+        val sent = open(order).any { it.sent }
         open(order).clear()
-        states[order] = OrderState.ABANDONED
+        states[order] = if (sent) OrderState.VOIDED else OrderState.ABANDONED
         return ticket(order)
     }
 
@@ -452,7 +548,7 @@ class FakeTill : Till {
         val (lines, onOrder) = priced(order)
         return Ticket(
             order = order,
-            lines = orders.getValue(order).map { line ->
+            lines = orders.getValue(order).filter { !it.voided }.map { line ->
                 TicketLine(
                     line.id, line.variant, line.count.toString(), money(unitPrice(line) * line.count), line.count,
                     discounts = lines.getValue(line.id).second,
@@ -460,6 +556,7 @@ class FakeTill : Till {
                         "${money(price)} (was ${money(prices.getValue(line.variant))}), ${reasonWords(reason).lowercase()}"
                     },
                     notes = line.notes,
+                    sent = line.sent,
                 )
             },
             total = money(due),

@@ -26,9 +26,10 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use crate::error::KeelError;
 use crate::records::{
-    Amount, CashMovement, CashPaid, Choice, DayReport, DrawerView, Item, ItemKind, Job, Member,
-    Menu, Mode, NewDevice, Outcome, PrintJob, Printer, Refunded, RegisterConfig, ReportKind,
-    Resolution, ReturnLine, Returnable, SoldOut, SyncKit, SyncState, Ticket, Until, Waits,
+    Amount, CashMovement, CashPaid, Choice, DayReport, DrawerView, Item, ItemKind, Job,
+    KitchenAlert, KitchenScreen, KitchenStation, Member, Menu, Mode, NewDevice, Outcome, PrintJob,
+    Printer, Refunded, RegisterConfig, ReportKind, Resolution, ReturnLine, Returnable, SoldOut,
+    SyncKit, SyncState, Ticket, Until, Waits,
 };
 
 /// The runtime as a device runs it: the system's clock and the operating system's randomness,
@@ -932,6 +933,102 @@ impl Register {
         self.with(|runtime| runtime.availability_version())
     }
 
+    /// Sends `order`'s pending lines to the kitchen (ADR-0034); nothing, with none pending or no
+    /// kitchen.
+    ///
+    /// # Errors
+    /// [`KeelError::Refused`] if the order refuses: it isn't open, or another device owns it.
+    pub fn send(&self, order: String) -> Result<Ticket, KeelError> {
+        let order = id(&order)?;
+        self.with(|runtime| runtime.send(order)).map(|ticket| (&ticket).into())
+    }
+
+    /// Voids `line` of `order`, sent to the kitchen, for `reason`, with an optional `note`.
+    ///
+    /// # Errors
+    /// [`KeelError::ApprovalRequired`] if the member's role doesn't permit taking a line off;
+    /// [`KeelError::Refused`] if the line isn't sent, or is on a check paid toward.
+    pub fn void_line(
+        &self,
+        order: String,
+        line: String,
+        reason: String,
+        note: Option<String>,
+    ) -> Result<Ticket, KeelError> {
+        let (order, line) = (id(&order)?, id(&line)?);
+        let reason = self::reason(&reason, note)?;
+        self.with(|runtime| runtime.void_line(order, line, reason)).map(|ticket| (&ticket).into())
+    }
+
+    /// The kitchen's stations, in the order the profile lists them; none without a kitchen.
+    pub fn kitchen_stations(&self) -> Vec<KitchenStation> {
+        let runtime = self.runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        runtime
+            .profile()
+            .kitchen()
+            .map(|kitchen| {
+                kitchen
+                    .stations
+                    .iter()
+                    .map(|station| KitchenStation {
+                        station: station.id.to_string(),
+                        name: station.name.to_string(),
+                        expo: station.expo,
+                        screen: station.screen,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// What a screen showing `stations` shows, recording as shown what it shows for the first
+    /// time.
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] for an identifier that isn't one; [`KeelError::Device`]
+    /// if the store can't be read or written.
+    pub fn kitchen_screen(&self, stations: Vec<String>) -> Result<KitchenScreen, KeelError> {
+        let stations: Vec<Id<keel_domain::refs::Station>> =
+            stations.iter().map(|station| id(station)).collect::<Result<_, _>>()?;
+        self.with(|runtime| runtime.kitchen_screen(&stations)).map(|screen| (&screen).into())
+    }
+
+    /// Bumps `ticket`: its station is done with it. No one need be signed in.
+    ///
+    /// # Errors
+    /// [`KeelError::Refused`] if it isn't sent, or is bumped already.
+    pub fn bump(&self, ticket: String) -> Result<(), KeelError> {
+        let ticket = id(&ticket)?;
+        self.with(|runtime| runtime.bump(ticket))
+    }
+
+    /// Brings `ticket` back on its station's screen.
+    ///
+    /// # Errors
+    /// [`KeelError::Refused`] if it isn't bumped.
+    pub fn recall_ticket(&self, ticket: String) -> Result<(), KeelError> {
+        let ticket = id(&ticket)?;
+        self.with(|runtime| runtime.recall_ticket(ticket))
+    }
+
+    /// A number that moves with every kitchen event, here or heard: a screen reads its tickets
+    /// again when it does.
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read.
+    pub fn kitchen_version(&self) -> Result<u64, KeelError> {
+        self.with(|runtime| runtime.kitchen_version())
+    }
+
+    /// The tickets rerouted in the last ten minutes, the latest first.
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read.
+    pub fn kitchen_alerts(&self) -> Result<Vec<KitchenAlert>, KeelError> {
+        self.with(|runtime| runtime.kitchen_alerts())
+            .map(|alerts| alerts.iter().map(KitchenAlert::from).collect())
+    }
+
     /// Sets the printer jobs go to.
     ///
     /// # Errors
@@ -959,6 +1056,8 @@ impl Register {
             bytes: job.bytes,
             confirm: job.confirm.into(),
             process_id: job.process_id.to_vec(),
+            host: job.to.as_ref().map(|printer| printer.host.clone()),
+            port: job.to.as_ref().map(|printer| printer.port.get()),
         }))
     }
 

@@ -180,8 +180,9 @@ fn events_record_the_business_date_and_who_did_what() {
     runtime.sign_in(id(0x501), "1234").unwrap();
     runtime.pay_cash(order, usd(500)).unwrap();
 
-    // The order is created and the line added; then the payment is started and captured, and
-    // the check and the order closed, in one intent.
+    // The order is created and the line added; then the line is fired and its tickets sent to
+    // the bar and expo, the payment started and captured, and the check and the order closed,
+    // in one intent (ADR-0034).
     let events = runtime.store().log(id(0xd1), 0, 100).unwrap();
     let recorded: Vec<(BusinessDate, Actor)> = events
         .iter()
@@ -191,13 +192,27 @@ fn events_record_the_business_date_and_who_did_what() {
     let after = (date("2026-10-03"), Actor::TeamMember(id(0x501)));
     assert_eq!(
         recorded,
-        [before.clone(), before, after.clone(), after.clone(), after.clone(), after]
+        [
+            before.clone(),
+            before,
+            after.clone(),
+            after.clone(),
+            after.clone(),
+            after.clone(),
+            after.clone(),
+            after.clone(),
+            after
+        ]
     );
     let correlations: Vec<_> = events.iter().map(|event| event.body().correlation).collect();
     assert!(correlations.iter().all(Option::is_some));
     assert_ne!(correlations[0], correlations[1]);
     assert_ne!(correlations[1], correlations[2]);
-    assert_eq!(correlations[2..], [correlations[2]; 4]);
+    assert_eq!(
+        correlations[2..],
+        [correlations[2]; 7],
+        "the pay, its fire and its tickets, as one"
+    );
 }
 
 #[test]

@@ -171,6 +171,36 @@ interface Till {
      */
     fun availabilityVersion(): Long?
 
+    /**
+     * Sends [order]'s pending lines to the kitchen (ADR-0034), and gives the ticket; nothing, with
+     * none pending or no kitchen.
+     */
+    fun send(order: String): Ticket
+
+    /**
+     * Voids [line] of [order], sent to the kitchen, for [reason], one of [VOID_REASONS]' codes:
+     * one beyond the cashier's role is refused with [TillException.approval].
+     */
+    fun voidLine(order: String, line: String, reason: String): Ticket
+
+    /** The kitchen's stations; none without a kitchen. */
+    fun kitchenStations(): List<KitchenStation> = emptyList()
+
+    /**
+     * What a kitchen screen showing [stations] shows (ADR-0034): their tickets not bumped, the
+     * earliest first; what it shows for the first time is recorded as shown.
+     */
+    fun kitchenScreen(stations: List<String>): KitchenView
+
+    /** Bumps [ticket]: its station is done with it. No one need be signed in. */
+    fun bump(ticket: String)
+
+    /** Brings [ticket] back on its station's screen. */
+    fun recallTicket(ticket: String)
+
+    /** The tickets no screen showed in time, rerouted in the last ten minutes, the latest first. */
+    fun kitchenAlerts(): List<KitchenAlert> = emptyList()
+
     /** How replication with the location stands, for a register joined to its network. */
     fun syncState(): SyncInfo? = null
 
@@ -361,6 +391,8 @@ data class TicketLine(
     val repriced: String? = null,
     /** Its notes, for the kitchen and the receipt. */
     val notes: String? = null,
+    /** Whether it was sent to the kitchen: it is voided, not changed or taken off (ADR-0034). */
+    val sent: Boolean = false,
 )
 
 /** A discount on a ticket, in words, such as "Loyalty 10%", and what it took, such as "−$2.10". */
@@ -504,6 +536,74 @@ val CASH_REASONS = listOf(
     DiscountReason("change_for_customer", "Change for a customer"),
     DiscountReason("other", "Other"),
 )
+
+/** The reasons the register offers for voiding a line sent to the kitchen. */
+val VOID_REASONS = listOf(
+    DiscountReason("customer", "Customer changed their mind"),
+    DiscountReason("wrong_item", "Wrong item"),
+    DiscountReason("made_wrong", "Made wrong"),
+    DiscountReason("other", "Other"),
+)
+
+/** A kitchen station (ADR-0034): expo gets every line of every order. */
+data class KitchenStation(val station: String, val name: String, val expo: Boolean = false, val screen: Boolean = true)
+
+/** How old a ticket is, by the kitchen's thresholds. */
+enum class Aging { FRESH, LATE_ISH, LATE }
+
+/** How a modifier changes an item, as a kitchen screen colours it. */
+enum class ModifierPrefix { PLAIN, NO, EXTRA, LIGHT, SIDE, SUB }
+
+/** A modifier of an item on a kitchen screen: 1 deep for one chosen on the item. */
+data class KdsModifier(val name: String, val prefix: ModifierPrefix = ModifierPrefix.PLAIN, val quantity: Int = 1, val depth: Int = 1)
+
+/** An item of a ticket on a kitchen screen. */
+data class KdsItem(
+    val line: String,
+    val name: String,
+    /** How many, as "2 x". */
+    val quantity: String,
+    val modifiers: List<KdsModifier> = emptyList(),
+    val notes: String? = null,
+    val allergens: List<String> = emptyList(),
+    /** For a component, the line it is for, such as "Breakfast sandwich". */
+    val componentOf: String? = null,
+    /** Voided since it was sent: struck through. */
+    val void: Boolean = false,
+    /** On expo, whether every station making it has bumped it. */
+    val ready: Boolean? = null,
+)
+
+/** A ticket on a kitchen screen. */
+data class KdsTicket(
+    val ticket: String,
+    val station: String,
+    val stationName: String,
+    /** Its order's code, as its receipt prints it. */
+    val code: String,
+    /** How its order reaches its customer, in words: "To go", "Dine in". */
+    val mode: String,
+    val sentAt: String,
+    val ageSeconds: Long,
+    val aging: Aging,
+    val items: List<KdsItem>,
+    /** No screen showed it in time: it printed elsewhere, or nowhere. */
+    val rerouted: Boolean = false,
+)
+
+/** A station's day so far. */
+data class StationTime(val station: String, val name: String, val bumped: Int, val averageSeconds: Long?)
+
+/** What a kitchen screen shows. */
+data class KitchenView(
+    val tickets: List<KdsTicket> = emptyList(),
+    /** The ticket bumped last today, which Recall brings back. */
+    val lastBumped: String? = null,
+    val times: List<StationTime> = emptyList(),
+)
+
+/** A ticket no screen showed in time, in words for staff. */
+data class KitchenAlert(val ticket: String, val station: String, val code: String, val words: String)
 
 /** A refusal the cashier sees, in words for them. */
 class TillException(

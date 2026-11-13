@@ -52,11 +52,12 @@ What is built shapes it:
    its station ("Hash brown, for Breakfast sandwich"). Every expo station gets every line. So
    every device routes a fire alike, and a test asks the profile, not the kitchen.
 
-3. **Firing at the register**: *Send* fires an order's pending lines; paying cash fires whatever
-   is still pending first, so a counter order reaches the kitchen when it is paid. A location
-   without a kitchen fires nothing. A fired line shows as sent: it is voided, for a reason, as
-   `line.remove` (ADR-0029), not taken off; dropping an order with fired lines voids it, as
-   `order.void`.
+3. **Firing at the register**: *Send* fires an order's pending lines; paying a check in cash
+   fires what of it is still pending, in the payment's own write, so a counter order reaches the
+   kitchen when it is paid, and another check's lines wait. A location without a kitchen fires
+   nothing. A fired line shows as sent: it is voided, for a reason, as `line.remove`
+   (ADR-0029), not taken off or changed; dropping an order with fired lines voids it, as
+   `order.void`, its reason `dropped`.
 
 4. **A kitchen ticket is an aggregate per station and fire**, stream kind `kitchen_ticket`, its
    identifier drawn by the device that fires, and written in the fire's own write. Its events,
@@ -80,8 +81,9 @@ What is built shapes it:
    The device that sent a ticket for a screen looks at it again from its print loop: once 10 s
    have passed with no screen showing it, it prints on the station's printer, or on the kitchen's
    fallback printer, marked rerouted, and the device records the reroute. A ticket nowhere to
-   print is rerouted nowhere. Every device shows the reroutes of the last ten minutes. A print
-   job names the printer it goes to; a receipt names none, and goes to the register's own. A
+   print is rerouted nowhere. Every device shows the reroutes of the last ten minutes. A
+   kitchen print job names the printer it goes to, and is handed over whether or not the
+   register has a printer of its own; a receipt names none, and goes to the register's own. A
    line voided after it was printed prints a void slip where its ticket printed.
 
 6. **The KDS** is the app on a device of the location, set to show some of its stations: their

@@ -1259,4 +1259,177 @@ class RegisterModelTest {
         assertEquals(false, model.state.value.mark?.working)
         assertEquals(true, model.state.value.mark?.button?.soldOut)
     }
+
+    /** Kept stations, as a device's settings keep them. */
+    private class KeptStations(var kept: Set<String>? = null) : KitchenSettings {
+        override fun load() = kept
+        override fun save(stations: Set<String>) {
+            kept = stations
+        }
+    }
+
+    @Test
+    fun an_order_is_sent_and_a_sent_line_is_voided_for_a_reason() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        assertEquals(3, model.state.value.stations.size, "the register knows its kitchen")
+        model.tap(model.button("Tea"))
+        model.tap(model.button("Scone"))
+        testScheduler.advanceUntilIdle()
+        model.send()
+        testScheduler.advanceUntilIdle()
+        val ticket = model.state.value.ticket!!
+        assertEquals(listOf(true, true), ticket.lines.map { it.sent })
+        // A sent line isn't changed: one more is refused, one fewer or off asks why it is voided.
+        val tea = ticket.lines[0]
+        model.more(tea)
+        testScheduler.advanceUntilIdle()
+        assertEquals("tea was sent to the kitchen: ring another.", model.state.value.error)
+        model.fewer(tea)
+        testScheduler.advanceUntilIdle()
+        assertEquals(tea.line, model.state.value.voiding?.line)
+        model.closeVoid()
+        assertNull(model.state.value.voiding)
+        model.remove(tea)
+        testScheduler.advanceUntilIdle()
+        // Two quick taps void it once.
+        model.voidLine("customer")
+        model.voidLine("customer")
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.error)
+        assertEquals(listOf("scone"), model.state.value.ticket!!.lines.map { it.name })
+        // A line rung after is sent on its own.
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(true, false), model.state.value.ticket!!.lines.map { it.sent })
+        model.send()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(true, true), model.state.value.ticket!!.lines.map { it.sent })
+    }
+
+    @Test
+    fun a_void_beyond_the_cashiers_role_asks_a_manager() = runTest {
+        val till = FakeTill().apply { lineVoidNeedsApproval = true }
+        val model = signedIn(till)
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.send()
+        testScheduler.advanceUntilIdle()
+        model.remove(model.state.value.ticket!!.lines[0])
+        testScheduler.advanceUntilIdle()
+        model.voidLine("wrong_item")
+        testScheduler.advanceUntilIdle()
+        assertEquals("line.remove", model.state.value.approval?.action)
+        model.chooseApprover(model.approvers().first())
+        model.approve("")
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.approval)
+        assertEquals(emptyList(), model.state.value.ticket!!.lines)
+    }
+
+    @Test
+    fun a_kitchen_screen_shows_its_stations_tickets_and_bumps_them_once() = runTest {
+        val till = FakeTill()
+        val settings = KeptStations()
+        val model = RegisterModel(till, this, StandardTestDispatcher(testScheduler), kitchenSettings = settings)
+        model.start()
+        testScheduler.advanceUntilIdle()
+        model.signIn(model.state.value.team.first())
+        testScheduler.advanceUntilIdle()
+        model.tap(model.button("Tea"))
+        model.tap(model.button("Scone"))
+        testScheduler.advanceUntilIdle()
+        model.send()
+        testScheduler.advanceUntilIdle()
+        model.signOut()
+        testScheduler.advanceUntilIdle()
+        // No one signs in to the kitchen screen; it shows every station until some are kept.
+        model.openKitchen()
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.KITCHEN, model.state.value.screen)
+        val kds = model.state.value.kds!!
+        assertEquals(setOf("bar", "kitchen", "expo"), kds.stations)
+        assertEquals(listOf("bar", "kitchen", "expo"), kds.view.tickets.map { it.station })
+        // The bar shown alone, kept for next time.
+        model.toggleStation("kitchen")
+        model.toggleStation("expo")
+        testScheduler.advanceUntilIdle()
+        assertEquals(setOf("bar"), settings.kept)
+        assertEquals(listOf("bar"), model.state.value.kds!!.view.tickets.map { it.station })
+        model.toggleStation("bar")
+        testScheduler.advanceUntilIdle()
+        assertEquals(setOf("bar"), model.state.value.kds!!.stations, "one station is always shown")
+        // Bumped twice quickly, by tap or key: once.
+        model.bumpSelected()
+        model.bumpSelected()
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, till.bumpCalls)
+        assertNull(model.state.value.error)
+        assertEquals(emptyList(), model.state.value.kds!!.view.tickets)
+        // Recalled, it is back.
+        model.recallLast()
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, model.state.value.kds!!.view.tickets.size)
+        // Expo: the tea made, the scone not yet.
+        model.toggleStation("expo")
+        model.toggleStation("bar")
+        testScheduler.advanceUntilIdle()
+        val expo = model.state.value.kds!!.view.tickets.single()
+        assertEquals(listOf(false, false), expo.items.map { it.ready })
+        model.closeKitchen()
+        assertEquals(Screen.SIGN_IN, model.state.value.screen)
+        assertNull(model.state.value.kds)
+        // Opened again, it shows the stations kept.
+        model.openKitchen()
+        testScheduler.advanceUntilIdle()
+        assertEquals(setOf("expo"), model.state.value.kds!!.stations)
+    }
+
+    @Test
+    fun a_kitchen_screens_selection_follows_its_keys_and_stays_on_its_ticket() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        for (name in listOf("Tea", "Scone")) {
+            model.tap(model.button(name))
+            testScheduler.advanceUntilIdle()
+            // Each sent on its own: the scone's sending sends the scone alone.
+            model.send()
+            testScheduler.advanceUntilIdle()
+        }
+        model.signOut()
+        testScheduler.advanceUntilIdle()
+        model.openKitchen()
+        testScheduler.advanceUntilIdle()
+        val tickets = model.state.value.kds!!.view.tickets
+        assertEquals(4, tickets.size, "the bar's, expo's, the kitchen's, expo's")
+        model.select(1)
+        model.select(5)
+        assertEquals(3, model.state.value.kds!!.selected, "kept to the last")
+        model.select(-9)
+        assertEquals(0, model.state.value.kds!!.selected)
+        model.select(tickets[2])
+        assertEquals(2, model.state.value.kds!!.selected)
+        // The first bumped: the selection stays on the ticket it was on.
+        model.bump(tickets[0])
+        testScheduler.advanceUntilIdle()
+        assertEquals(tickets[2].ticket, model.state.value.kds!!.selectedTicket?.ticket)
+    }
+
+    @Test
+    fun the_kitchens_reroutes_are_told_and_a_location_without_one_has_no_kitchen_screen() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        till.alerts += KitchenAlert("ticket1", "Bar", "ORDER1", "Bar's screen didn't show order ORDER1: printed at its printer")
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, model.state.value.alerts.size)
+        val none = FakeTill().apply { stations = emptyList() }
+        val register = model(none)
+        register.start()
+        testScheduler.advanceUntilIdle()
+        register.openKitchen()
+        testScheduler.advanceUntilIdle()
+        assertEquals("This location has no kitchen.", register.state.value.error)
+        assertEquals(Screen.SIGN_IN, register.state.value.screen)
+    }
 }

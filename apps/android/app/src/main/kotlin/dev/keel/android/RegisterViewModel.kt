@@ -12,7 +12,7 @@ import kotlin.time.Duration.Companion.seconds
 class RegisterViewModel(application: Application) : AndroidViewModel(application) {
     private val host = (application as KeelApplication).host
 
-    val model = RegisterModel(host.till, viewModelScope, host.kernel, host.printer)
+    val model = RegisterModel(host.till, viewModelScope, host.kernel, host.printer, StoredStations(application))
 
     init {
         model.start()
@@ -22,6 +22,13 @@ class RegisterViewModel(application: Application) : AndroidViewModel(application
             while (true) {
                 model.refreshSync()
                 delay(2.seconds)
+            }
+        }
+        // A kitchen screen reads its tickets every second, as they age (ADR-0034).
+        viewModelScope.launch {
+            while (true) {
+                if (model.state.value.kds != null) model.refreshKitchen()
+                delay(1.seconds)
             }
         }
     }

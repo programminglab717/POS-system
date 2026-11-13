@@ -100,6 +100,37 @@ class RegisterTest {
     }
 
     /**
+     * A cashier sends a bottled water to the kitchen (ADR-0034): the line shows sent; signed out,
+     * the device shows the kitchen display, where expo's ticket is bumped, recalled, and bumped
+     * again. Tickets of earlier runs may be on the screen too, as the app's store outlives a test.
+     */
+    @Test
+    fun an_order_sent_reaches_the_kitchen_display_and_is_bumped() {
+        val water = demoId(0x409)
+        compose.tap("member:Sam", wait = 20_000)
+        compose.enterPin("2468")
+        compose.tap("page:Food")
+        compose.tap("button:$water")
+        compose.tap("send")
+        compose.waitUntil(10_000) { compose.onAllNodes(tagStarting("sent:")).fetchSemanticsNodes().isNotEmpty() }
+        compose.tap("abandon")
+        compose.waitFor("approval:reason")
+        compose.tap("approver:Alex")
+        compose.enterPin("1234")
+        compose.tap("sign-out")
+        compose.tap("kitchen")
+        compose.waitUntil(10_000) { compose.onAllNodes(tagStarting("ticket:")).fetchSemanticsNodes().isNotEmpty() }
+        assertTrue(compose.onAllNodes(tagStarting("void:")).fetchSemanticsNodes().isNotEmpty(), "the dropped order's water shows VOID")
+        val before = compose.onAllNodes(tagStarting("ticket:")).fetchSemanticsNodes().size
+        compose.tapStarting("bump:")
+        compose.waitUntil(10_000) { compose.onAllNodes(tagStarting("ticket:")).fetchSemanticsNodes().size == before - 1 }
+        compose.tap("kitchen:recall")
+        compose.waitUntil(10_000) { compose.onAllNodes(tagStarting("ticket:")).fetchSemanticsNodes().size == before }
+        compose.tap("kitchen:exit")
+        compose.waitFor("member:Sam")
+    }
+
+    /**
      * A cashier drops an order with an item on it, which needs a manager (ADR-0029): the register
      * asks who approves, takes their PIN, and drops it.
      */

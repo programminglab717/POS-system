@@ -100,11 +100,11 @@ built in three slices, each verified as it lands, then reviewed together:
 
 1. **The domain and the store** (built 2026-11-13): profile format 3 (stations, routes,
    allergens), routing, the kitchen ticket aggregate and its five schemas, the projection.
-2. **The register and the kitchen**: firing, the tickets, voids and their slips, the KDS's
-   queries and intents, the fallback print jobs and the kitchen ticket's document, the bindings.
-3. **The shell**: the Android register's Send and voids, and the app as a KDS.
-
-Next: slice 2.
+2. **The register and the kitchen** (built 2026-11-13): firing, the tickets, voids and their
+   slips, the KDS's queries and intents, the fallback print jobs and the kitchen ticket's
+   document, the bindings.
+3. **The shell** (built 2026-11-13): the Android register's Send and voids, and the app as a
+   KDS. Next: the review.
 
 Built in slice 1:
 
@@ -133,6 +133,51 @@ Built in slice 1:
     ticket's items.
 - **The store's `kitchen_tickets` projection**: open tickets, a day's, an order's, those whose
   fallback is due, the rerouted, and a version that moves with every kitchen event.
+
+Built in slice 2:
+
+- **`keel-runtime`'s kitchen**: `send` fires an order's pending lines and sends each station its
+  ticket in one write; paying a check in cash fires what of it is pending, in the payment's
+  write. A ticket holds each line whole, or a modifier as a component, its quantity the line's
+  times the modifier's, with its modifiers, notes and allergens (the item's and its modifiers',
+  but a "No" one's). A station no screen shows prints at once. `void_line` voids a sent line for a
+  reason, as `line.remove`; dropping an order with sent lines voids it; each prints a void slip
+  where its ticket printed. The ticket view says which lines were sent.
+  - The screen: `kitchen_screen(stations)` lists their open tickets, oldest first, with age,
+    aging, items struck through when voided, and on expo whether each is made; records the
+    first showing (as the system's `kds`, with no one signed in); gives the last bumped and each
+    station's day so far. `bump`, `recall_ticket`, `kitchen_version`, `kitchen_alerts`.
+  - Fallbacks: the print loop reroutes this device's tickets no screen showed in 10 s, to the
+    station's printer, the fallback, or nowhere, recorded as the system's `kitchen`; kitchen
+    jobs (`print.kitchen`) name their printer, and are handed over whether or not the register
+    has its own; reprinted, they are marked.
+  - Known answers: a paid order to the bar, the kitchen and expo, water to expo alone; shown,
+    bumped, recalled, aged, timed; expo's made; voids struck and slipped; a second send sends
+    what is new; a printer-only station; reroutes to a station's printer, the fallback, or
+    nowhere, told for ten minutes; a component; no kitchen.
+  - Propagation (`tests/sync.rs`): a ticket the register pushes is on the hub's screen with no
+    time passing, and the screen's showing stops the register's reroute; a register that can't
+    hear the hub reroutes 10 s on, and the screen hears of it.
+- **The bindings**: `send`, `void_line`, `kitchen_stations`, `kitchen_screen`, `bump`,
+  `recall_ticket`, `kitchen_version`, `kitchen_alerts`; a ticket line's `sent`; a print job's
+  kitchen printer; the order modes drive-thru and curbside.
+
+Built in slice 3:
+
+- **The Android register**: *Send to the kitchen* while a line is pending; a sent line shows
+  sent, its − and Remove void it for a reason chosen, its + refused; reroutes are told above the
+  menu on every device.
+- **The app as a kitchen screen**: from the sign-in screen, no one signed in; the stations it
+  shows chosen and kept on the device; tickets as cards, oldest first, aged in colour and in
+  words, "No" and "Extra" modifiers, notes and allergens set apart, voids struck through, expo's
+  made; a tap selects, Bump bumps once however fast, Recall brings back the last; a bump bar's
+  arrow, Enter and R keys do the same. It reads its tickets every second.
+- **The print loop** asks for jobs with no printer of its own set, and sends a kitchen job to the
+  printer it names.
+  - Model tests against the fake till: send, a sent line voided for a reason and once, a void a
+    manager approves, a screen's stations kept, bumped once, recalled, expo's made, its keys'
+    selection, reroutes told, a location without a kitchen. An instrumented test sends a water,
+    bumps and recalls it on the kitchen screen; it waits for an emulator.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3, 4 and 5's among them, and
 the three of step 2 the scrolling ticket pane should mend.

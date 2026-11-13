@@ -47,6 +47,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material3.ButtonDefaults
 import dev.keel.register.Approval
+import dev.keel.register.TicketLine
+import dev.keel.register.VOID_REASONS
 import dev.keel.register.MarkSheet
 import dev.keel.register.backWords
 import dev.keel.register.CASH_REASONS
@@ -94,10 +96,12 @@ fun RegisterScreen(model: RegisterModel) {
                 state.screen == Screen.PRINTER -> PrinterPage(state, model)
                 state.screen == Screen.DRAWER -> DrawerPage(state, model)
                 state.screen == Screen.RETURN -> ReturnPage(state, model)
+                state.screen == Screen.KITCHEN -> KitchenPage(state, model)
                 else -> Register(state, model)
             }
         }
         state.sheet?.let { SheetDialog(it, state.error, model) }
+        state.voiding?.let { VoidDialog(it, model) }
         state.mark?.let { MarkDialog(it, state.error, model) }
         state.tender?.let { TenderDialog(it, model) }
         state.discount?.let { DiscountDialog(it, state.error, model) }
@@ -124,6 +128,10 @@ private fun Loading() {
 private fun SignIn(state: RegisterState, model: RegisterModel) {
     Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Who's working?", style = MaterialTheme.typography.headlineMedium)
+        // A kitchen screen needs no one signed in (ADR-0034).
+        if (state.stations.isNotEmpty()) {
+            TextButton(onClick = model::openKitchen, modifier = Modifier.testTag("kitchen")) { Text("Kitchen display") }
+        }
         Spacer(Modifier.height(24.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             for (member in state.team) {
@@ -178,6 +186,15 @@ private fun Register(state: RegisterState, model: RegisterModel) {
                     "Tap an item to 86 it, or to put it back.",
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+            // Tickets no screen showed in time, which every device tells its staff (ADR-0034).
+            for (alert in state.alerts) {
+                Text(
+                    alert.words,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp).testTag("alert:${alert.ticket}"),
                 )
             }
             if (state.soldOut.isNotEmpty()) {
@@ -244,6 +261,14 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                 Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("${line.quantity} × ${line.name}", Modifier.weight(1f))
+                        // Sent to the kitchen: it is voided, not changed (ADR-0034).
+                        if (line.sent) {
+                            Text(
+                                "Sent",
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 6.dp).testTag("sent:${line.line}"),
+                            )
+                        }
                         Text(line.amount)
                     }
                     for (words in line.modifiers) Text(words, style = MaterialTheme.typography.bodySmall)
@@ -253,11 +278,13 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                     // Wrapped, so every button stays reachable on a narrow pane. Found in review:
                     // the later ones were squeezed to nothing on a phone.
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (line.count != null) {
+                        if (line.count != null && !line.sent) {
                             TextButton(onClick = { model.fewer(line) }, modifier = Modifier.testTag("fewer:${line.line}")) { Text("−") }
                             TextButton(onClick = { model.more(line) }, modifier = Modifier.testTag("more:${line.line}")) { Text("+") }
                         }
-                        TextButton(onClick = { model.remove(line) }, modifier = Modifier.testTag("remove:${line.line}")) { Text("Remove") }
+                        TextButton(onClick = { model.remove(line) }, modifier = Modifier.testTag("remove:${line.line}")) {
+                            Text(if (line.sent) "Void" else "Remove")
+                        }
                         TextButton(onClick = { model.openDiscount(line) }, modifier = Modifier.testTag("discount:${line.line}")) { Text("Discount") }
                         TextButton(onClick = { model.openPrice(line) }, modifier = Modifier.testTag("price:${line.line}")) { Text("Price") }
                         TextButton(onClick = { model.openNotes(line) }, modifier = Modifier.testTag("note:${line.line}")) { Text("Note") }
@@ -297,6 +324,12 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                 }
             }
             Spacer(Modifier.height(8.dp))
+            // The kitchen gets what is pending when it is sent, or when it is paid (ADR-0034).
+            if (state.stations.isNotEmpty() && ticket.lines.any { !it.sent }) {
+                OutlinedButton(onClick = model::send, modifier = Modifier.fillMaxWidth().testTag("send")) {
+                    Text("Send to the kitchen")
+                }
+            }
             if (ticket.checks.isEmpty()) {
                 Button(
                     onClick = { model.openTender() },
@@ -685,6 +718,27 @@ private fun SheetDialog(sheet: ModifierSheet, error: String?, model: RegisterMod
             Button(onClick = model::addFromSheet, enabled = sheet.complete, modifier = Modifier.testTag("sheet:add")) { Text("Add") }
         },
         dismissButton = { TextButton(onClick = model::closeSheet) { Text("Cancel") } },
+    )
+}
+
+/** Why a line sent to the kitchen is voided (ADR-0034): it won't be made or charged. */
+@Composable
+private fun VoidDialog(line: TicketLine, model: RegisterModel) {
+    AlertDialog(
+        onDismissRequest = model::closeVoid,
+        title = { Text("Void ${line.name}") },
+        text = {
+            Column {
+                Text("It was sent to the kitchen: voided, it won't be made or charged.")
+                for (reason in VOID_REASONS) {
+                    TextButton(onClick = { model.voidLine(reason.code) }, modifier = Modifier.testTag("void:${reason.code}")) {
+                        Text(reason.words)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = model::closeVoid) { Text("Keep it") } },
     )
 }
 

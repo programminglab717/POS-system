@@ -25,6 +25,7 @@
 mod availability;
 mod drawer;
 mod error;
+mod kitchen;
 mod print;
 mod publication;
 mod receipt;
@@ -45,6 +46,8 @@ mod discount_tests;
 #[cfg(test)]
 mod drawer_tests;
 #[cfg(test)]
+mod kitchen_tests;
+#[cfg(test)]
 mod print_tests;
 #[cfg(test)]
 mod publication_tests;
@@ -57,7 +60,11 @@ mod tests;
 
 pub use availability::{ItemRef, SoldOut, Until};
 pub use error::RuntimeError;
-pub use print::{DRAWER, Job, JobKind, JobState, JobView, PrintJob, RECEIPT, Resolution};
+pub use kitchen::{
+    ALERT_WINDOW, Aging, FALLBACK_WAIT, KitchenAlert, KitchenScreen, ScreenItem, ScreenTicket,
+    StationTimes, how_many,
+};
+pub use print::{DRAWER, Job, JobKind, JobState, JobView, KITCHEN, PrintJob, RECEIPT, Resolution};
 pub use report::{DayReport, ReportKind, TenderLine};
 pub use returns::{Refunded, RefundedLine, Returnable, ReturnableLine};
 pub use runtime::{CASH_OFFERS, Identity, MOST_CHECKS, Runtime};

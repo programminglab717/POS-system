@@ -1,6 +1,7 @@
 package dev.keel.android.kernel
 
 import dev.keel.kernel.Confirm
+import dev.keel.kernel.NotSent
 import dev.keel.kernel.Outcome
 import dev.keel.kernel.PrintJob
 import dev.keel.kernel.Unconfirmed
@@ -34,20 +35,23 @@ class PrintLoop(
     /** What sends a job to a printer: `printTcp`, but for tests. */
     private val send: (host: String, port: UShort, job: PrintJob, waits: Waits) -> Outcome = ::printTcp,
 ) {
-    /** Runs until cancelled: call it on a thread that may block, such as `Dispatchers.IO`. */
+    /**
+     * Runs until cancelled: call it on a thread that may block, such as `Dispatchers.IO`. It asks
+     * for jobs whether or not the register's printer is set: a kitchen ticket names its own
+     * printer, and the kernel reroutes the tickets no screen showed as it is asked (ADR-0034).
+     */
     suspend fun run() {
         var profiled = false
         while (true) {
             val target = address()
-            if (target == null) {
-                delay(idle)
-                continue
-            }
             val job = try {
                 withContext(kernel) {
-                    // Jobs wait for a printer's profile, to be rendered for it.
-                    if (!profiled) register.setPrinter(printer)
-                    profiled = true
+                    // Jobs for the register's own printer wait for its profile, set once there is
+                    // an address to send them to.
+                    if (target != null && !profiled) {
+                        register.setPrinter(printer)
+                        profiled = true
+                    }
                     register.nextPrintJob()
                 }
             } catch (cancelled: CancellationException) {
@@ -59,15 +63,22 @@ class PrintLoop(
                 delay(idle)
                 continue
             }
-            val outcome = try {
-                send(target.host, target.port.toUShort(), job, waits)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                // A job the driver refuses, as none the register gives is, or a failure in it:
-                // whether any of it reached the printer is unknown, so staff decide. Found in
-                // review: the job stayed with the driver, and nothing printed after it.
-                Outcome.Unconfirmed(Unconfirmed.SEND_FAILED)
+            // A kitchen job goes to the printer it names; another, to the register's own.
+            val host = job.host ?: target?.host
+            val port = job.port ?: target?.port?.toUShort()
+            val outcome = if (host == null || port == null) {
+                Outcome.NotSent(NotSent.UNREACHABLE)
+            } else {
+                try {
+                    send(host, port, job, waits)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // A job the driver refuses, as none the register gives is, or a failure in
+                    // it: whether any of it reached the printer is unknown, so staff decide.
+                    // Found in review: the job stayed with the driver, and nothing printed after.
+                    Outcome.Unconfirmed(Unconfirmed.SEND_FAILED)
+                }
             }
             try {
                 withContext(kernel) { register.printOutcome(job.job, outcome) }

@@ -239,8 +239,8 @@ BUGS = [
         """        if self.sending.is_some() {
             return Ok(None);
         }
-        let now = self.clock.now();""",
-        """        let now = self.clock.now();""",
+        // A kitchen job names its printer""",
+        """        // A kitchen job names its printer""",
     ),
     (
         "print: any job's outcome is taken",
@@ -1133,5 +1133,126 @@ BUGS = [
         "src/availability.rs",
         "                Some(day.window(day.business_date_of(meta.now)?)?.1)",
         "                Some(day.window(day.local_time(meta.now)?.date)?.1)",
+    ),
+    # The kitchen (ADR-0034).
+    (
+        "kitchen: a modifier left out adds its allergens",
+        "src/kitchen.rs",
+        "        if modifier.prefix == Prefix::No {\n            continue;\n        }\n",
+        "",
+    ),
+    (
+        "kitchen: a component's quantity is its line's",
+        "src/kitchen.rs",
+        "        .checked_mul(i64::from(chosen.quantity.get()))",
+        "        .checked_mul(1)",
+    ),
+    (
+        "kitchen: fired lines are fired again",
+        "src/kitchen.rs",
+        "            .filter(|line| *line.status() == LineStatus::Pending)",
+        "            .filter(|line| line.is_live())",
+    ),
+    (
+        "kitchen: paying a check fires the other checks' lines",
+        "src/kitchen.rs",
+        "            .filter(|line| on_check.as_ref().is_none_or(|on| on.contains(&line.id())))",
+        "            .filter(|line| on_check.as_ref().is_none_or(|on| on.contains(&line.id()) || !on.is_empty()))",
+    ),
+    (
+        "kitchen: a station no screen shows prints nothing",
+        "src/kitchen.rs",
+        "                (false, Some(printer)) => {",
+        "                (false, Some(printer)) if false => {",
+    ),
+    (
+        "kitchen: sending fires nothing",
+        "src/kitchen.rs",
+        "                write_firing(w, firing, location, device, &meta)?;",
+        "                let _ = firing;",
+    ),
+    (
+        "kitchen: paying fires nothing",
+        "src/runtime.rs",
+        "                crate::kitchen::write_firing(w, firing, location, device, &meta)?;",
+        "                let _ = firing;",
+    ),
+    (
+        "kitchen: a screen records no showing",
+        "src/kitchen.rs",
+        "            .filter(|summary| summary.shown_at.is_none() && summary.rerouted.is_none())",
+        "            .filter(|summary| summary.shown_at.is_some() && summary.rerouted.is_none())",
+    ),
+    (
+        "kitchen: a voided line isn't struck through",
+        "src/kitchen.rs",
+        "                    void: order_void || line_void,",
+        "                    void: order_void,",
+    ),
+    (
+        "kitchen: a voided order isn't struck through",
+        "src/kitchen.rs",
+        "                    void: order_void || line_void,",
+        "                    void: line_void,",
+    ),
+    (
+        "kitchen: a ticket is late as soon as late-ish",
+        "src/kitchen.rs",
+        "        let aging = if age >= u64::from(kitchen.aging.late.get()) {",
+        "        let aging = if age >= u64::from(kitchen.aging.late_ish.get()) {",
+    ),
+    (
+        "kitchen: expo sees a line made when any station has bumped it",
+        "src/kitchen.rs",
+        "                *ready = *ready && ticket.is_bumped();",
+        "                *ready = *ready || ticket.is_bumped();",
+    ),
+    (
+        "kitchen: expo's own ticket counts as making",
+        "src/kitchen.rs",
+        "            if kitchen.station(sent.station).is_none_or(|station| station.expo) {\n                continue;\n            }\n",
+        "",
+    ),
+    (
+        "kitchen: a ticket for a printer-only station is rerouted",
+        "src/kitchen.rs",
+        "                    .is_some_and(|station| station.screen)",
+        "                    .is_some()",
+    ),
+    (
+        "kitchen: a reroute ignores the station's printer",
+        "src/kitchen.rs",
+        "                (Some(printer), _) => (RerouteTo::StationPrinter, Some(printer.clone())),",
+        "                (Some(_), None) => (RerouteTo::Nowhere, None),\n                (Some(_), Some(printer)) => (RerouteTo::FallbackPrinter, Some(printer.clone())),",
+    ),
+    (
+        "kitchen: the print loop doesn't reroute",
+        "src/runtime.rs",
+        "        self.reroute_overdue()?;\n",
+        "",
+    ),
+    (
+        "kitchen: a kitchen job waits for the register's own printer",
+        "src/runtime.rs",
+        "                    .is_some_and(|(_, kind)| kind == JobKind::Kitchen || own.is_some())",
+        "                    .is_some_and(|_| own.is_some())",
+    ),
+    (
+        "kitchen: a void slips every line of the ticket",
+        "src/kitchen.rs",
+        "                sent.items.iter().filter(|item| lines.contains(&item.line)).cloned().collect();",
+        "                sent.items.to_vec();",
+    ),
+    (
+        "kitchen: a void slips nowhere for a printer-only station",
+        "src/kitchen.rs",
+        "                _ if !station.screen => station.printer.clone(),",
+        "",
+    ),
+    (
+        "kitchen: dropping a sent order abandons it",
+        "src/runtime.rs",
+        "            if loaded.lines().iter().any(keel_domain::order::Line::was_fired) {",
+        "            if false && loaded.lines().iter().any(keel_domain::order::Line::was_fired) {",
     ),
 ]

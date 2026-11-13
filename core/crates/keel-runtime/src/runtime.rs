@@ -2,14 +2,15 @@
 
 use core::num::NonZeroU32;
 use core::time::Duration;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use keel_domain::checkout::Checkout;
-use keel_domain::codec::{Change, IdSet, Note, ProfileVersion};
+use keel_domain::codec::{Change, IdSet, Note, ProfileVersion, ReasonCode};
 use keel_domain::drawer::{CashTaken, Drawer, DrawerCommand};
 use keel_domain::order::{
     Channel, Check, Discount, DiscountApplied, DiscountValue, LineAdded, LineChanged, LineRepriced,
-    LinesAllocated, Mode, Order, OrderCommand, OrderCreated, Reason,
+    LineStatus, LinesAllocated, Mode, Order, OrderCommand, OrderCreated, Reason,
 };
 use keel_domain::payment::{
     CashTendered, Payment, PaymentCaptured, PaymentCommand, PaymentEvent, Tender,
@@ -371,6 +372,40 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         Ok(ticket)
     }
 
+    /// Voids `line` of `order`, sent to the kitchen, for `reason`: it won't be served or
+    /// charged; `line.remove`, as taking a line off is (ADR-0034, decision 3). The kitchen's
+    /// screens strike it through; a ticket that printed it gets a void slip where it printed.
+    ///
+    /// # Errors
+    /// [`RuntimeError::ApprovalRequired`] or [`RuntimeError::NotApprover`] if it needs an approval
+    /// it doesn't have; [`RuntimeError::PartlyPaid`] if a check it is on has a payment taken
+    /// toward it; [`RuntimeError`] if no one is signed in, or the order refuses: the line isn't
+    /// sent.
+    pub fn void_line(
+        &mut self,
+        order: Id<Order>,
+        line: Id<keel_domain::order::Line>,
+        reason: Reason,
+    ) -> Result<Ticket, RuntimeError> {
+        let loaded = self.store.load(Order::new(order))?;
+        known(&loaded)?;
+        let found = loaded.line(line).ok_or(keel_domain::order::CommandError::UnknownLine(line))?;
+        self.check_unpaid(&loaded, found.allocation().iter().map(|share| share.check))?;
+        // The order's own rules first: a line not sent asks for no approval.
+        if *found.status() != LineStatus::Fired {
+            return Err(keel_domain::order::CommandError::LineNotFired(line).into());
+        }
+        let granted = self.gate(Request::of(Action::LineRemove), Some(order.cast()))?;
+        let meta = self.meta()?;
+        let stream = self.approval_stream(granted.as_ref())?;
+        let slips = self.void_slips(order, &[line].into(), meta.now)?;
+        let command = OrderCommand::VoidLine { line, reason };
+        let ticket =
+            self.decide_printing(order, command, &meta, granted.as_ref(), stream, &slips)?;
+        self.spend(granted.as_ref());
+        Ok(ticket)
+    }
+
     /// Puts a discount on `line` of `order`, or on the whole order when `line` is `None`, for
     /// `reason`: `discount.apply`, which the member's role permits or a manager approves
     /// (ADR-0029, ADR-0030), asked for as what all the order's discounts would take together
@@ -520,12 +555,30 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let meta = self.meta()?;
         let stream = self.approval_stream(granted.as_ref())?;
         let payments = self.payments(order)?;
+        // An order with lines sent to the kitchen is voided, not abandoned: the kitchen is told,
+        // and a ticket that printed gets a void slip (ADR-0034, decision 3).
+        let sent: BTreeSet<Id<keel_domain::order::Line>> = loaded
+            .live_lines()
+            .filter(|line| line.was_fired())
+            .map(keel_domain::order::Line::id)
+            .collect();
+        let slips =
+            if sent.is_empty() { Vec::new() } else { self.void_slips(order, &sent, meta.now)? };
         let (location, device) = (self.location(), self.device);
         let (profile, locale) = (&self.profile, self.locale);
         let ticket = self.store.write(|w| {
             let meta = approved(w, granted.as_ref(), stream, &meta)?;
             let mut loaded = w.load(Order::new(order))?;
             known(&loaded)?;
+            if loaded.lines().iter().any(keel_domain::order::Line::was_fired) {
+                let dropped = Reason { code: ReasonCode::new("dropped")?, note: None };
+                let event = loaded.decide(location, device, OrderCommand::Void(dropped))?;
+                let voided = append(w, order.cast(), &event, &meta)?;
+                for (job, printer, doc) in &slips {
+                    w.enqueue(&print::kitchen_effect(*job, doc, printer, Some(voided))?, meta.now)?;
+                }
+                return view(w, order, &payments, profile, locale);
+            }
             let live: Vec<_> = loaded.live_lines().map(keel_domain::order::Line::id).collect();
             for line in live {
                 let event = loaded.decide(location, device, OrderCommand::RemoveLine(line))?;
@@ -604,9 +657,19 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let closed_at = self.profile.business_day().local_time(meta.now)?;
         let payments = self.payments(order)?;
         let drawer_session = self.open_drawer_id()?;
+        // What of the check is still pending goes to the kitchen as it is paid, in the payment's
+        // own write: a counter order reaches the kitchen when it is paid (ADR-0034, decision 3).
+        let firing = {
+            let loaded = self.store.load(Order::new(order))?;
+            known(&loaded)?;
+            self.plan_firing(&loaded, Some(check), meta.now)?
+        };
         let (location, device) = (self.location(), self.device);
         let (profile, locale) = (&self.profile, self.locale);
         self.store.write(|w| {
+            if let Some(firing) = &firing {
+                crate::kitchen::write_firing(w, firing, location, device, &meta)?;
+            }
             let loaded = w.load(Order::new(order))?;
             known(&loaded)?;
             let rules = &profile.data().rules;
@@ -874,6 +937,20 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         granted: Option<&Granted>,
         stream: Option<Id<AggregateMarker>>,
     ) -> Result<Ticket, RuntimeError> {
+        self.decide_printing(order, command, meta, granted, stream, &[])
+    }
+
+    /// As [`Runtime::decide_approved`], enqueuing the kitchen's print jobs `slips` in the same
+    /// write, each caused by the event.
+    fn decide_printing(
+        &mut self,
+        order: Id<Order>,
+        command: OrderCommand,
+        meta: &Meta,
+        granted: Option<&Granted>,
+        stream: Option<Id<AggregateMarker>>,
+        slips: &[(Id<Job>, keel_domain::profile::Printer, Doc)],
+    ) -> Result<Ticket, RuntimeError> {
         let payments = self.payments(order)?;
         let (location, device) = (self.location(), self.device);
         let (profile, locale) = (&self.profile, self.locale);
@@ -882,7 +959,10 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             let loaded = w.load(Order::new(order))?;
             known(&loaded)?;
             let event = loaded.decide(location, device, command)?;
-            append(w, order.cast(), &event, meta)?;
+            let decided = append(w, order.cast(), &event, meta)?;
+            for (job, printer, doc) in slips {
+                w.enqueue(&print::kitchen_effect(*job, doc, printer, Some(decided))?, meta.now)?;
+            }
             // A split order whose open checks were emptied, every check holding something closed,
             // closes. Found in review: it stayed open for good, nothing able to close it.
             let loaded = w.load(Order::new(order))?;
@@ -900,7 +980,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
 
     /// The payments of `order` the store holds. An intent reads them just before its write, as a
     /// write can't list them: the runtime is its store's one writer, so nothing comes between.
-    fn payments(&self, order: Id<Order>) -> Result<Vec<Payment>, RuntimeError> {
+    pub(crate) fn payments(&self, order: Id<Order>) -> Result<Vec<Payment>, RuntimeError> {
         let mut payments = Vec::new();
         for summary in self.store.payments_of(order)? {
             payments.push(self.store.load(Payment::new(summary.id))?);
@@ -1068,10 +1148,15 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// # Errors
     /// [`RuntimeError::Store`] if the store can't be read or written.
     pub fn next_print_job(&mut self) -> Result<Option<PrintJob>, RuntimeError> {
-        let Some(printer) = self.printer else { return Ok(None) };
+        // Tickets no screen showed in time print first, wherever this register's printer is.
+        self.reroute_overdue()?;
         if self.sending.is_some() {
             return Ok(None);
         }
+        // A kitchen job names its printer; another goes to the register's own, once it is set.
+        // Kitchen printers are taken to be as wide as the register's, or 80 mm with none.
+        let own = self.printer;
+        let printer = own.unwrap_or(PrinterProfile::EPSON_80MM);
         let now = self.clock.now();
         let latest = print::after(now, print::MAX_WAIT)?;
         let mut pending: Vec<_> = self
@@ -1081,7 +1166,10 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             .enumerate()
             .filter(|(_, queued)| queued.state == keel_store::EffectState::Pending)
             .filter(|(_, queued)| queued.due <= now || queued.due > latest)
-            .filter(|(_, queued)| print::job_of(queued).is_some())
+            .filter(|(_, queued)| {
+                print::job_of(queued)
+                    .is_some_and(|(_, kind)| kind == JobKind::Kitchen || own.is_some())
+            })
             .collect();
         // The earliest due first, then the earliest enqueued; those the clock left behind, now.
         pending.sort_by_key(|(seq, queued)| (queued.due.min(now), *seq));
@@ -1091,7 +1179,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             if queued.due > now {
                 self.store.write(|w| w.reschedule(&key, now))?;
             }
-            let Ok(doc) = Doc::decode(&queued.effect.payload) else {
+            let Ok((doc, to)) = print::document(&queued) else {
                 self.store.write(|w| -> Result<(), RuntimeError> {
                     w.start(&key, now)?;
                     w.fail(&key)?;
@@ -1107,6 +1195,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 bytes: render(&doc, &printer),
                 confirm: printer.confirm,
                 process_id: process_id(print::process_number(job, started.attempts)),
+                to,
             }));
         }
         Ok(None)
@@ -1167,14 +1256,16 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 Ok(None)
             }
             Resolution::Again => {
-                let doc = Doc::decode(&queued.effect.payload)?;
+                let (doc, _) = print::document(&queued)?;
+                // A receipt, and a kitchen ticket, printed again say so: a cook mustn't make it
+                // twice (hardware §5).
                 let doc = match kind {
-                    JobKind::Receipt => self.as_reprint(&doc)?,
+                    JobKind::Receipt | JobKind::Kitchen => self.as_reprint(&doc)?,
                     JobKind::Drawer => doc,
                 };
                 let now = self.clock.now();
                 let again: Id<Job> = self.ids.generate(now)?;
-                let effect = print::effect(again, kind, &doc, queued.effect.cause)?;
+                let effect = print::again(again, &queued, &doc)?;
                 self.store.write(|w| -> Result<(), RuntimeError> {
                     w.fail(&key)?;
                     w.enqueue(&effect, now)?;
@@ -1281,7 +1372,7 @@ pub(crate) fn known(order: &Order) -> Result<(), RuntimeError> {
 /// The ticket of `order`, whose payments are `payments`, as the write `w` leaves it. An intent
 /// makes its ticket inside its write, so that one whose ticket can't be made, its order no longer
 /// priced without overflowing, is refused whole rather than done with no answer.
-fn view<S: Signer, E: Entropy>(
+pub(crate) fn view<S: Signer, E: Entropy>(
     w: &Writing<'_, S, E>,
     order: Id<Order>,
     payments: &[Payment],

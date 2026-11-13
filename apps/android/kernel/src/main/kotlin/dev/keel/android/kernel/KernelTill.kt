@@ -1,6 +1,17 @@
 package dev.keel.android.kernel
 
 import dev.keel.kernel.Choice
+import dev.keel.kernel.Aging as KernelAging
+import dev.keel.kernel.Rerouted
+import dev.keel.register.Aging
+import dev.keel.register.KdsItem
+import dev.keel.register.KdsModifier
+import dev.keel.register.KdsTicket
+import dev.keel.register.KitchenAlert
+import dev.keel.register.KitchenStation
+import dev.keel.register.KitchenView
+import dev.keel.register.ModifierPrefix
+import dev.keel.register.StationTime
 import dev.keel.kernel.ItemKind
 import dev.keel.kernel.Until
 import dev.keel.register.SoldOutItem
@@ -156,6 +167,67 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
         call { register.setLineNotes(order, line, notes).toTicket() }
 
     override fun abandon(order: String): Ticket = call { register.abandon(order).toTicket() }
+
+    override fun send(order: String): Ticket = call { register.send(order).toTicket() }
+
+    override fun voidLine(order: String, line: String, reason: String): Ticket =
+        call { register.voidLine(order, line, reason, null).toTicket() }
+
+    override fun kitchenStations(): List<KitchenStation> =
+        register.kitchenStations().map { KitchenStation(it.station, it.name, it.expo, it.screen) }
+
+    override fun kitchenScreen(stations: List<String>): KitchenView = call {
+        val screen = register.kitchenScreen(stations)
+        KitchenView(
+            tickets = screen.tickets.map { ticket ->
+                KdsTicket(
+                    ticket = ticket.ticket,
+                    station = ticket.station,
+                    stationName = ticket.stationName,
+                    code = ticket.code,
+                    mode = modeWords(ticket.mode),
+                    sentAt = ticket.sentAt.substringAfter(' '),
+                    ageSeconds = ticket.ageSeconds.toLong(),
+                    aging = when (ticket.aging) {
+                        KernelAging.FRESH -> Aging.FRESH
+                        KernelAging.LATE_ISH -> Aging.LATE_ISH
+                        KernelAging.LATE -> Aging.LATE
+                    },
+                    items = ticket.items.map { item ->
+                        KdsItem(
+                            line = item.line,
+                            name = item.name,
+                            quantity = item.quantity,
+                            modifiers = item.modifiers.map { KdsModifier(it.name, prefixOf(it.prefix), it.quantity.toInt(), it.depth.toInt()) },
+                            notes = item.notes,
+                            allergens = item.allergens,
+                            componentOf = item.componentOf,
+                            void = item.void,
+                            ready = item.ready,
+                        )
+                    },
+                    rerouted = ticket.rerouted != null,
+                )
+            },
+            lastBumped = screen.lastBumped,
+            times = screen.times.map { StationTime(it.station, it.name, it.bumped.toInt(), it.averageSeconds?.toLong()) },
+        )
+    }
+
+    override fun bump(ticket: String) = call { register.bump(ticket) }
+
+    override fun recallTicket(ticket: String) = call { register.recallTicket(ticket) }
+
+    override fun kitchenAlerts(): List<KitchenAlert> = call {
+        register.kitchenAlerts().map { alert ->
+            val where = when (alert.to) {
+                Rerouted.STATION_PRINTER -> "printed at its printer"
+                Rerouted.FALLBACK_PRINTER -> "printed at the kitchen's fallback printer"
+                Rerouted.NOWHERE -> "and there's no printer to print it"
+            }
+            KitchenAlert(alert.ticket, alert.station, alert.code, "${alert.station}'s screen didn't show order ${alert.code}: $where.")
+        }
+    }
 
     override fun cashOffers(order: String): List<Amount> = call { register.cashOffers(order).map { it.toAmount() } }
 
@@ -417,6 +489,7 @@ private fun KernelLine.toLine() = TicketLine(
     discounts = discounts.map { it.toDiscount() },
     repriced = repriced?.let { "${it.unitPrice.text} (was ${it.rung.text}), ${reasonWords(it.reason).lowercase()}" },
     notes = notes,
+    sent = sent,
 )
 
 private fun KernelCheck.toCheck() = TicketCheck(
@@ -470,4 +543,26 @@ private fun words(modifier: KernelModifier): String {
     val times = if (modifier.quantity > 1u) " ×${modifier.quantity}" else ""
     val price = if (modifier.price.minor != 0L) " ${modifier.price.text}" else ""
     return "  ".repeat((modifier.depth.toInt() - 1).coerceAtLeast(0)) + prefix + modifier.name + times + price
+}
+
+/** How an order's mode reads on a kitchen screen. */
+internal fun modeWords(mode: Mode): String = when (mode) {
+    Mode.DINE_IN -> "Dine in"
+    Mode.TAKEOUT -> "To go"
+    Mode.PICKUP -> "Pickup"
+    Mode.DELIVERY -> "Delivery"
+    Mode.SHIP -> "Ship"
+    Mode.SERVICE -> "Service"
+    Mode.DRIVE_THRU -> "Drive-thru"
+    Mode.CURBSIDE -> "Curbside"
+}
+
+/** A modifier's prefix, as a kitchen screen colours it. */
+internal fun prefixOf(prefix: Prefix): ModifierPrefix = when (prefix) {
+    Prefix.PLAIN -> ModifierPrefix.PLAIN
+    Prefix.NO -> ModifierPrefix.NO
+    Prefix.EXTRA -> ModifierPrefix.EXTRA
+    Prefix.LIGHT -> ModifierPrefix.LIGHT
+    Prefix.SIDE -> ModifierPrefix.SIDE
+    Prefix.SUB -> ModifierPrefix.SUB
 }

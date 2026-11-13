@@ -120,6 +120,8 @@ pub struct TicketLine {
     pub repriced: Option<TicketRepriced>,
     /// Its notes, for the kitchen and the receipt.
     pub notes: Option<Note>,
+    /// Whether it was sent to the kitchen: it is voided, not taken off or changed (ADR-0034).
+    pub sent: bool,
 }
 
 /// The device's drawer session (ADR-0031): its float and how many no-sales; once closed, what

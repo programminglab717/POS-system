@@ -84,6 +84,10 @@ pub enum Mode {
     Ship,
     /// A service performed for the customer.
     Service,
+    /// Served at a drive-through window.
+    DriveThru,
+    /// Brought out to the customer's car.
+    Curbside,
 }
 
 impl From<Mode> for order::Mode {
@@ -95,6 +99,23 @@ impl From<Mode> for order::Mode {
             Mode::Delivery => order::Mode::Delivery,
             Mode::Ship => order::Mode::Ship,
             Mode::Service => order::Mode::Service,
+            Mode::DriveThru => order::Mode::DriveThru,
+            Mode::Curbside => order::Mode::Curbside,
+        }
+    }
+}
+
+impl From<order::Mode> for Mode {
+    fn from(mode: order::Mode) -> Mode {
+        match mode {
+            order::Mode::DineIn => Mode::DineIn,
+            order::Mode::Takeout => Mode::Takeout,
+            order::Mode::Pickup => Mode::Pickup,
+            order::Mode::Delivery => Mode::Delivery,
+            order::Mode::Ship => Mode::Ship,
+            order::Mode::Service => Mode::Service,
+            order::Mode::DriveThru => Mode::DriveThru,
+            order::Mode::Curbside => Mode::Curbside,
         }
     }
 }
@@ -180,6 +201,8 @@ pub struct TicketLine {
     pub repriced: Option<TicketRepriced>,
     /// Its notes, for the kitchen and the receipt.
     pub notes: Option<String>,
+    /// Whether it was sent to the kitchen: it is voided, not taken off or changed (ADR-0034).
+    pub sent: bool,
 }
 
 /// A line's price as staff set it, and as it was rung (ADR-0030).
@@ -283,6 +306,7 @@ impl From<&runtime::TicketLine> for TicketLine {
                 reason: repriced.reason.as_str().to_owned(),
             }),
             notes: line.notes.as_ref().map(|notes| notes.as_str().to_owned()),
+            sent: line.sent,
         }
     }
 }
@@ -748,6 +772,8 @@ pub enum JobKind {
     Receipt,
     /// The cash drawer's pulse.
     Drawer,
+    /// A kitchen ticket, or a void slip, at the kitchen printer the job names (ADR-0034).
+    Kitchen,
 }
 
 impl From<runtime::JobKind> for JobKind {
@@ -755,6 +781,7 @@ impl From<runtime::JobKind> for JobKind {
         match kind {
             runtime::JobKind::Receipt => JobKind::Receipt,
             runtime::JobKind::Drawer => JobKind::Drawer,
+            runtime::JobKind::Kitchen => JobKind::Kitchen,
         }
     }
 }
@@ -772,6 +799,11 @@ pub struct PrintJob {
     pub confirm: Confirm,
     /// The process ID the driver asks the printer to answer with: four bytes.
     pub process_id: Vec<u8>,
+    /// For a kitchen job, the printer it goes to: its host and port; none for the register's
+    /// own printer.
+    pub host: Option<String>,
+    /// The kitchen printer's port.
+    pub port: Option<u16>,
 }
 
 /// Where a job is.
@@ -1181,6 +1213,245 @@ impl From<&runtime::SoldOut> for SoldOut {
             kind,
             name: sold_out.name.to_string(),
             back_at: sold_out.until.map(|until| until.to_string()),
+        }
+    }
+}
+
+/// A kitchen station, as a screen's settings list them (ADR-0034).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct KitchenStation {
+    /// The station.
+    pub station: String,
+    /// Its name, such as "Grill".
+    pub name: String,
+    /// Whether it is an expo station: it gets every line of every order.
+    pub expo: bool,
+    /// Whether a screen shows it.
+    pub screen: bool,
+}
+
+/// How old a ticket is, by the kitchen's thresholds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum Aging {
+    /// Younger than late-ish.
+    Fresh,
+    /// Late-ish.
+    LateIsh,
+    /// Late.
+    Late,
+}
+
+impl From<runtime::Aging> for Aging {
+    fn from(aging: runtime::Aging) -> Aging {
+        match aging {
+            runtime::Aging::Fresh => Aging::Fresh,
+            runtime::Aging::LateIsh => Aging::LateIsh,
+            runtime::Aging::Late => Aging::Late,
+        }
+    }
+}
+
+/// Where a ticket no screen showed was sent instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum Rerouted {
+    /// Its station's printer.
+    StationPrinter,
+    /// The kitchen's fallback printer.
+    FallbackPrinter,
+    /// Nowhere: there was no printer.
+    Nowhere,
+}
+
+impl From<keel_domain::kitchen::RerouteTo> for Rerouted {
+    fn from(to: keel_domain::kitchen::RerouteTo) -> Rerouted {
+        match to {
+            keel_domain::kitchen::RerouteTo::StationPrinter => Rerouted::StationPrinter,
+            keel_domain::kitchen::RerouteTo::FallbackPrinter => Rerouted::FallbackPrinter,
+            keel_domain::kitchen::RerouteTo::Nowhere => Rerouted::Nowhere,
+        }
+    }
+}
+
+/// A modifier of an item on a kitchen screen.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ScreenModifier {
+    /// Its name.
+    pub name: String,
+    /// How it changes the item: "No" and "Extra" are shown apart.
+    pub prefix: Prefix,
+    /// How many times it is applied.
+    pub quantity: u8,
+    /// How deep it is: 1 for one chosen on the item.
+    pub depth: u8,
+}
+
+/// An item of a ticket on a kitchen screen.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ScreenItem {
+    /// The order's line it makes.
+    pub line: String,
+    /// What to make.
+    pub name: String,
+    /// How many, as "2 x", or a measure, as "0.250 kg".
+    pub quantity: String,
+    /// Its modifiers, each before those under it.
+    pub modifiers: Vec<ScreenModifier>,
+    /// The line's notes.
+    pub notes: Option<String>,
+    /// The allergens it contains, by name, such as "milk".
+    pub allergens: Vec<String>,
+    /// For a component, the line's name.
+    pub component_of: Option<String>,
+    /// Whether its line, or its order, was voided since.
+    pub void: bool,
+    /// On an expo station, whether every station making it has bumped it.
+    pub ready: Option<bool>,
+}
+
+/// A ticket on a kitchen screen.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ScreenTicket {
+    /// The ticket.
+    pub ticket: String,
+    /// Its station.
+    pub station: String,
+    /// Its station's name.
+    pub station_name: String,
+    /// Its order.
+    pub order: String,
+    /// Its order's code, as its receipt prints it.
+    pub code: String,
+    /// How the order reaches its customer.
+    pub mode: Mode,
+    /// When it was sent, in the location's time, as `2026-10-02 09:00`.
+    pub sent_at: String,
+    /// How long ago, in whole seconds.
+    pub age_seconds: u64,
+    /// How old that is.
+    pub aging: Aging,
+    /// What to make.
+    pub items: Vec<ScreenItem>,
+    /// Where it was rerouted, if no screen showed it in time.
+    pub rerouted: Option<Rerouted>,
+}
+
+/// A station's day so far.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct StationTimes {
+    /// The station.
+    pub station: String,
+    /// Its name.
+    pub name: String,
+    /// How many tickets it bumped today.
+    pub bumped: u32,
+    /// Their average time from sent to bumped, in whole seconds.
+    pub average_seconds: Option<u64>,
+}
+
+/// What a kitchen screen shows (ADR-0034).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct KitchenScreen {
+    /// Its stations' tickets not yet bumped, the earliest sent first.
+    pub tickets: Vec<ScreenTicket>,
+    /// The ticket bumped last today, which Recall brings back.
+    pub last_bumped: Option<String>,
+    /// Each station's day so far.
+    pub times: Vec<StationTimes>,
+}
+
+impl From<&runtime::KitchenScreen> for KitchenScreen {
+    fn from(screen: &runtime::KitchenScreen) -> KitchenScreen {
+        KitchenScreen {
+            tickets: screen.tickets.iter().map(ScreenTicket::from).collect(),
+            last_bumped: screen.last_bumped.map(|ticket| ticket.to_string()),
+            times: screen
+                .times
+                .iter()
+                .map(|times| StationTimes {
+                    station: times.station.to_string(),
+                    name: times.name.to_string(),
+                    bumped: times.bumped,
+                    average_seconds: times.average,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&runtime::ScreenTicket> for ScreenTicket {
+    fn from(ticket: &runtime::ScreenTicket) -> ScreenTicket {
+        ScreenTicket {
+            ticket: ticket.ticket.to_string(),
+            station: ticket.station.to_string(),
+            station_name: ticket.station_name.to_string(),
+            order: ticket.order.to_string(),
+            code: ticket.code.clone(),
+            mode: ticket.mode.into(),
+            sent_at: ticket.sent_at.to_string(),
+            age_seconds: ticket.age,
+            aging: ticket.aging.into(),
+            items: ticket
+                .items
+                .iter()
+                .map(|shown| ScreenItem {
+                    line: shown.item.line.to_string(),
+                    name: shown.item.name.to_string(),
+                    quantity: runtime::how_many(shown.item.quantity),
+                    modifiers: shown
+                        .item
+                        .modifiers
+                        .iter()
+                        .map(|modifier| ScreenModifier {
+                            name: modifier.name.to_string(),
+                            prefix: modifier.prefix.into(),
+                            quantity: modifier.quantity.get(),
+                            depth: modifier.depth.get(),
+                        })
+                        .collect(),
+                    notes: shown.item.notes.as_ref().map(|notes| notes.as_str().to_owned()),
+                    allergens: shown
+                        .item
+                        .allergens
+                        .iter()
+                        .map(|allergen| allergen.name().to_owned())
+                        .collect(),
+                    component_of: shown
+                        .item
+                        .component_of
+                        .as_ref()
+                        .map(|name| name.as_str().to_owned()),
+                    void: shown.void,
+                    ready: shown.ready,
+                })
+                .collect(),
+            rerouted: ticket.rerouted.map(Rerouted::from),
+        }
+    }
+}
+
+/// A ticket no screen showed in time, as staff are told.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct KitchenAlert {
+    /// The ticket.
+    pub ticket: String,
+    /// Its station's name.
+    pub station: String,
+    /// Its order's code.
+    pub code: String,
+    /// Where it was sent instead.
+    pub to: Rerouted,
+    /// When, in the location's time.
+    pub at: String,
+}
+
+impl From<&runtime::KitchenAlert> for KitchenAlert {
+    fn from(alert: &runtime::KitchenAlert) -> KitchenAlert {
+        KitchenAlert {
+            ticket: alert.ticket.to_string(),
+            station: alert.station.to_string(),
+            code: alert.code.clone(),
+            to: alert.to.into(),
+            at: alert.at.to_string(),
         }
     }
 }

@@ -5,6 +5,8 @@
 use core::time::Duration;
 
 use keel_doc::{Confirm, Doc};
+use keel_domain::profile::Printer;
+use keel_events::cbor::{Map, Value};
 use keel_store::{Effect, EffectKind, EffectState, Queued};
 use keel_types::{Id, Timestamp};
 
@@ -18,6 +20,8 @@ pub enum Job {}
 pub const RECEIPT: &str = "print.receipt";
 /// The kind of a drawer kick's job.
 pub const DRAWER: &str = "print.drawer";
+/// The kind of a kitchen ticket's job, or a void slip's, at a kitchen printer (ADR-0034).
+pub const KITCHEN: &str = "print.kitchen";
 
 /// What a job prints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -26,6 +30,8 @@ pub enum JobKind {
     Receipt,
     /// The cash drawer's pulse.
     Drawer,
+    /// A kitchen ticket, or a void slip, at the kitchen printer it names (ADR-0034).
+    Kitchen,
 }
 
 impl JobKind {
@@ -33,6 +39,7 @@ impl JobKind {
         match self {
             JobKind::Receipt => RECEIPT,
             JobKind::Drawer => DRAWER,
+            JobKind::Kitchen => KITCHEN,
         }
     }
 
@@ -40,6 +47,7 @@ impl JobKind {
         match kind.as_str() {
             RECEIPT => Some(JobKind::Receipt),
             DRAWER => Some(JobKind::Drawer),
+            KITCHEN => Some(JobKind::Kitchen),
             _ => None,
         }
     }
@@ -82,6 +90,8 @@ pub struct PrintJob {
     pub confirm: Confirm,
     /// The process ID the driver asks the printer to answer with.
     pub process_id: [u8; 4],
+    /// The printer it goes to, for a kitchen job; `None` for the register's own.
+    pub to: Option<Printer>,
 }
 
 /// What staff decide about an unconfirmed job.
@@ -108,6 +118,61 @@ pub(crate) fn effect(
         payload: doc.encode(),
         cause,
     })
+}
+
+/// The effect of a new kitchen job, `doc` printed at `printer`: its payload `{1: document, 2:
+/// host, 3: port}`, in canonical CBOR.
+pub(crate) fn kitchen_effect(
+    job: Id<Job>,
+    doc: &Doc,
+    printer: &Printer,
+    cause: Option<Id<keel_events::envelope::Event>>,
+) -> Result<Effect, RuntimeError> {
+    let payload = Value::Map(
+        Map::from_entries(vec![
+            (Value::Unsigned(1), Value::Bytes(doc.encode())),
+            (Value::Unsigned(2), Value::from(printer.host.as_str())),
+            (Value::Unsigned(3), Value::Unsigned(u64::from(printer.port.get()))),
+        ])
+        .map_err(|_| RuntimeError::Time)?,
+    );
+    Ok(Effect {
+        key: job.to_bytes().to_vec(),
+        kind: EffectKind::new(KITCHEN)?,
+        payload: payload.encode(),
+        cause,
+    })
+}
+
+/// A queued job's document, and the printer it names: none for the register's own. A kitchen
+/// job's payload is `{1: document, 2: host, 3: port}`; another's, the document.
+pub(crate) fn document(queued: &Queued) -> Result<(Doc, Option<Printer>), RuntimeError> {
+    if JobKind::of(&queued.effect.kind) != Some(JobKind::Kitchen) {
+        return Ok((Doc::decode(&queued.effect.payload)?, None));
+    }
+    let unreadable = || RuntimeError::Time;
+    let value = keel_events::cbor::decode(&queued.effect.payload).map_err(|_| unreadable())?;
+    let map = value.as_map().ok_or_else(unreadable)?;
+    let get = |key: u64| map.get(&Value::Unsigned(key)).ok_or_else(unreadable);
+    let doc = Doc::decode(get(1)?.as_bytes().ok_or_else(unreadable)?)?;
+    let host = get(2)?.as_text().ok_or_else(unreadable)?.to_owned();
+    let port = get(3)?
+        .as_u64()
+        .and_then(|port| u16::try_from(port).ok())
+        .and_then(core::num::NonZeroU16::new)
+        .ok_or_else(unreadable)?;
+    Ok((doc, Some(Printer { host, port })))
+}
+
+/// A kitchen job's effect, `doc` in place of its document, for the same printer.
+pub(crate) fn again(job: Id<Job>, queued: &Queued, doc: &Doc) -> Result<Effect, RuntimeError> {
+    match (JobKind::of(&queued.effect.kind), document(queued)?) {
+        (Some(JobKind::Kitchen), (_, Some(printer))) => {
+            kitchen_effect(job, doc, &printer, queued.effect.cause)
+        }
+        (Some(kind), _) => effect(job, kind, doc, queued.effect.cause),
+        (None, _) => Err(RuntimeError::UnknownJob(job)),
+    }
 }
 
 /// The job a queued effect is, if it is one.

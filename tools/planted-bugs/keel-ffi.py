@@ -317,4 +317,28 @@ BUGS = [
         "            | RuntimeError::SoldOut(_)\n",
         "",
     ),
+    (
+        "ffi: a sent line shows not sent",
+        "src/records.rs",
+        "            sent: line.sent,",
+        "            sent: false,",
+    ),
+    (
+        "ffi: a kitchen job loses its printer",
+        "src/register.rs",
+        "            host: job.to.as_ref().map(|printer| printer.host.clone()),",
+        "            host: None,",
+    ),
+    (
+        "ffi: a voided item shows on",
+        "src/records.rs",
+        "                    void: shown.void,",
+        "                    void: false,",
+    ),
+    (
+        "ffi: a kitchen refusal is a device error",
+        "src/error.rs",
+        "            | RuntimeError::Kitchen(_) => KeelError::Refused { reason },",
+        "            => KeelError::Refused { reason },",
+    ),
 ]

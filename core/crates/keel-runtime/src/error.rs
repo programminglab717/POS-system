@@ -86,6 +86,9 @@ pub enum RuntimeError {
     /// An item, or a modifier chosen, is sold out (ADR-0033).
     #[error("{0} is sold out")]
     SoldOut(String),
+    /// A kitchen ticket refused the change (ADR-0034).
+    #[error(transparent)]
+    Kitchen(#[from] keel_domain::kitchen::KitchenError),
     /// An item's availability refused the change (ADR-0033).
     #[error(transparent)]
     Availability(#[from] keel_domain::availability::AvailabilityError),

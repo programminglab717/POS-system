@@ -29,6 +29,35 @@ enum class Screen {
 
     /** A return: a paid order's lines, what of each to return, and its refund (ADR-0032). */
     RETURN,
+
+    /** The kitchen screen: a station's tickets, to bump (ADR-0034). No one signs in. */
+    KITCHEN,
+}
+
+/** Where a kitchen screen's stations are kept, on the device: which it shows is its own setting. */
+interface KitchenSettings {
+    /** The stations kept, if some are. */
+    fun load(): Set<String>?
+
+    /** Keeps [stations]. */
+    fun save(stations: Set<String>)
+}
+
+/**
+ * The kitchen screen (ADR-0034): the stations it shows, what it shows of them, the ticket
+ * selected, as a bump bar's keys move it, and the tickets being bumped, so a second press
+ * bumps nothing more.
+ */
+data class KdsState(
+    val stations: Set<String>,
+    val view: KitchenView = KitchenView(),
+    val selected: Int = 0,
+    /** Whether the stations are being chosen. */
+    val choosing: Boolean = false,
+    val bumping: Set<String> = emptySet(),
+) {
+    /** The ticket selected, if any is shown. */
+    val selectedTicket: KdsTicket? get() = view.tickets.getOrNull(selected)
 }
 
 /**
@@ -190,6 +219,14 @@ data class RegisterState(
     val marking: Boolean = false,
     /** The 86 sheet open for a button, if any. */
     val mark: MarkSheet? = null,
+    /** The kitchen's stations, once read: a register with some sends lines to the kitchen. */
+    val stations: List<KitchenStation> = emptyList(),
+    /** The line sent to the kitchen whose void's reason is being chosen (ADR-0034). */
+    val voiding: TicketLine? = null,
+    /** The tickets no screen showed in time, as last read: every device tells its staff. */
+    val alerts: List<KitchenAlert> = emptyList(),
+    /** The kitchen screen, while the device shows it. */
+    val kds: KdsState? = null,
     /** The last refusal or failure, until the next intent. */
     val error: String? = null,
     /** This register's device, once the till has said, to tell its orders from other registers'. */
@@ -207,6 +244,7 @@ class RegisterModel(
     private val scope: CoroutineScope,
     private val worker: CoroutineDispatcher,
     private val settings: PrinterSettings? = null,
+    private val kitchenSettings: KitchenSettings? = null,
 ) {
     private val mutable = MutableStateFlow(RegisterState())
 
@@ -221,7 +259,10 @@ class RegisterModel(
         val team = till.team()
         val printer = settings?.load()
         val device = till.deviceId().ifEmpty { null }
-        mutable.update { it.copy(loading = false, team = team, printer = printer, profileVersion = version, device = device) }
+        val stations = till.kitchenStations()
+        mutable.update {
+            it.copy(loading = false, team = team, printer = printer, profileVersion = version, device = device, stations = stations)
+        }
     }
 
     /** The version of the profile the till rings from, or null if it can't say. */
@@ -500,7 +541,7 @@ class RegisterModel(
         mutable.update {
             RegisterState(
                 loading = false, team = it.team, printer = it.printer, ticket = it.ticket, sync = it.sync,
-                profileVersion = it.profileVersion, device = it.device,
+                profileVersion = it.profileVersion, device = it.device, stations = it.stations,
             )
         }
     }
@@ -556,25 +597,146 @@ class RegisterModel(
         mutable.update { it.copy(sheet = null) }
     }
 
-    /** One more of [line]. */
+    /** One more of [line]; a line sent to the kitchen isn't changed: another is rung. */
     fun more(line: TicketLine) = perform {
         val (order, now) = current(line) ?: return@perform
+        if (now.sent) throw TillException("${now.name} was sent to the kitchen: ring another.")
         val count = now.count ?: return@perform
         show(till.changeQuantity(order, now.line, count + 1))
     }
 
-    /** One fewer of [line]: the last one takes the line off. */
+    /** One fewer of [line]: the last one takes the line off; one sent is voided, for a reason. */
     fun fewer(line: TicketLine) = perform {
         val (order, now) = current(line) ?: return@perform
+        if (now.sent) return@perform beginVoid(now)
         val count = now.count ?: return@perform
         show(if (count > 1) till.changeQuantity(order, now.line, count - 1) else till.removeLine(order, now.line))
     }
 
-    /** Takes [line] off the order. */
+    /** Takes [line] off the order; one sent to the kitchen is voided, for a reason (ADR-0034). */
     fun remove(line: TicketLine) = perform {
         val (order, now) = current(line) ?: return@perform
+        if (now.sent) return@perform beginVoid(now)
         show(till.removeLine(order, now.line))
     }
+
+    private fun beginVoid(line: TicketLine) = mutable.update { it.copy(voiding = line, error = null) }
+
+    /**
+     * Voids the line asked about, for [reason]: closed at the tap, so a second tap voids nothing
+     * more; tried again as it was once a manager approves.
+     */
+    fun voidLine(reason: String) {
+        val line = current.voiding ?: return
+        val order = current.ticket?.order ?: return
+        mutable.update { it.copy(voiding = null) }
+        perform { show(till.voidLine(order, line.line, reason)) }
+    }
+
+    /** No void: the line stays. */
+    fun closeVoid() = mutable.update { it.copy(voiding = null) }
+
+    /** Sends the order's pending lines to the kitchen (ADR-0034). */
+    fun send() = perform {
+        val ticket = current.ticket ?: return@perform
+        show(till.send(ticket.order))
+    }
+
+    /**
+     * Shows the kitchen screen (ADR-0034): the stations kept on the device, or every one, and
+     * their tickets. No one signs in; the register's own sign-in waits.
+     */
+    fun openKitchen() = perform {
+        val stations = till.kitchenStations()
+        if (stations.isEmpty()) throw TillException("This location has no kitchen.")
+        val known = stations.map { it.station }.toSet()
+        val kept = kitchenSettings?.load()?.intersect(known)?.takeIf { it.isNotEmpty() } ?: known
+        mutable.update { it.copy(screen = Screen.KITCHEN, stations = stations, kds = KdsState(kept)) }
+        readKitchen()
+    }
+
+    /** Reads the kitchen screen again; the shell calls it every second, as tickets age. */
+    fun refreshKitchen() = scope.launch {
+        if (current.kds == null) return@launch
+        try {
+            withContext(worker) { readKitchen() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Read again at the next second.
+        }
+    }
+
+    /** Reads what the screen's stations show, keeping the selection on the ticket it was on. */
+    private fun readKitchen() {
+        val kds = current.kds ?: return
+        val view = till.kitchenScreen(kds.stations.toList())
+        mutable.update { state ->
+            val now = state.kds ?: return@update state
+            val was = now.selectedTicket?.ticket
+            val at = view.tickets.indexOfFirst { it.ticket == was }.takeIf { it >= 0 }
+                ?: now.selected.coerceIn(0, (view.tickets.size - 1).coerceAtLeast(0))
+            state.copy(kds = now.copy(view = view, selected = at, bumping = now.bumping.filter { id -> view.tickets.any { it.ticket == id } }.toSet()))
+        }
+    }
+
+    /** Bumps [ticket] once, however many times it is tapped or its key pressed. */
+    fun bump(ticket: KdsTicket) {
+        val kds = current.kds ?: return
+        if (ticket.ticket in kds.bumping) return
+        mutable.update { state -> state.copy(kds = state.kds?.copy(bumping = state.kds.bumping + ticket.ticket), error = null) }
+        perform {
+            try {
+                till.bump(ticket.ticket)
+            } finally {
+                mutable.update { state -> state.copy(kds = state.kds?.copy(bumping = state.kds.bumping - ticket.ticket)) }
+            }
+            readKitchen()
+        }
+    }
+
+    /** Bumps the ticket selected: a bump bar's bump key. */
+    fun bumpSelected() {
+        val ticket = current.kds?.selectedTicket ?: return
+        bump(ticket)
+    }
+
+    /** Moves the selection [by] tickets: a bump bar's arrow keys. */
+    fun select(by: Int) = mutable.update { state ->
+        val kds = state.kds ?: return@update state
+        val last = (kds.view.tickets.size - 1).coerceAtLeast(0)
+        state.copy(kds = kds.copy(selected = (kds.selected + by).coerceIn(0, last)))
+    }
+
+    /** Selects [ticket]: a tap. */
+    fun select(ticket: KdsTicket) = mutable.update { state ->
+        val kds = state.kds ?: return@update state
+        val at = kds.view.tickets.indexOfFirst { it.ticket == ticket.ticket }
+        if (at < 0) state else state.copy(kds = kds.copy(selected = at))
+    }
+
+    /** Brings back the ticket bumped last: a bump bar's recall key. */
+    fun recallLast() = perform {
+        val last = current.kds?.view?.lastBumped ?: throw TillException("Nothing was bumped today.")
+        till.recallTicket(last)
+        readKitchen()
+    }
+
+    /** Opens or closes the choice of stations. */
+    fun chooseStations() = mutable.update { state -> state.copy(kds = state.kds?.copy(choosing = !state.kds.choosing)) }
+
+    /** Shows [station] on the screen, or stops: at least one is always shown. */
+    fun toggleStation(station: String) = perform {
+        val kds = current.kds ?: return@perform
+        val chosen = if (station in kds.stations) kds.stations - station else kds.stations + station
+        if (chosen.isEmpty()) return@perform
+        kitchenSettings?.save(chosen)
+        mutable.update { state -> state.copy(kds = state.kds?.copy(stations = chosen, selected = 0)) }
+        readKitchen()
+    }
+
+    /** Leaves the kitchen screen, for signing in. */
+    fun closeKitchen() = mutable.update { it.copy(screen = Screen.SIGN_IN, kds = null, error = null) }
 
     /**
      * [line] as the order being rung has it now, on the worker, after every intent queued before:
@@ -1029,6 +1191,17 @@ class RegisterModel(
         // that took a publication as it joined, after its cashier signed in, kept the old menu.
         val version = withContext(worker) { version() }
         if (version != null && version != current.profileVersion) catalogChanged(version)
+        // The tickets no screen showed in time, which every device tells its staff (ADR-0034).
+        if (current.stations.isNotEmpty()) {
+            val alerts = try {
+                withContext(worker) { till.kitchenAlerts() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                current.alerts
+            }
+            mutable.update { it.copy(alerts = alerts) }
+        }
         // What is sold out, read again whenever it moves: an 86 on another register, or one whose
         // time has passed, which moves no version (ADR-0033).
         if (current.member == null) return@launch

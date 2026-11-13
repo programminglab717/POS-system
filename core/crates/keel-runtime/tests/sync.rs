@@ -532,3 +532,47 @@ fn an_86_reaches_the_other_device_within_10_seconds() {
     assert!(location.hub.sold_out().unwrap().is_empty());
     assert!(location.register.sold_out().unwrap().is_empty());
 }
+
+/// A ticket sent on the register reaches a screen on another device as soon as the register
+/// pushes it, and the screen's showing reaches the register, so it doesn't reroute what the
+/// screen showed (ADR-0034, decisions 4 and 5; offline and sync §9: fired to visible on a KDS
+/// through the hub). A register that can't hear the hub reroutes, 10 s on.
+#[test]
+fn a_ticket_reaches_a_screen_through_the_hub_and_its_showing_stops_the_reroute() {
+    let (hub_dir, register_dir) = (dir("kds-hub"), dir("kds-register"));
+    let mut location = settled(open(&hub_dir, HUB, 1), open(&register_dir, REGISTER, 2));
+    let (bar, expo) = (id(0x701), id(0x703));
+    let order = location.register.start_order(Mode::Takeout).unwrap().order;
+    location.register.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    location.register.send(order).unwrap();
+    // Pushed at once, as a sale is: the screen has it with no time passing.
+    let frames = location.register.take_frames().unwrap();
+    location.send(REGISTER, frames);
+    location.deliver();
+    // The screen shows the bar and expo, which the espresso goes to.
+    let screen = location.hub.kitchen_screen(&[bar, expo]).unwrap();
+    assert_eq!(screen.tickets.len(), 2, "the screen has the tickets");
+    let frames = location.hub.take_frames().unwrap();
+    location.send(HUB, frames);
+    location.deliver();
+    // 10 s on, the register reroutes nothing: it heard the screen show it.
+    location.run(Duration::from_millis(250), 44);
+    location.register.next_print_job().unwrap();
+    assert!(location.register.kitchen_alerts().unwrap().is_empty());
+    // An order the register sends while it can't hear the hub: rerouted, 10 s on; the screen
+    // hears of it, and of the reroute, once the register hears the hub again.
+    let order = location.register.start_order(Mode::Takeout).unwrap().order;
+    location.register.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    location.register.send(order).unwrap();
+    location.register.clock().advance(Duration::from_secs(10)).unwrap();
+    location.register.next_print_job().unwrap();
+    let alerts = location.register.kitchen_alerts().unwrap();
+    assert_eq!(alerts.len(), 2, "the bar's and expo's: {alerts:?}");
+    let frames = location.register.take_frames().unwrap();
+    location.send(REGISTER, frames);
+    location.deliver();
+    assert_eq!(location.hub.kitchen_alerts().unwrap().len(), 2);
+    let screen = location.hub.kitchen_screen(&[bar]).unwrap();
+    assert_eq!(screen.tickets.len(), 2);
+    assert!(screen.tickets[1].rerouted.is_some());
+}

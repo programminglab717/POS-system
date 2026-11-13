@@ -67,6 +67,13 @@ class OpeningTill(open: () -> Till) : Till {
     override fun putBack(item: String, modifier: Boolean) = till.putBack(item, modifier)
     override fun soldOut() = till.soldOut()
     override fun availabilityVersion() = openedTill?.availabilityVersion()
+    override fun send(order: String) = till.send(order)
+    override fun voidLine(order: String, line: String, reason: String) = till.voidLine(order, line, reason)
+    override fun kitchenStations() = till.kitchenStations()
+    override fun kitchenScreen(stations: List<String>) = till.kitchenScreen(stations)
+    override fun bump(ticket: String) = till.bump(ticket)
+    override fun recallTicket(ticket: String) = till.recallTicket(ticket)
+    override fun kitchenAlerts() = openedTill?.kitchenAlerts().orEmpty()
     override fun syncState() = openedTill?.syncState()
 
     override fun profileVersion() = openedTill?.profileVersion()

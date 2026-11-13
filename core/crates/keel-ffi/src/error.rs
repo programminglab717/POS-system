@@ -190,7 +190,8 @@ impl From<RuntimeError> for KeelError {
             | RuntimeError::OrderChanged
             | RuntimeError::Refund(_)
             | RuntimeError::SoldOut(_)
-            | RuntimeError::Availability(_) => KeelError::Refused { reason },
+            | RuntimeError::Availability(_)
+            | RuntimeError::Kitchen(_) => KeelError::Refused { reason },
             RuntimeError::TenderShort { due } => KeelError::TenderShort {
                 due: Amount {
                     minor: due.minor(),
