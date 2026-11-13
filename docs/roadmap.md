@@ -288,7 +288,8 @@ designed in an ADR of its own when it begins, built in slices, and reviewed:
    X/Z reports from local data (N-01, N-02, O-02). *Status: designed in
    [ADR-0031](./adr/0031-cash-drawers-and-day-reports.md); done 2026-11-12, reviewed; its
    emulator tests wait for CI's minutes.*
-4. **Returns and refunds**, linked to the original lines (B-09 basic, I-08).
+4. **Returns and refunds**, linked to the original lines (B-09 basic, I-08). *Status: designed in
+   [ADR-0032](./adr/0032-returns-and-refunds.md).*
 5. **Availability**: global 86 in-store, within 10 s (G-06).
 6. **The kitchen**: routing to stations, kitchen tickets and a KDS, ticket aging, fallbacks
    (D-01…D-03, D-06, D-07, D-11).

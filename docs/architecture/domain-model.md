@@ -434,7 +434,7 @@ can be paid before it is prepared, and a dine-in order is prepared before it is 
 | Appointment checkout | A `Booking` (§11) links to an order. The deposit taken at booking is applied as a payment. |
 | Rental | Order linked to an **outbound custody job** (§11.7): serialized unit, rate ladder, hold or deposit, return inspection, late and damage fees. |
 | Multi-date delivery (furniture, catering, B2B) | Lines are grouped into **fulfillment groups**, each with its own date, slot or ship method. Partial fulfillment and balance-due alerts are supported. |
-| Return / exchange | A **new order** with negative lines referencing the original `line_id`s (refunds use the originally allocated net price, tax and discount). An exchange nets return and sale lines in one order. Receipt-less returns are governed by policy (§6.4). |
+| Return / exchange | Lines returned **on the original order**, each refunded its share of what its checks' snapshots charged it, its net after discounts and its tax, through a refund of its own ([ADR-0032](../adr/0032-returns-and-refunds.md); this table first sketched a new order with negative lines). An exchange is a return and a sale in one visit. Receipt-less returns are governed by policy (§6.4). |
 | Catering / event | `scheduled_for` in the future, deposits, a delivery or setup fulfillment, and optionally BEO-style (banquet event order) notes. |
 | B2B / house account | A customer with a house account. Tender is `house_account` with net terms. Invoice document issued. Tax-exempt certificate referenced. |
 

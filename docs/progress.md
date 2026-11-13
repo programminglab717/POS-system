@@ -89,8 +89,15 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
-The MVP's step 4, returns and refunds, linked to the original lines (B-09 basic, I-08): to be
-designed in an ADR, then built in slices.
+The MVP's step 4, returns and refunds, linked to the original lines (B-09 basic, I-08)
+([ADR-0032](./adr/0032-returns-and-refunds.md), proposed), is built in three slices, each
+verified as it lands, then reviewed together:
+
+1. **The domain**: `order.lines_returned`, the refund aggregate and `drawer.cash_refunded`, their
+   folds and commands. Next.
+2. **The register**: the projections, the runtime's lookup, return and refund, the refund
+   receipt, the reports, the bindings.
+3. **The shell**: the Android register's returns.
 
 Waiting on CI's minutes: the Android app's instrumented tests, step 3's drawer test among them,
 and the three of step 2 the scrolling ticket pane should mend.
