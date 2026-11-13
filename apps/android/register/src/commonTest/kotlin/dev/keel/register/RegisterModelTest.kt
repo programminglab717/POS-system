@@ -891,10 +891,10 @@ class RegisterModelTest {
         // Not found by a code no receipt has; found by the end of its own.
         model.showOrders()
         testScheduler.advanceUntilIdle()
-        model.findReturn("zz")
+        model.findReturn("zzzzzz")
         testScheduler.advanceUntilIdle()
         assertEquals("No paid order has that code.", model.state.value.error)
-        model.findReturn("ER1")
+        model.findReturn("ORDER1")
         testScheduler.advanceUntilIdle()
         assertEquals(Screen.RETURN, model.state.value.screen)
         val line = model.state.value.returning!!.returnable.lines.single()
@@ -906,6 +906,10 @@ class RegisterModelTest {
         model.pickMore(line)
         model.pickMore(line)
         assertEquals(mapOf(line.line to 1L), model.state.value.returning?.picks)
+        // No reason chosen: it is asked for. Found in review: every return was "damaged".
+        model.confirmReturn()
+        testScheduler.advanceUntilIdle()
+        assertEquals("Choose why it is returned.", model.state.value.error)
         model.returnReason("wrong_item")
         model.confirmReturn()
         testScheduler.advanceUntilIdle()
@@ -924,5 +928,100 @@ class RegisterModelTest {
         testScheduler.advanceUntilIdle()
         assertEquals(Screen.ORDERS, model.state.value.screen)
         assertNull(model.state.value.returning)
+    }
+
+    /** Two teas paid, and the model on the return of the order. */
+    private suspend fun kotlinx.coroutines.test.TestScope.returning(till: FakeTill, model: RegisterModel = signedIn(till)): RegisterModel {
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.more(model.state.value.ticket!!.lines.single())
+        testScheduler.advanceUntilIdle()
+        model.openTender()
+        testScheduler.advanceUntilIdle()
+        model.pay(model.state.value.tender!!.offers[0])
+        testScheduler.advanceUntilIdle()
+        model.findReturn("order1")
+        testScheduler.advanceUntilIdle()
+        return model
+    }
+
+    /** A second tap while the refund is made refunds nothing more. Found in review: it did. */
+    @Test
+    fun a_double_tap_refunds_once() = runTest {
+        val till = FakeTill()
+        val model = returning(till)
+        val line = model.state.value.returning!!.returnable.lines.single()
+        model.pickMore(line)
+        model.returnReason("damaged")
+        model.confirmReturn()
+        model.confirmReturn()
+        testScheduler.advanceUntilIdle()
+        assertEquals("$3.00", model.state.value.refund?.amount)
+        assertEquals(1, till.printJobs().count { it.job.startsWith("refund:") })
+        assertEquals(1L, model.state.value.returning?.returnable?.lines?.single()?.leftCount)
+    }
+
+    /** A line sold by measure is picked whole. */
+    @Test
+    fun a_line_sold_by_measure_is_returned_whole() = runTest {
+        val till = FakeTill().apply { measured = setOf("tea") }
+        val model = returning(till)
+        val line = model.state.value.returning!!.returnable.lines.single()
+        assertNull(line.leftCount)
+        model.pickMore(line)
+        assertEquals(mapOf<String, Long?>(line.line to null), model.state.value.returning?.picks)
+        model.returnReason("damaged")
+        model.confirmReturn()
+        testScheduler.advanceUntilIdle()
+        assertEquals("$6.00", model.state.value.refund?.amount)
+        assertEquals(false, model.state.value.returning?.returnable?.lines?.single()?.anyLeft)
+    }
+
+    /** An order a card paid isn't refunded in cash: nothing is picked. */
+    @Test
+    fun an_order_a_card_paid_isnt_refunded_in_cash() = runTest {
+        val till = FakeTill().apply { cardPaid += "order1" }
+        val model = returning(till)
+        val sheet = model.state.value.returning!!
+        assertEquals(false, sheet.returnable.cashOnly)
+        model.pickMore(sheet.returnable.lines.single())
+        assertEquals(emptyMap(), model.state.value.returning?.picks)
+    }
+
+    /**
+     * A code of six characters finds an order, and one that two orders end with lists both to
+     * choose from. Found in review: a shorter one opened whatever order it ended.
+     */
+    @Test
+    fun a_receipts_code_finds_its_order_or_asks_which() = runTest {
+        val till = FakeTill()
+        val model = signedIn(object : Till by till {
+            override fun findOrders(code: String) = if (code == "TWICE1") listOf("order1", "order2") else till.findOrders(code)
+        })
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.openTender()
+        testScheduler.advanceUntilIdle()
+        model.pay(model.state.value.tender!!.offers[0])
+        testScheduler.advanceUntilIdle()
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.openTender()
+        testScheduler.advanceUntilIdle()
+        model.pay(model.state.value.tender!!.offers[0])
+        testScheduler.advanceUntilIdle()
+        model.showOrders()
+        testScheduler.advanceUntilIdle()
+        model.findReturn("rder1")
+        testScheduler.advanceUntilIdle()
+        assertEquals("A receipt's code is six characters.", model.state.value.error)
+        model.findReturn("TWICE1")
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("order1", "order2"), model.state.value.matches?.map { it.order })
+        assertEquals(Screen.ORDERS, model.state.value.screen)
+        model.beginReturn(model.state.value.matches!![1])
+        testScheduler.advanceUntilIdle()
+        assertEquals("order2", model.state.value.returning?.returnable?.order)
+        assertNull(model.state.value.matches)
     }
 }

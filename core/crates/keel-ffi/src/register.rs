@@ -587,8 +587,17 @@ impl Register {
             let mut quantities = Vec::with_capacity(asked.len());
             for (line, count) in &asked {
                 let known = returnable.lines.iter().find(|known| known.line == *line);
+                // A count is of a line sold by the each; all that is left, of one with something
+                // left. Found in review: a count of a line sold by measure returned that many
+                // kilograms, and one with nothing left was called a quantity of nothing.
                 let quantity = match (known, count) {
-                    (Some(known), None) => known.left,
+                    (Some(known), None) if known.left.is_positive() => known.left,
+                    (Some(_), None) => {
+                        return Err(keel_domain::order::CommandError::ReturnBeyond(*line).into());
+                    }
+                    (Some(known), Some(_)) if known.left_count.is_none() => {
+                        return Err(keel_domain::order::CommandError::WrongUnit(*line).into());
+                    }
                     (Some(known), Some(count)) => {
                         keel_types::Quantity::from_whole(i64::from(*count), known.quantity.unit())?
                     }

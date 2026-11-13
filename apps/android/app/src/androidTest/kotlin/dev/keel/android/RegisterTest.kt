@@ -1,5 +1,6 @@
 package dev.keel.android
 
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -196,8 +197,9 @@ class RegisterTest {
     }
 
     /**
-     * A manager sells an espresso in the exact cash, $3.54, finds it among today's orders, and
-     * returns it, refunded what was paid (ADR-0032).
+     * A manager sells an espresso in the exact cash, $3.54, finds it by its receipt's code, and
+     * returns it, refunded what was paid, nothing left of it after (ADR-0032). Found in review: the
+     * test checked only the amount, which another test's espresso would have refunded too.
      */
     @Test
     fun a_paid_espresso_is_returned_and_refunded() {
@@ -209,12 +211,19 @@ class RegisterTest {
         compose.tap("offer:0")
         compose.waitFor("change")
         compose.tap("orders")
-        compose.tapStarting("return:0")
+        // The latest paid order is first: this one. Its code is its identifier's last six.
+        compose.waitUntil(10_000) { compose.onAllNodes(tagStarting("return:0")).fetchSemanticsNodes().isNotEmpty() }
+        val tag = compose.onAllNodes(tagStarting("return:0")).fetchSemanticsNodes()[0].config[SemanticsProperties.TestTag]
+        val order = tag.removePrefix("return:")
+        compose.onNodeWithTag("return:code").performTextReplacement(order.takeLast(6).uppercase())
+        compose.tap("return:find")
         compose.tapStarting("return-more:")
         compose.tap("return-reason:damaged")
         compose.tap("return:refund")
         compose.waitUntil(10_000) { compose.shown("return:handed").contains("$3.54") }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("0 left", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         compose.tap("back")
+        compose.waitFor("return:code")
         compose.tap("back")
         compose.tap("sign-out")
     }

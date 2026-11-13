@@ -987,14 +987,26 @@ BUGS = [
     (
         "return: a refund is gated for no amount",
         "src/returns.rs",
-        "                Request { action: Action::RefundIssue, amount: Some(total), percent: None };",
-        "                Request { action: Action::RefundIssue, amount: None, percent: None };",
+        "Request { action: Action::RefundIssue, amount: Some(owed), percent: None };",
+        "Request { action: Action::RefundIssue, amount: None, percent: None };",
     ),
     (
         "return: the cash handed back isn't rounded",
         "src/returns.rs",
-        "        let handed = cash.due;",
-        "        let handed = total;",
+        "        let rounded = cash_due(&self.profile, owed)?.due;",
+        "        let rounded = owed;",
+    ),
+    (
+        "return: cash is rounded return by return",
+        "src/returns.rs",
+        "        let handed = most.checked_sub(handed_before)?;",
+        "        let handed = cash_due(&self.profile, total)?.due;\n        let _ = (most, handed_before);",
+    ),
+    (
+        "return: a return split in parts passes the role's limit",
+        "src/returns.rs",
+        "Request { action: Action::RefundIssue, amount: Some(owed), percent: None };",
+        "Request { action: Action::RefundIssue, amount: Some(total), percent: None };",
     ),
     (
         "return: the refund isn't taken out of the drawer",
@@ -1029,7 +1041,13 @@ BUGS = [
     (
         "report: a refund a drawer paid is reported as with no drawer",
         "src/report.rs",
-        "            if info.tender == Tender::Cash && !self.store.refund_in_drawer(refund.id)? {",
-        "            if info.tender == Tender::Cash {",
+        "                && !self.store.refund_in_drawer(refund.id)?\n",
+        "",
+    ),
+    (
+        "return: a part of a receipt's code finds an order",
+        "src/returns.rs",
+        "        if code.chars().count() != RECEIPT_CODE {",
+        "        if code.is_empty() {",
     ),
 ]

@@ -167,7 +167,11 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 }
                 None => refunds.push((info.tender, 1, handed)),
             }
-            if info.tender == Tender::Cash && !self.store.refund_in_drawer(refund.id)? {
+            // A refund that handed nothing back took nothing from a drawer. Found in review.
+            if info.tender == Tender::Cash
+                && handed.is_positive()
+                && !self.store.refund_in_drawer(refund.id)?
+            {
                 without = without.checked_add(handed)?;
                 refunds_without = refunds_without.saturating_add(1);
             }

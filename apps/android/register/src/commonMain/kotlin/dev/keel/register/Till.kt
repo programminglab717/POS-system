@@ -442,6 +442,9 @@ data class Refund(
     val lines: List<Pair<String, String>>,
 )
 
+/** How many characters a receipt's code has: the last six of its order's identifier (ADR-0032). */
+const val RECEIPT_CODE = 6
+
 /** The reasons the register offers for a return. */
 val RETURN_REASONS = listOf(
     DiscountReason("damaged", "Damaged"),

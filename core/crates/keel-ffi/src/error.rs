@@ -187,6 +187,7 @@ impl From<RuntimeError> for KeelError {
             | RuntimeError::NoDrawer
             | RuntimeError::Drawer(_)
             | RuntimeError::CardRefund
+            | RuntimeError::OrderChanged
             | RuntimeError::Refund(_) => KeelError::Refused { reason },
             RuntimeError::TenderShort { due } => KeelError::TenderShort {
                 due: Amount {

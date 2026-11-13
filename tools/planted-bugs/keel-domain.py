@@ -3163,10 +3163,10 @@ BUGS = [
         "    let rounded = doubled.checked_div(whole.checked_mul(2)?)?;",
     ),
     (
-        "return: a return refunds its share of its own quantity",
+        "return: a return refunds its share of what was returned, not of what was refunded",
         "src/order/returns.rs",
-        "    share(amount, after, whole)?.checked_sub(share(amount, before, whole)?).ok()",
-        "    let _ = after;\n    share(amount, quantity, whole)",
+        "    let part = owed.checked_sub(refunded).ok()?;",
+        "    let part = owed.checked_sub(share(charged, before, whole)?).ok()?;",
     ),
     (
         "return: a share of more than the whole is taken",

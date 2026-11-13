@@ -14,7 +14,7 @@
 //! it. Permissions and approvals are checked by other parts of the kernel.
 
 use keel_events::envelope::{Device, Location};
-use keel_types::{Id, Quantity};
+use keel_types::{Id, Money, Quantity};
 
 use super::checks::{Check, LinesAllocated};
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
@@ -373,13 +373,17 @@ impl Order {
                 return Err(CommandError::Invalid(PayloadError::Invalid("quantity")));
             }
             let (net, tax) = self.charged(id).ok_or(CommandError::NotCharged(id))?;
-            let before = line
-                .returned()
-                .map_or(Quantity::zero(quantity.unit()), |before: &Returned| before.quantity);
+            let zero = Money::zero(net.currency());
+            let before = line.returned().copied().unwrap_or(Returned {
+                quantity: Quantity::zero(quantity.unit()),
+                net: zero,
+                tax: zero,
+            });
             let whole = line.quantity();
             let beyond = CommandError::ReturnBeyond(id);
-            let net = refunded(net, before, quantity, whole).ok_or_else(|| beyond.clone())?;
-            let tax = refunded(tax, before, quantity, whole).ok_or(beyond)?;
+            let net = refunded(net, before.net, before.quantity, quantity, whole)
+                .ok_or_else(|| beyond.clone())?;
+            let tax = refunded(tax, before.tax, before.quantity, quantity, whole).ok_or(beyond)?;
             returned.push(LineReturned { line: id, quantity, net, tax });
         }
         let event = LinesReturned { refund: asked.refund, lines: returned, reason: asked.reason };

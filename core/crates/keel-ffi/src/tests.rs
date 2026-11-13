@@ -1108,6 +1108,12 @@ fn espressos_are_returned_through_the_register() {
         register.return_lines(order.clone(), again, "damaged".into(), None),
         Err(KeelError::Refused { .. })
     ));
+    // All that is left, of a line with nothing left: nothing more to return.
+    let rest = vec![ReturnLine { line: returnable.lines[0].line.clone(), count: None }];
+    assert!(matches!(
+        register.return_lines(order.clone(), rest, "damaged".into(), None),
+        Err(KeelError::Refused { reason }) if reason.contains("left to return")
+    ));
     let unknown = vec![ReturnLine { line: demo_id(0x999), count: Some(1) }];
     assert!(matches!(
         register.return_lines(order.clone(), unknown, "damaged".into(), None),

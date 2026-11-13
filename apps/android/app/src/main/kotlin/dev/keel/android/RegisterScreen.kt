@@ -55,6 +55,7 @@ import dev.keel.register.DiscountSheet
 import dev.keel.register.NotesSheet
 import dev.keel.register.PRICE_REASONS
 import dev.keel.register.PriceSheet
+import dev.keel.register.RECEIPT_CODE
 import dev.keel.register.RETURN_REASONS
 import dev.keel.register.ReturnableLine
 import dev.keel.register.TicketDiscount
@@ -373,7 +374,6 @@ private fun DrawerPage(state: RegisterState, model: RegisterModel) {
             Text("Drawer", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             TextButton(onClick = model::showRegister, modifier = Modifier.testTag("back")) { Text("Back") }
         }
-        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         val drawer = state.drawer
         if (drawer == null) {
             Text("No drawer is open.", modifier = Modifier.testTag("drawer:none"))
@@ -782,9 +782,25 @@ private fun Orders(state: RegisterState, model: RegisterModel) {
                 singleLine = true,
                 modifier = Modifier.weight(1f).testTag("return:code"),
             )
-            TextButton(onClick = { model.findReturn(code) }, modifier = Modifier.testTag("return:find")) { Text("Find") }
+            // Six characters, as a receipt prints: found in review, a shorter code opened whatever
+            // order it ended.
+            TextButton(
+                onClick = { model.findReturn(code) },
+                enabled = code.trim().length == RECEIPT_CODE,
+                modifier = Modifier.testTag("return:find"),
+            ) { Text("Find") }
         }
-        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        // More than one paid order has the code: the cashier chooses.
+        state.matches?.let { matches ->
+            Text("Orders with that code", style = MaterialTheme.typography.titleSmall)
+            for (match in matches) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(match.lines.joinToString { "${it.quantity} × ${it.name}" }, Modifier.weight(1f))
+                    Text(match.total)
+                    TextButton(onClick = { model.beginReturn(match) }, modifier = Modifier.testTag("match:${match.order}")) { Text("Return") }
+                }
+            }
+        }
         if (state.orders.isEmpty()) Text("None yet today.")
         LazyColumn {
             items(state.orders.reversed(), key = { it.order }) { order ->
@@ -817,11 +833,11 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
             Text("Return", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             TextButton(onClick = model::closeReturn, modifier = Modifier.testTag("back")) { Text("Back") }
         }
-        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("return:error")) }
         if (!sheet.returnable.cashOnly) {
             Text("A card paid this order: it is refunded to the card, which the register can't do yet.")
         }
-        for (line in sheet.returnable.lines) ReturnRow(line, sheet.picks[line.line], line.line in sheet.picks, model)
+        val picking = sheet.returnable.cashOnly && !sheet.refunding
+        for (line in sheet.returnable.lines) ReturnRow(line, sheet.picks[line.line], line.line in sheet.picks, picking, model)
         Text("Refunded so far: ${sheet.returnable.refunded}", style = MaterialTheme.typography.bodySmall)
         Text("Why", style = MaterialTheme.typography.titleSmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -836,7 +852,7 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
         }
         Button(
             onClick = model::confirmReturn,
-            enabled = sheet.picks.isNotEmpty() && sheet.returnable.cashOnly,
+            enabled = sheet.picks.isNotEmpty() && sheet.reason != null && sheet.returnable.cashOnly && !sheet.refunding,
             modifier = Modifier.fillMaxWidth().testTag("return:refund"),
         ) { Text("Refund in cash") }
         state.refund?.let { refund ->
@@ -849,13 +865,13 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
 }
 
 @Composable
-private fun ReturnRow(line: ReturnableLine, picked: Long?, isPicked: Boolean, model: RegisterModel) {
+private fun ReturnRow(line: ReturnableLine, picked: Long?, isPicked: Boolean, picking: Boolean, model: RegisterModel) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().testTag("return-line:${line.line}")) {
         Column(Modifier.weight(1f)) {
             Text(line.name)
             Text("${line.leftText} left of ${line.charged}", style = MaterialTheme.typography.bodySmall)
         }
-        TextButton(onClick = { model.pickFewer(line) }, enabled = isPicked, modifier = Modifier.testTag("return-fewer:${line.line}")) { Text("−") }
+        TextButton(onClick = { model.pickFewer(line) }, enabled = picking && isPicked, modifier = Modifier.testTag("return-fewer:${line.line}")) { Text("−") }
         Text(
             when {
                 !isPicked -> "0"
@@ -864,7 +880,7 @@ private fun ReturnRow(line: ReturnableLine, picked: Long?, isPicked: Boolean, mo
             },
             modifier = Modifier.testTag("return-picked:${line.line}"),
         )
-        TextButton(onClick = { model.pickMore(line) }, enabled = line.anyLeft, modifier = Modifier.testTag("return-more:${line.line}")) { Text("+") }
+        TextButton(onClick = { model.pickMore(line) }, enabled = picking && line.anyLeft, modifier = Modifier.testTag("return-more:${line.line}")) { Text("+") }
     }
 }
 
@@ -901,7 +917,10 @@ private fun OrderRow(
         Text(order.total)
         if (order.state == OrderState.CLOSED) {
             TextButton(onClick = onReprint, modifier = Modifier.testTag("reprint:${order.order}")) { Text("Reprint") }
-            TextButton(onClick = onReturn, modifier = Modifier.testTag("return:${order.order}")) { Text("Return") }
+            // Not on one another register owns, which refuses it. Found in review.
+            if (!elsewhere) {
+                TextButton(onClick = onReturn, modifier = Modifier.testTag("return:${order.order}")) { Text("Return") }
+            }
         }
         // Parked on another register: tapping it recalls it through the hub; a manager can take it
         // over when the hub can't be reached.

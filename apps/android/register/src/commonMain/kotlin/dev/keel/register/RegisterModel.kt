@@ -38,7 +38,10 @@ enum class Screen {
 data class ReturnSheet(
     val returnable: Returnable,
     val picks: Map<String, Long?> = emptyMap(),
-    val reason: String = RETURN_REASONS.first().code,
+    /** Why: none until the cashier says. Found in review: every return was "damaged". */
+    val reason: String? = null,
+    /** Whether the refund is being made: nothing more is picked or refunded until it is done. */
+    val refunding: Boolean = false,
 )
 
 /**
@@ -152,6 +155,8 @@ data class RegisterState(
     val returning: ReturnSheet? = null,
     /** What the last return refunded, to hand back. */
     val refund: Refund? = null,
+    /** The paid orders a receipt's code matched, when more than one did, to choose from. */
+    val matches: List<Ticket>? = null,
     /** The change handed back for the last order paid, until the next is begun. */
     val change: String? = null,
     val orders: List<Ticket> = emptyList(),
@@ -728,12 +733,21 @@ class RegisterModel(
     }
 
     /**
-     * Finds the paid order whose receipt code is [code], and begins its return; the latest, if
-     * more than one has it (ADR-0032).
+     * Finds the paid order whose receipt code is [code], six characters, and begins its return;
+     * with more than one, lists them for the cashier to choose (ADR-0032). Found in review: a
+     * shorter code opened the latest order it ended, which might be any.
      */
     fun findReturn(code: String) = perform {
-        val order = till.findOrders(code).firstOrNull() ?: throw TillException("No paid order has that code.")
-        openReturn(till.returnable(order))
+        if (code.trim().length != RECEIPT_CODE) throw TillException("A receipt's code is six characters.")
+        val found = till.findOrders(code)
+        when (found.size) {
+            0 -> throw TillException("No paid order has that code.")
+            1 -> openReturn(till.returnable(found.single()))
+            else -> {
+                val matches = found.map(till::ticket)
+                mutable.update { it.copy(matches = matches) }
+            }
+        }
     }
 
     /** Begins a return of paid order [order]. */
@@ -743,13 +757,15 @@ class RegisterModel(
     }
 
     private fun openReturn(returnable: Returnable) {
-        mutable.update { it.copy(screen = Screen.RETURN, returning = ReturnSheet(returnable), refund = null) }
+        mutable.update {
+            it.copy(screen = Screen.RETURN, returning = ReturnSheet(returnable), refund = null, matches = null)
+        }
     }
 
     /** Picks one more of [line] to return, up to what is left; a line sold by measure, whole. */
     fun pickMore(line: ReturnableLine) = mutable.update { state ->
         val sheet = state.returning ?: return@update state
-        if (!line.anyLeft) return@update state
+        if (!line.anyLeft || sheet.refunding || !sheet.returnable.cashOnly) return@update state
         val left = line.leftCount
         val picks = if (left == null) {
             sheet.picks + (line.line to null)
@@ -763,6 +779,7 @@ class RegisterModel(
     /** Picks one fewer of [line]: none, for a line sold by measure. */
     fun pickFewer(line: ReturnableLine) = mutable.update { state ->
         val sheet = state.returning ?: return@update state
+        if (sheet.refunding) return@update state
         val now = sheet.picks[line.line]
         val picks = if (now == null || now <= 1) sheet.picks - line.line else sheet.picks + (line.line to now - 1)
         state.copy(returning = sheet.copy(picks = picks))
@@ -770,33 +787,70 @@ class RegisterModel(
 
     /** Why the lines are returned. */
     fun returnReason(code: String) = mutable.update { state ->
-        state.copy(returning = state.returning?.copy(reason = code))
+        state.copy(returning = state.returning?.copy(reason = code), error = null)
     }
 
     /**
-     * Returns what is picked, for the reason chosen, and shows what to hand back. Read once the
-     * taps before it are in, and tried again as it was once a manager approves.
+     * Returns what is picked, for the reason chosen, and shows what to hand back; tried again as
+     * it was once a manager approves. Taken at the tap, and nothing more is taken until it is
+     * done: found in review, a second tap refunded again.
      */
-    fun confirmReturn() = perform {
-        val sheet = current.returning ?: return@perform
-        if (sheet.picks.isEmpty()) {
-            mutable.update { it.copy(error = "Choose what is returned.") }
-            return@perform
+    fun confirmReturn() {
+        val sheet = current.returning ?: return
+        if (sheet.refunding) return
+        val reason = sheet.reason
+        val refusal = when {
+            sheet.picks.isEmpty() -> "Choose what is returned."
+            reason == null -> "Choose why it is returned."
+            else -> null
+        }
+        if (refusal != null || reason == null) {
+            mutable.update { it.copy(error = refusal) }
+            return
         }
         val picks = sheet.picks.map { (line, count) -> ReturnPick(line, count) }
         val order = sheet.returnable.order
+        mutable.update { it.copy(returning = sheet.copy(refunding = true), error = null) }
         perform {
-            val refund = till.returnLines(order, picks, sheet.reason)
+            val refund = try {
+                till.returnLines(order, picks, reason)
+            } catch (refused: TillException) {
+                // What is left may have changed, as another register returned some of it: read it
+                // again, and keep only what can still be picked. Found in review.
+                val returnable = if (refused.approval == null) till.returnable(order) else null
+                mutable.update { state ->
+                    val now = state.returning ?: return@update state
+                    val read = returnable ?: now.returnable
+                    state.copy(returning = now.copy(returnable = read, picks = clamp(now.picks, read), refunding = false))
+                }
+                throw refused
+            }
+            // The refund is shown, and its picks gone, before anything else can fail: found in
+            // review, a failed refresh left them for a second tap.
+            mutable.update { state ->
+                state.copy(refund = refund, returning = state.returning?.copy(picks = emptyMap(), refunding = false))
+            }
             val returnable = till.returnable(order)
             val jobs = till.printJobs()
-            mutable.update { it.copy(refund = refund, returning = ReturnSheet(returnable, reason = sheet.reason), jobs = jobs) }
+            mutable.update { state -> state.copy(returning = state.returning?.copy(returnable = returnable), jobs = jobs) }
         }
     }
 
-    /** Leaves the return: back to today's orders. */
-    fun closeReturn() = perform {
-        val orders = listed()
-        mutable.update { it.copy(screen = Screen.ORDERS, orders = orders, returning = null, refund = null) }
+    /** [picks], each no more than [returnable] has left. */
+    private fun clamp(picks: Map<String, Long?>, returnable: Returnable): Map<String, Long?> =
+        picks.mapNotNull { (line, count) ->
+            val known = returnable.lines.find { it.line == line }?.takeIf { it.anyLeft } ?: return@mapNotNull null
+            val left = known.leftCount
+            line to if (left == null || count == null) count else minOf(count, left)
+        }.toMap()
+
+    /** Leaves the return: back to today's orders, at once, which are then read again. */
+    fun closeReturn() {
+        mutable.update { it.copy(screen = Screen.ORDERS, returning = null, refund = null, matches = null, error = null) }
+        perform {
+            val orders = listed()
+            mutable.update { it.copy(orders = orders) }
+        }
     }
 
     /** Shows the printer: its address, and its jobs. */
@@ -874,7 +928,7 @@ class RegisterModel(
     }
 
     /** Back to the register from today's orders or the printer. */
-    fun showRegister() = mutable.update { it.copy(screen = Screen.REGISTER) }
+    fun showRegister() = mutable.update { it.copy(screen = Screen.REGISTER, error = null, matches = null) }
 
     /** Rings [variant], on a new order if none is open. */
     private fun ring(variant: String, choices: List<Chosen>, quantity: Int) {

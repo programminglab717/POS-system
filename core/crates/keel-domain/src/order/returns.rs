@@ -159,15 +159,32 @@ pub fn share(amount: Money, part: Quantity, whole: Quantity) -> Option<Money> {
     Some(Money::from_minor(i64::try_from(rounded).ok()?, amount.currency()))
 }
 
-/// What returning `quantity` more of a line refunds of `amount`, what its order charged it, once
-/// `before` of its `whole` quantity was returned: its share of everything returned after, less
-/// its share of what was returned before. `None` if that would take more than the line has.
+/// What returning `quantity` more of a line refunds of `charged`, what its order charged it,
+/// once `before` of its `whole` quantity was returned and `refunded` was refunded for it: its
+/// share of everything returned after, less what was refunded, never below nothing nor beyond what
+/// is left of the charge; and, once all of it is returned, exactly what is left. `None` if that
+/// would return more than the line has, or what was refunded is already more than its charge.
+///
+/// What was refunded, rather than the share of what was returned before, is what it is taken
+/// from: found in review, returns worked out against another charge, as two devices', lost a
+/// cent or took one too many.
 pub fn refunded(
-    amount: Money,
+    charged: Money,
+    refunded: Money,
     before: Quantity,
     quantity: Quantity,
     whole: Quantity,
 ) -> Option<Money> {
     let after = before.checked_add(quantity).ok()?;
-    share(amount, after, whole)?.checked_sub(share(amount, before, whole)?).ok()
+    let left = charged.checked_sub(refunded).ok().filter(|left| !left.is_negative())?;
+    // The share of all of it is all of the charge: once all is returned, what is left of it.
+    let owed = share(charged, after, whole)?;
+    let part = owed.checked_sub(refunded).ok()?;
+    Some(if part.is_negative() {
+        Money::zero(charged.currency())
+    } else if part.compare(left).ok()? == core::cmp::Ordering::Greater {
+        left
+    } else {
+        part
+    })
 }

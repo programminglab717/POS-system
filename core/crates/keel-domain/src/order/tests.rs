@@ -2099,6 +2099,38 @@ fn shares_round_half_up_and_add_up() {
     );
     assert_eq!(crate::order::share(usd(5), each(0), each(0)), None);
     assert_eq!(crate::order::share(usd(i64::MAX), each(1), each(1)), Some(usd(i64::MAX)));
-    assert_eq!(refunded(usd(1_000), each(1), each(1), each(3)), Some(usd(334)));
-    assert_eq!(refunded(usd(1_000), each(3), each(1), each(3)), None);
+    assert_eq!(refunded(usd(1_000), usd(333), each(1), each(1), each(3)), Some(usd(334)));
+    assert_eq!(refunded(usd(1_000), usd(1_000), each(3), each(1), each(3)), None);
+    // The last refunds what is left, whatever was refunded before.
+    assert_eq!(refunded(usd(1_000), usd(666), each(2), each(1), each(3)), Some(usd(334)));
+    // Never below nothing, nor beyond what is left; nothing once more than the charge went.
+    assert_eq!(refunded(usd(1_000), usd(700), each(1), each(1), each(3)), Some(usd(0)));
+    assert_eq!(refunded(usd(1_000), usd(1_001), each(1), each(1), each(3)), None);
+}
+
+/// Two returns worked out on two devices, each the share of one of three, and then the last one
+/// here: it refunds what is left of the charge, so the three add up to it. Found in review: it
+/// refunded its share, a cent short.
+#[test]
+fn the_last_return_refunds_what_is_left_whatever_came_before() {
+    let mut device = closed_order();
+    for (n, other) in [(0xC1_u64, 0xD), (0xC2, 0xD2)] {
+        let event = OrderEvent::LinesReturned(LinesReturned {
+            refund: id(n),
+            lines: vec![LineReturned {
+                line: id(1),
+                quantity: each(1),
+                net: usd(333),
+                tax: usd(30),
+            }],
+            reason: reason("damaged"),
+        });
+        let mut meta = device.script.meta_at(location());
+        meta.origin_device = id(other);
+        device.order.apply(&meta, &event);
+    }
+    device.run(returning(0xC3, &[(1, each(1))])).unwrap();
+    assert_eq!(last_refunds(&device), [(id(1), each(1), 334, 29)]);
+    let returned = device.order.line(id(1)).unwrap().returned().unwrap();
+    assert_eq!((returned.net, returned.tax), (usd(1_000), usd(89)));
 }

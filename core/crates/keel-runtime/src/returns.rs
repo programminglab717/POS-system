@@ -6,7 +6,7 @@ use keel_doc::{Block, Doc};
 use keel_domain::codec::Name;
 use keel_domain::drawer::{CashRefunded, Drawer, DrawerCommand};
 use keel_domain::order::{Line, Order, OrderCommand, OrderEvent, Reason, Return};
-use keel_domain::payment::Tender;
+use keel_domain::payment::{Payment, PaymentCaptured, Tender};
 use keel_domain::refund::{Refund, RefundCommand, RefundCompleted, RefundInitiated};
 use keel_domain::staff::{Action, Request};
 use keel_events::keys::Signer;
@@ -78,6 +78,9 @@ pub struct Refunded {
     pub handed: Amount,
 }
 
+/// How many characters a receipt's code has: the last six of its order's identifier.
+pub(crate) const RECEIPT_CODE: usize = 6;
+
 /// How many whole units `quantity` is, if it is a count of them.
 fn whole(quantity: Quantity) -> Option<u32> {
     if quantity.unit() != Unit::Each {
@@ -90,13 +93,14 @@ fn whole(quantity: Quantity) -> Option<u32> {
 
 impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// The closed orders whose receipt code, the last six characters of their identifier, is
-    /// `code`, whatever its case: the latest first.
+    /// `code`, whatever its case: the latest first; none for a code of another length. Found in
+    /// review: a shorter one matched whatever order it ended.
     ///
     /// # Errors
     /// [`RuntimeError`] if the store can't be read.
     pub fn find_orders(&self, code: &str) -> Result<Vec<Id<Order>>, RuntimeError> {
         let code = code.trim().to_lowercase();
-        if code.is_empty() {
+        if code.chars().count() != RECEIPT_CODE {
             return Ok(Vec::new());
         }
         let mut found: Vec<Id<Order>> = self
@@ -118,7 +122,6 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     pub fn returnable(&self, order: Id<Order>) -> Result<Returnable, RuntimeError> {
         let loaded = self.store.load(Order::new(order))?;
         known(&loaded)?;
-        let currency = self.profile.data().currency;
         let mut lines = Vec::new();
         for line in loaded.live_lines() {
             let Some((net, tax)) = loaded.charged(line.id()) else { continue };
@@ -135,36 +138,61 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 charged: Amount::new(net.checked_add(tax)?, self.locale),
             });
         }
-        let mut refunded = Money::zero(currency);
-        for refund in self.store.refunds_of(order)? {
-            if let Some(completed) = refund.completed {
-                refunded = refunded.checked_add(completed.amount)?;
-            }
-        }
+        let (refunded, _) = self.refunded_of(order)?;
         Ok(Returnable {
             order,
             lines,
             refunded: Amount::new(refunded, self.locale),
-            cash_only: self.paid_in_cash_alone(order)?,
+            cash_only: self.cash_taken(&loaded)?.is_some(),
         })
     }
 
-    /// Whether every payment captured for `order` was in cash.
-    fn paid_in_cash_alone(&self, order: Id<Order>) -> Result<bool, RuntimeError> {
-        Ok(self.store.payments_of(order)?.iter().all(|payment| {
-            payment.state != PaymentState::Captured
-                || payment.info.as_ref().is_some_and(|info| info.tender == Tender::Cash)
-        }))
+    /// The cash closed order `loaded` took, what its customers paid for it, if every payment
+    /// that settled its checks is known here, captured, in cash; `None` otherwise, as for an
+    /// order a card paid, or one whose payments haven't reached this register. Found in review:
+    /// a payment not yet here, or not yet captured here, passed for cash.
+    fn cash_taken(&self, loaded: &Order) -> Result<Option<Money>, RuntimeError> {
+        let mut taken = Money::zero(self.profile.data().currency);
+        let settled = loaded.checks().iter().filter_map(|check| check.closed()?.payments.as_ref());
+        for payment in settled.flat_map(keel_domain::codec::IdSet::iter) {
+            let Some(summary) = self.store.payment(payment)? else { return Ok(None) };
+            let cash = summary.info.as_ref().is_some_and(|info| info.tender == Tender::Cash);
+            if summary.state != PaymentState::Captured || !cash {
+                return Ok(None);
+            }
+            let loaded = self.store.load(Payment::new(payment))?;
+            let Some(received) = loaded.captured().and_then(PaymentCaptured::received) else {
+                return Ok(None);
+            };
+            taken = taken.checked_add(received)?;
+        }
+        Ok(Some(taken))
+    }
+
+    /// What the refunds of `order` came to: what they refunded, and the cash they handed back.
+    fn refunded_of(&self, order: Id<Order>) -> Result<(Money, Money), RuntimeError> {
+        let zero = Money::zero(self.profile.data().currency);
+        let (mut owed, mut handed) = (zero, zero);
+        for refund in self.store.refunds_of(order)? {
+            let Some(completed) = refund.completed else { continue };
+            owed = owed.checked_add(completed.amount)?;
+            handed = handed.checked_add(completed.handed().ok_or(MoneyError::Overflow)?)?;
+        }
+        Ok((owed, handed))
     }
 
     /// Returns `lines` of closed order `order`, each by how much, for `reason` (ADR-0032): each
     /// refunded its share of what the order's checks charged it, in cash, rounded as the
-    /// location rounds cash, out of the device's open drawer, if one is open. A refund is
-    /// `refund.issue`, for what it refunds, which the member's role permits or a manager
-    /// approves. The drawer kicks, and the refund's receipt prints.
+    /// location rounds cash, out of the device's open drawer, if one is open. What is handed back
+    /// is rounded over everything the order's refunds refunded, and is never more than the cash
+    /// the order took: found in review, refunds rounded one by one handed back more. A refund is
+    /// `refund.issue`, for everything the order's refunds refunded with it, which the member's
+    /// role permits or a manager approves: found in review, a return split in parts passed a
+    /// role's limit part by part. The drawer kicks, and the refund's receipt prints.
     ///
     /// # Errors
-    /// [`RuntimeError::CardRefund`] for an order a card paid; [`RuntimeError::Order`] if the order
+    /// [`RuntimeError::CardRefund`] for an order a card paid, or one this register doesn't know
+    /// was paid in cash; [`RuntimeError::Order`] if the order
     /// isn't closed, the device doesn't own it, or a line can't be returned by as much;
     /// [`RuntimeError::ApprovalRequired`] or [`RuntimeError::NotApprover`] if it needs an
     /// approval it doesn't have; [`RuntimeError`] if no one is signed in.
@@ -177,26 +205,35 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let meta = self.meta()?;
         let loaded = self.store.load(Order::new(order))?;
         known(&loaded)?;
-        if !self.paid_in_cash_alone(order)? {
-            return Err(RuntimeError::CardRefund);
-        }
+        let taken = self.cash_taken(&loaded)?.ok_or(RuntimeError::CardRefund)?;
         let refund: Id<Refund> = self.ids.generate(meta.now)?;
         let asked = Return { refund, lines: lines.to_vec(), reason };
-        let event =
-            loaded.decide(self.location(), self.device, OrderCommand::ReturnLines(asked))?;
+        let command = OrderCommand::ReturnLines(asked);
+        let event = loaded.decide(self.location(), self.device, command.clone())?;
         let overflow = || RuntimeError::from(MoneyError::Overflow);
         let OrderEvent::LinesReturned(returned) = &event else { return Err(overflow()) };
         let total = returned.total().ok_or_else(overflow)?;
+        let (owed_before, handed_before) = self.refunded_of(order)?;
+        let owed = owed_before.checked_add(total)?;
         // The order's own rules come before an approval is asked for what they would refuse.
         let granted = if total.is_positive() {
             let request =
-                Request { action: Action::RefundIssue, amount: Some(total), percent: None };
+                Request { action: Action::RefundIssue, amount: Some(owed), percent: None };
             self.gate(request, Some(order.cast()))?
         } else {
             None
         };
-        let cash = cash_due(&self.profile, total)?;
-        let handed = cash.due;
+        // Rounded over all the order's refunds, and no more than the cash it took.
+        let rounded = cash_due(&self.profile, owed)?.due;
+        let most =
+            if rounded.compare(taken)? == core::cmp::Ordering::Greater { taken } else { rounded };
+        let handed = most.checked_sub(handed_before)?;
+        let handed = if handed.is_positive() && total.is_positive() {
+            handed
+        } else {
+            Money::zero(total.currency())
+        };
+        let rounding = handed.checked_sub(total)?;
         let locale = self.locale;
         let refunded_lines: Vec<RefundedLine> = returned
             .lines
@@ -226,6 +263,12 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let stream = self.approval_stream(granted.as_ref())?;
         self.store.write(|w| -> Result<(), RuntimeError> {
             let meta = crate::staff::approved(w, granted.as_ref(), stream, &meta)?;
+            // Decided again in the write, on the order as it stands: found in review, another
+            // write between the read and this one went unchecked.
+            let now = w.load(Order::new(order))?.decide(location, device, command)?;
+            if now != event {
+                return Err(RuntimeError::OrderChanged);
+            }
             let cause = append(w, order.cast(), &event, &meta)?;
             if total.is_positive() {
                 let initiated = RefundInitiated { order, tender: Tender::Cash, amount: total };
@@ -235,7 +278,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                     RefundCommand::Initiate(initiated),
                 )?;
                 append(w, refund.cast(), &started, &meta)?;
-                let rounding = (!cash.rounding.is_zero()).then_some(cash.rounding);
+                let rounding = (!rounding.is_zero()).then_some(rounding);
                 let completed = RefundCompleted { amount: total, rounding };
                 let started = w.load(Refund::new(refund))?;
                 let paid = started.decide(location, device, RefundCommand::Complete(completed))?;

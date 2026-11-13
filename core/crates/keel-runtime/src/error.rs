@@ -76,8 +76,13 @@ pub enum RuntimeError {
     Drawer(#[from] keel_domain::drawer::DrawerError),
     /// The order was paid in part by card: it is refunded to the card, which card refunds will
     /// do (ADR-0032).
-    #[error("a card paid the order: it is refunded to the card, which isn't built yet")]
+    #[error(
+        "the order wasn't paid in cash alone, as far as this register knows: a card's is refunded to the card, which isn't built yet"
+    )]
     CardRefund,
+    /// The order changed while the intent was being made: look at it again (ADR-0032).
+    #[error("the order changed meanwhile: look at it again")]
+    OrderChanged,
     /// The refund refused the change.
     #[error(transparent)]
     Refund(#[from] keel_domain::refund::RefundError),

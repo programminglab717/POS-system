@@ -475,21 +475,33 @@ class FakeTill : Till {
     /** The reason the last return was made for. */
     var lastReturnReason: String? = null
 
-    override fun findOrders(code: String) =
-        states.filterValues { it == OrderState.CLOSED }.keys.filter { it.endsWith(code.lowercase()) }.reversed()
+    /** The orders a card paid, which aren't refunded in cash, as the kernel's. */
+    val cardPaid = mutableSetOf<String>()
+
+    /** The items sold by measure: a line of one is returned whole. */
+    var measured = setOf<String>()
+
+    // As the kernel's: a code of six characters, trimmed, whatever its case.
+    override fun findOrders(code: String): List<String> {
+        val trimmed = code.trim().lowercase()
+        if (trimmed.length != RECEIPT_CODE) return emptyList()
+        return states.filterValues { it == OrderState.CLOSED }.keys.filter { it.endsWith(trimmed) }.reversed()
+    }
 
     override fun returnable(order: String): Returnable {
         if (states[order] != OrderState.CLOSED) throw TillException("the order isn't closed")
         val lines = orders.getValue(order).map { line ->
             val left = line.count.toLong() - (returned[line.id] ?: 0)
-            ReturnableLine(line.id, line.variant, left.toString(), left, left > 0, money(unitPrice(line) * line.count))
+            val count = left.takeIf { line.variant !in measured }
+            ReturnableLine(line.id, line.variant, left.toString(), count, left > 0, money(unitPrice(line) * line.count))
         }
-        return Returnable(order, lines, money(refundedOf[order] ?: 0), cashOnly = true)
+        return Returnable(order, lines, money(refundedOf[order] ?: 0), cashOnly = order !in cardPaid)
     }
 
     override fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund {
         // As the kernel's order: only a closed one, each line once, no more than is left.
         if (states[order] != OrderState.CLOSED) throw TillException("the order isn't closed")
+        if (order in cardPaid) throw TillException("a card paid the order: it is refunded to the card, which isn't built yet")
         if (lines.isEmpty() || lines.map { it.line }.toSet().size != lines.size) throw TillException("invalid event: lines")
         val each = lines.map { pick ->
             val line = orders.getValue(order).find { it.id == pick.line } ?: throw TillException("no line ${pick.line}")

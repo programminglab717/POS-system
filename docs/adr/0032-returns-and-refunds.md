@@ -1,6 +1,6 @@
 # ADR-0032: Returns and refunds: lines returned on the original order, refunds as their own aggregate, never beyond what was paid
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-13
 
 ## Context
@@ -39,11 +39,12 @@ through quantities and prices below zero, for amounts that are already known.
 
 2. **What a line returned refunds** is its share of what its order was charged for it: the net
    and tax of every closed check's part of it, from their snapshots, for the quantity returned
-   out of the line's quantity. Each share is taken of the quantity returned so far, so partial
-   returns add up: `refund = share(returned after) − share(returned before)`, where
-   `share(q) = amount × q / quantity`, rounded half up. The last return of a line refunds
-   exactly what is left of its net and tax, whatever was returned before. A comped line refunds
-   nothing; a discounted line refunds what it was sold for.
+   out of the line's quantity. Each share is taken of the quantity returned so far, less what was
+   refunded for it so far, so partial returns add up: `refund = share(returned after) −
+   refunded`, where `share(q) = amount × q / quantity`, rounded half up, and never below nothing
+   nor beyond what is left. The last return of a line refunds exactly what is left of its net
+   and tax, whatever was returned before. A comped line refunds nothing; a discounted line
+   refunds what it was sold for.
 
 3. **The fold applies a return and reports what doesn't fit**: a return of a line the order
    doesn't have doesn't apply; one on an order that isn't closed, or that takes a line beyond
@@ -68,8 +69,10 @@ through quantities and prices below zero, for amounts that are already known.
    handed back, more than zero), which what the drawer should hold leaves out. With no drawer
    open the refund goes on, reported as cash with no drawer, as a sale's is.
 
-6. **Gated as the roles say**: a return as `refund.issue`, for what it refunds (ADR-0029).
-   Its reason is the merchant's reason code.
+6. **Gated as the roles say**: a return as `refund.issue`, for what the order's refunds refund
+   with it (ADR-0029), so a return split in parts is asked for as all of them. Its reason is the
+   merchant's reason code. Cash handed back is rounded over all the order's refunds, never more
+   than the cash the order took. A return that refunds nothing has no refund events.
 
 7. **The store projects refunds**: a `refunds` table, one row per refund (its order, tender,
    amount, state, business date, and what was refunded), found by order and by business date.
@@ -104,6 +107,45 @@ through quantities and prices below zero, for amounts that are already known.
 - Four new schemas, which every replica's kernel must know before any device writes them.
 - A return on another register needs the hub, or a manager's take-over, to have the order.
 - An order with a card payment can't be refunded until card refunds arrive.
+
+## As built
+
+Built in three slices on 2026-11-13, each verified as it landed, then reviewed: the kernel and the
+Android shell each by a reviewer who hadn't built them. What the review found, and what was done:
+
+- **Refunds in parts handed back more cash than was taken**: each rounded to five cents on its
+  own, three espressos paid as $10.60 went back as $10.65. Cash handed back is rounded over the
+  order's refunds, and capped at the cash its payments took.
+- **A share was taken of what was returned, not of what was refunded**: two devices' returns,
+  worked out against one charge each, left the last a cent short. A return refunds its share
+  less what was refunded (decision 2).
+- **A role's limit could be passed in parts**: each return was asked for on its own. It is asked
+  for as all the order's refunds (decision 6).
+- **A payment not yet here passed for cash**: an order counts as paid in cash only if every
+  payment its closed checks name is here, captured, in cash.
+- **The order was decided outside its write**: it is decided again inside, and an order changed
+  meanwhile is refused.
+- **A refund that handed back nothing** counted as cash with no drawer: it isn't counted.
+- **The bindings** took a count of a line sold by measure as that many kilograms, and called a
+  line with nothing left a quantity of nothing: the first is refused, the second is "nothing
+  left".
+- **On the register**: a second tap on Refund refunded again; a code shorter than six characters
+  opened whatever order it ended, and the kernel took one too; two orders with one code opened
+  the latest; every return was "damaged" unless changed; a refused refund kept picks of lines
+  since returned elsewhere; a failed refresh after a refund left its picks for a second tap;
+  Return was offered on an order another register owns; errors showed twice. Each is fixed, with
+  a model test; the fake till now finds, refuses and measures as the kernel does.
+
+Gaps that remain:
+
+- **Card refunds** wait for card payments (step 7); the refusal of a card-paid order can't be
+  tested until the runtime takes cards.
+- **A return on another register** needs the order: the register doesn't recall it through the
+  hub for a return yet, and hides Return on such an order.
+- **Reports** list refunds by tender, not the lines returned; a refund in another currency is
+  left out of them.
+- **The decision made again in the write**, a refund that hands back nothing, and a payment
+  unknown here are guarded but untested: no test makes them happen.
 
 ## Alternatives considered
 

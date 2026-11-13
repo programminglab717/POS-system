@@ -6,15 +6,17 @@
 
 ## Where we are
 
-**The MVP, steps 1 to 3 of 10, are done.** Step 1, staff, roles and approvals
+**The MVP, steps 1 to 4 of 10, are done.** Step 1, staff, roles and approvals
 ([ADR-0029](./adr/0029-staff-roles-and-approvals.md)); step 2, selling at the register
 ([ADR-0030](./adr/0030-selling-at-the-register.md)): discounts with reasons and limits, prices
 set by hand, line notes, split checks and partial cash payments, and orders parked on one
 register and recalled on another through the hub; step 3, cash
-([ADR-0031](./adr/0031-cash-drawers-and-day-reports.md), accepted after its review): drawer
-sessions with a float, paid in, paid out, safe drops and no-sales, a blind close, and X and Z
-reports from local data. Each in the kernel, the bindings and the Android register. Step 4,
-returns and refunds, is next.
+([ADR-0031](./adr/0031-cash-drawers-and-day-reports.md)): drawer sessions with a float, paid in,
+paid out, safe drops and no-sales, a blind close, and X and Z reports from local data; step 4,
+returns and refunds ([ADR-0032](./adr/0032-returns-and-refunds.md), accepted after its review):
+a paid order found from its receipt, lines returned whole or in part, each refunded what was
+paid for it and never more, in cash out of the drawer. Each in the kernel, the bindings and the
+Android register. Step 5, availability, is next.
 
 **CI is out of minutes for the month**: the work since is verified here as CI would verify it,
 but for the app's instrumented tests, which need an emulator. Step 3 changed them, and fixed
@@ -89,18 +91,25 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
+The MVP's step 5, availability: a global 86 in-store, within 10 s (G-06). To be designed in an
+ADR, then built in slices.
+
+Waiting on CI's minutes: the Android app's instrumented tests, steps 3 and 4's among them, and
+the three of step 2 the scrolling ticket pane should mend.
+
+## Completed
+
+### Returns and refunds: MVP step 4 (2026-11-13)
+
 The MVP's step 4, returns and refunds, linked to the original lines (B-09 basic, I-08)
-([ADR-0032](./adr/0032-returns-and-refunds.md), proposed), is built in three slices, each
-verified as it lands, then reviewed together:
+([ADR-0032](./adr/0032-returns-and-refunds.md), accepted after its review), was built in three
+slices, each verified as it landed, then reviewed together:
 
 1. **The domain** (built 2026-11-13): `order.lines_returned`, the refund aggregate and
    `drawer.cash_refunded`, their folds and commands; the store's `drawers` projection's version 3.
 2. **The register** (built 2026-11-13): the projections, the runtime's lookup, return and
    refund, the refund receipt, the reports, the bindings.
-3. **The shell** (built 2026-11-13): the Android register's returns. Then the review: next.
-
-Waiting on CI's minutes: the Android app's instrumented tests, step 3's drawer test among them,
-and the three of step 2 the scrolling ticket pane should mend.
+3. **The shell** (built 2026-11-13): the Android register's returns.
 
 Built in slice 1:
 
@@ -153,7 +162,28 @@ Built in slices 2 and 3:
   the wasm build, the planted bugs (9 more in `keel-runtime`, each caught), the Kotlin bindings'
   tests, `:register:jvmTest`, `:kernel:testDebugUnitTest` and the app's builds.
 
-## Completed
+The review (2026-11-13), the kernel and the Android shell each by a reviewer who hadn't built
+them; ADR-0032's As built lists what it found and what remains. Fixed, each with a test:
+
+- **Cash**: handed back rounded over the order's refunds and capped at the cash it took ($3.55,
+  $3.55 and $3.50 back for three espressos paid as $10.60, not $10.65).
+- **Shares**: a return refunds its share less what was refunded, so returns worked out on two
+  devices still add up to the charge.
+- **The gate**: asked for as all the order's refunds, so a return split in parts passes no limit
+  part by part.
+- **Paid in cash**: only if every payment the closed checks name is here, captured, in cash.
+- **The write**: the order decided again inside it.
+- **Reports, bindings, the register**: a refund handing back nothing isn't drawerless; a count of
+  a measured line refused; a double tap refunds once; a receipt's code is six characters, and
+  two orders with one are listed to choose from; a reason is chosen; picks kept to what is left
+  after a refusal; Return hidden on another register's order; errors shown once.
+- **Planted bugs**: 5 more, each caught; one dropped as equivalent to the code (the share of all
+  of a line is all of it), and four re-aimed.
+- **Verified**, as CI would, CI's minutes being spent: `cargo fmt`, clippy with all features and
+  none, the docs, every workspace test with the exhaustive sweeps, the wasm build, the planted
+  bugs' staleness check, the Kotlin bindings' tests, `:register:jvmTest`,
+  `:kernel:testDebugUnitTest` and the app's builds. The instrumented tests wait for an emulator.
+
 
 ### Cash: MVP step 3 (2026-11-12)
 

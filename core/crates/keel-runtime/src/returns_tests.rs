@@ -59,6 +59,9 @@ fn a_cashier_returns_espressos_once_a_manager_approves_each_refunded_what_was_pa
     assert_eq!(runtime.find_orders(&code.to_uppercase()).unwrap(), [order]);
     assert_eq!(runtime.find_orders(code).unwrap(), [order]);
     assert!(runtime.find_orders("zzzzzz").unwrap().is_empty());
+    // Only a whole code finds it: a part of one could be any order's.
+    assert!(runtime.find_orders(&code[1..]).unwrap().is_empty());
+    assert!(runtime.find_orders("").unwrap().is_empty());
     let returnable = runtime.returnable(order).unwrap();
     assert_eq!(returnable.lines.len(), 1);
     assert_eq!(returnable.lines[0].left_count, Some(3));
@@ -222,4 +225,37 @@ fn a_refund_beyond_the_role_waits_for_a_manager() {
         runtime.return_lines(order, &[(line, each(2))], reason()),
         Err(RuntimeError::ApprovalRequired(Action::RefundIssue))
     ));
+    // One more alone is $3.54, but with the first $7.08: a return split in parts is asked for as
+    // all its parts. Found in review: each part passed on its own.
+    assert!(matches!(
+        runtime.return_lines(order, &[(line, each(1))], reason()),
+        Err(RuntimeError::ApprovalRequired(Action::RefundIssue))
+    ));
+}
+
+/// Three espressos, $10.62, paid as $10.60 where cash rounds to five cents, returned one at a
+/// time: $3.55, $3.55 and $3.50 handed back, the $10.60 taken. Found in review: each rounded on
+/// its own, $10.65 went back.
+#[test]
+fn refunds_in_parts_hand_back_no_more_than_was_taken() {
+    use keel_types::{RoundingMode, RoundingRule};
+    let scratch = Scratch::new();
+    let mut data = demo().unwrap().data().clone();
+    data.cash_rounding =
+        Some(RoundingRule::new(RoundingMode::HalfAwayFromZero, NonZeroU32::new(5).unwrap()));
+    let mut runtime = register(&scratch, keel_domain::profile::Profile::new(data).unwrap());
+    runtime.sign_in(id(0x501), "1234").unwrap();
+    runtime.open_drawer(usd(10_000)).unwrap();
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(order, id(0x401), &[], NonZeroU32::new(3).unwrap()).unwrap();
+    runtime.pay_cash(order, usd(1_060)).unwrap();
+    let line = runtime.ticket(order).unwrap().lines[0].line;
+    let handed: Vec<i64> = (0..3)
+        .map(|_| {
+            runtime.return_lines(order, &[(line, each(1))], reason()).unwrap().handed.money.minor()
+        })
+        .collect();
+    assert_eq!(handed, [355, 355, 350]);
+    let closed = runtime.close_drawer(usd(10_000)).unwrap();
+    assert_eq!(closed.variance.unwrap().money, usd(0));
 }
