@@ -17,15 +17,19 @@
     reason = "test code"
 )]
 
-use core::num::{NonZeroU8, NonZeroU32};
+use core::num::{NonZeroU8, NonZeroU16, NonZeroU32};
+use std::collections::BTreeSet;
 
 use keel_domain::codec::Name;
-use keel_domain::order::{ChosenModifier, Placement, Prefix};
+use keel_domain::order::{ChosenModifier, Mode, Placement, Prefix};
 use keel_domain::profile::{
-    BusinessDay, Catalog, CatalogGroup, CatalogItem, CatalogModifier, CatalogVariant, Choice,
-    Member, Menu, Page, Profile, ProfileData, RingError, demo,
+    Aging, Allergen, BusinessDay, Catalog, CatalogGroup, CatalogItem, CatalogModifier,
+    CatalogVariant, Choice, Kitchen, Member, Menu, Page, Printer, Profile, ProfileData, RingError,
+    Route, Routed, Station, demo,
 };
-use keel_domain::refs::{Modifier, ModifierGroup, TaxCategory, Variant};
+use keel_domain::refs::{
+    Item, Modifier, ModifierGroup, Station as StationRef, TaxCategory, Variant,
+};
 use keel_domain::staff::{Action, MAX_PERCENT, Permission, PinHash, Role};
 use keel_events::cbor::{self, Map, Value};
 use keel_pricing::{Dining, Rules, Tax, TaxRounding, TaxScope};
@@ -193,6 +197,7 @@ fn catalog(shape: &Shape, currency: Currency) -> Catalog {
                     prefix: prefix(g, m),
                     price: Money::from_minor(*price, currency),
                     groups: under.iter().map(|&u| group_id(u)).collect(),
+                    allergens: BTreeSet::new(),
                 })
                 .collect(),
         })
@@ -215,6 +220,7 @@ fn catalog(shape: &Shape, currency: Currency) -> Catalog {
                 })
                 .collect(),
             groups: offered.iter().map(|&g| group_id(g)).collect(),
+            allergens: BTreeSet::new(),
         })
         .collect();
     Catalog { items, groups }
@@ -224,6 +230,8 @@ fn catalog(shape: &Shape, currency: Currency) -> Catalog {
 fn build(shape: &Shape) -> Profile {
     let mut data = demo().unwrap().data().clone();
     data.catalog = catalog(shape, Currency::USD);
+    // The demo's kitchen routes the demo's items, which this catalog hasn't.
+    data.kitchen = None;
     data.menu = Menu { pages: vec![Page { name: name("All"), buttons: vec![variant_id(0, 0)] }] };
     Profile::new(data).unwrap()
 }
@@ -512,7 +520,8 @@ fn any_profile() -> impl Strategy<Value = ProfileData> {
         (any_name(), any::<Index>(), any::<[u8; 16]>(), any::<[u8; 32]>()),
         1..=4,
     );
-    (place, any_rules(), any_shape(), pages, team, any_roles()).prop_map(
+    let extras = (prop::option::of(any::<u64>()), prop::option::of(any_kitchen_picks()));
+    (place, any_rules(), any_shape(), pages, team, any_roles(), extras).prop_map(
         |(
             (location, title, address, currency, zone, hour, minute, cash_rounding),
             rules,
@@ -520,8 +529,13 @@ fn any_profile() -> impl Strategy<Value = ProfileData> {
             pages,
             team,
             roles,
+            (allergens, kitchen),
         )| {
-            let catalog = catalog(&shape, currency);
+            let mut catalog = catalog(&shape, currency);
+            if let Some(seed) = allergens {
+                give_allergens(&mut catalog, seed);
+            }
+            let kitchen = kitchen.map(|picks| kitchen_of(&catalog, &picks));
             let variants: Vec<Id<Variant>> = catalog
                 .items
                 .iter()
@@ -561,9 +575,132 @@ fn any_profile() -> impl Strategy<Value = ProfileData> {
                     })
                     .collect(),
                 roles,
+                kitchen,
             }
         },
     )
+}
+
+/// Allergens for some of `catalog`'s items and modifiers, drawn from `seed`: none, one or a few.
+fn give_allergens(catalog: &mut Catalog, seed: u64) {
+    let mut rng = seed | 1;
+    let mut draw = || -> BTreeSet<Allergen> {
+        let bits = next(&mut rng);
+        if bits.is_multiple_of(3) {
+            return BTreeSet::new();
+        }
+        (0..(bits >> 2) % 4)
+            .map(|n| Allergen::ALL[usize::try_from((bits >> (8 + 4 * n)) % 14).unwrap()])
+            .collect()
+    };
+    for item in &mut catalog.items {
+        item.allergens = draw();
+    }
+    for modifier in catalog.groups.iter_mut().flat_map(|group| group.modifiers.iter_mut()) {
+        modifier.allergens = draw();
+    }
+}
+
+/// A route's picks: its station, items and modifiers by index, and its modes' codes.
+type RoutePicks = (Index, Vec<Index>, Vec<Index>, Vec<usize>);
+
+/// A kitchen's picks: its stations, each `(expo, screen, printer)`, its routes, each
+/// `(station, items, modifiers, modes)` by index, its default station, its aging and its fallback
+/// printer.
+#[derive(Clone, Debug)]
+struct KitchenPicks {
+    stations: Vec<(bool, bool, Option<usize>)>,
+    routes: Vec<RoutePicks>,
+    default: Option<Index>,
+    aging: (u32, u32),
+    fallback: Option<usize>,
+}
+
+/// Printers' hosts and ports: a name, addresses, and the range's ends.
+const PRINTERS: [(&str, u16); 4] =
+    [("10.0.0.5", 9100), ("kitchen-printer.local", 9100), ("192.168.1.250", 1), ("::1", 65_535)];
+
+fn any_kitchen_picks() -> impl Strategy<Value = KitchenPicks> {
+    let station =
+        (prop::bool::weighted(0.25), any::<bool>(), prop::option::of(0_usize..PRINTERS.len()));
+    let route = (
+        any::<Index>(),
+        prop::collection::vec(any::<Index>(), 0..=3),
+        prop::collection::vec(any::<Index>(), 0..=3),
+        prop::collection::vec(0_usize..Mode::ALL.len(), 0..=2),
+    );
+    (
+        prop::collection::vec(station, 1..=4),
+        prop::collection::vec(route, 0..=5),
+        prop::option::of(any::<Index>()),
+        (1_u32..=900, 1_u32..=900),
+        prop::option::of(0_usize..PRINTERS.len()),
+    )
+        .prop_map(|(stations, routes, default, aging, fallback)| KitchenPicks {
+            stations,
+            routes,
+            default,
+            aging,
+            fallback,
+        })
+}
+
+/// A kitchen for `catalog` from `picks`, mended where they would break its rules: a station no
+/// screen shows has a printer; the first station isn't expo; routes go to stations that aren't
+/// expo and name something; the default station isn't expo; late is after late-ish.
+fn kitchen_of(catalog: &Catalog, picks: &KitchenPicks) -> Kitchen {
+    let printer = |at: usize| Printer {
+        host: PRINTERS[at].0.to_owned(),
+        port: NonZeroU16::new(PRINTERS[at].1).unwrap(),
+    };
+    let stations: Vec<Station> = picks
+        .stations
+        .iter()
+        .enumerate()
+        .map(|(at, &(expo, screen, printed))| Station {
+            id: id(0x700 + u64::try_from(at).unwrap()),
+            name: name(&format!("Station {at}")),
+            expo: expo && at > 0,
+            screen,
+            printer: printed.map(printer).or_else(|| (!screen).then(|| printer(0))),
+        })
+        .collect();
+    let makers: Vec<Id<StationRef>> =
+        stations.iter().filter(|station| !station.expo).map(|station| station.id).collect();
+    let items: Vec<Id<Item>> = catalog.items.iter().map(|item| item.id).collect();
+    let modifiers: Vec<Id<Modifier>> = catalog
+        .groups
+        .iter()
+        .flat_map(|group| &group.modifiers)
+        .map(|modifier| modifier.id)
+        .collect();
+    let routes = picks
+        .routes
+        .iter()
+        .map(|(station, item_picks, modifier_picks, modes)| Route {
+            station: *station.get(&makers),
+            items: item_picks.iter().map(|pick| *pick.get(&items)).collect(),
+            modifiers: modifier_picks.iter().map(|pick| *pick.get(&modifiers)).collect(),
+            modes: modes.iter().map(|&at| Mode::ALL[at]).collect(),
+        })
+        .filter(|route| !route.items.is_empty() || !route.modifiers.is_empty())
+        .collect();
+    let (a, b) = picks.aging;
+    let (late_ish, late) = match a.cmp(&b) {
+        core::cmp::Ordering::Less => (a, b),
+        core::cmp::Ordering::Greater => (b, a),
+        core::cmp::Ordering::Equal => (a, a + 1),
+    };
+    Kitchen {
+        stations,
+        routes,
+        default_station: picks.default.map(|pick| *pick.get(&makers)),
+        aging: Aging {
+            late_ish: NonZeroU32::new(late_ish).unwrap(),
+            late: NonZeroU32::new(late).unwrap(),
+        },
+        fallback_printer: picks.fallback.map(printer),
+    }
 }
 
 /// A profile's roles: none, as in format 1, or up to three, each permitting actions drawn, with
@@ -635,6 +772,15 @@ enum Kind {
     Role,
     Permissions,
     Permission,
+    Allergens,
+    Kitchen,
+    Stations,
+    Station,
+    Routes,
+    Route,
+    RouteItems,
+    RouteModifiers,
+    Modes,
     Other,
 }
 
@@ -647,6 +793,13 @@ impl Kind {
             (Kind::Profile, 10) => Kind::Menu,
             (Kind::Profile, 11) => Kind::Team,
             (Kind::Profile, 12) => Kind::Roles,
+            (Kind::Profile, 13) => Kind::Kitchen,
+            (Kind::Item | Kind::Modifier, 6) => Kind::Allergens,
+            (Kind::Kitchen, 1) => Kind::Stations,
+            (Kind::Kitchen, 2) => Kind::Routes,
+            (Kind::Route, 2) => Kind::RouteItems,
+            (Kind::Route, 3) => Kind::RouteModifiers,
+            (Kind::Route, 4) => Kind::Modes,
             (Kind::Member, 4) => Kind::Pin,
             (Kind::Role, 3) => Kind::Permissions,
             (Kind::Rules, 3) => Kind::Taxes,
@@ -672,6 +825,8 @@ impl Kind {
             Kind::Team => Kind::Member,
             Kind::Roles => Kind::Role,
             Kind::Permissions => Kind::Permission,
+            Kind::Stations => Kind::Station,
+            Kind::Routes => Kind::Route,
             _ => Kind::Other,
         }
     }
@@ -679,10 +834,12 @@ impl Kind {
     /// The keys a map of this kind may leave out.
     fn optional(self) -> &'static [u64] {
         match self {
-            Kind::Profile => &[7],
-            Kind::Tax => &[5],
+            Kind::Profile => &[7, 12, 13],
+            Kind::Item | Kind::Modifier => &[6],
+            Kind::Station | Kind::Tax => &[5],
+            Kind::Route => &[2, 3, 4],
             Kind::Variant => &[2],
-            Kind::Group => &[3, 5],
+            Kind::Group | Kind::Kitchen => &[3, 5],
             Kind::Permission => &[2, 3],
             _ => &[],
         }
@@ -690,7 +847,15 @@ impl Kind {
 
     /// Whether an array of this kind is a set, written in ascending order.
     fn is_set(self) -> bool {
-        matches!(self, Kind::Categories | Kind::Groups)
+        matches!(
+            self,
+            Kind::Categories
+                | Kind::Groups
+                | Kind::Allergens
+                | Kind::RouteItems
+                | Kind::RouteModifiers
+                | Kind::Modes
+        )
     }
 }
 
@@ -837,7 +1002,112 @@ fn apply(node: &Value, kind: Kind, change: &Change) -> Option<(Value, bool)> {
     }
 }
 
+/// A line's modifiers for routing: each `(modifier, under)` by index, two levels deep.
+type LinePicks = Vec<(Index, Vec<Index>)>;
+
+/// The modifiers `picks` choose from `catalog`, as a line holds them.
+fn line_modifiers(catalog: &Catalog, picks: &LinePicks) -> Vec<ChosenModifier> {
+    let modifiers: Vec<&CatalogModifier> =
+        catalog.groups.iter().flat_map(|group| &group.modifiers).collect();
+    let chosen = |pick: &Index, under: Vec<ChosenModifier>| {
+        let modifier = pick.get(&modifiers);
+        ChosenModifier {
+            modifier: modifier.id,
+            name: modifier.name.clone(),
+            prefix: modifier.prefix,
+            quantity: NonZeroU8::MIN,
+            placement: Placement::Whole,
+            unit_price: modifier.price,
+            modifiers: under,
+        }
+    };
+    picks
+        .iter()
+        .map(|(pick, under)| {
+            chosen(pick, under.iter().map(|under| chosen(under, Vec::new())).collect())
+        })
+        .collect()
+}
+
+/// Where a line goes, worked out from the decision's words, station by station (ADR-0034,
+/// decision 2): expo whole; a station a route names the item for, in the mode, whole; the
+/// default whole when no station's route names the item; otherwise each modifier a route of the
+/// station names, once, in the order the line lists them, each before those under it.
+fn route_model(
+    kitchen: &Kitchen,
+    mode: Mode,
+    item: Option<Id<Item>>,
+    modifiers: &[ChosenModifier],
+) -> Vec<Routed> {
+    let mut order = Vec::new();
+    for modifier in modifiers {
+        order.push(modifier.modifier);
+        for under in &modifier.modifiers {
+            order.push(under.modifier);
+        }
+    }
+    let routes = |station: Id<StationRef>| {
+        kitchen.routes.iter().filter(move |route| {
+            route.station == station && (route.modes.is_empty() || route.modes.contains(&mode))
+        })
+    };
+    let names_item = |station: Id<StationRef>| {
+        routes(station).any(|route| item.is_some_and(|item| route.items.contains(&item)))
+    };
+    let anywhere = kitchen.stations.iter().any(|station| names_item(station.id));
+    let mut out = Vec::new();
+    for station in &kitchen.stations {
+        let whole = station.expo
+            || names_item(station.id)
+            || (!anywhere && kitchen.default_station == Some(station.id));
+        if whole {
+            out.push(Routed { station: station.id, component: None });
+            continue;
+        }
+        let mut seen = Vec::new();
+        for &modifier in &order {
+            if !seen.contains(&modifier)
+                && routes(station.id).any(|route| route.modifiers.contains(&modifier))
+            {
+                seen.push(modifier);
+                out.push(Routed { station: station.id, component: Some(modifier) });
+            }
+        }
+    }
+    out
+}
+
 proptest! {
+    /// A line goes where the model says: by its item and mode, the default when nothing names
+    /// it, its modifiers as components, expo whole; a variant the catalog lacks, as an item no
+    /// route names.
+    #[test]
+    fn lines_route_as_the_model_says(
+        data in any_profile(),
+        picks in any_kitchen_picks(),
+        mode in prop::sample::select(Mode::ALL.to_vec()),
+        variant in any::<Index>(),
+        unknown in prop::bool::weighted(0.1),
+        line in prop::collection::vec((any::<Index>(), prop::collection::vec(any::<Index>(), 0..=2)), 0..=3),
+    ) {
+        let mut data = data;
+        data.kitchen = Some(kitchen_of(&data.catalog, &picks));
+        let Ok(profile) = Profile::new(data) else { return Ok(()) };
+        let catalog = &profile.data().catalog;
+        let variants: Vec<(Id<Variant>, Id<Item>)> = catalog
+            .items
+            .iter()
+            .flat_map(|item| item.variants.iter().map(move |variant| (variant.id, item.id)))
+            .collect();
+        let (variant, item) = if unknown { (id(0x4fff), None) } else {
+            let (variant, item) = *variant.get(&variants);
+            (variant, Some(item))
+        };
+        let modifiers = line_modifiers(catalog, &line);
+        let kitchen = profile.kitchen().unwrap();
+        prop_assert_eq!(profile.route(mode, variant, &modifiers), route_model(kitchen, mode, item, &modifiers));
+    }
+
     /// Choices ring exactly when they break no rule, and as the model says; a refusal names a
     /// rule they break.
     #[test]

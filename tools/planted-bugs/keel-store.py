@@ -1617,4 +1617,40 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         """db.query_row("SELECT COALESCE(SUM(events), 0) FROM availability", [], |row| {""",
         """db.query_row("SELECT COUNT(*) FROM availability", [], |row| {""",
     ),
+    (
+        "kitchen: a bumped ticket is projected open",
+        "src/kitchen.rs",
+        "            i64::from(ticket.is_bumped()),",
+        "            0_i64,",
+    ),
+    (
+        "kitchen: a shown ticket's fallback is due",
+        "src/store.rs",
+        "                 AND sent_at <= ?2 AND shown_at IS NULL AND rerouted IS NULL AND bumped = 0 \\",
+        "                 AND sent_at <= ?2 AND rerouted IS NULL AND bumped = 0 \\",
+    ),
+    (
+        "kitchen: a rerouted ticket's fallback is due again",
+        "src/store.rs",
+        "                 AND sent_at <= ?2 AND shown_at IS NULL AND rerouted IS NULL AND bumped = 0 \\",
+        "                 AND sent_at <= ?2 AND shown_at IS NULL AND bumped = 0 \\",
+    ),
+    (
+        "kitchen: a fallback is due at once",
+        "src/store.rs",
+        "                 AND sent_at <= ?2 AND shown_at IS NULL AND rerouted IS NULL AND bumped = 0 \\",
+        "                 AND sent_at <= ?2 + 100000000 AND shown_at IS NULL AND rerouted IS NULL AND bumped = 0 \\",
+    ),
+    (
+        "kitchen: the version counts tickets, not events",
+        "src/store.rs",
+        "                db.query_row(\"SELECT COALESCE(SUM(events), 0) FROM kitchen_tickets\", [], |row| {",
+        "                db.query_row(\"SELECT COUNT(*) FROM kitchen_tickets\", [], |row| {",
+    ),
+    (
+        "kitchen: every reroute is recent",
+        "src/store.rs",
+        "            \"rerouted IS NOT NULL AND rerouted_at >= ?1 ORDER BY rerouted_at DESC, ticket_id\",",
+        "            \"rerouted IS NOT NULL AND (rerouted_at >= ?1 OR 1) ORDER BY rerouted_at DESC, ticket_id\",",
+    ),
 ]

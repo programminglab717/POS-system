@@ -3,8 +3,9 @@
 SHA-256 and length, and its catalog's and pricing rules' versions, which keel-domain's known
 answers pin.
 
-- The demo café's (`profile::demo`), in New York: in format 2, with roles and its members' PINs
-  (ADR-0029), hashed with `argon2-cffi`, the Argon2 reference implementation's bindings.
+- The demo café's (`profile::demo`), in New York: in format 3, with roles and its members' PINs
+  (ADR-0029), hashed with `argon2-cffi`, the Argon2 reference implementation's bindings, and its
+  kitchen and its items' and modifiers' allergens (ADR-0034).
 - A bakery's in Toronto (`golden_bakery` in `src/profile/tests.rs`), which writes every optional
   field the demo leaves out: cash rounding, a tax by dining, a group's minimum and free
   applications together, every prefix, and modifiers chosen under a modifier in a group that
@@ -40,7 +41,10 @@ def builders(currency):
         return [minor, currency]
 
     def modifier(n, name, prefix, minor, groups=()):
-        return {1: ident(n), 2: name, 3: prefix, 4: money(minor), 5: [ident(g) for g in groups]}
+        record = {1: ident(n), 2: name, 3: prefix, 4: money(minor), 5: [ident(g) for g in groups]}
+        if ALLERGENS.get(n):
+            record[6] = sorted(ALLERGENS[n])
+        return record
 
     def group(n, name, bounds, repeat, modifiers):
         low, high, free = bounds
@@ -58,13 +62,16 @@ def builders(currency):
                 record[2] = title
             return record
 
-        return {
+        record = {
             1: ident(n),
             2: name,
             3: ident(category),
             4: [variant(*v) for v in variants],
             5: [ident(g) for g in groups],
         }
+        if ALLERGENS.get(n):
+            record[6] = sorted(ALLERGENS[n])
+        return record
 
     return modifier, group, item
 
@@ -94,6 +101,19 @@ def pin(digits, salt):
     return {1: salt, 2: hashed}
 
 
+# Allergens, by their codes in ADR-0034: 0 gluten, 2 eggs, 6 milk, 7 tree nuts; the demo's,
+# by the identifier of the item or modifier that has them. The bakery has none.
+GLUTEN, EGGS, MILK, TREE_NUTS = 0, 2, 6, 7
+ALLERGENS = {}
+DEMO_ALLERGENS = {
+    0x201: {MILK}, 0x204: {MILK}, 0x302: {MILK}, 0x20A: {MILK}, 0x20B: {MILK},
+    0x203: {TREE_NUTS},
+    0x20D: {EGGS}, 0x20E: {EGGS},
+    0x304: {GLUTEN},
+    0x305: {GLUTEN, EGGS, MILK},
+}
+
+
 # The actions of ADR-0029, by code: order.void, line.remove, discount.apply, price.override,
 # refund.issue, drawer.no_sale, drawer.variance, drawer.paid_out, receipt.reprint,
 # item.availability.
@@ -101,6 +121,8 @@ ACTIONS = range(10)
 
 
 def demo():
+    ALLERGENS.clear()
+    ALLERGENS.update(DEMO_ALLERGENS)
     modifier, group, item = builders("USD")
     groups = [
         group(0x101, "Milk", (0, 1, 0), False, [
@@ -182,11 +204,26 @@ def demo():
             ]},
         ],
     }
-    profile[1] = 2
+    # The kitchen: the bar, which makes the coffee, the kitchen, which makes the food, and expo,
+    # each shown on a screen, none printed; no default station; 300 s to late-ish, 600 s to late.
+    def station(n, name, expo):
+        return {1: ident(n), 2: name, 3: expo, 4: True}
+
+    def route(n, items):
+        return {1: ident(n), 2: sorted(ident(i) for i in items)}
+
+    profile[13] = {
+        1: [station(0x701, "Bar", False), station(0x702, "Kitchen", False),
+            station(0x703, "Expo", True)],
+        2: [route(0x701, [0x301, 0x302, 0x303]), route(0x702, [0x304, 0x305])],
+        4: [300, 600],
+    }
+    profile[1] = 3
     return profile, catalog, rules
 
 
 def bakery():
+    ALLERGENS.clear()
     modifier, group, item = builders("CAD")
     groups = [
         group(0x111, "Warming", (0, 1, 0), False, [modifier(0x221, "Warmed", PLAIN, 0)]),

@@ -26,6 +26,7 @@ use crate::drawers::{self, DRAWER_COLUMNS, DrawerState, DrawerSummary};
 use crate::error::StoreError;
 use crate::faults::{Faults, NoFaults, Point, proceed};
 use crate::key::StoreKey;
+use crate::kitchen::{self, KITCHEN_COLUMNS, KitchenSummary};
 use crate::outbox::{self, EffectState, Queued};
 use crate::projection::{
     self, ORDER_COLUMNS, OrderState, OrderSummary, PAYMENT_COLUMNS, PaymentSummary, Projection,
@@ -758,6 +759,124 @@ impl<S: Signer, E: Entropy> Store<S, E> {
                     row.get(0)
                 })?;
             u64::try_from(events).map_err(|_| StoreError::Corrupt("a count"))
+        })
+    }
+
+    /// The kitchen ticket `id`, as the `kitchen_tickets` projection keeps it; `None` if the store
+    /// holds no event of it (ADR-0034).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn kitchen_ticket(
+        &self,
+        id: Id<keel_domain::kitchen::KitchenTicket>,
+    ) -> Result<Option<KitchenSummary>, StoreError> {
+        self.read(|db| {
+            db.query_row(
+                &format!("SELECT {KITCHEN_COLUMNS} FROM kitchen_tickets WHERE ticket_id = ?1"),
+                [&id.to_bytes()[..]],
+                kitchen::kitchen_summary,
+            )
+            .optional()?
+            .transpose()
+        })
+    }
+
+    /// The kitchen tickets sent and not bumped, of every station, the earliest sent first
+    /// (ADR-0034).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn open_kitchen_tickets(&self) -> Result<Vec<KitchenSummary>, StoreError> {
+        self.kitchen_where("bumped = 0 AND sent_at IS NOT NULL ORDER BY sent_at, ticket_id", [])
+    }
+
+    /// The kitchen tickets of order `order`, the earliest sent first.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn order_kitchen_tickets(
+        &self,
+        order: Id<Order>,
+    ) -> Result<Vec<KitchenSummary>, StoreError> {
+        self.kitchen_where("order_id = ?1 ORDER BY sent_at, ticket_id", [&order.to_bytes()[..]])
+    }
+
+    /// The kitchen tickets sent on `date`, the earliest sent first: the day's times.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn day_kitchen_tickets(
+        &self,
+        date: BusinessDate,
+    ) -> Result<Vec<KitchenSummary>, StoreError> {
+        self.kitchen_where("business_date = ?1 ORDER BY sent_at, ticket_id", [date.to_string()])
+    }
+
+    /// The kitchen tickets `device` sent at `before` or earlier that no screen showed, nothing
+    /// rerouted, and no station bumped: those whose fallback is due (ADR-0034).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn unshown_kitchen_tickets(
+        &self,
+        device: Id<Device>,
+        before: Timestamp,
+    ) -> Result<Vec<KitchenSummary>, StoreError> {
+        self.read(|db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT {KITCHEN_COLUMNS} FROM kitchen_tickets WHERE sent_by = ?1 \
+                 AND sent_at <= ?2 AND shown_at IS NULL AND rerouted IS NULL AND bumped = 0 \
+                 ORDER BY sent_at, ticket_id"
+            ))?;
+            let rows = statement.query_map(
+                params![&device.to_bytes()[..], before.as_micros()],
+                kitchen::kitchen_summary,
+            )?;
+            rows.map(|row| row?).collect()
+        })
+    }
+
+    /// The kitchen tickets rerouted at `since` or later, the latest first: what staff are told.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn rerouted_kitchen_tickets(
+        &self,
+        since: Timestamp,
+    ) -> Result<Vec<KitchenSummary>, StoreError> {
+        self.kitchen_where(
+            "rerouted IS NOT NULL AND rerouted_at >= ?1 ORDER BY rerouted_at DESC, ticket_id",
+            [since.as_micros()],
+        )
+    }
+
+    /// How many kitchen events the store holds: it moves with every ticket sent, shown, bumped,
+    /// recalled or rerouted, here or heard, so a screen that follows it reads its tickets again.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn kitchen_version(&self) -> Result<u64, StoreError> {
+        self.read(|db| {
+            let events: i64 =
+                db.query_row("SELECT COALESCE(SUM(events), 0) FROM kitchen_tickets", [], |row| {
+                    row.get(0)
+                })?;
+            u64::try_from(events).map_err(|_| StoreError::Corrupt("a count"))
+        })
+    }
+
+    fn kitchen_where<P: rusqlite::Params>(
+        &self,
+        condition: &str,
+        params: P,
+    ) -> Result<Vec<KitchenSummary>, StoreError> {
+        self.read(|db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT {KITCHEN_COLUMNS} FROM kitchen_tickets WHERE {condition}"
+            ))?;
+            let rows = statement.query_map(params, kitchen::kitchen_summary)?;
+            rows.map(|row| row?).collect()
         })
     }
 

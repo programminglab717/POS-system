@@ -60,7 +60,7 @@ pub(crate) struct Projection {
 }
 
 /// Every projection.
-pub(crate) const ALL: [Projection; 7] = [
+pub(crate) const ALL: [Projection; 8] = [
     ORDERS,
     PAYMENTS,
     SEQUENCE,
@@ -68,6 +68,7 @@ pub(crate) const ALL: [Projection; 7] = [
     crate::drawers::DRAWERS,
     crate::refunds::REFUNDS,
     crate::availability::AVAILABILITY,
+    crate::kitchen::KITCHEN_TICKETS,
 ];
 
 impl Projection {

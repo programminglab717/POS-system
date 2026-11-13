@@ -37,3 +37,7 @@ pub enum Table {}
 /// Marks identifiers of staff roles, which bundle permissions.
 #[derive(Debug)]
 pub enum Role {}
+
+/// Marks identifiers of kitchen stations, such as the grill or expo (ADR-0034).
+#[derive(Debug)]
+pub enum Station {}

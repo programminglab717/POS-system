@@ -543,3 +543,80 @@ pub(crate) fn any_availability_event() -> BoxedStrategy<keel_domain::availabilit
     ];
     changed.prop_map(AvailabilityEvent::Changed).boxed()
 }
+
+/// A kitchen ticket's items (ADR-0034): a few, each a quantity of more than nothing in any
+/// unit, modifiers nested well, each before those under it, with or without notes, allergens
+/// and a line it is a component of.
+pub(crate) fn any_kitchen_items() -> BoxedStrategy<Vec<keel_domain::kitchen::KitchenItem>> {
+    use std::collections::BTreeSet;
+
+    use keel_domain::kitchen::{KitchenItem, KitchenModifier};
+    use keel_domain::order::Prefix;
+    use keel_domain::profile::Allergen;
+    use keel_types::{Quantity, Unit};
+    let modifier = (
+        prop::sample::select(Prefix::ALL.to_vec()),
+        1_u8..=3,
+        // Steps from the depth before: one deeper, the same, or back up.
+        prop::sample::select(vec![1_i8, 0, -1, -2]),
+    );
+    let item = (
+        0_u64..8,
+        prop_oneof![
+            (1_i64..=20).prop_map(|n| Quantity::from_whole(n, Unit::Each).unwrap()),
+            (1_i64..=5_000_000).prop_map(|micros| Quantity::from_micros(micros, Unit::Kilogram)),
+        ],
+        prop::collection::vec(modifier, 0..=4),
+        prop::option::of(Just(Note::new("no ice").unwrap())),
+        prop::collection::btree_set(prop::sample::select(Allergen::ALL.to_vec()), 0..=3),
+        any::<bool>(),
+    )
+        .prop_map(|(line, quantity, modifiers, notes, allergens, component)| {
+            let mut depth = 0_i8;
+            let modifiers = modifiers
+                .into_iter()
+                .map(|(prefix, quantity, step)| {
+                    depth = (depth + step).clamp(1, 5).min(depth + 1);
+                    KitchenModifier {
+                        name: Name::new("Oat milk").unwrap(),
+                        prefix,
+                        quantity: NonZeroU8::new(quantity).unwrap(),
+                        depth: NonZeroU8::new(u8::try_from(depth).unwrap()).unwrap(),
+                    }
+                })
+                .collect();
+            KitchenItem {
+                line: id(0x900 + line),
+                name: Name::new("Latte (Large)").unwrap(),
+                quantity,
+                modifiers,
+                notes,
+                allergens: allergens.into_iter().collect::<BTreeSet<_>>(),
+                component_of: component.then(|| Name::new("Breakfast").unwrap()),
+            }
+        });
+    prop::collection::vec(item, 1..=3).boxed()
+}
+
+/// Any kitchen ticket event (ADR-0034).
+pub(crate) fn any_kitchen_event() -> BoxedStrategy<keel_domain::kitchen::KitchenEvent> {
+    use keel_domain::kitchen::{KitchenEvent, RerouteTo, TicketSent};
+    use keel_domain::order::Mode;
+    let sent = (0_u64..4, 0_u64..4, prop::sample::select(Mode::ALL.to_vec()), any_kitchen_items())
+        .prop_map(|(order, station, mode, items)| {
+            KitchenEvent::Sent(TicketSent {
+                order: id(0x800 + order),
+                station: id(0x700 + station),
+                mode,
+                items,
+            })
+        });
+    prop_oneof![
+        4 => sent,
+        1 => Just(KitchenEvent::Shown),
+        1 => Just(KitchenEvent::Bumped),
+        1 => Just(KitchenEvent::Recalled),
+        1 => prop::sample::select(RerouteTo::ALL.to_vec()).prop_map(KitchenEvent::Rerouted),
+    ]
+    .boxed()
+}

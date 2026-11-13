@@ -3,6 +3,7 @@
 
 use core::fmt::Write as _;
 use core::num::{NonZeroU8, NonZeroU32};
+use std::collections::BTreeSet;
 
 use keel_events::cbor::{Map, Value};
 use keel_types::{Currency, Id, Money};
@@ -317,25 +318,32 @@ fn entry(entries: &mut [(Value, Value)], key: u64) -> &mut Value {
 #[test]
 fn encodings_other_than_the_profiles_own_are_refused() {
     assert_eq!(
-        decode_changed(|e| *entry(e, 1) = Value::Unsigned(3)).map(|_| ()),
-        Err(ProfileError::Format(3))
+        decode_changed(|e| *entry(e, 1) = Value::Unsigned(4)).map(|_| ()),
+        Err(ProfileError::Format(4))
     );
     assert_eq!(
-        decode_changed(|e| e.push((Value::Unsigned(13), Value::Null))).map(|_| ()),
-        Err(ProfileError::Payload(PayloadError::UnknownField("13".to_owned())))
+        decode_changed(|e| e.push((Value::Unsigned(14), Value::Null))).map(|_| ()),
+        Err(ProfileError::Payload(PayloadError::UnknownField("14".to_owned())))
     );
-    // Format 1 has no roles: their key is unknown to it. Format 2 has them.
+    // Format 1 has no roles: their key is unknown to it. Format 2 has them, and no kitchen.
     assert_eq!(
         decode_changed(|e| *entry(e, 1) = Value::Unsigned(1)).map(|_| ()),
         Err(ProfileError::Payload(PayloadError::UnknownField("12".to_owned())))
     );
     assert_eq!(
-        decode_changed(|e| e.retain(|(k, _)| *k != Value::Unsigned(12))).map(|_| ()),
-        Err(ProfileError::Payload(PayloadError::Missing("roles")))
+        decode_changed(|e| *entry(e, 1) = Value::Unsigned(2)).map(|_| ()),
+        Err(ProfileError::Payload(PayloadError::UnknownField("13".to_owned())))
     );
+    // In format 3, roles are optional, but written only when there are some; a member with a
+    // role still needs it.
     assert_eq!(
         decode_changed(|e| *entry(e, 12) = Value::Array(Vec::new())).map(|_| ()),
-        Err(ProfileError::Invalid("a format-2 profile with no roles"))
+        Err(ProfileError::Invalid("a profile's roles, written and empty"))
+    );
+    assert!(decode_changed(|e| e.retain(|(k, _)| *k != Value::Unsigned(12))).is_err());
+    assert_eq!(
+        decode_changed(|e| *entry(e, 13) = Value::Null).map(|_| ()),
+        Err(ProfileError::Payload(PayloadError::Invalid("kitchen")))
     );
     assert_eq!(
         decode_changed(|e| e.retain(|(k, _)| *k != Value::Unsigned(11))).map(|_| ()),
@@ -382,19 +390,20 @@ fn hex(bytes: &[u8]) -> String {
 /// Pinned from `tests/golden/profile.py`, which builds the demo profile with Python's `cbor2`,
 /// independently of this codec, and its PINs' hashes with `argon2-cffi`, the reference
 /// implementation's bindings. In format 2 since ADR-0029: its catalog's and rules' versions are
-/// as they were in format 1.
+/// as they were in format 1. In format 3 since ADR-0034, with a kitchen and allergens: its
+/// rules' version is as it was, and its catalog's moved with the allergens.
 #[test]
 fn the_demo_is_pinned_byte_for_byte() {
     let profile = demo().unwrap();
     let bytes = profile.encode();
-    assert_eq!(bytes.len(), 2632);
+    assert_eq!(bytes.len(), 2894);
     assert_eq!(
         hex(&sha256(&bytes)),
-        "f18e3f2d63758eee2275263b0659631f7c14f63c3cf7c5eb521b202e888cf202"
+        "c009fa218fe937c0af3a65a20f5b426f8072d7d0f9c9d4c2f0a333a7eb1891ba"
     );
     assert_eq!(
         hex(profile.catalog_version().as_bytes()),
-        "92b47a4d0bf077d94f33b6c3cc7c712c7db7e89132d6a583b045121b425eea76"
+        "565abdb3b9aafeb31cc47f4bed6cc7d8af1311f7edc2bc70d4a6664642ec018a"
     );
     assert_eq!(
         hex(profile.rules_version().as_bytes()),
@@ -700,6 +709,7 @@ fn golden_bakery() -> Profile {
             prefix,
             price: cad(minor),
             groups: groups.iter().map(|&g| id(g)).collect(),
+            allergens: BTreeSet::new(),
         };
     let group = |n: u64, title: &str, (min, max, free): (u8, u8, u8), repeat: bool, modifiers| {
         CatalogGroup {
@@ -730,6 +740,7 @@ fn golden_bakery() -> Profile {
                 })
                 .collect(),
             groups: groups.iter().map(|&g| id(g)).collect(),
+            allergens: BTreeSet::new(),
         }
     };
     let tax = |n: u64, title: &str, rate: &str, categories: &[u64], dining| Tax {
@@ -834,6 +845,7 @@ fn golden_bakery() -> Profile {
             Member { id: id(0x513), name: name("Noor"), role: None, pin: None },
         ],
         roles: Vec::new(),
+        kitchen: None,
     })
     .unwrap()
 }
@@ -886,4 +898,224 @@ fn the_bakerys_tarts_ring_with_toppings_under_toppings() {
     );
     assert_eq!(rung.item.name.as_str(), "Tarte aux fruits (Slice)");
     assert_eq!(rung.item.tax_category, id(0x14));
+}
+
+/// The demo without its kitchen and allergens: as it was before format 3.
+fn demo_before_the_kitchen() -> ProfileData {
+    let mut data = demo().unwrap().data().clone();
+    data.kitchen = None;
+    for item in &mut data.catalog.items {
+        item.allergens.clear();
+    }
+    for modifier in data.catalog.groups.iter_mut().flat_map(|group| group.modifiers.iter_mut()) {
+        modifier.allergens.clear();
+    }
+    data
+}
+
+/// Format 3 is written only for a profile with a kitchen or allergens, and allergens only in it:
+/// a profile has one encoding, and a kernel before format 3 refuses one whole, rather than
+/// reading its catalog without them (ADR-0034).
+#[test]
+fn format_3_is_written_for_a_kitchen_or_allergens_alone() {
+    let reformat = |data: ProfileData, format: u64| {
+        let bytes = Profile::new(data).unwrap().encode();
+        let mut value = cbor::decode(&bytes).unwrap();
+        let Value::Map(map) = &mut value else { panic!("a profile is a map") };
+        let mut entries = map.clone().into_entries();
+        entries.iter_mut().find(|(k, _)| *k == Value::Unsigned(1)).unwrap().1 =
+            Value::Unsigned(format);
+        Profile::decode(&Value::Map(Map::from_entries(entries).unwrap()).encode()).map(|_| ())
+    };
+    // Without them, the demo is written as it was, in format 2, and the catalog's version too.
+    let before = demo_before_the_kitchen();
+    let profile = Profile::new(before.clone()).unwrap();
+    assert_eq!(profile.encode().get(..3), Some([0xab, 0x01, 0x02].as_slice()), "11 keys, format 2");
+    assert_eq!(
+        hex(profile.catalog_version().as_bytes()),
+        "92b47a4d0bf077d94f33b6c3cc7c712c7db7e89132d6a583b045121b425eea76"
+    );
+    assert_eq!(
+        reformat(before.clone(), 3),
+        Err(ProfileError::Invalid("a format-3 profile with no kitchen and no allergens"))
+    );
+    // Allergens alone make it format 3; written as format 2, it is refused.
+    let mut allergens = before.clone();
+    allergens.catalog.items[3].allergens.insert(Allergen::Gluten);
+    assert_eq!(
+        Profile::new(allergens.clone()).unwrap().encode().get(..3),
+        Some([0xab, 0x01, 0x03].as_slice())
+    );
+    assert_eq!(
+        reformat(allergens, 2),
+        Err(ProfileError::Invalid("allergens in a profile before format 3"))
+    );
+    // A kitchen alone, with no roles: format 3, its roles' key absent.
+    let mut kitchen = before;
+    kitchen.kitchen = demo().unwrap().data().kitchen.clone();
+    kitchen.roles.clear();
+    for member in &mut kitchen.team {
+        member.role = None;
+        member.pin = None;
+    }
+    let bytes = Profile::new(kitchen).unwrap().encode();
+    assert_eq!(bytes.get(..3), Some([0xab, 0x01, 0x03].as_slice()), "11 keys: no roles, a kitchen");
+    assert_eq!(Profile::decode(&bytes).unwrap().encode(), bytes);
+}
+
+/// A line's modifiers for routing: each `(modifier, under)`, each once, as the demo names them.
+fn line_modifiers(modifiers: &[(u64, &[u64])]) -> Vec<ChosenModifier> {
+    let one = |n: u64, under: Vec<ChosenModifier>| ChosenModifier {
+        modifier: id(n),
+        name: Name::new("x").unwrap(),
+        prefix: Prefix::Plain,
+        quantity: NonZeroU8::MIN,
+        placement: Placement::Whole,
+        unit_price: Money::zero(Currency::USD),
+        modifiers: under,
+    };
+    modifiers
+        .iter()
+        .map(|&(n, under)| one(n, under.iter().map(|&u| one(u, Vec::new())).collect()))
+        .collect()
+}
+
+fn routed(station: u64, component: Option<u64>) -> Routed {
+    Routed { station: id(station), component: component.map(id) }
+}
+
+/// The demo's kitchen with a fry station, `0x704`, that makes hash browns on their own, and a
+/// pickup station, `0x705`, that makes bagels to go.
+fn with_fry_and_pickup() -> Profile {
+    let mut data = demo().unwrap().data().clone();
+    let kitchen = data.kitchen.as_mut().unwrap();
+    for (n, title) in [(0x704, "Fry"), (0x705, "Pickup")] {
+        kitchen.stations.push(Station {
+            id: id(n),
+            name: Name::new(title).unwrap(),
+            expo: false,
+            screen: true,
+            printer: None,
+        });
+    }
+    kitchen.routes.push(Route {
+        station: id(0x704),
+        items: BTreeSet::new(),
+        modifiers: [id(0x210)].into(),
+        modes: BTreeSet::new(),
+    });
+    kitchen.routes.push(Route {
+        station: id(0x705),
+        items: [id(0x304)].into(),
+        modifiers: BTreeSet::new(),
+        modes: [Mode::Takeout, Mode::Pickup].into(),
+    });
+    Profile::new(data).unwrap()
+}
+
+#[test]
+fn lines_go_to_the_stations_that_make_them_and_expo() {
+    use Mode::{DineIn, Takeout};
+    let demo = demo().unwrap();
+    // A latte to the bar, a bagel to the kitchen, each to expo too; water to expo alone.
+    assert_eq!(demo.route(DineIn, id(0x403), &[]), [routed(0x701, None), routed(0x703, None)]);
+    assert_eq!(demo.route(DineIn, id(0x407), &[]), [routed(0x702, None), routed(0x703, None)]);
+    assert_eq!(demo.route(DineIn, id(0x409), &[]), [routed(0x703, None)]);
+    // A variant the catalog no longer has goes where no route names it.
+    assert_eq!(demo.route(DineIn, id(0x4ff), &[]), [routed(0x703, None)]);
+    let kitchen = with_fry_and_pickup();
+    // A sandwich with a hash brown, ketchup under it: the kitchen makes it, fry its hash brown.
+    let sandwich = line_modifiers(&[(0x20d, &[]), (0x210, &[0x211])]);
+    assert_eq!(
+        kitchen.route(DineIn, id(0x408), &sandwich),
+        [routed(0x702, None), routed(0x703, None), routed(0x704, Some(0x210))]
+    );
+    // A bagel to go goes to pickup and the kitchen; eaten in, the kitchen alone.
+    assert_eq!(
+        kitchen.route(Takeout, id(0x407), &[]),
+        [routed(0x702, None), routed(0x703, None), routed(0x705, None)]
+    );
+    assert_eq!(kitchen.route(DineIn, id(0x407), &[]), [routed(0x702, None), routed(0x703, None)]);
+    // A default station takes what no route names.
+    let mut data = demo.data().clone();
+    data.kitchen.as_mut().unwrap().default_station = Some(id(0x702));
+    let defaulted = Profile::new(data).unwrap();
+    assert_eq!(defaulted.route(DineIn, id(0x409), &[]), [routed(0x702, None), routed(0x703, None)]);
+    // A location with no kitchen routes nothing.
+    let mut data = demo.data().clone();
+    data.kitchen = None;
+    assert!(Profile::new(data).unwrap().route(DineIn, id(0x403), &[]).is_empty());
+}
+
+#[test]
+fn a_kitchen_that_breaks_a_rule_is_refused() {
+    let refused = |change: &dyn Fn(&mut Kitchen)| {
+        let mut data = demo().unwrap().data().clone();
+        change(data.kitchen.as_mut().unwrap());
+        Profile::new(data).map(|_| ()).unwrap_err()
+    };
+    assert_eq!(
+        refused(&|k| k.stations.clear()),
+        ProfileError::Invalid("a kitchen with no stations")
+    );
+    assert_eq!(refused(&|k| k.stations[1].id = id(0x701)), ProfileError::Duplicate("stations"));
+    assert_eq!(
+        refused(&|k| k.stations[0].screen = false),
+        ProfileError::Invalid("a station no screen shows and that prints nowhere")
+    );
+    assert_eq!(refused(&|k| k.default_station = Some(id(0x7ff))), ProfileError::Unknown("station"));
+    assert_eq!(
+        refused(&|k| k.default_station = Some(id(0x703))),
+        ProfileError::Invalid("an expo station as the default")
+    );
+    assert_eq!(refused(&|k| k.routes[0].station = id(0x7ff)), ProfileError::Unknown("station"));
+    assert_eq!(
+        refused(&|k| k.routes[0].station = id(0x703)),
+        ProfileError::Invalid("a route to an expo station, which gets every line")
+    );
+    assert_eq!(
+        refused(&|k| k.routes[0].items.clear()),
+        ProfileError::Invalid("a route that names nothing")
+    );
+    assert_eq!(
+        refused(&|k| {
+            k.routes[0].items.insert(id(0x3ff));
+        }),
+        ProfileError::Unknown("item")
+    );
+    assert_eq!(
+        refused(&|k| {
+            k.routes[0].modifiers.insert(id(0x2ff));
+        }),
+        ProfileError::Unknown("modifier")
+    );
+    assert_eq!(
+        refused(&|k| k.aging.late = k.aging.late_ish),
+        ProfileError::Invalid("a ticket late before it is late-ish")
+    );
+    let host = |text: &str| {
+        let text = text.to_owned();
+        move |k: &mut Kitchen| {
+            k.fallback_printer =
+                Some(Printer { host: text.clone(), port: core::num::NonZeroU16::MIN });
+        }
+    };
+    for bad in ["", "two words", "naïve", &"a".repeat(254)] {
+        assert_eq!(
+            refused(&host(bad)),
+            ProfileError::Invalid("a printer's host that isn't a name or an address"),
+            "{bad:?}"
+        );
+    }
+    // A printer-only station, a station's printer, and a fallback: all fine.
+    let mut data = demo().unwrap().data().clone();
+    let kitchen = data.kitchen.as_mut().unwrap();
+    kitchen.stations[0].screen = false;
+    kitchen.stations[0].printer = Some(Printer {
+        host: "10.0.0.5".to_owned(),
+        port: core::num::NonZeroU16::new(9100).unwrap(),
+    });
+    host(&"a".repeat(253))(kitchen);
+    let profile = Profile::new(data).unwrap();
+    assert_eq!(Profile::decode(&profile.encode()).unwrap().data(), profile.data());
 }

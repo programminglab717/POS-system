@@ -57,6 +57,7 @@ mod drawers;
 mod error;
 mod faults;
 mod key;
+mod kitchen;
 mod outbox;
 mod ownership;
 mod projection;
@@ -77,6 +78,7 @@ pub use drawers::{DrawerState, DrawerSummary};
 pub use error::StoreError;
 pub use faults::{Faults, NoFaults, Point};
 pub use key::StoreKey;
+pub use kitchen::KitchenSummary;
 pub use outbox::{
     Effect, EffectError, EffectKind, EffectState, Enqueued, MAX_KEY, MAX_PAYLOAD, Queued,
 };

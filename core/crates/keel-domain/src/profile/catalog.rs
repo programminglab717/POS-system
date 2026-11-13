@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use keel_types::{Id, Money};
 
+use super::kitchen::Allergen;
 use crate::codec::{CatalogVersion, Name};
 use crate::order::{ChosenModifier, ItemSnapshot, Placement, Prefix};
 use crate::refs::{Item, Modifier, ModifierGroup, TaxCategory, Variant};
@@ -34,6 +35,8 @@ pub struct CatalogItem {
     pub variants: Vec<CatalogVariant>,
     /// The modifier groups offered for it, in the order they are shown.
     pub groups: Vec<Id<ModifierGroup>>,
+    /// The allergens it contains, as the kitchen is told (ADR-0034): format 3 alone.
+    pub allergens: BTreeSet<Allergen>,
 }
 
 /// A unit an item is sold in, such as a large latte.
@@ -81,6 +84,8 @@ pub struct CatalogModifier {
     pub price: Money,
     /// The modifier groups offered under it, in the order they are shown.
     pub groups: Vec<Id<ModifierGroup>>,
+    /// The allergens it adds, as the kitchen is told (ADR-0034): format 3 alone.
+    pub allergens: BTreeSet<Allergen>,
 }
 
 /// A cashier's choice of a modifier for a line, or for another modifier.

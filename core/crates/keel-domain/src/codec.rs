@@ -25,6 +25,7 @@
 
 use core::fmt;
 use core::num::{NonZeroU8, NonZeroU16};
+use std::collections::BTreeSet;
 
 use keel_events::cbor::{Map, Value};
 use keel_types::{Currency, Id, Money, Quantity, Timestamp, Unit};
@@ -510,6 +511,34 @@ impl<T> Field for IdSet<T> {
             _ => true,
         });
         (ascending && !ids.is_empty()).then_some(IdSet(ids))
+    }
+}
+
+/// A non-empty set of coded values, such as allergens or order modes, encoded in ascending order
+/// of their codes, so it has one encoding; a field with no values is absent.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CodeSet<T>(pub BTreeSet<T>);
+
+impl<T: Field + Ord + Copy> Field for CodeSet<T> {
+    fn to_value(&self) -> Value {
+        let mut values: Vec<Value> = self.0.iter().map(Field::to_value).collect();
+        values.sort_by_key(Value::as_u64);
+        Value::Array(values)
+    }
+
+    fn from_value(value: &Value) -> Option<CodeSet<T>> {
+        let values = value.as_array()?;
+        let codes: Vec<u64> = values.iter().map(Value::as_u64).collect::<Option<_>>()?;
+        // Only the ascending, repeat-free order is accepted.
+        let ascending = codes.windows(2).all(|pair| match pair {
+            [left, right] => left < right,
+            _ => true,
+        });
+        if !ascending || codes.is_empty() {
+            return None;
+        }
+        let set: BTreeSet<T> = values.iter().map(T::from_value).collect::<Option<_>>()?;
+        Some(CodeSet(set))
     }
 }
 

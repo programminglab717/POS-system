@@ -1,14 +1,16 @@
 //! The demo profile: a café's, for tests, the simulator and the register shell before a location
 //! has its own.
 
-use core::num::NonZeroU8;
+use core::num::{NonZeroU8, NonZeroU32};
+use std::collections::BTreeSet;
 
 use keel_pricing::{Rules, Tax, TaxRounding, TaxScope};
 use keel_types::{Currency, Id, Money, Rate, RoundingMode};
 
 use super::{
-    BusinessDay, Catalog, CatalogGroup, CatalogItem, CatalogModifier, CatalogVariant, Member, Menu,
-    Page, Profile, ProfileData, ProfileError,
+    Aging, Allergen, BusinessDay, Catalog, CatalogGroup, CatalogItem, CatalogModifier,
+    CatalogVariant, Kitchen, Member, Menu, Page, Profile, ProfileData, ProfileError, Route,
+    Station,
 };
 use crate::codec::Name;
 use crate::order::Prefix;
@@ -65,7 +67,27 @@ fn modifier(
         prefix,
         price: usd(cents),
         groups: groups.iter().map(|&group| id(group)).collect::<Result<_, _>>()?,
+        allergens: allergens(n),
     })
+}
+
+/// The allergens of the demo's item or modifier ending in `n`.
+fn allergens(n: u64) -> BTreeSet<Allergen> {
+    use Allergen::{Eggs, Gluten, Milk, TreeNuts};
+    let of: &[Allergen] = match n {
+        // Whole and skim milk, a latte, cream cheese and butter.
+        0x201 | 0x204 | 0x302 | 0x20a | 0x20b => &[Milk],
+        // Almond milk.
+        0x203 => &[TreeNuts],
+        // The eggs.
+        0x20d | 0x20e => &[Eggs],
+        // A bagel.
+        0x304 => &[Gluten],
+        // A breakfast sandwich: its roll, egg and cheese.
+        0x305 => &[Gluten, Eggs, Milk],
+        _ => &[],
+    };
+    of.iter().copied().collect()
 }
 
 /// An item of the demo's, with its variants and the groups offered for it.
@@ -91,6 +113,7 @@ fn item(
             })
             .collect::<Result<_, ProfileError>>()?,
         groups: groups.iter().map(|&group| id(group)).collect::<Result<_, _>>()?,
+        allergens: allergens(n),
     })
 }
 
@@ -108,10 +131,12 @@ fn item(
 /// | `401` to `40a` | their variants |
 /// | `501`, `502` | the team: Alex, a manager, PIN 1234, and Sam, a cashier, PIN 2468 |
 /// | `601`, `602` | the roles: manager, who may do everything, and cashier |
+/// | `701` to `703` | the kitchen's stations: the bar, which makes the coffee, the kitchen, which makes the food, and expo; each shown on a screen, none with a printer |
 ///
 /// A cashier may take a line off, print a receipt again, mark an item available or not, discount
 /// up to 10% and $5, and close a drawer up to $5 over or short; anything else, a manager approves.
-/// The PINs' salts are fixed, so the demo has one encoding: a merchant's are drawn.
+/// The PINs' salts are fixed, so the demo has one encoding: a merchant's are drawn. Bottled water
+/// and coffee beans go to no station but expo, which gets every line.
 ///
 /// # Errors
 /// None in practice: the demo is checked like any profile.
@@ -171,6 +196,34 @@ pub fn demo() -> Result<Profile, ProfileError> {
             },
         ],
         roles: roles()?,
+        kitchen: Some(kitchen()?),
+    })
+}
+
+/// The demo's kitchen: the bar and the kitchen, each with its items, and expo.
+fn kitchen() -> Result<Kitchen, ProfileError> {
+    let station = |n: u64, title: &str, expo: bool| -> Result<Station, ProfileError> {
+        Ok(Station { id: id(n)?, name: name(title)?, expo, screen: true, printer: None })
+    };
+    let route = |station: u64, items: &[u64]| -> Result<Route, ProfileError> {
+        Ok(Route {
+            station: id(station)?,
+            items: items.iter().map(|&item| id(item)).collect::<Result<_, _>>()?,
+            modifiers: BTreeSet::new(),
+            modes: BTreeSet::new(),
+        })
+    };
+    let seconds = |n: u32| NonZeroU32::new(n).ok_or(ProfileError::Invalid("a demo time of zero"));
+    Ok(Kitchen {
+        stations: vec![
+            station(0x701, "Bar", false)?,
+            station(0x702, "Kitchen", false)?,
+            station(0x703, "Expo", true)?,
+        ],
+        routes: vec![route(0x701, &[0x301, 0x302, 0x303])?, route(0x702, &[0x304, 0x305])?],
+        default_station: None,
+        aging: Aging { late_ish: seconds(300)?, late: seconds(600)? },
+        fallback_printer: None,
     })
 }
 

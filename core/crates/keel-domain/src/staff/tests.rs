@@ -189,6 +189,14 @@ fn a_cashier_asks_a_manager_who_never_approves_their_own_request() {
 fn a_profile_without_roles_lets_every_member_do_everything_with_no_pin() {
     let mut data = demo().unwrap().data().clone();
     data.roles.clear();
+    // Nor a kitchen, nor allergens, which format 3 alone writes.
+    data.kitchen = None;
+    for item in &mut data.catalog.items {
+        item.allergens.clear();
+    }
+    for modifier in data.catalog.groups.iter_mut().flat_map(|group| group.modifiers.iter_mut()) {
+        modifier.allergens.clear();
+    }
     for member in &mut data.team {
         member.role = None;
         member.pin = None;

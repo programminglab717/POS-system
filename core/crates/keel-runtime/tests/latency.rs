@@ -55,6 +55,7 @@ fn large(skus: u64) -> Profile {
                 price: Money::from_minor(100 + i64::try_from(n % 900).unwrap(), Currency::USD),
             }],
             groups: Vec::new(),
+            allergens: std::collections::BTreeSet::new(),
         });
     }
     data.menu.pages.push(Page {

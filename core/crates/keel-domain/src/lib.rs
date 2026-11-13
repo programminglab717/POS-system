@@ -22,6 +22,8 @@
 //! - [`drawer`]: a drawer session's cash, from its float to its blind close (ADR-0031);
 //! - [`refund`]: money paid back for lines returned (ADR-0032);
 //! - [`availability`]: whether an item is on sale, or 86'd (ADR-0033).
+//! - [`kitchen`]: tickets for the kitchen's stations, and what each station did with them
+//!   (ADR-0034).
 //!
 //! [`checkout`] holds the rules that span an order and its payments: what each check still owes,
 //! starting a payment, closing a check, and money that doesn't fit the order. [`sequence`] holds
@@ -41,6 +43,7 @@ pub mod checkout;
 pub mod codec;
 pub mod drawer;
 pub mod hub;
+pub mod kitchen;
 pub mod order;
 pub mod payment;
 pub mod profile;

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1307c71f27ea798a1b9bb68378e5e898ee6b8a490cb1fadebe5f8060eb41ac54 # shrinks to (shape, item, variant, choices) = (Shape { groups: [(2, (0, 255, 0), false, [(75, []), (60, []), (999999999, []), (100, [])])], items: [([60, 60, 100], 2, [])] }, 0, 2, [])

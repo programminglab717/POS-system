@@ -35,7 +35,7 @@ What is built shapes it:
 
    | Record | Keys |
    |---|---|
-   | kitchen | 1 stations (at least one), 2 routes, 3 default station, 4 `[seconds until a ticket is late-ish, seconds until it is late]`, 5 fallback printer (optional) |
+   | kitchen | 1 stations (at least one), 2 routes, 3 default station (optional), 4 `[seconds until a ticket is late-ish, seconds until it is late]`, 5 fallback printer (optional) |
    | station | 1 identifier, 2 name, 3 expo (a bool), 4 screen (a bool: a KDS shows it), 5 printer (optional) |
    | route | 1 station, 2 items (a set), 3 modifiers (a set), 4 order modes (a set; absent for all) |
    | printer | 1 host, 2 port |
@@ -46,7 +46,8 @@ What is built shapes it:
    none, so a catalog without them hashes as before.
 
 2. **Routing is a function of the profile**: a line goes to every station a route names for its
-   item, in its order's mode, or to the default station when none does; a route that matches
+   item, in its order's mode, or to the default station when none does, if the kitchen has one:
+   bottled water goes to no cook; a route that matches
    only one of its modifiers, at any depth, sends that modifier on its own, as a component, to
    its station ("Hash brown, for Breakfast sandwich"). Every expo station gets every line. So
    every device routes a fire alike, and a test asks the profile, not the kitchen.
@@ -75,10 +76,10 @@ What is built shapes it:
    ticket: the screen as the system's component `kds`, the register as its member, a reroute as
    the component `kitchen`, so a KDS needs no one signed in.
 
-5. **Fallbacks are print jobs**: each ticket for a station with a printer and no screen prints at
-   once; each for a screen is a print job due 10 s after it is sent, which, when its time comes,
-   is dropped if a screen showed the ticket, and otherwise prints on the station's printer, or on
-   the kitchen's fallback printer, marked rerouted, and records the reroute. A ticket nowhere to
+5. **Fallbacks print**: each ticket for a station with a printer and no screen prints at once.
+   The device that sent a ticket for a screen looks at it again from its print loop: once 10 s
+   have passed with no screen showing it, it prints on the station's printer, or on the kitchen's
+   fallback printer, marked rerouted, and the device records the reroute. A ticket nowhere to
    print is rerouted nowhere. Every device shows the reroutes of the last ten minutes. A print
    job names the printer it goes to; a receipt names none, and goes to the register's own. A
    line voided after it was printed prints a void slip where its ticket printed.

@@ -98,11 +98,41 @@ The MVP's step 6, the kitchen: routing to stations, kitchen tickets and a KDS, t
 fallbacks (D-01…D-03, D-06, D-07, D-11) ([ADR-0034](./adr/0034-the-kitchen.md), proposed), is
 built in three slices, each verified as it lands, then reviewed together:
 
-1. **The domain and the store**: profile format 3 (stations, routes, allergens), routing, the
-   kitchen ticket aggregate and its five schemas, the projection. Next.
+1. **The domain and the store** (built 2026-11-13): profile format 3 (stations, routes,
+   allergens), routing, the kitchen ticket aggregate and its five schemas, the projection.
 2. **The register and the kitchen**: firing, the tickets, voids and their slips, the KDS's
    queries and intents, the fallback print jobs and the kitchen ticket's document, the bindings.
 3. **The shell**: the Android register's Send and voids, and the app as a KDS.
+
+Next: slice 2.
+
+Built in slice 1:
+
+- **The profile, format 3** (`keel-domain`): the kitchen (stations, each expo or not, shown on a
+  screen or not, with a printer or not; routes by item, modifier and order mode; an optional
+  default station; aging thresholds; a fallback printer) and the catalog's allergens. Format 3
+  is written only for a profile with a kitchen or allergens, and allergens only in it, so a
+  profile without them is byte for byte as before, its catalog's version too, and a kernel
+  before format 3 refuses one whole. The demo café is format 3: a bar, a kitchen and expo, its
+  water and beans to expo alone. The cloud's catalog editor keeps each item's allergens.
+  - Routing (`Profile::route`): a line to every station a route names for its item in its
+    order's mode, or the default; a modifier a route names, at any depth, to its station as a
+    component; every expo station whole.
+  - Known answers: the demo's routes, a component, a route by mode, a default, no kitchen; every
+    rule a kitchen breaks; format 3 for a kitchen or allergens alone; the demo re-pinned from
+    the independent `cbor2` builder, extended with the kitchen and allergens.
+  - Properties: routing against a model of the decision's words; random profiles with kitchens
+    and allergens round-trip, and every change to their encodings is refused or canonical.
+- **Kitchen tickets** (`keel-domain`): `kitchen.ticket_sent`, `_shown`, `_bumped`, `_recalled`,
+  `_rerouted`, v1, pinned as `cbor2` encodes them. The first sending, showing and reroute
+  stand, and the latest bump or recall; an event before the sending or at another location
+  doesn't apply; a ticket both shown and rerouted is reported. Commands refuse what the fold
+  reports and what changes nothing, a showing after a reroute among them.
+  - Properties: the fold against a model of the rules; a command accepted exactly when its event
+    changes the ticket and reports nothing; the payload model knows the five schemas and a
+    ticket's items.
+- **The store's `kitchen_tickets` projection**: open tickets, a day's, an order's, those whose
+  fallback is due, the rerouted, and a version that moves with every kitchen event.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3, 4 and 5's among them, and
 the three of step 2 the scrolling ticket pane should mend.

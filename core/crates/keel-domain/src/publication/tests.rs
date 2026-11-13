@@ -42,6 +42,7 @@ fn large(items: u64) -> Profile {
                 price: Money::from_minor(100, Currency::USD),
             }],
             groups: Vec::new(),
+            allergens: std::collections::BTreeSet::new(),
         });
     }
     Profile::new(data).unwrap()

@@ -843,6 +843,14 @@ proceed (and conflict) independently.
 - **Speed-of-service instrumentation**: every order records timestamps for start, send, first item
   started, bump, ready and handoff, by channel and station. A drive-thru timer API pairs a detected
   car with a transaction.
+- **As built** ([ADR-0034](../adr/0034-the-kitchen.md)): a kitchen ticket is an aggregate per
+  station and fire, `kitchen_ticket`, its events `kitchen.ticket_sent`, `_shown`, `_bumped`,
+  `_recalled` and `_rerouted` (v1). It holds what to make as it was sent; what became of its lines
+  since is read from the order. The location's profile, format 3, holds the kitchen: stations
+  (expo or not, shown on a screen or not, with a printer or not), routes by item and modifier and
+  order mode, an optional default station, aging thresholds and a fallback printer; and the
+  catalog's allergens, from a fixed list of fourteen. Routing is a function of the profile:
+  dayparts, revenue centres, course holds and cook-time sequencing are not built yet.
 
 ---
 

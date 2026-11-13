@@ -32,8 +32,8 @@ use keel_types::{Currency, Id, Money, Unit};
 use proptest::prelude::*;
 use support::{
     any_availability_event, any_captured, any_check_closed, any_drawer_event, any_event,
-    any_line_added, any_line_changed, any_lines_allocated, any_lines_returned, any_ownership_event,
-    any_payment_event, any_refund_event, modifiers,
+    any_kitchen_event, any_kitchen_items, any_line_added, any_line_changed, any_lines_allocated,
+    any_lines_returned, any_ownership_event, any_payment_event, any_refund_event, modifiers,
 };
 
 /// An event of any aggregate.
@@ -44,6 +44,7 @@ enum Event {
     Drawer(keel_domain::drawer::DrawerEvent),
     Refund(keel_domain::refund::RefundEvent),
     Availability(keel_domain::availability::AvailabilityEvent),
+    Kitchen(keel_domain::kitchen::KitchenEvent),
     Sequence(SequenceEvent),
     Hub(HubEvent),
 }
@@ -56,6 +57,7 @@ impl Event {
             Event::Drawer(event) => event.schema(),
             Event::Refund(event) => event.schema(),
             Event::Availability(event) => event.schema(),
+            Event::Kitchen(event) => event.schema(),
             Event::Sequence(event) => event.schema(),
             Event::Hub(event) => event.schema(),
         }
@@ -68,6 +70,7 @@ impl Event {
             Event::Drawer(event) => event.to_value(),
             Event::Refund(event) => event.to_value(),
             Event::Availability(event) => event.to_value(),
+            Event::Kitchen(event) => event.to_value(),
             Event::Sequence(event) => event.to_value(),
             Event::Hub(event) => event.to_value(),
         }
@@ -83,6 +86,9 @@ fn decode(schema: &SchemaRef, payload: &Value) -> Result<Value, DecodeError> {
         keel_domain::drawer::DrawerEvent::from_value(schema, payload).map(|event| event.to_value())
     } else if name.starts_with("availability.") {
         keel_domain::availability::AvailabilityEvent::from_value(schema, payload)
+            .map(|event| event.to_value())
+    } else if name.starts_with("kitchen.") {
+        keel_domain::kitchen::KitchenEvent::from_value(schema, payload)
             .map(|event| event.to_value())
     } else if name.starts_with("refund.") {
         keel_domain::refund::RefundEvent::from_value(schema, payload).map(|event| event.to_value())
@@ -103,6 +109,7 @@ fn any_any_event() -> impl Strategy<Value = Event> {
         1 => any_drawer_event().prop_map(Event::Drawer).boxed(),
         1 => any_refund_event().prop_map(Event::Refund).boxed(),
         1 => any_availability_event().prop_map(Event::Availability).boxed(),
+        1 => any_kitchen_event().prop_map(Event::Kitchen).boxed(),
         1 => any_assigned().prop_map(|record| Event::Sequence(SequenceEvent::Assigned(record))),
         1 => any_claimed().prop_map(|claimed| Event::Hub(HubEvent::Claimed(claimed))),
     ]
@@ -149,6 +156,8 @@ enum Kind {
     Bool,
     /// A time: microseconds since the Unix epoch, from 0001 to 9999 (ADR-0033).
     Time,
+    /// A kitchen ticket's items (ADR-0034).
+    KitchenItems,
     /// A sequencing record's epoch or number, or a position in a log: from 1 to [`LARGEST`]. A
     /// grant's lease and epoch, and a claim's epoch, too.
     Number,
@@ -185,6 +194,14 @@ fn drawer_rules(schema: &str) -> Option<Vec<(u64, Kind, Presence)>> {
             (4, Reason, Optional),
             (5, Note, Optional),
         ],
+        "kitchen.ticket_sent" => vec![
+            (1, Id, Required),
+            (2, Id, Required),
+            (3, Code(7), Required),
+            (4, KitchenItems, Required),
+        ],
+        "kitchen.ticket_shown" | "kitchen.ticket_bumped" | "kitchen.ticket_recalled" => vec![],
+        "kitchen.ticket_rerouted" => vec![(1, Code(2), Required)],
         "order.lines_returned" => vec![
             (1, Id, Required),
             (2, LinesReturned, Required),
@@ -494,6 +511,63 @@ fn returned_valid(value: &Value) -> bool {
         })
 }
 
+/// Whether `value` is a kitchen ticket's items (ADR-0034): one to 500 of them, each a line, a
+/// name, a quantity of more than nothing and its modifiers, each listed before those under it,
+/// the first at depth 1 and none more than one deeper than the one before nor deeper than 5;
+/// and optionally notes, allergens (codes 0 to 13, ascending, at least one) and the name of the
+/// line it is a component of.
+fn kitchen_items_valid(value: &Value) -> bool {
+    let Some(items) = value.as_array() else { return false };
+    (1..=500).contains(&items.len()) && items.iter().all(kitchen_item_valid)
+}
+
+fn kitchen_item_valid(item: &Value) -> bool {
+    let Some(map) = item.as_map() else { return false };
+    let kinds: [(u64, bool); 7] =
+        [(1, true), (2, true), (3, true), (4, true), (5, false), (6, false), (7, false)];
+    let known = map.iter().all(|(key, _)| key.as_u64().is_some_and(|key| (1..=7).contains(&key)));
+    let present = kinds
+        .iter()
+        .filter(|(_, required)| *required)
+        .all(|(key, _)| map.get(&Value::Unsigned(*key)).is_some());
+    if !known || !present {
+        return false;
+    }
+    let get = |key: u64| map.get(&Value::Unsigned(key));
+    let quantity = get(3).unwrap();
+    let positive =
+        valid_value(Quantity, quantity) && as_i64(&quantity.as_array().unwrap()[0]).unwrap() > 0;
+    let allergens = get(6).is_none_or(|codes| {
+        codes.as_array().is_some_and(|codes| {
+            let codes: Option<Vec<u64>> = codes.iter().map(Value::as_u64).collect();
+            codes.is_some_and(|codes| {
+                !codes.is_empty()
+                    && codes.iter().all(|&code| code <= 13)
+                    && codes.windows(2).all(|pair| pair[0] < pair[1])
+            })
+        })
+    });
+    valid_value(Id, get(1).unwrap())
+        && valid_value(Name, get(2).unwrap())
+        && positive
+        && kitchen_modifiers_valid(get(4).unwrap())
+        && get(5).is_none_or(|notes| valid_value(Note, notes))
+        && allergens
+        && get(7).is_none_or(|name| valid_value(Name, name))
+}
+
+fn kitchen_modifiers_valid(value: &Value) -> bool {
+    let Some(modifiers) = records(value, &[Name, Code(5), Count8, Count8]) else { return false };
+    let mut deepest = 0;
+    modifiers.len() <= 255
+        && modifiers.iter().all(|modifier| {
+            let depth = modifier[3].as_u64().unwrap();
+            let fits = depth <= deepest + 1 && depth <= 5;
+            deepest = depth;
+            fits
+        })
+}
+
 /// The rules of a capture, which span its fields.
 fn capture_valid(map: &Map) -> bool {
     let get = |key: u64| map.get(&Value::Unsigned(key)).map(|value| money(value).unwrap());
@@ -568,6 +642,7 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
         LineCharges => records(value, &[Id, Money, Money, Money]).is_some(),
         TaxCharges => records(value, &[Id, Money, Money]).is_some(),
         LinesReturned => records(value, &[Id, Quantity, Money, Money]).is_some(),
+        KitchenItems => kitchen_items_valid(value),
         Bool => value.as_bool().is_some(),
         Time => as_i64(value).is_some_and(|micros| {
             (keel_types::Timestamp::MIN.as_micros()..=keel_types::Timestamp::MAX.as_micros())
@@ -828,6 +903,7 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
         .boxed(),
         LineCharges => charges_near_miss(3),
         LinesReturned => returned_near_miss(),
+        KitchenItems => kitchen_items_near_miss(),
         Bool => bool_near_miss(),
         Time => time_near_miss(),
         TaxCharges => charges_near_miss(4),
@@ -944,6 +1020,71 @@ fn returned_near_miss() -> BoxedStrategy<Value> {
         1 => Just(Value::Array(Vec::new())),
     ]
     .boxed()
+}
+
+/// A kitchen ticket's items: valid, or with one thing wrong, aimed at the payload's rules.
+fn kitchen_items_near_miss() -> BoxedStrategy<Value> {
+    let field = |items: &[keel_domain::kitchen::KitchenItem]| {
+        let sent = keel_domain::kitchen::TicketSent {
+            order: support::id(1),
+            station: support::id(2),
+            mode: keel_domain::order::Mode::DineIn,
+            items: items.to_vec(),
+        };
+        let payload = keel_domain::kitchen::KitchenEvent::Sent(sent).to_value();
+        payload.as_map().unwrap().get(&Value::Unsigned(4)).unwrap().clone()
+    };
+    prop_oneof![
+        2 => any_kitchen_items().prop_map(move |items| field(&items)),
+        4 => (any_kitchen_items(), 0_u8..6, any::<prop::sample::Index>(), any::<prop::sample::Index>())
+            .prop_map(move |(items, how, at, deep)| spoil_kitchen(&field(&items), how, at, deep)),
+        1 => Just(Value::Array(Vec::new())),
+    ]
+    .boxed()
+}
+
+/// Items with one thing wrong, or right after all: the item at `at` with its quantity zero, a
+/// modifier at `deep` made one or two deeper, an unknown key, its allergens out of order or
+/// repeated or with a code past the list's, or its notes empty.
+fn spoil_kitchen(
+    value: &Value,
+    how: u8,
+    at: prop::sample::Index,
+    deep: prop::sample::Index,
+) -> Value {
+    let mut items = value.as_array().unwrap().to_vec();
+    let i = at.index(items.len());
+    let mut entries = items[i].as_map().unwrap().clone().into_entries();
+    let set = |entries: &mut Vec<(Value, Value)>, key: u64, value: Value| {
+        entries.retain(|(k, _)| k.as_u64() != Some(key));
+        entries.push((Value::Unsigned(key), value));
+    };
+    match how {
+        0 => set(&mut entries, 3, Value::Array(vec![Value::Unsigned(0), Value::from("each")])),
+        1 => {
+            let (_, modifiers) = entries.iter_mut().find(|(k, _)| k.as_u64() == Some(4)).unwrap();
+            let mut list = modifiers.as_array().unwrap().to_vec();
+            if !list.is_empty() {
+                let m = deep.index(list.len());
+                let mut fields = list[m].as_map().unwrap().clone().into_entries();
+                let (_, depth) = fields.iter_mut().find(|(k, _)| k.as_u64() == Some(4)).unwrap();
+                *depth =
+                    Value::Unsigned(depth.as_u64().unwrap() + 1 + u64::from(m.is_multiple_of(2)));
+                list[m] = Value::Map(Map::from_entries(fields).unwrap());
+            }
+            *modifiers = Value::Array(list);
+        }
+        2 => set(&mut entries, 8, Value::Unsigned(1)),
+        3 => set(&mut entries, 6, Value::Array(vec![Value::Unsigned(6), Value::Unsigned(2)])),
+        4 => set(
+            &mut entries,
+            6,
+            Value::Array(vec![Value::Unsigned(if deep.index(2) == 0 { 13 } else { 14 })]),
+        ),
+        _ => set(&mut entries, 5, Value::from("")),
+    }
+    items[i] = Value::Map(Map::from_entries(entries).unwrap());
+    Value::Array(items)
 }
 
 fn charges_near_miss(key: u64) -> BoxedStrategy<Value> {
@@ -1773,6 +1914,15 @@ proptest! {
         accepted_exactly_when_valid(&event, &change)?;
     }
 
+    /// The same for kitchen tickets (ADR-0034), on their own, so that each of their fields, and
+    /// a ticket's items' rules, are tried often.
+    #[test]
+    fn changed_kitchen_payloads_are_accepted_exactly_when_valid(
+        (event, change) in any_case(any_kitchen_event().prop_map(Event::Kitchen)),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
     /// The same for discounts (ADR-0030), on their own, so that each of their fields, and the
     /// rules across them, are tried often.
     #[test]
@@ -2202,7 +2352,7 @@ proptest! {
         let schema = schema_ref(&event);
         let newer = SchemaRef { name: schema.name.clone(), version: version.try_into().unwrap() };
         prop_assert_eq!(decode(&newer, &event.to_value()), Err(DecodeError::UnknownSchema));
-        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown", "drawer.unknown", "refund.unknown", "availability.unknown"] {
+        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown", "drawer.unknown", "refund.unknown", "availability.unknown", "kitchen.unknown"] {
             let renamed = SchemaRef { name: SchemaName::new(name).unwrap(), version: schema.version };
             prop_assert_eq!(decode(&renamed, &event.to_value()), Err(DecodeError::UnknownSchema));
         }
@@ -2216,14 +2366,16 @@ proptest! {
         let as_refund = keel_domain::refund::RefundEvent::from_value(&schema, &payload).map(|_| ());
         let as_availability =
             keel_domain::availability::AvailabilityEvent::from_value(&schema, &payload).map(|_| ());
+        let as_kitchen = keel_domain::kitchen::KitchenEvent::from_value(&schema, &payload).map(|_| ());
         let crossed = match &event {
-            Event::Order(_) => [as_payment, as_sequence, as_hub, as_drawer, as_refund, as_availability],
-            Event::Payment(_) => [as_order, as_sequence, as_hub, as_drawer, as_refund, as_availability],
-            Event::Sequence(_) => [as_order, as_payment, as_hub, as_drawer, as_refund, as_availability],
-            Event::Hub(_) => [as_order, as_payment, as_sequence, as_drawer, as_refund, as_availability],
-            Event::Drawer(_) => [as_order, as_payment, as_sequence, as_hub, as_refund, as_availability],
-            Event::Refund(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_availability],
-            Event::Availability(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_refund],
+            Event::Order(_) => [as_payment, as_sequence, as_hub, as_drawer, as_refund, as_availability, as_kitchen],
+            Event::Payment(_) => [as_order, as_sequence, as_hub, as_drawer, as_refund, as_availability, as_kitchen],
+            Event::Sequence(_) => [as_order, as_payment, as_hub, as_drawer, as_refund, as_availability, as_kitchen],
+            Event::Hub(_) => [as_order, as_payment, as_sequence, as_drawer, as_refund, as_availability, as_kitchen],
+            Event::Drawer(_) => [as_order, as_payment, as_sequence, as_hub, as_refund, as_availability, as_kitchen],
+            Event::Refund(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_availability, as_kitchen],
+            Event::Availability(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_refund, as_kitchen],
+            Event::Kitchen(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_refund, as_availability],
         };
         for decoded in crossed {
             prop_assert_eq!(decoded, Err(DecodeError::UnknownSchema));

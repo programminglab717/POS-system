@@ -596,3 +596,89 @@ fn availability_is_projected_and_sold_out_items_found() {
     assert_eq!(store.availability(espresso).unwrap(), Some(summary));
     assert_eq!(store.availability_version().unwrap(), 3);
 }
+
+/// Kitchen tickets are projected (ADR-0034): the open ones, a day's, an order's, those whose
+/// fallback is due, the rerouted, and a version that moves with every event.
+#[test]
+fn kitchen_tickets_are_projected_and_found() {
+    use keel_domain::kitchen::{KitchenEvent, KitchenItem, KitchenTicket, RerouteTo, TicketSent};
+    use keel_types::Timestamp;
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let at =
+        |seconds: i64| Timestamp::from_micros(1_794_560_400_000_000 + seconds * 1_000_000).unwrap();
+    let sent = |station: u64| {
+        KitchenEvent::Sent(TicketSent {
+            order: id(0x800),
+            station: id(station),
+            mode: Mode::DineIn,
+            items: vec![KitchenItem {
+                line: id(0x900),
+                name: Name::new("Latte").unwrap(),
+                quantity: Quantity::from_whole(1, Unit::Each).unwrap(),
+                modifiers: Vec::new(),
+                notes: None,
+                allergens: std::collections::BTreeSet::new(),
+                component_of: None,
+            }],
+        })
+    };
+    let (bar, kitchen): (Id<KitchenTicket>, Id<KitchenTicket>) = (id(0xA01), id(0xA02));
+    assert_eq!(store.kitchen_version().unwrap(), 0);
+    append(
+        &mut store,
+        vec![domain_draft(bar.cast(), &sent(0x701)), domain_draft(kitchen.cast(), &sent(0x702))],
+        at(0),
+    );
+    let ids = |tickets: Vec<KitchenSummary>| {
+        tickets.into_iter().map(|ticket| ticket.id).collect::<Vec<_>>()
+    };
+    assert_eq!(ids(store.open_kitchen_tickets().unwrap()), [bar, kitchen]);
+    let summary = store.kitchen_ticket(bar).unwrap().unwrap();
+    assert_eq!(summary.station, Some(id(0x701)));
+    assert_eq!(summary.order, Some(id(0x800)));
+    assert_eq!(summary.sent.map(|(when, _)| when), Some(at(0)));
+    let device = summary.sent.unwrap().1;
+    // The bar's screen shows its ticket; neither is due its fallback until 10 s on.
+    append(&mut store, vec![domain_draft(bar.cast(), &KitchenEvent::Shown)], at(2));
+    assert_eq!(store.kitchen_ticket(bar).unwrap().unwrap().shown_at, Some(at(2)));
+    assert_eq!(ids(store.unshown_kitchen_tickets(device, at(-1)).unwrap()), []);
+    assert_eq!(ids(store.unshown_kitchen_tickets(device, at(0)).unwrap()), [kitchen]);
+    assert_eq!(
+        ids(store.unshown_kitchen_tickets(id(0xD9), at(10)).unwrap()),
+        [],
+        "another device's"
+    );
+    // The kitchen's is rerouted, the bar's bumped.
+    append(
+        &mut store,
+        vec![
+            domain_draft(kitchen.cast(), &KitchenEvent::Rerouted(RerouteTo::StationPrinter)),
+            domain_draft(bar.cast(), &KitchenEvent::Bumped),
+        ],
+        at(10),
+    );
+    assert_eq!(ids(store.unshown_kitchen_tickets(device, at(10)).unwrap()), []);
+    let rerouted = store.rerouted_kitchen_tickets(at(5)).unwrap();
+    assert_eq!(
+        rerouted.iter().map(|ticket| (ticket.id, ticket.rerouted)).collect::<Vec<_>>(),
+        [(kitchen, Some((RerouteTo::StationPrinter, at(10))))]
+    );
+    assert_eq!(ids(store.rerouted_kitchen_tickets(at(11)).unwrap()), []);
+    assert_eq!(ids(store.open_kitchen_tickets().unwrap()), [kitchen]);
+    let bumped = store.kitchen_ticket(bar).unwrap().unwrap();
+    assert!(bumped.bumped);
+    assert_eq!(bumped.bumped_at, Some(at(10)));
+    // Recalled, it is open again; the day's and the order's tickets are both.
+    append(&mut store, vec![domain_draft(bar.cast(), &KitchenEvent::Recalled)], at(12));
+    assert_eq!(ids(store.open_kitchen_tickets().unwrap()), [bar, kitchen]);
+    let date = summary.business_date.unwrap();
+    assert_eq!(ids(store.day_kitchen_tickets(date).unwrap()), [bar, kitchen]);
+    assert_eq!(ids(store.order_kitchen_tickets(id(0x800)).unwrap()), [bar, kitchen]);
+    assert_eq!(ids(store.order_kitchen_tickets(id(0x801)).unwrap()), []);
+    assert_eq!(store.kitchen_version().unwrap(), 6);
+    let before = store.kitchen_ticket(bar).unwrap();
+    store.rebuild_projections().unwrap();
+    assert_eq!(store.kitchen_ticket(bar).unwrap(), before);
+    assert_eq!(store.kitchen_version().unwrap(), 6);
+}

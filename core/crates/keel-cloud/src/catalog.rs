@@ -270,12 +270,26 @@ pub fn apply(profile: &Profile, edit: &CatalogEdit) -> Result<Profile, EditError
     let mut data = profile.data().clone();
     let currency = data.currency;
     let money = |minor: i64| Money::from_minor(minor, currency);
+    // The editor doesn't edit allergens yet: an item or modifier keeps the ones it had.
+    let item_allergens = |item: Id<keel_domain::refs::Item>| {
+        data.catalog
+            .items
+            .iter()
+            .find(|known| known.id == item)
+            .map(|known| known.allergens.clone())
+            .unwrap_or_default()
+    };
+    let modifier_allergens = |modifier: Id<keel_domain::refs::Modifier>| {
+        profile.modifier(modifier).map(|known| known.allergens.clone()).unwrap_or_default()
+    };
     let items = edit
         .items
         .iter()
         .map(|item| {
+            let item_id = id(&item.id, "item")?;
             Ok(CatalogItem {
-                id: id(&item.id, "item")?,
+                id: item_id,
+                allergens: item_allergens(item_id),
                 name: name(&item.name, "item name")?,
                 tax_category: id(&item.tax_category, "tax category")?,
                 variants: item
@@ -324,8 +338,10 @@ pub fn apply(profile: &Profile, edit: &CatalogEdit) -> Result<Profile, EditError
                                     modifier.prefix
                                 ))
                             })?;
+                        let modifier_id = id(&modifier.id, "modifier")?;
                         Ok(CatalogModifier {
-                            id: id(&modifier.id, "modifier")?,
+                            id: modifier_id,
+                            allergens: modifier_allergens(modifier_id),
                             name: name(&modifier.name, "modifier name")?,
                             prefix,
                             price: money(modifier.price),

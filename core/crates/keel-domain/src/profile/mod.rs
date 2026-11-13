@@ -58,6 +58,7 @@
 
 mod catalog;
 mod demo;
+mod kitchen;
 mod rules;
 #[cfg(test)]
 mod tests;
@@ -75,8 +76,15 @@ pub use catalog::{
     Catalog, CatalogGroup, CatalogItem, CatalogModifier, CatalogVariant, Choice, RingError, Rung,
 };
 pub use demo::demo;
+pub use kitchen::{
+    Aging, Allergen, Kitchen, MAX_HOST, MAX_ROUTED, MAX_ROUTES, MAX_STATIONS, Printer, Route,
+    Routed, Station,
+};
 
-use crate::codec::{CatalogVersion, Field, Fields, Name, PayloadError, Record, RulesVersion};
+use crate::codec::{
+    CatalogVersion, CodeSet, Field, Fields, Name, PayloadError, Record, RulesVersion,
+};
+use crate::order::{ChosenModifier, Mode};
 use crate::refs::{Modifier, ModifierGroup, Role as RoleRef, Variant};
 use crate::staff::{PinHash, Request, Role};
 use catalog::{Index, full_name};
@@ -86,6 +94,9 @@ pub const FORMAT: u64 = 1;
 
 /// The profile format of a profile with roles (ADR-0029).
 pub const FORMAT_ROLES: u64 = 2;
+
+/// The profile format of a profile with a kitchen, or allergens, and roles or none (ADR-0034).
+pub const FORMAT_KITCHEN: u64 = 3;
 
 /// The most roles a profile has.
 pub const MAX_ROLES: usize = 100;
@@ -182,6 +193,8 @@ pub struct ProfileData {
     pub team: Vec<Member>,
     /// What each may do: empty for a profile without roles, whose members may do everything.
     pub roles: Vec<Role>,
+    /// Its kitchen, if it has one (ADR-0034).
+    pub kitchen: Option<Kitchen>,
 }
 
 /// A location profile, checked whole.
@@ -257,6 +270,9 @@ impl Profile {
         let index = check_catalog(&data.catalog, data.currency)?;
         check_menu(&data.menu, &index)?;
         check_team(&data.team, &data.roles)?;
+        if let Some(kitchen) = &data.kitchen {
+            kitchen::check(kitchen, &data.catalog, &index)?;
+        }
         let catalog_version =
             CatalogVersion::from_bytes(sha256(&catalog_value(&data.catalog).encode()));
         let rules_version =
@@ -273,19 +289,30 @@ impl Profile {
         let value = cbor::decode(bytes)?;
         let mut fields = Fields::read(&value)?;
         let format: u64 = fields.required(key::FORMAT, "profile format")?;
-        if format != FORMAT && format != FORMAT_ROLES {
+        if format != FORMAT && format != FORMAT_ROLES && format != FORMAT_KITCHEN {
             return Err(ProfileError::Format(format));
         }
-        // Format 2 has roles, and format 1 none: its key 12 is unknown.
-        let roles = if format == FORMAT_ROLES {
-            let roles: Vec<Role> = fields.required(key::ROLES, "roles")?;
-            if roles.is_empty() {
-                return Err(ProfileError::Invalid("a format-2 profile with no roles"));
+        // Format 2 has roles, and format 1 none: its key 12 is unknown. Format 3 has them or
+        // not, and its kitchen or not; keys 12 and 13 are unknown before it.
+        let roles = match format {
+            FORMAT_ROLES => {
+                let roles: Vec<Role> = fields.required(key::ROLES, "roles")?;
+                if roles.is_empty() {
+                    return Err(ProfileError::Invalid("a format-2 profile with no roles"));
+                }
+                roles
             }
-            roles
-        } else {
-            Vec::new()
+            FORMAT_KITCHEN => {
+                let roles: Option<Vec<Role>> = fields.optional(key::ROLES, "roles")?;
+                if roles.as_ref().is_some_and(Vec::is_empty) {
+                    return Err(ProfileError::Invalid("a profile's roles, written and empty"));
+                }
+                roles.unwrap_or_default()
+            }
+            _ => Vec::new(),
         };
+        let kitchen: Option<Kitchen> =
+            if format == FORMAT_KITCHEN { fields.optional(key::KITCHEN, "kitchen")? } else { None };
         let business_day: BusinessDay = fields.required(key::BUSINESS_DAY, "business day")?;
         let rules = fields.required::<RulesField>(key::RULES, "pricing rules")?.0;
         let catalog = fields.required::<CatalogField>(key::CATALOG, "catalog")?.0;
@@ -303,16 +330,35 @@ impl Profile {
             menu: fields.required(key::MENU, "menu")?,
             team: fields.required(key::TEAM, "team")?,
             roles,
+            kitchen,
         };
         fields.finish()?;
+        // A profile has one encoding: format 3 only with what needs it, and allergens only in
+        // format 3, which older kernels refuse whole rather than misread.
+        let needs = needs_kitchen_format(&data);
+        if format == FORMAT_KITCHEN && !needs {
+            return Err(ProfileError::Invalid(
+                "a format-3 profile with no kitchen and no allergens",
+            ));
+        }
+        if format != FORMAT_KITCHEN && has_allergens(&data.catalog) {
+            return Err(ProfileError::Invalid("allergens in a profile before format 3"));
+        }
         Profile::new(data)
     }
 
     /// The profile's canonical encoding.
     pub fn encode(&self) -> Vec<u8> {
         let data = &self.data;
-        // A profile without roles is written as format 1, byte for byte as before.
-        let format = if data.roles.is_empty() { FORMAT } else { FORMAT_ROLES };
+        // A profile without roles is written as format 1, and one without a kitchen or
+        // allergens as format 1 or 2, byte for byte as before.
+        let format = if needs_kitchen_format(data) {
+            FORMAT_KITCHEN
+        } else if data.roles.is_empty() {
+            FORMAT
+        } else {
+            FORMAT_ROLES
+        };
         let roles = (!data.roles.is_empty()).then_some(&data.roles);
         Record::default()
             .field(key::FORMAT, &format)
@@ -327,6 +373,7 @@ impl Profile {
             .field(key::MENU, &data.menu)
             .field(key::TEAM, &data.team)
             .optional(key::ROLES, roles)
+            .optional(key::KITCHEN, data.kitchen.as_ref())
             .build()
             .encode()
     }
@@ -375,6 +422,25 @@ impl Profile {
     /// The modifier group `group`.
     pub fn group(&self, group: Id<ModifierGroup>) -> Option<&CatalogGroup> {
         self.data.catalog.groups.get(*self.index.groups.get(&group)?)
+    }
+
+    /// The location's kitchen, if it has one (ADR-0034).
+    pub const fn kitchen(&self) -> Option<&Kitchen> {
+        self.data.kitchen.as_ref()
+    }
+
+    /// Where a line of `variant` with `modifiers`, in an order of `mode`, goes in the kitchen
+    /// ([`Kitchen::route`]); nowhere, in a location without one. A variant the catalog no longer
+    /// has goes where no route names it.
+    pub fn route(
+        &self,
+        mode: Mode,
+        variant: Id<Variant>,
+        modifiers: &[ChosenModifier],
+    ) -> Vec<Routed> {
+        let Some(kitchen) = &self.data.kitchen else { return Vec::new() };
+        let item = kitchen::item_of(&self.data.catalog, &self.index, variant);
+        kitchen.route(mode, item, modifiers)
     }
 
     /// The modifier `modifier`, of whichever group holds it.
@@ -657,6 +723,27 @@ mod key {
     pub(super) const MENU: u64 = 10;
     pub(super) const TEAM: u64 = 11;
     pub(super) const ROLES: u64 = 12;
+    pub(super) const KITCHEN: u64 = 13;
+}
+
+/// Whether `data` is written as format 3: it has a kitchen, or allergens.
+fn needs_kitchen_format(data: &ProfileData) -> bool {
+    data.kitchen.is_some() || has_allergens(&data.catalog)
+}
+
+/// Whether any item or modifier of `catalog` gives allergens.
+fn has_allergens(catalog: &Catalog) -> bool {
+    catalog.items.iter().any(|item| !item.allergens.is_empty())
+        || catalog
+            .groups
+            .iter()
+            .flat_map(|group| &group.modifiers)
+            .any(|modifier| !modifier.allergens.is_empty())
+}
+
+/// `allergens` as a catalog record writes them: absent when there are none.
+fn allergen_codes(allergens: &BTreeSet<Allergen>) -> Option<CodeSet<Allergen>> {
+    (!allergens.is_empty()).then(|| CodeSet(allergens.clone()))
 }
 
 impl Field for u64 {
@@ -770,6 +857,7 @@ mod catalog_key {
     pub(super) const ITEM_TAX_CATEGORY: u64 = 3;
     pub(super) const ITEM_VARIANTS: u64 = 4;
     pub(super) const ITEM_GROUPS: u64 = 5;
+    pub(super) const ALLERGENS: u64 = 6;
 
     pub(super) const VARIANT_PRICE: u64 = 3;
 
@@ -792,6 +880,7 @@ impl Field for CatalogItem {
             .field(catalog_key::ITEM_TAX_CATEGORY, &self.tax_category)
             .field(catalog_key::ITEM_VARIANTS, &self.variants)
             .field(catalog_key::ITEM_GROUPS, &self.groups)
+            .optional(catalog_key::ALLERGENS, allergen_codes(&self.allergens).as_ref())
             .build()
     }
 
@@ -803,10 +892,18 @@ impl Field for CatalogItem {
             tax_category: fields.required(catalog_key::ITEM_TAX_CATEGORY, "tax category").ok()?,
             variants: fields.required(catalog_key::ITEM_VARIANTS, "variants").ok()?,
             groups: fields.required(catalog_key::ITEM_GROUPS, "modifier groups").ok()?,
+            allergens: allergens_of(&mut fields)?,
         };
         fields.finish().ok()?;
         Some(item)
     }
+}
+
+/// A catalog record's allergens, none when absent; `None` if they aren't a set of allergens.
+fn allergens_of(fields: &mut Fields<'_>) -> Option<BTreeSet<Allergen>> {
+    let codes: Option<CodeSet<Allergen>> =
+        fields.optional(catalog_key::ALLERGENS, "allergens").ok()?;
+    Some(codes.map(|codes| codes.0).unwrap_or_default())
 }
 
 impl Field for CatalogVariant {
@@ -868,6 +965,7 @@ impl Field for CatalogModifier {
             .field(catalog_key::MODIFIER_PREFIX, &self.prefix)
             .field(catalog_key::MODIFIER_PRICE, &self.price)
             .field(catalog_key::MODIFIER_GROUPS, &self.groups)
+            .optional(catalog_key::ALLERGENS, allergen_codes(&self.allergens).as_ref())
             .build()
     }
 
@@ -879,6 +977,7 @@ impl Field for CatalogModifier {
             prefix: fields.required(catalog_key::MODIFIER_PREFIX, "prefix").ok()?,
             price: fields.required(catalog_key::MODIFIER_PRICE, "price").ok()?,
             groups: fields.required(catalog_key::MODIFIER_GROUPS, "modifier groups").ok()?,
+            allergens: allergens_of(&mut fields)?,
         };
         fields.finish().ok()?;
         Some(modifier)
