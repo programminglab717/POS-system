@@ -14,13 +14,15 @@
 //! it. Permissions and approvals are checked by other parts of the kernel.
 
 use keel_events::envelope::{Device, Location};
-use keel_types::Id;
+use keel_types::{Id, Quantity};
 
 use super::checks::{Check, LinesAllocated};
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
+use super::returns::{LineReturned, LinesReturned, Return, Returned, refunded};
 use super::state::{Line, LineStatus, Order, OrderInfo, OrderStatus};
 use super::types::{Discount, DiscountApplied, DiscountValue, LineRepriced, Reason};
 use crate::codec::{Change, IdSet, PayloadError};
+use crate::refund::Refund;
 use crate::schema::{SchemaError, Unrecordable, check_recordable};
 
 /// What a device asks to do to an order.
@@ -82,6 +84,9 @@ pub enum OrderCommand {
     /// Price a live line again, at a unit price of zero or more in the order's currency, unless
     /// it is on a closed check (ADR-0030).
     RepriceLine(LineRepriced),
+    /// Return lines of a closed order, whole or in part, each refunded its share of what the
+    /// order's checks charged it (ADR-0032). The order works out the shares.
+    ReturnLines(Return),
 }
 
 impl OrderCommand {
@@ -104,6 +109,7 @@ impl OrderCommand {
                 | OrderCommand::ApplyDiscount(_)
                 | OrderCommand::RemoveDiscount(_)
                 | OrderCommand::RepriceLine(_)
+                | OrderCommand::ReturnLines(_)
         )
     }
 }
@@ -190,6 +196,22 @@ pub enum CommandError {
     /// The order has no discount with that identifier, or it was taken off.
     #[error("no discount {0}")]
     UnknownDiscount(Id<Discount>),
+    /// Only a closed order's lines are returned (ADR-0032).
+    #[error("the order isn't closed")]
+    NotClosed,
+    /// Lines of the order were returned: what its checks charged, which the returns were refunded
+    /// from, stays frozen.
+    #[error("lines of the order were returned: it can't be reopened")]
+    Returned,
+    /// A return with that refund was recorded before.
+    #[error("a return with refund {0} was recorded before")]
+    ReturnExists(Id<Refund>),
+    /// More of the line than is left to return.
+    #[error("more of line {0} than is left to return")]
+    ReturnBeyond(Id<Line>),
+    /// No closed check charged the line, so there is nothing to refund it from.
+    #[error("no check charged line {0}")]
+    NotCharged(Id<Line>),
     /// The device's request for the order still waits for the hub's answer.
     #[error("the device's request for the order is waiting")]
     RequestPending,
@@ -225,7 +247,13 @@ impl Order {
             OrderCommand::Reopen(reason) if closed => {
                 self.check_location(location)?;
                 self.check_owner(device)?;
+                self.check_not_returned()?;
                 OrderEvent::Reopened { reason }
+            }
+            OrderCommand::ReturnLines(asked) if closed => {
+                let info = self.check_location(location)?;
+                self.check_owner(device)?;
+                self.decide_return(info, asked)?
             }
             OrderCommand::RequestOwnership if closed => {
                 self.check_location(location)?;
@@ -310,6 +338,56 @@ impl Order {
             return Err(CommandError::NothingToClose);
         }
         Ok(info)
+    }
+
+    /// Refuses reopening an order with lines returned.
+    fn check_not_returned(&self) -> Result<(), CommandError> {
+        if self.lines().iter().any(|line| line.returned().is_some()) {
+            return Err(CommandError::Returned);
+        }
+        Ok(())
+    }
+
+    /// Decides on a return (ADR-0032): each line once, live, in its own unit, charged by a closed
+    /// check, and no more of it than is left; each refunded its share of what it was charged, of
+    /// what is returned so far.
+    fn decide_return(&self, info: &OrderInfo, asked: Return) -> Result<OrderEvent, CommandError> {
+        if self.has_return(asked.refund) {
+            return Err(CommandError::ReturnExists(asked.refund));
+        }
+        let mut lines = asked.lines;
+        lines.sort_by_key(|(line, _)| line.to_bytes());
+        if lines.windows(2).any(|pair| matches!(pair, [(a, _), (b, _)] if a == b)) {
+            return Err(CommandError::Invalid(PayloadError::Invalid("lines")));
+        }
+        let mut returned = Vec::with_capacity(lines.len());
+        for (id, quantity) in lines {
+            let line = self.line(id).ok_or(CommandError::UnknownLine(id))?;
+            if !line.is_live() {
+                return Err(CommandError::LineNotLive(id));
+            }
+            if quantity.unit() != line.quantity().unit() {
+                return Err(CommandError::WrongUnit(id));
+            }
+            if !quantity.is_positive() {
+                return Err(CommandError::Invalid(PayloadError::Invalid("quantity")));
+            }
+            let (net, tax) = self.charged(id).ok_or(CommandError::NotCharged(id))?;
+            let before = line
+                .returned()
+                .map_or(Quantity::zero(quantity.unit()), |before: &Returned| before.quantity);
+            let whole = line.quantity();
+            let beyond = CommandError::ReturnBeyond(id);
+            let net = refunded(net, before, quantity, whole).ok_or_else(|| beyond.clone())?;
+            let tax = refunded(tax, before, quantity, whole).ok_or(beyond)?;
+            returned.push(LineReturned { line: id, quantity, net, tax });
+        }
+        let event = LinesReturned { refund: asked.refund, lines: returned, reason: asked.reason };
+        event.validate().map_err(CommandError::Invalid)?;
+        if event.lines.iter().any(|line| line.net.currency() != info.currency) {
+            return Err(CommandError::WrongCurrency);
+        }
+        Ok(OrderEvent::LinesReturned(event))
     }
 
     /// The first closed check, by number.
@@ -404,7 +482,9 @@ impl Order {
             OrderCommand::Create(_) => Err(CommandError::AlreadyCreated),
             OrderCommand::RequestOwnership => self.decide_ownership(device, None),
             OrderCommand::OverrideOwnership(reason) => self.decide_ownership(device, Some(reason)),
+            OrderCommand::ReturnLines(_) => Err(CommandError::NotClosed),
             OrderCommand::Reopen(reason) => {
+                self.check_not_returned()?;
                 self.closed_check().ok_or(CommandError::NothingToReopen)?;
                 Ok(OrderEvent::Reopened { reason })
             }

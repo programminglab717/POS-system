@@ -32,7 +32,8 @@ use keel_types::{Currency, Id, Money, Unit};
 use proptest::prelude::*;
 use support::{
     any_captured, any_check_closed, any_drawer_event, any_event, any_line_added, any_line_changed,
-    any_lines_allocated, any_ownership_event, any_payment_event, modifiers,
+    any_lines_allocated, any_lines_returned, any_ownership_event, any_payment_event,
+    any_refund_event, modifiers,
 };
 
 /// An event of any aggregate.
@@ -41,6 +42,7 @@ enum Event {
     Order(OrderEvent),
     Payment(PaymentEvent),
     Drawer(keel_domain::drawer::DrawerEvent),
+    Refund(keel_domain::refund::RefundEvent),
     Sequence(SequenceEvent),
     Hub(HubEvent),
 }
@@ -51,6 +53,7 @@ impl Event {
             Event::Order(event) => event.schema(),
             Event::Payment(event) => event.schema(),
             Event::Drawer(event) => event.schema(),
+            Event::Refund(event) => event.schema(),
             Event::Sequence(event) => event.schema(),
             Event::Hub(event) => event.schema(),
         }
@@ -61,6 +64,7 @@ impl Event {
             Event::Order(event) => event.to_value(),
             Event::Payment(event) => event.to_value(),
             Event::Drawer(event) => event.to_value(),
+            Event::Refund(event) => event.to_value(),
             Event::Sequence(event) => event.to_value(),
             Event::Hub(event) => event.to_value(),
         }
@@ -74,6 +78,8 @@ fn decode(schema: &SchemaRef, payload: &Value) -> Result<Value, DecodeError> {
         PaymentEvent::from_value(schema, payload).map(|event| event.to_value())
     } else if name.starts_with("drawer.") {
         keel_domain::drawer::DrawerEvent::from_value(schema, payload).map(|event| event.to_value())
+    } else if name.starts_with("refund.") {
+        keel_domain::refund::RefundEvent::from_value(schema, payload).map(|event| event.to_value())
     } else if name.starts_with("sequence.") {
         SequenceEvent::from_value(schema, payload).map(|event| event.to_value())
     } else if name.starts_with("hub.") {
@@ -89,6 +95,7 @@ fn any_any_event() -> impl Strategy<Value = Event> {
         3 => any_event().prop_map(Event::Order),
         1 => any_payment_event().prop_map(Event::Payment),
         1 => any_drawer_event().prop_map(Event::Drawer).boxed(),
+        1 => any_refund_event().prop_map(Event::Refund).boxed(),
         1 => any_assigned().prop_map(|record| Event::Sequence(SequenceEvent::Assigned(record))),
         1 => any_claimed().prop_map(|claimed| Event::Hub(HubEvent::Claimed(claimed))),
     ]
@@ -129,6 +136,8 @@ enum Kind {
     LineCharges,
     /// What a closed check charged for each tax.
     TaxCharges,
+    /// Lines returned, and what each refunds (ADR-0032).
+    LinesReturned,
     /// A sequencing record's epoch or number, or a position in a log: from 1 to [`LARGEST`]. A
     /// grant's lease and epoch, and a claim's epoch, too.
     Number,
@@ -145,14 +154,25 @@ enum Kind {
 use Kind::*;
 use Presence::{Clearable, Optional, Required};
 
-/// The documented keys of each drawer schema (ADR-0031), or `None` for another schema.
+/// The documented keys of each drawer and refund schema, and of a return (ADR-0031, ADR-0032), or
+/// `None` for another schema.
 fn drawer_rules(schema: &str) -> Option<Vec<(u64, Kind, Presence)>> {
     Some(match schema {
         "drawer.opened" => vec![(1, Money, Required)],
-        "drawer.cash_taken" => vec![(1, Id, Required), (2, Money, Required)],
+        "drawer.cash_taken" | "drawer.cash_refunded" => {
+            vec![(1, Id, Required), (2, Money, Required)]
+        }
         "drawer.cash_moved" => DRAWER_MOVED.to_vec(),
         "drawer.no_sale" => vec![(1, Reason, Required), (2, Note, Optional)],
         "drawer.closed" => vec![(1, Money, Required), (2, Money, Required)],
+        "refund.initiated" => vec![(1, Id, Required), (2, Code(1), Required), (3, Money, Required)],
+        "refund.completed" => vec![(1, Money, Required), (2, Money, Optional)],
+        "order.lines_returned" => vec![
+            (1, Id, Required),
+            (2, LinesReturned, Required),
+            (3, Reason, Required),
+            (4, Note, Optional),
+        ],
         _ => return None,
     })
 }
@@ -437,6 +457,25 @@ fn snapshot_valid(map: &Map) -> bool {
         && (total <= 0 || map.get(&Value::Unsigned(6)).is_some())
 }
 
+/// The rules of lines returned (ADR-0032): not empty, in strictly ascending order of line, each
+/// returning more than zero and refunding a net and a tax of zero or more, all in one currency.
+fn returned_valid(value: &Value) -> bool {
+    let lines = records(value, &[Id, Quantity, Money, Money]).unwrap();
+    let Some(first) = lines.first() else { return false };
+    let currency = money(&first[2]).unwrap().1;
+    strictly_ascending(&lines.iter().map(|line| &line[0]).collect::<Vec<_>>())
+        && lines.iter().all(|line| {
+            let micros = as_i64(&line[1].as_array().unwrap()[0]).unwrap();
+            let (net, net_currency) = money(&line[2]).unwrap();
+            let (tax, tax_currency) = money(&line[3]).unwrap();
+            micros > 0
+                && net >= 0
+                && tax >= 0
+                && net_currency == currency
+                && tax_currency == currency
+        })
+}
+
 /// The rules of a capture, which span its fields.
 fn capture_valid(map: &Map) -> bool {
     let get = |key: u64| map.get(&Value::Unsigned(key)).map(|value| money(value).unwrap());
@@ -510,6 +549,7 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
         }),
         LineCharges => records(value, &[Id, Money, Money, Money]).is_some(),
         TaxCharges => records(value, &[Id, Money, Money]).is_some(),
+        LinesReturned => records(value, &[Id, Quantity, Money, Money]).is_some(),
         Number => value.as_u64().is_some_and(|n| (1..=LARGEST).contains(&n)),
         Lease => value.as_u64().is_some_and(|n| n <= LARGEST),
         Runs => runs_valid(value),
@@ -629,7 +669,19 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
         "order.check_closed" => snapshot_valid(map),
         "order.line_repriced" => money(get(2).unwrap()).unwrap().0 >= 0,
         "drawer.opened" => money(get(1).unwrap()).unwrap().0 >= 0,
-        "drawer.cash_taken" | "drawer.cash_moved" => money(get(2).unwrap()).unwrap().0 > 0,
+        "drawer.cash_taken" | "drawer.cash_moved" | "drawer.cash_refunded" => {
+            money(get(2).unwrap()).unwrap().0 > 0
+        }
+        "order.lines_returned" => returned_valid(get(2).unwrap()),
+        "refund.initiated" => money(get(3).unwrap()).unwrap().0 > 0,
+        "refund.completed" => {
+            let (amount, currency) = money(get(1).unwrap()).unwrap();
+            amount > 0
+                && get(2).is_none_or(|rounding| {
+                    let (rounding, in_currency) = money(rounding).unwrap();
+                    rounding != 0 && in_currency == currency
+                })
+        }
         "drawer.closed" => {
             let (counted, currency) = money(get(1).unwrap()).unwrap();
             counted >= 0 && money(get(2).unwrap()).unwrap().1 == currency
@@ -724,6 +776,7 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
         ]
         .boxed(),
         LineCharges => charges_near_miss(3),
+        LinesReturned => returned_near_miss(),
         TaxCharges => charges_near_miss(4),
         Modifiers => prop_oneof![
             2 => support::any_currency()
@@ -825,6 +878,21 @@ fn cuts_near_miss() -> BoxedStrategy<Value> {
 }
 
 /// Charges close to a snapshot's: its lines' (key 3) or taxes' (key 4), valid or spoiled.
+/// Values close to lines returned (ADR-0032): valid, or spoiled as charges are.
+fn returned_near_miss() -> BoxedStrategy<Value> {
+    let field = |returned: &keel_domain::order::LinesReturned| {
+        let payload = OrderEvent::LinesReturned(returned.clone()).to_value();
+        payload.as_map().unwrap().get(&Value::Unsigned(2)).unwrap().clone()
+    };
+    prop_oneof![
+        2 => any_lines_returned().prop_map(move |returned| field(&returned)),
+        4 => (any_lines_returned(), 0_u8..5, any::<prop::sample::Index>(), -2_i64..=2)
+            .prop_map(move |(returned, how, at, by)| spoil_charges(&field(&returned), how, at, by)),
+        1 => Just(Value::Array(Vec::new())),
+    ]
+    .boxed()
+}
+
 fn charges_near_miss(key: u64) -> BoxedStrategy<Value> {
     let field = move |closed: &CheckClosed| {
         let payload = OrderEvent::CheckClosed(closed.clone()).to_value();
@@ -1628,6 +1696,21 @@ proptest! {
         accepted_exactly_when_valid(&event, &change)?;
     }
 
+    /// The same for refunds, cash refunded, and returns (ADR-0032), on their own, so that each
+    /// of their fields, and the rules across them, are tried often.
+    #[test]
+    fn changed_refund_payloads_are_accepted_exactly_when_valid(
+        (event, change) in any_case(prop_oneof![
+            any_refund_event().prop_map(Event::Refund),
+            any_lines_returned().prop_map(|returned| Event::Order(OrderEvent::LinesReturned(returned))),
+            any_drawer_event()
+                .prop_filter("cash refunded", |event| matches!(event, keel_domain::drawer::DrawerEvent::CashRefunded(_)))
+                .prop_map(Event::Drawer),
+        ]),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
     /// The same for discounts (ADR-0030), on their own, so that each of their fields, and the
     /// rules across them, are tried often.
     #[test]
@@ -2057,7 +2140,7 @@ proptest! {
         let schema = schema_ref(&event);
         let newer = SchemaRef { name: schema.name.clone(), version: version.try_into().unwrap() };
         prop_assert_eq!(decode(&newer, &event.to_value()), Err(DecodeError::UnknownSchema));
-        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown", "drawer.unknown"] {
+        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown", "drawer.unknown", "refund.unknown"] {
             let renamed = SchemaRef { name: SchemaName::new(name).unwrap(), version: schema.version };
             prop_assert_eq!(decode(&renamed, &event.to_value()), Err(DecodeError::UnknownSchema));
         }
@@ -2068,12 +2151,14 @@ proptest! {
         let as_sequence = SequenceEvent::from_value(&schema, &payload).map(|_| ());
         let as_hub = HubEvent::from_value(&schema, &payload).map(|_| ());
         let as_drawer = keel_domain::drawer::DrawerEvent::from_value(&schema, &payload).map(|_| ());
+        let as_refund = keel_domain::refund::RefundEvent::from_value(&schema, &payload).map(|_| ());
         let crossed = match &event {
-            Event::Order(_) => [as_payment, as_sequence, as_hub, as_drawer],
-            Event::Payment(_) => [as_order, as_sequence, as_hub, as_drawer],
-            Event::Sequence(_) => [as_order, as_payment, as_hub, as_drawer],
-            Event::Hub(_) => [as_order, as_payment, as_sequence, as_drawer],
-            Event::Drawer(_) => [as_order, as_payment, as_sequence, as_hub],
+            Event::Order(_) => [as_payment, as_sequence, as_hub, as_drawer, as_refund],
+            Event::Payment(_) => [as_order, as_sequence, as_hub, as_drawer, as_refund],
+            Event::Sequence(_) => [as_order, as_payment, as_hub, as_drawer, as_refund],
+            Event::Hub(_) => [as_order, as_payment, as_sequence, as_drawer, as_refund],
+            Event::Drawer(_) => [as_order, as_payment, as_sequence, as_hub, as_refund],
+            Event::Refund(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer],
         };
         for decoded in crossed {
             prop_assert_eq!(decoded, Err(DecodeError::UnknownSchema));

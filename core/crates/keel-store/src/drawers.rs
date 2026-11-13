@@ -1,7 +1,8 @@
 //! The `drawers` projection (ADR-0031): one row per drawer session, so a device finds its open
 //! session, and a day's report finds that day's sessions, without reading every event; and one
 //! row per payment whose cash a session took, so a report finds which cash no drawer counted,
-//! whatever day the session opened. Version 2 adds those; found in review.
+//! whatever day the session opened. Version 2 adds those; found in review. Version 3 adds what
+//! each session refunded, and one row per refund whose cash it handed back (ADR-0032).
 
 use keel_domain::aggregate::{Aggregate, fold};
 use keel_domain::drawer::{Drawer, DrawerClosed, DrawerInfo, Sums};
@@ -18,7 +19,7 @@ use crate::schema::{hlc, id};
 /// The `drawers` projection.
 pub(crate) const DRAWERS: Projection = Projection {
     name: "drawers",
-    version: 2,
+    version: 3,
     kind: "drawer",
     key: "drawer_id",
     order: "drawer_id",
@@ -43,7 +44,8 @@ pub(crate) const DRAWERS: Projection = Projection {
             unreadable INTEGER NOT NULL,
             events INTEGER NOT NULL,
             first_hlc BLOB NOT NULL CHECK (length(first_hlc) = 8),
-            last_hlc BLOB NOT NULL CHECK (length(last_hlc) = 8)
+            last_hlc BLOB NOT NULL CHECK (length(last_hlc) = 8),
+            refunded INTEGER
         ) STRICT;
         CREATE INDEX drawers_by_device ON drawers (device, state, first_hlc);
         CREATE INDEX drawers_by_date ON drawers (business_date, first_hlc);
@@ -53,8 +55,15 @@ pub(crate) const DRAWERS: Projection = Projection {
             PRIMARY KEY (payment_id, drawer_id)
         ) STRICT;
         CREATE INDEX drawer_payments_by_drawer ON drawer_payments (drawer_id);
+        CREATE TABLE drawer_refunds (
+            refund_id BLOB NOT NULL CHECK (length(refund_id) = 16),
+            drawer_id BLOB NOT NULL CHECK (length(drawer_id) = 16),
+            PRIMARY KEY (refund_id, drawer_id)
+        ) STRICT;
+        CREATE INDEX drawer_refunds_by_drawer ON drawer_refunds (drawer_id);
     ",
-    drop: "DROP TABLE IF EXISTS drawer_payments; DROP TABLE IF EXISTS drawers",
+    drop: "DROP TABLE IF EXISTS drawer_refunds; DROP TABLE IF EXISTS drawer_payments; \
+           DROP TABLE IF EXISTS drawers",
     project: project_drawer,
 };
 
@@ -144,8 +153,8 @@ fn project_drawer(
     db.execute(
         "INSERT OR REPLACE INTO drawers (drawer_id, state, location, device, currency, float, \
          opened_by, business_date, taken, paid_in, paid_out, dropped, no_sales, counted, \
-         expected, conflicts, unreadable, events, first_hlc, last_hlc) VALUES (?1, ?2, ?3, ?4, \
-         ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+         expected, conflicts, unreadable, events, first_hlc, last_hlc, refunded) VALUES (?1, ?2, \
+         ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             &drawer.stream_id().to_bytes()[..],
             DrawerState::of(&drawer).code(),
@@ -167,6 +176,7 @@ fn project_drawer(
             span.events,
             &span.first[..],
             &span.last[..],
+            sums.map(|sums| sums.refunded.minor()),
         ],
     )?;
     let session = &drawer.stream_id().to_bytes()[..];
@@ -176,17 +186,23 @@ fn project_drawer(
     for payment in drawer.payments() {
         insert.execute(params![&payment.to_bytes()[..], session])?;
     }
+    db.execute("DELETE FROM drawer_refunds WHERE drawer_id = ?1", [session])?;
+    let mut insert =
+        db.prepare("INSERT INTO drawer_refunds (refund_id, drawer_id) VALUES (?1, ?2)")?;
+    for refund in drawer.refunds() {
+        insert.execute(params![&refund.to_bytes()[..], session])?;
+    }
     Ok(())
 }
 
 /// The columns a drawer summary is read from, in order.
 pub(crate) const DRAWER_COLUMNS: &str = "drawer_id, state, location, device, currency, float, \
     opened_by, business_date, taken, paid_in, paid_out, dropped, no_sales, counted, expected, \
-    conflicts, unreadable, events, first_hlc, last_hlc";
+    conflicts, unreadable, events, first_hlc, last_hlc, refunded";
 
 /// Reads a drawer summary from a row of [`DRAWER_COLUMNS`].
 pub(crate) fn drawer_summary(row: &Row<'_>) -> rusqlite::Result<Result<DrawerSummary, StoreError>> {
-    let values: Vec<Value> = (0..20).map(|column| row.get(column)).collect::<Result<_, _>>()?;
+    let values: Vec<Value> = (0..21).map(|column| row.get(column)).collect::<Result<_, _>>()?;
     Ok(read_drawer(&values))
 }
 
@@ -215,11 +231,11 @@ fn read_drawer(values: &[Value]) -> Result<DrawerSummary, StoreError> {
         (None, None) => None,
         _ => return Err(StoreError::Corrupt("a drawer's opening")),
     };
-    let sums = match (money(8)?, money(9)?, money(10)?, money(11)?) {
-        (Some(taken), Some(paid_in), Some(paid_out), Some(dropped)) => {
-            Some(Sums { taken, paid_in, paid_out, dropped })
+    let sums = match (money(8)?, money(9)?, money(10)?, money(11)?, money(20)?) {
+        (Some(taken), Some(paid_in), Some(paid_out), Some(dropped), Some(refunded)) => {
+            Some(Sums { taken, paid_in, paid_out, dropped, refunded })
         }
-        (None, None, None, None) => None,
+        (None, None, None, None, None) => None,
         _ => return Err(StoreError::Corrupt("a drawer's sums")),
     };
     let closed = match (money(13)?, money(14)?) {

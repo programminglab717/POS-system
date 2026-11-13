@@ -876,11 +876,13 @@ fn signed_events_fold_into_their_stream_only() {
 struct Device {
     order: Order,
     script: Script,
+    /// The last event it recorded.
+    last: Option<OrderEvent>,
 }
 
 impl Device {
     fn new() -> Device {
-        Device { order: Order::new(id(0xA)), script: Script::new() }
+        Device { order: Order::new(id(0xA)), script: Script::new(), last: None }
     }
 
     /// A device with an open order holding line 1, fired or not.
@@ -897,6 +899,7 @@ impl Device {
     fn run(&mut self, command: OrderCommand) -> Result<(), CommandError> {
         let event = self.order.decide(location(), id(0xD), command)?;
         self.record(&event);
+        self.last = Some(event);
         Ok(())
     }
 
@@ -1150,7 +1153,7 @@ fn orders_close_with_their_checks_and_reopen_when_something_closed() {
     assert_eq!(device.run(OrderCommand::Abandon), Err(CommandError::HasLiveLines));
     // Even when a concurrent removal took the check's only line off, what it was paid stands:
     // the order isn't abandoned.
-    let mut emptied = Device { order: device.order.clone(), script: Script::new() };
+    let mut emptied = Device { order: device.order.clone(), script: Script::new(), last: None };
     let meta = emptied.script.meta_at(location());
     emptied.order.apply(&meta, &OrderEvent::LineRemoved { line: id(1) });
     assert_eq!(emptied.run(OrderCommand::Abandon), Err(CommandError::CheckClosed(id(0xA))));
@@ -1346,7 +1349,28 @@ fn golden_events() -> Vec<OrderEvent> {
                 note: Some(Note::new("cafe across the street").unwrap()),
             },
         }),
+        golden_return(),
     ]
+}
+
+/// The return of the pinned examples: two of a count and half a kilogram (ADR-0032).
+fn golden_return() -> OrderEvent {
+    OrderEvent::LinesReturned(LinesReturned {
+        refund: id(0xC1),
+        lines: vec![
+            LineReturned { line: id(0x301), quantity: each(2), net: usd(650), tax: usd(58) },
+            LineReturned {
+                line: id(0x302),
+                quantity: Quantity::from_micros(500_000, Unit::Kilogram),
+                net: usd(125),
+                tax: usd(0),
+            },
+        ],
+        reason: Reason {
+            code: ReasonCode::new("damaged").unwrap(),
+            note: Some(Note::new("cracked lid").unwrap()),
+        },
+    })
 }
 
 /// Payload rules that span fields, which a device's own commands already respect, so only a
@@ -1424,7 +1448,8 @@ fn bytes(hex: &str) -> Vec<u8> {
 /// The order payloads, pinned forever: one example of each schema. Python's `cbor2` decoded
 /// each one, confirmed it is canonical, and matched it field by field against the documented
 /// key tables; it encoded the check payloads, the closing and reopening ones, the ownership ones
-/// (ADR-0021) and the discount and pricing ones (ADR-0030), itself, from the key tables. If this test fails, a payload format changed,
+/// (ADR-0021), the discount and pricing ones (ADR-0030) and the return (ADR-0032), itself, from
+/// the key tables. If this test fails, a payload format changed,
 /// and stored events would no longer decode.
 #[test]
 fn the_payload_formats_are_pinned() {
@@ -1483,6 +1508,10 @@ fn the_payload_formats_are_pinned() {
         (
             "order.line_repriced",
             "a401500192f0c1000070008000000000000001028219018b63555344036b70726963655f6d61746368047663616665206163726f73732074686520737472656574",
+        ),
+        (
+            "order.lines_returned",
+            "a401500192f0c10000700080000000000000c10282a401500192f0c100007000800000000000030102821a001e84806465616368038219028a635553440482183a63555344a401500192f0c100007000800000000000030202821a0007a120626b670382187d6355534404820063555344036764616d61676564046b637261636b6564206c6964",
         ),
     ];
     let events = golden_events();
@@ -1851,4 +1880,225 @@ fn a_line_is_priced_again_only_as_its_rules_allow() {
     let mut device = Device::with_line(false);
     device.record(&OrderEvent::CheckClosed(closed(0xA, &[(1, 100)])));
     assert_eq!(device.run(reprice(1, usd(0))), Err(CommandError::LineOnClosedCheck(id(1))));
+}
+
+/// A device holding a closed order (ADR-0032): line 1, three at $4.00, discounted to $10.00 with
+/// $0.89 of tax; line 2, half a kilogram, shared by the main check and check 0xC1, $5.00 on each
+/// with no tax; line 3, comped. Every check closed, and the order.
+fn closed_order() -> Device {
+    let mut device = Device::new();
+    device.run(OrderCommand::Create(created())).unwrap();
+    let mut three = added(1, usd(400));
+    three.quantity = each(3);
+    device.run(OrderCommand::AddLine(three)).unwrap();
+    let mut half = added(2, usd(2_000));
+    half.quantity = Quantity::from_micros(500_000, Unit::Kilogram);
+    device.run(OrderCommand::AddLine(half)).unwrap();
+    device.run(OrderCommand::AddLine(added(3, usd(300)))).unwrap();
+    device.run(OrderCommand::CompLine { line: id(3), reason: reason("birthday") }).unwrap();
+    device.run(OrderCommand::OpenCheck(id(0xC1))).unwrap();
+    let split = LinesAllocated::new([allocation(2, 0xA, 1), allocation(2, 0xC1, 1)]).unwrap();
+    device.run(OrderCommand::AllocateLines(split)).unwrap();
+    let charge = |line, gross, net, tax| LineCharge {
+        line: id(line),
+        gross: usd(gross),
+        net: usd(net),
+        tax: usd(tax),
+    };
+    let taxed = TaxCharge { tax: id(0x900), taxable: usd(1_000), amount: usd(89) };
+    device.record(&OrderEvent::CheckClosed(CheckClosed {
+        lines: vec![charge(1, 1_200, 1_000, 89), charge(2, 500, 500, 0), charge(3, 300, 0, 0)],
+        taxes: vec![taxed],
+        total: usd(1_589),
+        ..closed(0xA, &[])
+    }));
+    device.record(&OrderEvent::CheckClosed(closed(0xC1, &[(2, 500)])));
+    device.record(&OrderEvent::Closed);
+    device
+}
+
+fn returning(refund: u64, lines: &[(u64, Quantity)]) -> OrderCommand {
+    OrderCommand::ReturnLines(Return {
+        refund: id(refund),
+        lines: lines.iter().map(|&(line, quantity)| (id(line), quantity)).collect(),
+        reason: reason("damaged"),
+    })
+}
+
+/// What the device's last return refunded for each line: its net and tax.
+fn last_refunds(device: &Device) -> Vec<(Id<Line>, Quantity, i64, i64)> {
+    let Some(OrderEvent::LinesReturned(returned)) = device.last.clone() else {
+        return Vec::new();
+    };
+    returned
+        .lines
+        .iter()
+        .map(|line| (line.line, line.quantity, line.net.minor(), line.tax.minor()))
+        .collect()
+}
+
+#[test]
+fn lines_are_returned_and_refunded_their_share_of_what_was_paid() {
+    let mut device = closed_order();
+    assert_eq!(device.order.charged(id(1)), Some((usd(1_000), usd(89))));
+    assert_eq!(device.order.charged(id(2)), Some((usd(1_000), usd(0))), "both checks' parts");
+    // One of three: a third of $10.00 and of $0.89, rounded half up: $3.33 and $0.30.
+    device.run(returning(0xC1, &[(1, each(1))])).unwrap();
+    assert_eq!(last_refunds(&device), [(id(1), each(1), 333, 30)]);
+    // The second: two thirds less one, $6.67 − $3.33 and $0.59 − $0.30.
+    device.run(returning(0xC2, &[(1, each(1))])).unwrap();
+    assert_eq!(last_refunds(&device), [(id(1), each(1), 334, 29)]);
+    // The last refunds exactly what is left, and the shared line its two checks' parts. The
+    // comped line refunds nothing.
+    let half = Quantity::from_micros(500_000, Unit::Kilogram);
+    device.run(returning(0xC3, &[(3, each(1)), (2, half), (1, each(1))])).unwrap();
+    assert_eq!(
+        last_refunds(&device),
+        [(id(1), each(1), 333, 30), (id(2), half, 1_000, 0), (id(3), each(1), 0, 0)]
+    );
+    let returned = device.order.line(id(1)).unwrap().returned().unwrap();
+    assert_eq!((returned.quantity, returned.net, returned.tax), (each(3), usd(1_000), usd(89)));
+    assert!(device.order.conflicts().is_empty());
+    // Nothing is left of them.
+    assert_eq!(
+        device.run(returning(0xC4, &[(1, each(1))])),
+        Err(CommandError::ReturnBeyond(id(1)))
+    );
+}
+
+#[test]
+fn return_commands_follow_the_rules() {
+    let mut device = closed_order();
+    let half = Quantity::from_micros(500_000, Unit::Kilogram);
+    assert_eq!(
+        device.run(returning(0xC1, &[(1, each(4))])),
+        Err(CommandError::ReturnBeyond(id(1)))
+    );
+    assert_eq!(device.run(returning(0xC1, &[(9, each(1))])), Err(CommandError::UnknownLine(id(9))));
+    assert_eq!(device.run(returning(0xC1, &[(1, half)])), Err(CommandError::WrongUnit(id(1))));
+    assert_eq!(
+        device.run(returning(0xC1, &[(1, each(0))])),
+        Err(CommandError::Invalid(PayloadError::Invalid("quantity")))
+    );
+    assert_eq!(
+        device.run(returning(0xC1, &[(1, each(1)), (1, each(1))])),
+        Err(CommandError::Invalid(PayloadError::Invalid("lines")))
+    );
+    assert_eq!(
+        device.run(returning(0xC1, &[])),
+        Err(CommandError::Invalid(PayloadError::Invalid("lines")))
+    );
+    // Only the owner returns it.
+    assert_eq!(
+        device.order.decide(location(), id(0xD2), returning(0xC1, &[(1, each(1))])),
+        Err(CommandError::NotOwner(id(0xD)))
+    );
+    device.run(returning(0xC1, &[(1, each(1))])).unwrap();
+    assert_eq!(
+        device.run(returning(0xC1, &[(1, each(1))])),
+        Err(CommandError::ReturnExists(id(0xC1)))
+    );
+    // An order with a return stays closed.
+    assert_eq!(device.run(OrderCommand::Reopen(reason("wrong"))), Err(CommandError::Returned));
+    // An open order's lines aren't returned.
+    let mut open = Device::with_line(true);
+    assert_eq!(open.run(returning(0xC1, &[(1, each(1))])), Err(CommandError::NotClosed));
+}
+
+#[test]
+fn returns_that_dont_fit_are_reported() {
+    let mut script = Script::created();
+    script.apply(&OrderEvent::LineAdded(added(1, usd(400))));
+    let returned = |refund: u64, line: u64, quantity, net| {
+        OrderEvent::LinesReturned(LinesReturned {
+            refund: id(refund),
+            lines: vec![LineReturned {
+                line: id(line),
+                quantity,
+                net,
+                tax: Money::zero(net.currency()),
+            }],
+            reason: reason("damaged"),
+        })
+    };
+    // Before the order closed, and beyond what any check charged: it applies, and is reported.
+    script.apply(&returned(0xC1, 1, each(1), usd(400)));
+    assert_eq!(
+        script.kinds(),
+        [ConflictKind::ReturnedBeforeClose, ConflictKind::ReturnedBeyond(id(1))]
+    );
+    script.apply(&OrderEvent::CheckClosed(closed(0xA, &[(1, 400)])));
+    script.apply(&OrderEvent::Closed);
+    let before = script.kinds().len();
+    script.apply(&returned(0xC1, 1, each(1), usd(1)));
+    script.apply(&returned(0xC2, 9, each(1), usd(1)));
+    script.apply(&returned(0xC3, 1, each(1), eur(1)));
+    script.apply(&returned(0xC4, 1, Quantity::from_micros(1, Unit::Kilogram), usd(1)));
+    // A second of the only one: beyond its quantity.
+    script.apply(&returned(0xC5, 1, each(1), usd(0)));
+    script.apply(&OrderEvent::Reopened { reason: reason("wrong") });
+    assert_eq!(
+        script.kinds()[before..],
+        [
+            ConflictKind::DuplicateReturn(id(0xC1)),
+            ConflictKind::UnknownLine(id(9)),
+            ConflictKind::CurrencyMismatch(id(1)),
+            ConflictKind::UnitMismatch(id(1)),
+            ConflictKind::ReturnedBeyond(id(1)),
+            ConflictKind::ReopenedAfterReturn,
+        ]
+    );
+    let returned = script.order.line(id(1)).unwrap().returned().unwrap();
+    assert_eq!((returned.quantity, returned.net), (each(2), usd(400)));
+}
+
+#[test]
+fn return_payloads_keep_their_rules() {
+    let decode = |returned: LinesReturned| {
+        let event = OrderEvent::LinesReturned(returned);
+        let schema = event.schema().to_ref().unwrap();
+        OrderEvent::from_value(&schema, &event.to_value())
+    };
+    let invalid = Err(DecodeError::Malformed(PayloadError::Invalid("lines")));
+    let line = |n, quantity, net, tax| LineReturned { line: id(n), quantity, net, tax };
+    let of = |lines| LinesReturned { refund: id(0xC1), lines, reason: reason("damaged") };
+    assert!(decode(of(vec![line(1, each(1), usd(0), usd(0))])).is_ok(), "a comp refunds nothing");
+    assert_eq!(decode(of(vec![])), invalid);
+    assert_eq!(
+        decode(of(vec![line(2, each(1), usd(1), usd(0)), line(1, each(1), usd(1), usd(0))])),
+        invalid
+    );
+    assert_eq!(
+        decode(of(vec![line(1, each(1), usd(1), usd(0)), line(1, each(1), usd(1), usd(0))])),
+        invalid
+    );
+    assert_eq!(decode(of(vec![line(1, each(0), usd(1), usd(0))])), invalid);
+    assert_eq!(decode(of(vec![line(1, each(1), usd(-1), usd(0))])), invalid);
+    assert_eq!(decode(of(vec![line(1, each(1), usd(1), usd(-1))])), invalid);
+    assert_eq!(decode(of(vec![line(1, each(1), usd(1), eur(0))])), invalid);
+    assert_eq!(
+        decode(of(vec![line(1, each(1), usd(1), usd(0)), line(2, each(1), eur(1), eur(0))])),
+        invalid
+    );
+}
+
+#[test]
+fn shares_round_half_up_and_add_up() {
+    let third = |part| crate::order::share(usd(1_000), each(part), each(3)).map(Money::minor);
+    assert_eq!(
+        [third(0), third(1), third(2), third(3)],
+        [Some(0), Some(333), Some(667), Some(1_000)]
+    );
+    // Half a cent rounds up: $0.05 halved.
+    assert_eq!(crate::order::share(usd(5), each(1), each(2)), Some(usd(3)));
+    assert_eq!(crate::order::share(usd(5), each(3), each(2)), None, "more than the whole");
+    assert_eq!(crate::order::share(usd(-5), each(1), each(2)), None);
+    assert_eq!(
+        crate::order::share(usd(5), each(1), Quantity::from_micros(1, Unit::Kilogram)),
+        None
+    );
+    assert_eq!(crate::order::share(usd(5), each(0), each(0)), None);
+    assert_eq!(crate::order::share(usd(i64::MAX), each(1), each(1)), Some(usd(i64::MAX)));
+    assert_eq!(refunded(usd(1_000), each(1), each(1), each(3)), Some(usd(334)));
+    assert_eq!(refunded(usd(1_000), each(3), each(1), each(3)), None);
 }

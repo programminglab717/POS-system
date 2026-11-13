@@ -48,6 +48,7 @@ use super::checks::{Check, CheckShare, LinesAllocated};
 use super::closing::CheckClosed;
 use super::events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
 use super::ownership::{Lease, Ownership, OwnershipGranted, Request};
+use super::returns::{LinesReturned, Returned};
 use super::types::{
     Channel, ChosenModifier, Discount, DiscountApplied, DiscountValue, ItemSnapshot, LineRepriced,
     Mode, Reason, modifier_currency,
@@ -55,6 +56,7 @@ use super::types::{
 use crate::aggregate::{Aggregate, EventMeta, Skipped};
 use crate::codec::{Change, Note};
 use crate::refs::{RevenueCenter, Table};
+use crate::refund::Refund;
 use crate::schema::DecodeError;
 
 /// An order: the universal transaction (domain model §6).
@@ -73,6 +75,8 @@ pub struct Order {
     /// The identifier of every discount applied, even those since taken off: a discount's
     /// identifier names it for good.
     used_discounts: BTreeSet<Id<Discount>>,
+    /// The refund of every return recorded: a refund names one return (ADR-0032).
+    refunds: BTreeSet<Id<Refund>>,
     conflicts: Vec<Conflict>,
     skipped: Vec<Skipped>,
 }
@@ -142,6 +146,8 @@ pub struct Line {
     discounts: Vec<DiscountApplied>,
     /// The price staff set for it, if they did: the last that applied.
     repriced: Option<LineRepriced>,
+    /// What its returns came to, if it was returned (ADR-0032).
+    returned: Option<Returned>,
     fired: bool,
     allocation: Vec<CheckShare>,
 }
@@ -209,6 +215,11 @@ impl Line {
     /// else the item's as it was rung (ADR-0030).
     pub fn unit_price(&self) -> Money {
         self.repriced.as_ref().map_or(self.item.unit_price, |repriced| repriced.unit_price)
+    }
+
+    /// What its returns came to, if it was returned (ADR-0032).
+    pub const fn returned(&self) -> Option<&Returned> {
+        self.returned.as_ref()
     }
 
     /// The price staff set for it, and why, if they did.
@@ -338,6 +349,18 @@ pub enum ConflictKind {
     UnknownDiscount(Id<Discount>),
     /// A line was priced again after it was removed or voided; it has no effect.
     RepricedAfterRemoval(Id<Line>),
+    /// A return was recorded with the refund of one recorded before; it wasn't applied again
+    /// (ADR-0032).
+    DuplicateReturn(Id<Refund>),
+    /// Lines were returned while the order wasn't closed: the return applies, and a person should
+    /// look.
+    ReturnedBeforeClose,
+    /// A line was returned beyond what it has: more than its quantity, more than its checks
+    /// charged it, or once it was removed or voided. The return applies: the money has moved.
+    ReturnedBeyond(Id<Line>),
+    /// An order with lines returned was reopened: what its checks charged, which its returns
+    /// were refunded from, is no longer frozen.
+    ReopenedAfterReturn,
 }
 
 impl Order {
@@ -354,6 +377,7 @@ impl Order {
             answered: BTreeSet::new(),
             discounts: Vec::new(),
             used_discounts: BTreeSet::new(),
+            refunds: BTreeSet::new(),
             conflicts: Vec::new(),
             skipped: Vec::new(),
         }
@@ -460,6 +484,21 @@ impl Order {
                 .allocation
                 .iter()
                 .any(|share| self.check(share.check).is_some_and(|check| !check.is_open()))
+    }
+
+    /// What the order's closed checks charged `line`, its net and its tax, from their snapshots:
+    /// what its returns are refunded from (ADR-0032). `None` if no closed check charged it.
+    pub fn charged(&self, line: Id<Line>) -> Option<(Money, Money)> {
+        let mut charges = self.checks.iter().filter_map(|check| check.closed()?.line(line));
+        let first = charges.next()?;
+        charges.try_fold((first.net, first.tax), |(net, tax), charge| {
+            Some((net.checked_add(charge.net).ok()?, tax.checked_add(charge.tax).ok()?))
+        })
+    }
+
+    /// Whether a return with refund `refund` was recorded (ADR-0032).
+    pub fn has_return(&self, refund: Id<Refund>) -> bool {
+        self.refunds.contains(&refund)
     }
 
     /// Whether a live line has a part on `check`.
@@ -608,6 +647,7 @@ impl Order {
             comp: None,
             discounts: Vec::new(),
             repriced: None,
+            returned: None,
             fired: false,
             allocation: vec![CheckShare { check, shares: NonZeroU16::MIN }],
         });
@@ -928,9 +968,65 @@ impl Order {
         }
     }
 
-    fn apply_reopened(&mut self) {
+    fn apply_lines_returned(
+        &mut self,
+        meta: &EventMeta,
+        currency: Currency,
+        returned: &LinesReturned,
+    ) {
+        if !self.refunds.insert(returned.refund) {
+            return self.conflict(meta, ConflictKind::DuplicateReturn(returned.refund));
+        }
+        if self.status != OrderStatus::Closed {
+            self.conflict(meta, ConflictKind::ReturnedBeforeClose);
+        }
+        for each in &returned.lines {
+            let id = each.line;
+            let charged = self.charged(id);
+            let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
+                self.conflict(meta, ConflictKind::UnknownLine(id));
+                continue;
+            };
+            if each.net.currency() != currency || each.tax.currency() != currency {
+                self.conflict(meta, ConflictKind::CurrencyMismatch(id));
+                continue;
+            }
+            if each.quantity.unit() != line.quantity.unit() {
+                self.conflict(meta, ConflictKind::UnitMismatch(id));
+                continue;
+            }
+            let before = line.returned.unwrap_or(Returned {
+                quantity: Quantity::zero(line.quantity.unit()),
+                net: Money::zero(currency),
+                tax: Money::zero(currency),
+            });
+            let after = before.quantity.checked_add(each.quantity).ok().zip(
+                before.net.checked_add(each.net).ok().zip(before.tax.checked_add(each.tax).ok()),
+            );
+            let Some((quantity, (net, tax))) = after else {
+                self.conflict(meta, ConflictKind::ReturnedBeyond(id));
+                continue;
+            };
+            line.returned = Some(Returned { quantity, net, tax });
+            let (charged_net, charged_tax) =
+                charged.unwrap_or((Money::zero(currency), Money::zero(currency)));
+            let more = |amount: Money, than: Money| amount.minor() > than.minor();
+            let beyond = !line.is_live()
+                || quantity.micros() > line.quantity.micros()
+                || more(net, charged_net)
+                || more(tax, charged_tax);
+            if beyond {
+                self.conflict(meta, ConflictKind::ReturnedBeyond(id));
+            }
+        }
+    }
+
+    fn apply_reopened(&mut self, meta: &EventMeta) {
         if self.has_ended() {
             return;
+        }
+        if self.lines.iter().any(|line| line.returned.is_some()) {
+            self.conflict(meta, ConflictKind::ReopenedAfterReturn);
         }
         self.status = OrderStatus::Active;
         for check in &mut self.checks {
@@ -1010,7 +1106,7 @@ impl Aggregate for Order {
             OrderEvent::LinesAllocated(allocated) => self.apply_lines_allocated(meta, allocated),
             OrderEvent::CheckClosed(closed) => self.apply_check_closed(meta, currency, closed),
             OrderEvent::Closed => self.apply_order_closed(meta),
-            OrderEvent::Reopened { .. } => self.apply_reopened(),
+            OrderEvent::Reopened { .. } => self.apply_reopened(meta),
             OrderEvent::OwnershipRequested { lease } => self.apply_requested(meta, *lease),
             OrderEvent::OwnershipGranted(granted) => self.apply_granted(meta, granted),
             OrderEvent::OwnershipOverridden { lease, .. } => self.apply_overridden(meta, *lease),
@@ -1022,6 +1118,9 @@ impl Aggregate for Order {
             }
             OrderEvent::LineRepriced(repriced) => {
                 self.apply_line_repriced(meta, currency, repriced);
+            }
+            OrderEvent::LinesReturned(returned) => {
+                self.apply_lines_returned(meta, currency, returned);
             }
         }
     }

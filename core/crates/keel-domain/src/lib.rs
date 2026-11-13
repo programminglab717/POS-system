@@ -16,8 +16,11 @@
 //!   view and become events, so a device acting alone never creates a conflict.
 //!
 //! The aggregates so far:
-//! - [`order`]: an order's creation and attributes, its lines, its checks, and closing it;
-//! - [`payment`]: money moving against a check, in cash or by card.
+//! - [`order`]: an order's creation and attributes, its lines, its checks, closing it, and its
+//!   lines returned;
+//! - [`payment`]: money moving against a check, in cash or by card;
+//! - [`drawer`]: a drawer session's cash, from its float to its blind close (ADR-0031);
+//! - [`refund`]: money paid back for lines returned (ADR-0032).
 //!
 //! [`checkout`] holds the rules that span an order and its payments: what each check still owes,
 //! starting a payment, closing a check, and money that doesn't fit the order. [`sequence`] holds
@@ -41,6 +44,7 @@ pub mod payment;
 pub mod profile;
 pub mod publication;
 pub mod refs;
+pub mod refund;
 pub mod roster;
 pub mod schema;
 pub mod sequence;

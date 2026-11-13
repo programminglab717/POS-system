@@ -15,5 +15,5 @@ mod state;
 mod tests;
 
 pub use commands::{DrawerCommand, DrawerError};
-pub use events::{CashMoved, CashTaken, DrawerClosed, DrawerEvent, Movement};
+pub use events::{CashMoved, CashRefunded, CashTaken, DrawerClosed, DrawerEvent, Movement};
 pub use state::{Conflict, ConflictKind, Drawer, DrawerInfo, Sums};

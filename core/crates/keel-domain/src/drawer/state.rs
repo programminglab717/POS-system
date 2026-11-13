@@ -14,9 +14,10 @@ use std::collections::BTreeSet;
 use keel_events::envelope::{self, Device, Event, Location, SchemaRef};
 use keel_types::{Id, Money, MoneyError};
 
-use super::events::{CashMoved, CashTaken, DrawerClosed, DrawerEvent, Movement};
+use super::events::{CashMoved, CashRefunded, CashTaken, DrawerClosed, DrawerEvent, Movement};
 use crate::aggregate::{Aggregate, EventMeta, Skipped};
 use crate::payment::Payment;
+use crate::refund::Refund;
 use crate::schema::DecodeError;
 
 /// A drawer session: the cash in one drawer, from its opening to its close (domain model §13).
@@ -26,6 +27,8 @@ pub struct Drawer {
     info: Option<DrawerInfo>,
     sums: Option<Sums>,
     payments: BTreeSet<Id<Payment>>,
+    /// The refunds whose cash it handed back (ADR-0032).
+    refunds: BTreeSet<Id<Refund>>,
     no_sales: u64,
     closed: Option<DrawerClosed>,
     conflicts: Vec<Conflict>,
@@ -43,6 +46,8 @@ pub struct Sums {
     pub paid_out: Money,
     /// Dropped to the safe.
     pub dropped: Money,
+    /// Handed back for refunds (ADR-0032).
+    pub refunded: Money,
 }
 
 /// What a drawer session was opened with.
@@ -90,6 +95,9 @@ pub enum ConflictKind {
     AfterClose,
     /// The session was closed again; the second close wasn't applied.
     DuplicateClose,
+    /// Cash was handed back again for a refund already counted; it wasn't counted twice
+    /// (ADR-0032).
+    DuplicateRefund(Id<Refund>),
     /// An amount would overflow its sum; it wasn't applied. Found in review: it was reported as
     /// in another currency.
     Overflow,
@@ -103,6 +111,7 @@ impl Drawer {
             info: None,
             sums: None,
             payments: BTreeSet::new(),
+            refunds: BTreeSet::new(),
             no_sales: 0,
             closed: None,
             conflicts: Vec::new(),
@@ -128,6 +137,11 @@ impl Drawer {
     /// The payments whose cash it took.
     pub fn payments(&self) -> &BTreeSet<Id<Payment>> {
         &self.payments
+    }
+
+    /// The refunds whose cash it handed back.
+    pub fn refunds(&self) -> &BTreeSet<Id<Refund>> {
+        &self.refunds
     }
 
     /// How many times it was opened with no sale.
@@ -194,7 +208,13 @@ impl Drawer {
             float,
             opened_by: meta.event_id,
         });
-        self.sums = Some(Sums { taken: zero, paid_in: zero, paid_out: zero, dropped: zero });
+        self.sums = Some(Sums {
+            taken: zero,
+            paid_in: zero,
+            paid_out: zero,
+            dropped: zero,
+            refunded: zero,
+        });
     }
 
     fn apply_taken(&mut self, meta: &EventMeta, taken: &CashTaken) {
@@ -203,6 +223,15 @@ impl Drawer {
         }
         if self.add(meta, taken.amount, |sums| &mut sums.taken) {
             self.payments.insert(taken.payment);
+        }
+    }
+
+    fn apply_refunded(&mut self, meta: &EventMeta, refunded: &CashRefunded) {
+        if self.refunds.contains(&refunded.refund) {
+            return self.conflict(meta, ConflictKind::DuplicateRefund(refunded.refund));
+        }
+        if self.add(meta, refunded.amount, |sums| &mut sums.refunded) {
+            self.refunds.insert(refunded.refund);
         }
     }
 
@@ -230,7 +259,7 @@ impl Drawer {
 /// What a session opened with `float` should hold once its cash came to `sums`.
 pub(super) fn held(float: Money, sums: &Sums) -> Result<Money, MoneyError> {
     let held = float.checked_add(sums.taken)?.checked_add(sums.paid_in)?;
-    held.checked_sub(sums.paid_out)?.checked_sub(sums.dropped)
+    held.checked_sub(sums.paid_out)?.checked_sub(sums.dropped)?.checked_sub(sums.refunded)
 }
 
 impl Aggregate for Drawer {
@@ -263,6 +292,7 @@ impl Aggregate for Drawer {
             DrawerEvent::CashMoved(moved) => self.apply_moved(meta, moved),
             DrawerEvent::NoSale { .. } => self.no_sales = self.no_sales.saturating_add(1),
             DrawerEvent::Closed(closed) => self.apply_closed(meta, closed),
+            DrawerEvent::CashRefunded(refunded) => self.apply_refunded(meta, refunded),
         }
         // Reported once: an event that didn't apply has already said why.
         if after && self.conflicts.len() == before {

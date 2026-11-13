@@ -93,14 +93,38 @@ The MVP's step 4, returns and refunds, linked to the original lines (B-09 basic,
 ([ADR-0032](./adr/0032-returns-and-refunds.md), proposed), is built in three slices, each
 verified as it lands, then reviewed together:
 
-1. **The domain**: `order.lines_returned`, the refund aggregate and `drawer.cash_refunded`, their
-   folds and commands. Next.
+1. **The domain** (built 2026-11-13): `order.lines_returned`, the refund aggregate and
+   `drawer.cash_refunded`, their folds and commands; the store's `drawers` projection's version 3.
 2. **The register**: the projections, the runtime's lookup, return and refund, the refund
-   receipt, the reports, the bindings.
+   receipt, the reports, the bindings. Next.
 3. **The shell**: the Android register's returns.
 
 Waiting on CI's minutes: the Android app's instrumented tests, step 3's drawer test among them,
 and the three of step 2 the scrolling ticket pane should mend.
+
+Built in slice 1:
+
+- **`keel-domain`'s returns**: `order.lines_returned` (v1), on a closed order, under its
+  ownership: each line once, live, in its own unit, no more than is left of it; each refunded its
+  share of what its closed checks' snapshots charged it, its net and tax, of what is returned so
+  far, rounded half up, so that partial returns add up and the last refunds exactly what is
+  left. The fold applies a return and reports one on an order that isn't closed, beyond a line's
+  quantity or charge, of an unknown line, in another unit or currency, or with a refund used
+  before; and a reopening after a return, which commands refuse.
+- **`keel-domain`'s refunds**: an aggregate of `refund.initiated` and `refund.completed` (v1),
+  single-writer; a completion by another device, or beyond the start, applies and is reported.
+- **`drawer.cash_refunded`** (v1): cash handed back, which what the drawer should hold leaves
+  out, once per refund. The store's `drawers` projection's version 3 keeps each session's refunds.
+  - Known answers: three at $4.00 discounted to $10.00 with $0.89 of tax, returned one at a time
+    for $3.33, $3.34 and $3.33, and $0.30, $0.29 and $0.30; a line shared by two checks; a comp
+    refunding nothing; every refusal and conflict; the four payloads pinned as `cbor2` encodes
+    them; every rule a payload breaks.
+  - Properties: returns and reopenings by command against a model with its own arithmetic, on
+    closed orders of shared and unshared lines in two units; returns and reopenings folded, by
+    the owner or another device, against a model; the refund's fold and commands against models;
+    the drawer's models know refunds; the payload model knows the four schemas.
+  - Planted bugs: 20 in `keel-domain` and 2 in `keel-store`; three re-aimed that reopening's
+    refusal had moved.
 
 ## Completed
 

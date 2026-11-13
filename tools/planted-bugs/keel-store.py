@@ -1578,8 +1578,8 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
     (
         "drawers: paid out reads back as paid in",
         "src/drawers.rs",
-        "    let sums = match (money(8)?, money(9)?, money(10)?, money(11)?) {",
-        "    let sums = match (money(8)?, money(10)?, money(9)?, money(11)?) {",
+        "    let sums = match (money(8)?, money(9)?, money(10)?, money(11)?, money(20)?) {",
+        "    let sums = match (money(8)?, money(10)?, money(9)?, money(11)?, money(20)?) {",
     ),
     (
         "drawers: a drawer's payments aren't kept",
@@ -1592,5 +1592,17 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         "src/store.rs",
         "\"SELECT {PAYMENT_COLUMNS} FROM payments WHERE business_date = ?1 \\",
         "\"SELECT {PAYMENT_COLUMNS} FROM payments WHERE business_date <= ?1 \\",
+    ),
+    (
+        "drawers: a drawer's refunds aren't kept",
+        "src/drawers.rs",
+        "        insert.execute(params![&refund.to_bytes()[..], session])?;",
+        "        let _ = (refund, &mut insert);",
+    ),
+    (
+        "drawers: what a drawer refunded is read as what it dropped",
+        "src/drawers.rs",
+        "    let sums = match (money(8)?, money(9)?, money(10)?, money(11)?, money(20)?) {",
+        "    let sums = match (money(8)?, money(9)?, money(10)?, money(11)?, money(11)?) {",
     ),
 ]

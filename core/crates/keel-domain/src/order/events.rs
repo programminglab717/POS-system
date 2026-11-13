@@ -27,10 +27,12 @@
 //! | `order.discount_applied` | 1 discount, 2 line (optional: absent for the whole order), 3 percent (basis points, optional), 4 amount (optional), 5 reason code, 6 note (optional) |
 //! | `order.discount_removed` | 1 discount |
 //! | `order.line_repriced` | 1 line, 2 unit price, 3 reason code, 4 note (optional) |
+//! | `order.lines_returned` | 1 refund, 2 lines (an array of lines returned, not empty), 3 reason code, 4 note (optional) |
 //!
 //! A chosen modifier is a map: 1 modifier, 2 name, 3 prefix, 4 quantity, 5 placement, 6 unit
 //! price, 7 modifiers (an array, possibly empty). An allocation is a map: 1 line, 2 check, 3
-//! shares (a count up to 65,535). A line charge is a map: 1 line, 2 gross, 3 net, 4 tax. A tax
+//! shares (a count up to 65,535). A line returned is a map: 1 line, 2 quantity, 3 net, 4 tax.
+//! A line charge is a map: 1 line, 2 gross, 3 net, 4 tax. A tax
 //! charge is a map: 1 tax, 2 taxable amount, 3 tax. A lease and an epoch are unsigned integers
 //! of at most 2^63 − 1 (ADR-0021).
 //!
@@ -48,7 +50,9 @@
 //! - a discount has a percentage or an amount, not both: a percentage from 1 to 10,000 basis
 //!   points, an amount more than zero; and a discount on the whole order is a percentage
 //! - a line is priced again at zero or more
-//!   (ADR-0030).
+//!   (ADR-0030);
+//! - lines returned are in strictly ascending order of line, each returning more than zero and
+//!   refunding a net and a tax of zero or more, every amount in one currency (ADR-0032).
 
 use core::num::{NonZeroU8, NonZeroU16};
 
@@ -59,6 +63,7 @@ use keel_types::{Currency, Id, Quantity};
 use super::checks::{Check, LinesAllocated};
 use super::closing::CheckClosed;
 use super::ownership::{Lease, OwnershipGranted, Refusal};
+use super::returns::LinesReturned;
 use super::state::Line;
 use super::types::{
     Channel, ChosenModifier, Discount, DiscountApplied, DiscountValue, ItemSnapshot, LineRepriced,
@@ -257,6 +262,8 @@ pub enum OrderEvent {
         /// Why.
         reason: Reason,
     },
+    /// Lines of a closed order were returned, refunded by a refund of their own (ADR-0032).
+    LinesReturned(LinesReturned),
 }
 
 impl OrderEvent {
@@ -279,6 +286,7 @@ impl OrderEvent {
                 | OrderEvent::DiscountApplied(_)
                 | OrderEvent::DiscountRemoved { .. }
                 | OrderEvent::LineRepriced(_)
+                | OrderEvent::LinesReturned(_)
         )
     }
 }
@@ -306,6 +314,7 @@ const OWNERSHIP_OVERRIDDEN: SchemaId = SchemaId { name: "order.ownership_overrid
 const DISCOUNT_APPLIED: SchemaId = SchemaId { name: "order.discount_applied", version: 1 };
 const DISCOUNT_REMOVED: SchemaId = SchemaId { name: "order.discount_removed", version: 1 };
 const LINE_REPRICED: SchemaId = SchemaId { name: "order.line_repriced", version: 1 };
+const LINES_RETURNED: SchemaId = SchemaId { name: "order.lines_returned", version: 1 };
 
 impl DomainEvent for OrderEvent {
     const STREAM: &'static str = "order";
@@ -333,6 +342,7 @@ impl DomainEvent for OrderEvent {
         DISCOUNT_APPLIED,
         DISCOUNT_REMOVED,
         LINE_REPRICED,
+        LINES_RETURNED,
     ];
 
     fn schema(&self) -> SchemaId {
@@ -359,6 +369,7 @@ impl DomainEvent for OrderEvent {
             OrderEvent::DiscountApplied(_) => DISCOUNT_APPLIED,
             OrderEvent::DiscountRemoved { .. } => DISCOUNT_REMOVED,
             OrderEvent::LineRepriced(_) => LINE_REPRICED,
+            OrderEvent::LinesReturned(_) => LINES_RETURNED,
         }
     }
 
@@ -366,6 +377,7 @@ impl DomainEvent for OrderEvent {
         let record = Record::default();
         match self {
             OrderEvent::CheckClosed(closed) => closed.record(record),
+            OrderEvent::LinesReturned(returned) => returned.record(record),
             OrderEvent::Created(created) => record
                 .field(1, &created.channel)
                 .field(2, &created.mode)
@@ -515,6 +527,8 @@ impl DomainEvent for OrderEvent {
             };
             repriced.validate()?;
             OrderEvent::LineRepriced(repriced)
+        } else if LINES_RETURNED.matches(schema) {
+            OrderEvent::LinesReturned(LinesReturned::read(&mut fields)?)
         } else if OWNERSHIP_OVERRIDDEN.matches(schema) {
             OrderEvent::OwnershipOverridden {
                 lease: fields.required(1, "lease")?,

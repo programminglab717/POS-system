@@ -940,11 +940,11 @@ BUGS = [
     (
         "voided orders reopen",
         "src/order/state.rs",
-        """    fn apply_reopened(&mut self) {
+        """    fn apply_reopened(&mut self, meta: &EventMeta) {
         if self.has_ended() {
             return;
         }""",
-        "    fn apply_reopened(&mut self) {",
+        "    fn apply_reopened(&mut self, meta: &EventMeta) {",
     ),
     (
         "closed orders can't be voided",
@@ -1079,8 +1079,10 @@ BUGS = [
         "src/order/commands.rs",
         """                self.check_location(location)?;
                 self.check_owner(device)?;
+                self.check_not_returned()?;
                 OrderEvent::Reopened { reason }""",
         """                self.check_owner(device)?;
+                self.check_not_returned()?;
                 OrderEvent::Reopened { reason }""",
     ),
     (
@@ -2055,8 +2057,10 @@ BUGS = [
         "src/order/commands.rs",
         """                self.check_location(location)?;
                 self.check_owner(device)?;
+                self.check_not_returned()?;
                 OrderEvent::Reopened { reason }""",
         """                self.check_location(location)?;
+                self.check_not_returned()?;
                 OrderEvent::Reopened { reason }""",
     ),
     (
@@ -3150,5 +3154,126 @@ BUGS = [
         "src/drawer/state.rs",
         "            Some(Err(MoneyError::Overflow)) => self.conflict(meta, ConflictKind::Overflow),",
         "            Some(Err(MoneyError::Overflow)) => self.conflict(meta, ConflictKind::CurrencyMismatch),",
+    ),
+    # Returns and refunds (ADR-0032).
+    (
+        "return: a share rounds down",
+        "src/order/returns.rs",
+        "    let rounded = doubled.checked_add(whole)?.checked_div(whole.checked_mul(2)?)?;",
+        "    let rounded = doubled.checked_div(whole.checked_mul(2)?)?;",
+    ),
+    (
+        "return: a return refunds its share of its own quantity",
+        "src/order/returns.rs",
+        "    share(amount, after, whole)?.checked_sub(share(amount, before, whole)?).ok()",
+        "    let _ = after;\n    share(amount, quantity, whole)",
+    ),
+    (
+        "return: a share of more than the whole is taken",
+        "src/order/returns.rs",
+        "    if whole == 0 || part > whole {",
+        "    if whole == 0 {",
+    ),
+    (
+        "return: lines out of order decode",
+        "src/order/returns.rs",
+        "            .all(|pair| matches!(pair, [a, b] if a.line.to_bytes() < b.line.to_bytes()));",
+        "            .all(|pair| matches!(pair, [a, b] if a.line.to_bytes() <= b.line.to_bytes()));",
+    ),
+    (
+        "return: a line is returned twice in one return",
+        "src/order/commands.rs",
+        "        if lines.windows(2).any(|pair| matches!(pair, [(a, _), (b, _)] if a == b)) {",
+        "        if false {",
+    ),
+    (
+        "return: a refund's return is recorded twice",
+        "src/order/commands.rs",
+        "        if self.has_return(asked.refund) {",
+        "        if false {",
+    ),
+    (
+        "return: an order with returns is reopened",
+        "src/order/commands.rs",
+        "        if self.lines().iter().any(|line| line.returned().is_some()) {",
+        "        if false {",
+    ),
+    (
+        "return: an open order's lines are returned",
+        "src/order/commands.rs",
+        "            OrderCommand::ReturnLines(asked) if closed => {",
+        "            OrderCommand::ReturnLines(asked) if true => {",
+    ),
+    (
+        "return: what was charged is one check's part",
+        "src/order/state.rs",
+        "        charges.try_fold((first.net, first.tax), |(net, tax), charge| {",
+        "        charges.take(0).try_fold((first.net, first.tax), |(net, tax), charge| {",
+    ),
+    (
+        "return: the fold applies a duplicate return",
+        "src/order/state.rs",
+        "        if !self.refunds.insert(returned.refund) {",
+        "        if !self.refunds.insert(returned.refund) && false {",
+    ),
+    (
+        "return: a return on an open order isn't reported",
+        "src/order/state.rs",
+        "            self.conflict(meta, ConflictKind::ReturnedBeforeClose);",
+        "",
+    ),
+    (
+        "return: a return beyond the charge isn't reported",
+        "src/order/state.rs",
+        "                || more(net, charged_net)\n",
+        "",
+    ),
+    (
+        "refund: a completion beyond the start isn't reported",
+        "src/refund/state.rs",
+        "            Ok(Ordering::Greater) => self.conflict(meta, ConflictKind::BeyondInitiated),",
+        "            Ok(Ordering::Greater) => {}",
+    ),
+    (
+        "refund: a second completion applies",
+        "src/refund/state.rs",
+        "        if self.completed.is_some() {",
+        "        if false {",
+    ),
+    (
+        "refund: a command completes for more than was started",
+        "src/refund/commands.rs",
+        "                    Ok(Ordering::Greater) => return Err(RefundError::BeyondInitiated),",
+        "                    Ok(Ordering::Greater) => {}",
+    ),
+    (
+        "refund: another device completes it",
+        "src/refund/commands.rs",
+        "                if info.device != device {",
+        "                if false {",
+    ),
+    (
+        "refund: a rounding of zero decodes",
+        "src/refund/events.rs",
+        "                if rounding.is_zero() || rounding.currency() != amount.currency() =>",
+        "                if rounding.currency() != amount.currency() =>",
+    ),
+    (
+        "drawer: a refund's cash is counted twice",
+        "src/drawer/state.rs",
+        "        if self.refunds.contains(&refunded.refund) {",
+        "        if false {",
+    ),
+    (
+        "drawer: what is expected leaves out refunds",
+        "src/drawer/state.rs",
+        "?.checked_sub(sums.refunded)",
+        "",
+    ),
+    (
+        "drawer: a refund's cash is handed back twice",
+        "src/drawer/commands.rs",
+        "                if self.refunds().contains(&refunded.refund) {",
+        "                if false {",
     ),
 ]

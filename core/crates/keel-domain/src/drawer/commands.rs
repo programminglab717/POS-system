@@ -5,7 +5,7 @@
 use keel_events::envelope::{Device, Location};
 use keel_types::{Currency, Id, Money};
 
-use super::events::{CashMoved, CashTaken, DrawerClosed, DrawerEvent, Movement};
+use super::events::{CashMoved, CashRefunded, CashTaken, DrawerClosed, DrawerEvent, Movement};
 use super::state::{Drawer, Sums, held};
 use crate::codec::PayloadError;
 use crate::order::Reason;
@@ -27,6 +27,8 @@ pub enum DrawerCommand {
     MoveCash(CashMoved),
     /// Open the drawer with no sale.
     NoSale(Reason),
+    /// Hand cash back for a refund (ADR-0032).
+    RefundCash(CashRefunded),
     /// Close the session with what was counted: the expected amount is the drawer's own.
     Close {
         /// What was counted.
@@ -59,6 +61,9 @@ pub enum DrawerError {
     /// The payment's cash was counted already.
     #[error("that payment's cash is in the drawer already")]
     AlreadyTaken,
+    /// That refund's cash was handed back already.
+    #[error("that refund's cash was handed back already")]
+    AlreadyRefunded,
     /// The amounts overflow.
     #[error("the amounts overflow")]
     Overflow,
@@ -150,6 +155,14 @@ impl Drawer {
                 DrawerEvent::CashMoved(moved)
             }
             DrawerCommand::NoSale(reason) => DrawerEvent::NoSale { reason },
+            DrawerCommand::RefundCash(refunded) => {
+                in_currency(refunded.amount)?;
+                if self.refunds().contains(&refunded.refund) {
+                    return Err(DrawerError::AlreadyRefunded);
+                }
+                self.fits(refunded.amount, |sums| &mut sums.refunded)?;
+                DrawerEvent::CashRefunded(refunded)
+            }
             DrawerCommand::Close { counted } => {
                 in_currency(counted)?;
                 let expected = self

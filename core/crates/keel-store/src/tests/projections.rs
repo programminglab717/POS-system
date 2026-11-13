@@ -427,7 +427,9 @@ const GOLDEN_PAYMENTS: &str = "Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 
 #[test]
 fn drawers_are_projected_and_found_by_device_and_date() {
     use keel_domain::drawer::Drawer;
-    use keel_domain::drawer::{CashMoved, CashTaken, DrawerClosed, DrawerEvent, Movement, Sums};
+    use keel_domain::drawer::{
+        CashMoved, CashRefunded, CashTaken, DrawerClosed, DrawerEvent, Movement, Sums,
+    };
     let dir = TempDir::new();
     let mut store = open(&dir.db());
     let drawer: Id<Drawer> = id(0x9000);
@@ -439,17 +441,28 @@ fn drawers_are_projected_and_found_by_device_and_date() {
         amount: usd(500),
         reason: Reason { code: ReasonCode::new("supplier").unwrap(), note: None },
     });
-    let events = append(&mut store, vec![draft(&opened), draft(&taken), draft(&paid_out)], at(0));
-    // The payment's cash is found in a drawer; another's isn't.
+    // A refund's cash handed back (ADR-0032).
+    let refunded = DrawerEvent::CashRefunded(CashRefunded { refund: id(0x8100), amount: usd(354) });
+    let drafts = vec![draft(&opened), draft(&taken), draft(&paid_out), draft(&refunded)];
+    let events = append(&mut store, drafts, at(0));
+    // The payment's cash is found in a drawer; another's isn't; and the refund's.
     assert!(store.in_drawer(id(0x8000)).unwrap());
     assert!(!store.in_drawer(id(0x8001)).unwrap());
+    assert!(store.refund_in_drawer(id(0x8100)).unwrap());
+    assert!(!store.refund_in_drawer(id(0x8101)).unwrap());
     let summary = store.drawer(drawer).unwrap().unwrap();
     assert_eq!(summary.state, DrawerState::Open);
     let info = summary.info.as_ref().unwrap();
     assert_eq!((info.float, info.opened_by), (usd(10_000), events[0].body().event_id));
     assert_eq!(
         summary.sums,
-        Some(Sums { taken: usd(1_089), paid_in: usd(0), paid_out: usd(500), dropped: usd(0) })
+        Some(Sums {
+            taken: usd(1_089),
+            paid_in: usd(0),
+            paid_out: usd(500),
+            dropped: usd(0),
+            refunded: usd(354),
+        })
     );
     assert_eq!(summary.business_date, Some("2026-09-28".parse().unwrap()));
     let device = info.device;
@@ -479,6 +492,7 @@ fn drawers_are_projected_and_found_by_device_and_date() {
     store.rebuild_projections().unwrap();
     assert_eq!(store.drawer(drawer).unwrap().unwrap().state, DrawerState::Closed);
     assert!(store.in_drawer(id(0x8000)).unwrap());
+    assert!(store.refund_in_drawer(id(0x8100)).unwrap());
     // Cash before the opening: unopened, with a conflict.
     let early: Id<Drawer> = id(0x9001);
     append(&mut store, vec![domain_draft(early.cast(), &taken)], at(2));

@@ -11,6 +11,7 @@ use keel_domain::drawer::Drawer;
 use keel_domain::hub::Term;
 use keel_domain::order::Order;
 use keel_domain::payment::Payment;
+use keel_domain::refund::Refund;
 use keel_events::envelope::{Device, Event, Location, StreamRef};
 use keel_events::event::SignedEvent;
 use keel_events::keys::Signer;
@@ -700,6 +701,20 @@ impl<S: Signer, E: Entropy> Store<S, E> {
             Ok(db.query_row(
                 "SELECT EXISTS (SELECT 1 FROM drawer_payments WHERE payment_id = ?1)",
                 [&payment.to_bytes()[..]],
+                |row| row.get(0),
+            )?)
+        })
+    }
+
+    /// Whether a drawer session handed back the cash of refund `refund` (ADR-0032).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn refund_in_drawer(&self, refund: Id<Refund>) -> Result<bool, StoreError> {
+        self.read(|db| {
+            Ok(db.query_row(
+                "SELECT EXISTS (SELECT 1 FROM drawer_refunds WHERE refund_id = ?1)",
+                [&refund.to_bytes()[..]],
                 |row| row.get(0),
             )?)
         })

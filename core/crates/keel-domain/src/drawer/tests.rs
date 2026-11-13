@@ -105,7 +105,13 @@ fn a_drawer_counts_its_cash_from_its_float_to_its_close() {
     let sums = *script.drawer.sums().unwrap();
     assert_eq!(
         sums,
-        Sums { taken: usd(3_589), paid_in: usd(2_000), paid_out: usd(2_500), dropped: usd(10_000) }
+        Sums {
+            taken: usd(3_589),
+            paid_in: usd(2_000),
+            paid_out: usd(2_500),
+            dropped: usd(10_000),
+            refunded: usd(0),
+        }
     );
     assert_eq!(script.drawer.no_sales(), 1);
     assert_eq!(script.drawer.expected(), Ok(Some(usd(8_089))));
@@ -285,6 +291,11 @@ fn the_payload_formats_are_pinned() {
             "drawer.closed",
             "a201821944186355534402821944b563555344",
         ),
+        (
+            DrawerEvent::CashRefunded(CashRefunded { refund: id(0xC1), amount: usd(710) }),
+            "drawer.cash_refunded",
+            "a201500192f0c10000700080000000000000c102821902c663555344",
+        ),
     ];
     assert_eq!(pinned.len(), DrawerEvent::SCHEMAS.len());
     for (event, name, hex) in pinned {
@@ -358,4 +369,44 @@ fn amounts_that_overflow_are_refused_and_reported() {
         Err(DrawerError::Overflow)
     );
     device.run(DrawerCommand::Close { counted: usd(0) }).unwrap();
+}
+
+/// Cash handed back for a refund leaves the drawer, once per refund (ADR-0032).
+#[test]
+fn a_refund_takes_cash_out_of_the_drawer_once() {
+    let refunded =
+        |refund, amount| DrawerEvent::CashRefunded(CashRefunded { refund: id(refund), amount });
+    let mut script = Script::opened(usd(10_000));
+    script.apply(&taken(0xB1, usd(1_089)));
+    script.apply(&refunded(0xC1, usd(354)));
+    let again = script.apply(&refunded(0xC1, usd(354)));
+    let foreign = script.apply(&refunded(0xC2, eur(100)));
+    // $100.00 + $10.89 − $3.54 = $107.35.
+    assert_eq!(script.drawer.expected(), Ok(Some(usd(10_735))));
+    assert_eq!(script.drawer.sums().unwrap().refunded, usd(354));
+    assert_eq!(
+        script.kinds(),
+        [
+            (again, ConflictKind::DuplicateRefund(id(0xC1))),
+            (foreign, ConflictKind::CurrencyMismatch)
+        ]
+    );
+    assert_eq!(script.drawer.refunds().len(), 1);
+
+    let refund =
+        |refund, amount| DrawerCommand::RefundCash(CashRefunded { refund: id(refund), amount });
+    let mut device = Device1 { script: Script::new() };
+    assert_eq!(device.run(refund(0xC1, usd(100))), Err(DrawerError::NotOpened));
+    device.run(DrawerCommand::Open { float: usd(10_000), currency: Currency::USD }).unwrap();
+    device.run(refund(0xC1, usd(100))).unwrap();
+    assert_eq!(device.run(refund(0xC1, usd(100))), Err(DrawerError::AlreadyRefunded));
+    assert_eq!(device.run(refund(0xC2, eur(100))), Err(DrawerError::WrongCurrency));
+    assert_eq!(
+        device.run(refund(0xC2, usd(0))),
+        Err(DrawerError::Invalid(PayloadError::Invalid("amount")))
+    );
+    assert_eq!(device.run(refund(0xC2, usd(i64::MAX))), Err(DrawerError::Overflow));
+    device.run(DrawerCommand::Close { counted: usd(9_900) }).unwrap();
+    let closed = device.script.drawer.closed().unwrap();
+    assert_eq!((closed.expected, closed.variance()), (usd(9_900), Some(usd(0))));
 }

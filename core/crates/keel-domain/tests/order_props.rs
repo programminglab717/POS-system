@@ -14,6 +14,8 @@
 //!   model says: a merge reaches states no single device does;
 //! - every check's basket holds its share of each line it is allocated, the checks' shares of a
 //!   line add up to the line, and a line's parts on closed checks were charged by them.
+//!
+//! Returns (ADR-0032) are modelled on their own, in `return_props`: these models leave them out.
 
 #![allow(
     clippy::unwrap_used,
@@ -616,7 +618,8 @@ fn owners_only(command: &OrderCommand) -> bool {
         | OrderCommand::Reopen(_)
         | OrderCommand::ApplyDiscount(_)
         | OrderCommand::RemoveDiscount(_)
-        | OrderCommand::RepriceLine(_) => true,
+        | OrderCommand::RepriceLine(_)
+        | OrderCommand::ReturnLines(_) => true,
         OrderCommand::Create(_)
         | OrderCommand::ChangeAttributes(_)
         | OrderCommand::AddLine(_)
@@ -1083,6 +1086,7 @@ impl Model {
         };
         match command {
             OrderCommand::Create(_) => {}
+            OrderCommand::ReturnLines(_) => unreachable!("returns are modelled in return_props"),
             OrderCommand::RequestOwnership => self.requests.push((device, self.ownership.lease)),
             OrderCommand::OverrideOwnership(_) => {
                 let lease = self.ownership.lease.next().unwrap();
@@ -1566,7 +1570,8 @@ fn owners_only_event(event: &OrderEvent) -> bool {
         | OrderEvent::Reopened { .. }
         | OrderEvent::DiscountApplied(_)
         | OrderEvent::DiscountRemoved { .. }
-        | OrderEvent::LineRepriced(_) => true,
+        | OrderEvent::LineRepriced(_)
+        | OrderEvent::LinesReturned(_) => true,
         OrderEvent::Created(_)
         | OrderEvent::AttributesChanged(_)
         | OrderEvent::LineAdded(_)
@@ -2999,7 +3004,12 @@ proptest! {
     /// so any value the payloads allow takes part.
     #[test]
     fn the_fold_matches_the_model_for_any_events(
-        events in prop::collection::vec(any_event(), 0..40),
+        events in prop::collection::vec(
+            any_event().prop_filter("returns are modelled in return_props", |event| {
+                !matches!(event, OrderEvent::LinesReturned(_))
+            }),
+            0..40,
+        ),
     ) {
         let events = numbered(events.into_iter().map(|event| (false, event)).collect());
         let order = folded(&events)?;

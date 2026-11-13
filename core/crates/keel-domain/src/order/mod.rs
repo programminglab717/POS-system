@@ -5,7 +5,8 @@
 //! removing, firing, voiding and comping them, and voiding or abandoning the whole order. An
 //! order's lines are split among its [`Check`]s, in whole shares. A check closes once its
 //! payments cover it, with a snapshot of what it was charged, and the order closes once its
-//! checks have. Adjustments come later.
+//! checks have. A closed order's lines can be returned, each refunded its share of what the
+//! checks charged it (ADR-0032). Adjustments come later.
 //!
 //! - [`OrderEvent`] lists what can happen to an order, and its payloads (schemas version 1).
 //! - [`Order`] is the state folded from those events. The fold is total, and resolves concurrent
@@ -25,6 +26,7 @@ mod closing;
 mod commands;
 mod events;
 mod ownership;
+mod returns;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -36,6 +38,7 @@ pub use closing::{CheckClosed, LineCharge, TaxCharge};
 pub use commands::{CommandError, OrderCommand};
 pub use events::{AttributesChanged, LineAdded, LineChanged, OrderCreated, OrderEvent};
 pub use ownership::{Lease, Ownership, OwnershipGranted, Refusal, Request};
+pub use returns::{LineReturned, LinesReturned, Return, Returned, refunded, share};
 pub use state::{Conflict, ConflictKind, Line, LineStatus, Order, OrderInfo, OrderStatus, Stage};
 
 pub use crate::aggregate::Skipped;

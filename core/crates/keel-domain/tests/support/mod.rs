@@ -10,8 +10,8 @@ use keel_domain::codec::{
 use keel_domain::order::{
     Allocation, AttributesChanged, Channel, CheckClosed, ChosenModifier, DiscountApplied,
     DiscountValue, Epoch, ItemSnapshot, Lease, LineAdded, LineChanged, LineCharge, LineRepriced,
-    LinesAllocated, Mode, OrderCreated, OrderEvent, OwnershipGranted, Placement, Prefix, Reason,
-    Refusal, TaxCharge,
+    LineReturned, LinesAllocated, LinesReturned, Mode, OrderCreated, OrderEvent, OwnershipGranted,
+    Placement, Prefix, Reason, Refusal, TaxCharge,
 };
 use keel_domain::payment::{
     CashTendered, PaymentAuthorized, PaymentCaptured, PaymentEnded, PaymentEvent, PaymentInitiated,
@@ -429,13 +429,60 @@ pub(crate) fn any_event() -> impl Strategy<Value = OrderEvent> {
                 reason,
             })
         ),
+        any_lines_returned().prop_map(OrderEvent::LinesReturned),
     ]
+}
+
+/// Lines returned that satisfy the payload rules (ADR-0032): one to four, in ascending order of
+/// line, each returning more than zero and refunding zero or more, all in one currency.
+pub(crate) fn any_lines_returned() -> BoxedStrategy<LinesReturned> {
+    any_currency()
+        .prop_flat_map(|currency| {
+            let line = (any_quantity(), price(currency), price(currency));
+            let lines = prop::collection::btree_map(0_u64..0xFFFF_FFFF, line, 1..=4);
+            (any_id(), lines, any_reason())
+        })
+        .prop_map(|(refund, lines, reason)| LinesReturned {
+            refund,
+            lines: lines
+                .into_iter()
+                .map(|(n, (quantity, net, tax))| LineReturned { line: id(n), quantity, net, tax })
+                .collect(),
+            reason,
+        })
+        .boxed()
+}
+
+/// Any refund event (ADR-0032): started for more than zero by either tender, completed for more
+/// than zero, with or without a rounding other than zero in its currency.
+pub(crate) fn any_refund_event() -> BoxedStrategy<keel_domain::refund::RefundEvent> {
+    use keel_domain::refund::{RefundCompleted, RefundEvent, RefundInitiated};
+    any_currency()
+        .prop_flat_map(|currency| {
+            let rounding = prop_oneof![-1_000_i64..=-1, 1_i64..=1_000]
+                .prop_map(move |minor| Money::from_minor(minor, currency));
+            prop_oneof![
+                (any_id(), any_code(Tender::ALL), positive(currency)).prop_map(
+                    |(order, tender, amount)| RefundEvent::Initiated(RefundInitiated {
+                        order,
+                        tender,
+                        amount
+                    })
+                ),
+                (positive(currency), prop::option::of(rounding)).prop_map(|(amount, rounding)| {
+                    RefundEvent::Completed(RefundCompleted { amount, rounding })
+                }),
+            ]
+        })
+        .boxed()
 }
 
 /// Any drawer event (ADR-0031): a float of zero or more, cash taken and moved of more than zero,
 /// a count of zero or more against any expected amount in its currency.
 pub(crate) fn any_drawer_event() -> BoxedStrategy<keel_domain::drawer::DrawerEvent> {
-    use keel_domain::drawer::{CashMoved, CashTaken, DrawerClosed, DrawerEvent, Movement};
+    use keel_domain::drawer::{
+        CashMoved, CashRefunded, CashTaken, DrawerClosed, DrawerEvent, Movement,
+    };
     let positive = |currency| {
         prop_oneof![Just(1_i64), 1_i64..10_000, 1_i64..=i64::MAX]
             .prop_map(move |minor| Money::from_minor(minor, currency))
@@ -454,6 +501,9 @@ pub(crate) fn any_drawer_event() -> BoxedStrategy<keel_domain::drawer::DrawerEve
                     }
                 ),
                 any_reason().prop_map(|reason| DrawerEvent::NoSale { reason }),
+                (any_id(), positive(currency)).prop_map(|(refund, amount)| {
+                    DrawerEvent::CashRefunded(CashRefunded { refund, amount })
+                }),
                 (price(currency), -1_000_000_i64..=1_000_000).prop_map(
                     move |(counted, expected)| {
                         DrawerEvent::Closed(DrawerClosed {

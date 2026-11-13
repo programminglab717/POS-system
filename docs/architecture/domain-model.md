@@ -487,18 +487,21 @@ PartiallyPaid and Paid stages, come later. Payloads follow
 | `order.discount_applied` | A discount went on a line, a percentage or an amount, or on the whole order, a percentage, with a reason (ADR-0030). |
 | `order.discount_removed` | A discount came off. |
 | `order.line_repriced` | A line was priced again by hand, at a unit price of zero or more, with a reason (ADR-0030). |
+| `order.lines_returned` | Lines of a closed order were returned, whole or in part, each with the net and tax it refunds, its share of what the checks' snapshots charged it, through a refund of its own, with a reason (ADR-0032). |
 
 - **A line's life.** A line is *pending* until it is fired, then *fired*. A pending line can be
   removed; a fired line can only be voided. Removed and voided lines no longer count, but a line
   remembers whether it was ever fired. A comp is a mark on a live line, pending or fired, rather
   than a status: the line is still served, at no charge. *Served* and *returned* arrive with
-  fulfillment and returns.
+  fulfillment. A line remembers what of it was returned (ADR-0032): how much, and the net and
+  tax refunded.
 - **Stage** is derived from the lines: *Draft* with no live lines, *Open* while a live line is
   pending, *Submitted* when every live line is fired. An active order can be voided at any stage.
   It can be abandoned only if nothing in it was ever fired: every line it had was removed first.
 - **Money and units.** An order has one currency, fixed when it is created. Every price in it,
   modifiers included, is in that currency, and a line's quantity keeps the unit it was added
-  with. Quantities are positive and prices are zero or more; returns will have their own events.
+  with. Quantities are positive and prices are zero or more; a return is an event of its own,
+  which refunds what was charged rather than adding negative lines (ADR-0032).
 - **Checks.** Every order has a *main check*, number 1, whose identifier is the order's own;
   more are opened as needed, numbered in the order they were opened. Each live line belongs to
   one or more checks in whole shares, in lowest terms: one share on one check for a line one
@@ -694,7 +697,11 @@ rules that span an order and its payments. The payloads' key tables are in
   another currency, one captured or unresolved on a voided or abandoned order, and one captured
   or unresolved on a check that closed without it; and a check overpaid, or closed and no longer
   covered.
-- **Not yet built:** refunds, returns and disputes; store-and-forward and asynchronous rails;
+- **Refunds** are their own aggregate (ADR-0032): `refund.initiated`, for an order's return, by
+  a tender, and `refund.completed`, with any cash rounding; single-writer, the device that made
+  the return. A completion by another device, or for more than the refund was started for,
+  applies and is reported.
+- **Not yet built:** card refunds and disputes; store-and-forward and asynchronous rails;
   tip adjustment and incremental authorization; other tenders; receipt details such as card
   brand, entry mode and EMV data, which come with the first connector.
 
@@ -1026,7 +1033,8 @@ One state machine covers goods that are **in someone else's custody**:
   the same write as the payment), `drawer.cash_moved` (paid in, paid out or dropped, with a
   reason), `drawer.no_sale` and `drawer.closed` (the blind count and what was expected), each
   v1; the store's `drawers` projection finds a device's open session, a day's sessions, and
-  which payments' cash a session took. An open session shows its float alone: what moved
+  which payments' cash a session took. `drawer.cash_refunded` hands cash back for a refund,
+  which what the drawer should hold leaves out (ADR-0032). An open session shows its float alone: what moved
   through it shows once it is counted. X and Z reports come from local data, a day's tenders by
   the day each payment was taken.
 - Safe and bank-deposit tracking (bag numbers) reconcile against expected cash by business date.

@@ -1,6 +1,6 @@
 //! Property tests for the drawer session (ADR-0031), against independent models:
 //! - the fold, given any events in any order, leaves the session as a model predicts: its float,
-//!   what its cash came to, its payments, its no-sales, its close and its conflicts. The model
+//!   what its cash came to, its payments and refunds, its no-sales, its close and its conflicts. The model
 //!   reads the events as queries over their positions (the first opening, the first close that
 //!   applies, the payments counted before each) rather than as the fold's state machine;
 //! - a device's commands, faulty ones included, are refused exactly when a model of the rules
@@ -22,11 +22,12 @@ use std::collections::BTreeSet;
 use keel_domain::aggregate::{Aggregate, EventMeta};
 use keel_domain::codec::ReasonCode;
 use keel_domain::drawer::{
-    CashMoved, CashTaken, ConflictKind, Drawer, DrawerClosed, DrawerCommand, DrawerError,
-    DrawerEvent, Movement, Sums,
+    CashMoved, CashRefunded, CashTaken, ConflictKind, Drawer, DrawerClosed, DrawerCommand,
+    DrawerError, DrawerEvent, Movement, Sums,
 };
 use keel_domain::order::Reason;
 use keel_domain::payment::Payment;
+use keel_domain::refund::Refund;
 use keel_domain::schema::DomainEvent;
 use keel_events::envelope::{Actor, Device, Event, Location};
 use keel_types::{Currency, Hlc, Id, Money};
@@ -81,6 +82,8 @@ fn fold_event() -> impl Strategy<Value = DrawerEvent> {
         4 => (kind, fold_amount())
             .prop_map(|(kind, amount)| DrawerEvent::CashMoved(CashMoved { kind, amount, reason: reason() })),
         1 => Just(DrawerEvent::NoSale { reason: reason() }),
+        3 => ((1_u64..=4), fold_amount())
+            .prop_map(|(n, amount)| DrawerEvent::CashRefunded(CashRefunded { refund: id(0xC0 + n), amount })),
         2 => (fold_amount(), fold_amount())
             .prop_map(|(counted, expected)| DrawerEvent::Closed(DrawerClosed { counted, expected })),
     ]
@@ -105,9 +108,41 @@ struct Expected {
     float: Option<Money>,
     sums: Option<Sums>,
     payments: BTreeSet<Id<Payment>>,
+    refunds: BTreeSet<Id<Refund>>,
     no_sales: u64,
     closed: Option<DrawerClosed>,
     conflicts: Vec<(Id<Event>, ConflictKind)>,
+}
+
+/// What, if anything, keeps an event from applying to an open session, in `currency`, which took
+/// `payments` and `refunds`, and is closed or not.
+fn refusal(
+    event: &DrawerEvent,
+    payments: &BTreeSet<Id<Payment>>,
+    refunds: &BTreeSet<Id<Refund>>,
+    closed: bool,
+    currency: Currency,
+) -> Option<ConflictKind> {
+    match event {
+        DrawerEvent::CashTaken(taken) if payments.contains(&taken.payment) => {
+            Some(ConflictKind::DuplicatePayment(taken.payment))
+        }
+        DrawerEvent::CashRefunded(refunded) if refunds.contains(&refunded.refund) => {
+            Some(ConflictKind::DuplicateRefund(refunded.refund))
+        }
+        DrawerEvent::CashTaken(CashTaken { amount, .. })
+        | DrawerEvent::CashMoved(CashMoved { amount, .. })
+        | DrawerEvent::CashRefunded(CashRefunded { amount, .. })
+            if amount.currency() != currency =>
+        {
+            Some(ConflictKind::CurrencyMismatch)
+        }
+        DrawerEvent::Closed(_) if closed => Some(ConflictKind::DuplicateClose),
+        DrawerEvent::Closed(close) if close.counted.currency() != currency => {
+            Some(ConflictKind::CurrencyMismatch)
+        }
+        _ => None,
+    }
 }
 
 fn expected(events: &[(EventMeta, DrawerEvent)]) -> Expected {
@@ -121,6 +156,7 @@ fn expected(events: &[(EventMeta, DrawerEvent)]) -> Expected {
             float: None,
             sums: None,
             payments: BTreeSet::new(),
+            refunds: BTreeSet::new(),
             no_sales: 0,
             closed: None,
             conflicts,
@@ -129,8 +165,10 @@ fn expected(events: &[(EventMeta, DrawerEvent)]) -> Expected {
     let (opened, DrawerEvent::Opened { float }) = &events[o] else { panic!("the first opening") };
     let (place, opener, currency) = (opened.location, opened.origin_device, float.currency());
     let zero = Money::zero(currency);
-    let mut sums = Sums { taken: zero, paid_in: zero, paid_out: zero, dropped: zero };
-    let (mut payments, mut no_sales, mut closed) = (BTreeSet::new(), 0, None);
+    let mut sums =
+        Sums { taken: zero, paid_in: zero, paid_out: zero, dropped: zero, refunded: zero };
+    let (mut payments, mut refunds, mut no_sales, mut closed) =
+        (BTreeSet::new(), BTreeSet::new(), 0, None);
     for (i, (meta, event)) in events.iter().enumerate() {
         let at = meta.event_id;
         if i == o {
@@ -153,24 +191,7 @@ fn expected(events: &[(EventMeta, DrawerEvent)]) -> Expected {
             conflicts.push((at, ConflictKind::NotOpener { by: meta.origin_device }));
         }
         let was_closed = closed.is_some();
-        // What, if anything, keeps the event from applying.
-        let refused = match event {
-            DrawerEvent::CashTaken(taken) if payments.contains(&taken.payment) => {
-                Some(ConflictKind::DuplicatePayment(taken.payment))
-            }
-            DrawerEvent::CashTaken(taken) if taken.amount.currency() != currency => {
-                Some(ConflictKind::CurrencyMismatch)
-            }
-            DrawerEvent::CashMoved(moved) if moved.amount.currency() != currency => {
-                Some(ConflictKind::CurrencyMismatch)
-            }
-            DrawerEvent::Closed(_) if was_closed => Some(ConflictKind::DuplicateClose),
-            DrawerEvent::Closed(close) if close.counted.currency() != currency => {
-                Some(ConflictKind::CurrencyMismatch)
-            }
-            _ => None,
-        };
-        if let Some(kind) = refused {
+        if let Some(kind) = refusal(event, &payments, &refunds, was_closed, currency) {
             conflicts.push((at, kind));
             continue;
         }
@@ -188,6 +209,10 @@ fn expected(events: &[(EventMeta, DrawerEvent)]) -> Expected {
                 *sum = sum.checked_add(moved.amount).unwrap();
             }
             DrawerEvent::NoSale { .. } => no_sales += 1,
+            DrawerEvent::CashRefunded(refunded) => {
+                sums.refunded = sums.refunded.checked_add(refunded.amount).unwrap();
+                refunds.insert(refunded.refund);
+            }
             DrawerEvent::Closed(close) => closed = Some(*close),
             DrawerEvent::Opened { .. } => panic!("handled above"),
         }
@@ -195,7 +220,15 @@ fn expected(events: &[(EventMeta, DrawerEvent)]) -> Expected {
             conflicts.push((at, ConflictKind::AfterClose));
         }
     }
-    Expected { float: Some(*float), sums: Some(sums), payments, no_sales, closed, conflicts }
+    Expected {
+        float: Some(*float),
+        sums: Some(sums),
+        payments,
+        refunds,
+        no_sales,
+        closed,
+        conflicts,
+    }
 }
 
 fn folded(events: &[(EventMeta, DrawerEvent)]) -> Drawer {
@@ -214,6 +247,7 @@ fn actual(drawer: &Drawer) -> Expected {
         float: drawer.info().map(|info| info.float),
         sums: drawer.sums().copied(),
         payments: drawer.payments().clone(),
+        refunds: drawer.refunds().clone(),
         no_sales: drawer.no_sales(),
         closed: drawer.closed().copied(),
         conflicts: drawer.conflicts().iter().map(|c| (c.event, c.kind)).collect(),
@@ -241,7 +275,7 @@ struct Step {
 
 fn any_step() -> impl Strategy<Value = Step> {
     let fault = prop_oneof![7 => Just(0_u8), 3 => 1_u8..=5];
-    (0_u8..5, -2_i64..3_000, 1_u64..=5, fault).prop_map(|(kind, amount, payment, fault)| Step {
+    (0_u8..6, -2_i64..3_000, 1_u64..=5, fault).prop_map(|(kind, amount, payment, fault)| Step {
         kind,
         amount,
         payment,
@@ -264,6 +298,7 @@ fn command(step: &Step) -> (DrawerCommand, u64, Id<Location>) {
             DrawerCommand::MoveCash(CashMoved { kind, amount, reason: reason() })
         }
         3 => DrawerCommand::NoSale(reason()),
+        5 => DrawerCommand::RefundCash(CashRefunded { refund: id(0xC0 + step.payment), amount }),
         _ => DrawerCommand::Close { counted: if step.fault == 4 { money(-1) } else { amount } },
     };
     let device = if step.fault == 1 { 2 } else { 1 };
@@ -280,6 +315,7 @@ struct Model {
     place: Option<Id<Location>>,
     expected: i64,
     payments: BTreeSet<Id<Payment>>,
+    refunds: BTreeSet<Id<Refund>>,
     closed: bool,
 }
 
@@ -292,6 +328,7 @@ enum Refusal {
     NotOpener,
     WrongCurrency,
     AlreadyTaken,
+    AlreadyRefunded,
     Invalid,
 }
 
@@ -304,6 +341,7 @@ fn refusal_of(error: &DrawerError) -> Refusal {
         DrawerError::NotOpener => Refusal::NotOpener,
         DrawerError::WrongCurrency => Refusal::WrongCurrency,
         DrawerError::AlreadyTaken => Refusal::AlreadyTaken,
+        DrawerError::AlreadyRefunded => Refusal::AlreadyRefunded,
         DrawerError::Invalid(_) => Refusal::Invalid,
         other => panic!("no command here should be refused with {other:?}"),
     }
@@ -347,6 +385,15 @@ impl Model {
                 Some(Refusal::WrongCurrency)
             }
             DrawerCommand::MoveCash(moved) if !moved.amount.is_positive() => Some(Refusal::Invalid),
+            DrawerCommand::RefundCash(refunded) if !dollars(&refunded.amount) => {
+                Some(Refusal::WrongCurrency)
+            }
+            DrawerCommand::RefundCash(refunded) if self.refunds.contains(&refunded.refund) => {
+                Some(Refusal::AlreadyRefunded)
+            }
+            DrawerCommand::RefundCash(refunded) if !refunded.amount.is_positive() => {
+                Some(Refusal::Invalid)
+            }
             DrawerCommand::Close { counted } if !dollars(counted) => Some(Refusal::WrongCurrency),
             DrawerCommand::Close { counted } if counted.is_negative() => Some(Refusal::Invalid),
             _ => None,
@@ -370,6 +417,10 @@ impl Model {
             }
             DrawerCommand::MoveCash(moved) => self.expected += moved.amount.minor(),
             DrawerCommand::NoSale(_) => {}
+            DrawerCommand::RefundCash(refunded) => {
+                self.expected -= refunded.amount.minor();
+                self.refunds.insert(refunded.refund);
+            }
             DrawerCommand::Close { .. } => self.closed = true,
         }
     }
@@ -390,7 +441,7 @@ proptest! {
         // What it should hold is what the model's sums say.
         if let (Some(float), Some(sums)) = (expected(&events).float, expected(&events).sums) {
             let held = float.minor() + sums.taken.minor() + sums.paid_in.minor()
-                - sums.paid_out.minor() - sums.dropped.minor();
+                - sums.paid_out.minor() - sums.dropped.minor() - sums.refunded.minor();
             prop_assert_eq!(drawer.expected().unwrap().map(Money::minor), Some(held));
         }
     }

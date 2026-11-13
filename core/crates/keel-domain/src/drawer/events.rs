@@ -10,9 +10,11 @@
 //! | `drawer.cash_moved` | 1 kind, 2 amount, 3 reason code, 4 note (optional) |
 //! | `drawer.no_sale` | 1 reason code, 2 note (optional) |
 //! | `drawer.closed` | 1 counted, 2 expected |
+//! | `drawer.cash_refunded` | 1 refund, 2 amount (ADR-0032) |
 //!
 //! Beyond the types, payloads must satisfy these rules:
-//! - a float is zero or more; cash taken and moved are more than zero; a count is zero or more;
+//! - a float is zero or more; cash taken, moved and refunded are more than zero; a count is zero
+//!   or more;
 //! - a close's count and expected amount are in the same currency.
 
 use keel_events::cbor::Value;
@@ -22,6 +24,7 @@ use keel_types::{Id, Money};
 use crate::codec::{Fields, PayloadError, Record, code_enum};
 use crate::order::Reason;
 use crate::payment::Payment;
+use crate::refund::Refund;
 use crate::schema::{DecodeError, DomainEvent, SchemaId};
 
 code_enum! {
@@ -49,6 +52,15 @@ pub struct CashTaken {
     /// The payment.
     pub payment: Id<Payment>,
     /// What it left in the drawer: its amount, tip and cash rounding. More than zero.
+    pub amount: Money,
+}
+
+/// Cash handed back from the drawer for a refund (ADR-0032).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CashRefunded {
+    /// The refund.
+    pub refund: Id<Refund>,
+    /// What was handed back, cash rounding included: more than zero.
     pub amount: Money,
 }
 
@@ -99,6 +111,8 @@ pub enum DrawerEvent {
     },
     /// The drawer was counted and the session closed.
     Closed(DrawerClosed),
+    /// Cash was handed back for a refund (ADR-0032).
+    CashRefunded(CashRefunded),
 }
 
 const OPENED: SchemaId = SchemaId { name: "drawer.opened", version: 1 };
@@ -106,6 +120,7 @@ const CASH_TAKEN: SchemaId = SchemaId { name: "drawer.cash_taken", version: 1 };
 const CASH_MOVED: SchemaId = SchemaId { name: "drawer.cash_moved", version: 1 };
 const NO_SALE: SchemaId = SchemaId { name: "drawer.no_sale", version: 1 };
 const CLOSED: SchemaId = SchemaId { name: "drawer.closed", version: 1 };
+const CASH_REFUNDED: SchemaId = SchemaId { name: "drawer.cash_refunded", version: 1 };
 
 impl DrawerEvent {
     /// Checks the payload's rules: see the module's.
@@ -118,6 +133,9 @@ impl DrawerEvent {
                 Err(PayloadError::Invalid("amount"))
             }
             DrawerEvent::CashMoved(moved) if !moved.amount.is_positive() => {
+                Err(PayloadError::Invalid("amount"))
+            }
+            DrawerEvent::CashRefunded(refunded) if !refunded.amount.is_positive() => {
                 Err(PayloadError::Invalid("amount"))
             }
             DrawerEvent::Closed(closed) if closed.counted.is_negative() => {
@@ -136,7 +154,8 @@ impl DrawerEvent {
 impl DomainEvent for DrawerEvent {
     const STREAM: &'static str = "drawer";
 
-    const SCHEMAS: &'static [SchemaId] = &[OPENED, CASH_TAKEN, CASH_MOVED, NO_SALE, CLOSED];
+    const SCHEMAS: &'static [SchemaId] =
+        &[OPENED, CASH_TAKEN, CASH_MOVED, NO_SALE, CLOSED, CASH_REFUNDED];
 
     fn schema(&self) -> SchemaId {
         match self {
@@ -145,6 +164,7 @@ impl DomainEvent for DrawerEvent {
             DrawerEvent::CashMoved(_) => CASH_MOVED,
             DrawerEvent::NoSale { .. } => NO_SALE,
             DrawerEvent::Closed(_) => CLOSED,
+            DrawerEvent::CashRefunded(_) => CASH_REFUNDED,
         }
     }
 
@@ -165,6 +185,9 @@ impl DomainEvent for DrawerEvent {
             }
             DrawerEvent::Closed(closed) => {
                 record.field(1, &closed.counted).field(2, &closed.expected)
+            }
+            DrawerEvent::CashRefunded(refunded) => {
+                record.field(1, &refunded.refund).field(2, &refunded.amount)
             }
         }
         .build()
@@ -202,6 +225,11 @@ impl DomainEvent for DrawerEvent {
             DrawerEvent::Closed(DrawerClosed {
                 counted: fields.required(1, "counted")?,
                 expected: fields.required(2, "expected")?,
+            })
+        } else if CASH_REFUNDED.matches(schema) {
+            DrawerEvent::CashRefunded(CashRefunded {
+                refund: fields.required(1, "refund")?,
+                amount: fields.required(2, "amount")?,
             })
         } else {
             return Err(DecodeError::UnknownSchema);
