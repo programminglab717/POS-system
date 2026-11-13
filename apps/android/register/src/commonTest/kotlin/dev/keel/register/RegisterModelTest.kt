@@ -1142,4 +1142,121 @@ class RegisterModelTest {
         testScheduler.advanceUntilIdle()
         assertEquals("the item is already sold out until then, or already on sale", model.state.value.error)
     }
+
+    /** Found in review: a refresh put back the sheet it began with, losing what was chosen meanwhile. */
+    @Test
+    fun choices_made_while_availability_is_read_stay() = runTest {
+        val fake = FakeTill()
+        var model: RegisterModel? = null
+        var chooseDuringRead = false
+        val till = object : Till by fake {
+            override fun soldOut(): List<SoldOutItem> {
+                if (chooseDuringRead) {
+                    chooseDuringRead = false
+                    val shots = model!!.state.value.sheet!!.shown[1]
+                    model!!.choose(shots.index, "shot")
+                    model!!.sheetQuantity(3)
+                }
+                return fake.soldOut()
+            }
+        }
+        model = signedIn(till)
+        model.tap(model.button("Latte"))
+        testScheduler.advanceUntilIdle()
+        fake.sold["vanilla"] = null
+        fake.availability += 1
+        chooseDuringRead = true
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        val sheet = model.state.value.sheet!!
+        assertEquals(listOf(1, 3), listOf(sheet.count(sheet.shown[1].index, "shot"), sheet.quantity))
+        assertEquals(true, sheet.item.groups.flatMap { it.modifiers }.single { it.modifier == "vanilla" }.soldOut)
+    }
+
+    /** Found in review: a tap made marking, then Done before the worker ran it, rang the item. */
+    @Test
+    fun a_tap_made_marking_never_rings() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.toggleMarking()
+        model.tap(model.button("Tea"))
+        model.toggleMarking()
+        testScheduler.advanceUntilIdle()
+        assertEquals(emptyList(), till.rung)
+        assertNull(model.state.value.ticket)
+    }
+
+    /** Found in review: every 86 in the store cleared the error shown, and a failed read showed one. */
+    @Test
+    fun an_86_heard_from_elsewhere_keeps_the_error_shown_and_a_failed_read_shows_none() = runTest {
+        val fake = FakeTill()
+        var failing = false
+        val till = object : Till by fake {
+            override fun menu(): List<MenuPage> = if (failing) throw TillException("disk") else fake.menu()
+        }
+        val model = signedIn(till)
+        fake.sold["tea"] = null
+        fake.availability += 1
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        assertEquals("Tea is sold out until put back.", model.state.value.error)
+        fake.sold["scone"] = null
+        fake.availability += 1
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals("Tea is sold out until put back.", model.state.value.error, "still shown")
+        assertEquals(true, model.button("Scone").soldOut)
+        failing = true
+        fake.sold.remove("scone")
+        fake.availability += 1
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals("Tea is sold out until put back.", model.state.value.error, "a failed read says nothing")
+        failing = false
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertEquals(false, model.button("Scone").soldOut, "read again at the next poll")
+    }
+
+    /** Found in review: an item 86'd with its sheet open left the sheet, its Add refused behind it. */
+    @Test
+    fun an_items_sheet_closes_when_the_item_sells_out() = runTest {
+        val fake = FakeTill()
+        val model = signedIn(fake)
+        model.tap(model.button("Latte"))
+        testScheduler.advanceUntilIdle()
+        assertNotNull(model.state.value.sheet)
+        fake.sold["latte"] = "2026-10-03 04:00"
+        fake.availability += 1
+        model.refreshSync()
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.sheet)
+        assertEquals("Latte just sold out.", model.state.value.error)
+    }
+
+    /** Found in review: the 86 sheet's buttons came back before it showed what the change did. */
+    @Test
+    fun the_86_sheet_works_until_it_shows_the_change() = runTest {
+        val fake = FakeTill()
+        var model: RegisterModel? = null
+        val working = mutableListOf<Boolean?>()
+        val till = object : Till by fake {
+            override fun soldOut(): List<SoldOutItem> {
+                working += model?.state?.value?.mark?.working
+                return fake.soldOut()
+            }
+        }
+        model = signedIn(till)
+        model.toggleMarking()
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        working.clear()
+        model.eightySix("tea", modifier = false, untilPutBack = false)
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf<Boolean?>(true), working, "still working while it reads")
+        assertEquals(false, model.state.value.mark?.working)
+        assertEquals(true, model.state.value.mark?.button?.soldOut)
+    }
 }

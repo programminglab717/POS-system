@@ -38,6 +38,6 @@ supersedes the old one.
 | [0030](./0030-selling-at-the-register.md) | Selling at the register: discounts and price overrides as order events, split checks and partial payments, and orders recalled across devices | Accepted |
 | [0031](./0031-cash-drawers-and-day-reports.md) | Cash: drawer sessions as single-writer aggregates, a blind close, and X and Z reports from local data | Accepted |
 | [0032](./0032-returns-and-refunds.md) | Returns and refunds: lines returned on the original order, refunds as their own aggregate, never beyond what was paid | Accepted |
-| [0033](./0033-availability.md) | Availability: an 86 as an event per item, the latest by HLC winning, in-store within 10 s | Proposed |
+| [0033](./0033-availability.md) | Availability: an 86 as an event per item, the latest by HLC winning, in-store within 10 s | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

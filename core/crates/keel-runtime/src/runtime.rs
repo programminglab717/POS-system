@@ -299,6 +299,9 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         if fewer {
             self.check_unpaid(&loaded, now.allocation().iter().map(|share| share.check))?;
         }
+        if more {
+            self.check_line_on_sale(now)?;
+        }
         // More of a line priced by hand moves its price further from the rung one, and more of a
         // discounted one takes more off: each is asked for as its own is. Found in review: a 10%
         // on one latte became 10% of a hundred with no approval.

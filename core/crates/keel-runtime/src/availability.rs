@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use keel_domain::availability::{Availability, AvailabilityChanged, AvailabilityCommand, ItemKind};
 use keel_domain::codec::Name;
-use keel_domain::order::Reason;
+use keel_domain::order::{ChosenModifier, Line, Reason};
 use keel_domain::profile::Choice;
 use keel_domain::refs::{Modifier, Variant};
 use keel_domain::staff::{Action, Request};
@@ -73,18 +73,18 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let profile = &self.profile;
         let mut sold_out = Vec::new();
         for summary in self.store.sold_out(self.clock.now())? {
-            let Some((kind, _, until)) = summary.latest else { continue };
-            let (item, name) = match kind {
-                ItemKind::Variant => {
-                    let variant: Id<Variant> = summary.id.cast();
-                    let Some(name) = profile.variant_name(variant) else { continue };
-                    (ItemRef::Variant(variant), name.clone())
-                }
-                ItemKind::Modifier => {
-                    let modifier: Id<Modifier> = summary.id.cast();
-                    let Some(found) = profile.modifier(modifier) else { continue };
-                    (ItemRef::Modifier(modifier), found.name.clone())
-                }
+            let Some((_, _, until)) = summary.latest else { continue };
+            // What the item is comes from the catalog, whose identifiers are unique, not from the
+            // change: one that named the other kind still sells the item out. Found in review: it
+            // was left on sale. An item the catalog doesn't have is no button.
+            let (variant, modifier): (Id<Variant>, Id<Modifier>) =
+                (summary.id.cast(), summary.id.cast());
+            let (item, name) = if let Some(name) = profile.variant_name(variant) {
+                (ItemRef::Variant(variant), name.clone())
+            } else if let Some(found) = profile.modifier(modifier) {
+                (ItemRef::Modifier(modifier), found.name.clone())
+            } else {
+                continue;
             };
             let until = until.map(|until| profile.business_day().local_time(until)).transpose()?;
             sold_out.push(SoldOut { item, name, until });
@@ -126,16 +126,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         until: Until,
         reason: Option<Reason>,
     ) -> Result<(), RuntimeError> {
-        let now = self.clock.now();
-        let until = match until {
-            Until::EndOfDay => {
-                let day = self.profile.business_day();
-                Some(day.window(day.business_date_of(now)?)?.1)
-            }
-            Until::Time(time) => Some(time),
-            Until::PutBack => None,
-        };
-        self.change_availability(item, false, until, reason)
+        self.change_availability(item, Some(until), reason)
     }
 
     /// Puts `item` back on sale: `item.availability`, as an 86 is.
@@ -143,17 +134,28 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// # Errors
     /// As [`Runtime::eighty_six`]; [`RuntimeError::Availability`] if it is on sale already.
     pub fn put_back(&mut self, item: ItemRef) -> Result<(), RuntimeError> {
-        self.change_availability(item, true, None, None)
+        self.change_availability(item, None, None)
     }
 
+    /// 86s `item` `until` then, or puts it back with none.
     fn change_availability(
         &mut self,
         item: ItemRef,
-        available: bool,
-        until: Option<Timestamp>,
+        until: Option<Until>,
         reason: Option<Reason>,
     ) -> Result<(), RuntimeError> {
         let meta = self.meta()?;
+        // The day's end is the one of the change's own time: read once. Found in review: read
+        // twice, an 86 made at the cutoff could end before it began.
+        let available = until.is_none();
+        let until = match until {
+            Some(Until::EndOfDay) => {
+                let day = self.profile.business_day();
+                Some(day.window(day.business_date_of(meta.now)?)?.1)
+            }
+            Some(Until::Time(time)) => Some(time),
+            Some(Until::PutBack) | None => None,
+        };
         let known = match item {
             ItemRef::Variant(variant) => self.profile.variant(variant).is_some(),
             ItemRef::Modifier(modifier) => self.profile.modifier(modifier).is_some(),
@@ -166,17 +168,15 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let changed = AvailabilityChanged { kind: item.kind(), available, until, reason };
         let command = AvailabilityCommand::Change(changed);
         // The item's own rules come before an approval is asked for a change they would refuse.
-        let event = current.decide(self.location(), meta.now, command.clone())?;
+        current.decide(self.location(), meta.now, command.clone())?;
         let granted = self.gate(Request::of(Action::ItemAvailability), Some(id.cast()))?;
         let stream = self.approval_stream(granted.as_ref())?;
         let location = self.location();
         self.store.write(|w| -> Result<(), RuntimeError> {
             let meta = crate::staff::approved(w, granted.as_ref(), stream, &meta)?;
-            // Decided again in the write, on the item as it stands.
-            let now = w.load(Availability::new(id))?.decide(location, meta.now, command)?;
-            if now != event {
-                return Err(RuntimeError::OrderChanged);
-            }
+            // Decided again in the write, on the item as it stands: a change heard meanwhile that
+            // makes this one change nothing refuses it.
+            let event = w.load(Availability::new(id))?.decide(location, meta.now, command)?;
             append(w, id.cast(), &event, &meta)?;
             Ok(())
         })?;
@@ -191,20 +191,45 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         variant: Id<Variant>,
         choices: &[Choice],
     ) -> Result<(), RuntimeError> {
+        // The choices, and the choices made under each, however deep.
+        let mut modifiers = Vec::new();
+        let mut left: Vec<&Choice> = choices.iter().collect();
+        while let Some(choice) = left.pop() {
+            modifiers.push(choice.modifier);
+            left.extend(choice.choices.iter());
+        }
+        self.refuse_sold_out(variant, &modifiers)
+    }
+
+    /// Refuses more of `line` if its variant, or a modifier on it at any depth, is sold out now: a
+    /// line rung before stays, but doesn't grow. Found in review: it did.
+    pub(crate) fn check_line_on_sale(&self, line: &Line) -> Result<(), RuntimeError> {
+        let mut modifiers = Vec::new();
+        let mut left: Vec<&ChosenModifier> = line.modifiers().iter().collect();
+        while let Some(chosen) = left.pop() {
+            modifiers.push(chosen.modifier);
+            left.extend(chosen.modifiers.iter());
+        }
+        self.refuse_sold_out(line.item().variant, &modifiers)
+    }
+
+    /// Refuses `variant` with `modifiers` if any of them is sold out now, naming it.
+    fn refuse_sold_out(
+        &self,
+        variant: Id<Variant>,
+        modifiers: &[Id<Modifier>],
+    ) -> Result<(), RuntimeError> {
         let sold_out = self.sold_out_map()?;
         let profile = &self.profile;
         if sold_out.contains_key(&variant.cast()) {
             let name = profile.variant_name(variant).map(ToString::to_string).unwrap_or_default();
             return Err(RuntimeError::SoldOut(name));
         }
-        // The choices, and the choices made under each, however deep.
-        let mut left: Vec<&Choice> = choices.iter().collect();
-        while let Some(choice) = left.pop() {
-            if sold_out.contains_key(&choice.modifier.cast()) {
-                let name = profile.modifier(choice.modifier).map(|found| found.name.to_string());
-                return Err(RuntimeError::SoldOut(name.unwrap_or_default()));
-            }
-            left.extend(choice.choices.iter());
+        if let Some(&modifier) =
+            modifiers.iter().find(|modifier| sold_out.contains_key(&modifier.cast()))
+        {
+            let name = profile.modifier(modifier).map(|found| found.name.to_string());
+            return Err(RuntimeError::SoldOut(name.unwrap_or_default()));
         }
         Ok(())
     }

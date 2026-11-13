@@ -156,6 +156,8 @@ class FakeTill : Till {
 
     override fun putBack(item: String, modifier: Boolean) {
         check(signedIn != null) { "no one signed in" }
+        val known = if (modifier) item in modifierIds else item in prices
+        if (!known) throw TillException("the catalog has no item $item")
         if (item !in sold) throw TillException("the item is already sold out until then, or already on sale")
         if (markNeedsApproval && approvedBy == null) throw TillException("Marking an item out needs a manager's approval.", approval = "item.availability")
         approvedBy = null

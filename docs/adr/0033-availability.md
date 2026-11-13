@@ -1,6 +1,6 @@
 # ADR-0033: Availability: an 86 as an event per item, the latest by HLC winning, in-store within 10 s
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-13
 
 ## Context
@@ -84,6 +84,41 @@ modifier sheet are read from the location's profile (ADR-0023).
 - One new schema, which every replica's kernel must know before any device writes it.
 - An 86 made on an island register reaches the others only when it hears the hub again.
 - A shell that polls every 2 s takes up to that, past the hub's delivery, to show an 86.
+
+## As built
+
+Built in three slices on 2026-11-13, each verified as it landed, then reviewed: the kernel and the
+Android shell each by a reviewer who hadn't built them. An 86 on one device is sold out on the
+other 1 s later in the runtime's time, through the hub, with no push from the shell; a shell
+polling every 2 s shows it within 3 s. What the review found, and what was done:
+
+- **More of a line sold out since it was rung** was sold: raising its quantity didn't ask. It is
+  refused, for the line's variant or any modifier on it; fewer, or as many, is not.
+- **An 86 at the cutoff** read the clock twice: its day's end, and its time. Both are the change's
+  own time now.
+- **A change naming the other kind** left the item on sale: what is sold out is looked up in the
+  catalog by identifier, whatever kind the change names.
+- **The propagation test** let 8 s pass, and its concurrent changes asserted only that the devices
+  agreed. It holds the hub to 1 s, and checks the later change stands for 86 against 86, 86
+  against put-back, and the reverse. The business day's end is tested at 2 am and on the night the
+  clocks go back.
+- **On the register**: a poll refreshing the menu reset choices made on the open sheet meanwhile,
+  and cleared the error shown, and showed one of its own when a read failed; a tap made marking
+  rang the item if Done came first; an item 86'd with its sheet open left the sheet, its Add
+  refused behind it; the 86 sheet's buttons came back before it showed the change; the 86 and
+  modifier sheets didn't show their refusals; the instrumented test looked for the bottled water
+  on the wrong page, and 86'd it until put back, which a failed run would leave. Each is fixed,
+  with a model test.
+
+Gaps that remain:
+
+- **A change naming the other kind** sells the item out, but the register's commands refuse an 86
+  of it as the other kind; only a forged or buggy writer makes one, and no test does.
+- **An approval** for an 86 is for the item, not for the change: one asked for an 86 can be spent
+  putting it back, as the roles gate both as one action.
+- **An 86 until another day** shows its time without its date on the Android register, which only
+  86s for the day or until put back.
+- **The Android register's instrumented test** waits for an emulator, as steps 3 and 4's do.
 
 ## Alternatives considered
 

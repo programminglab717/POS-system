@@ -6,7 +6,7 @@
 
 ## Where we are
 
-**The MVP, steps 1 to 4 of 10, are done.** Step 1, staff, roles and approvals
+**The MVP, steps 1 to 5 of 10, are done.** Step 1, staff, roles and approvals
 ([ADR-0029](./adr/0029-staff-roles-and-approvals.md)); step 2, selling at the register
 ([ADR-0030](./adr/0030-selling-at-the-register.md)): discounts with reasons and limits, prices
 set by hand, line notes, split checks and partial cash payments, and orders parked on one
@@ -15,8 +15,11 @@ register and recalled on another through the hub; step 3, cash
 paid out, safe drops and no-sales, a blind close, and X and Z reports from local data; step 4,
 returns and refunds ([ADR-0032](./adr/0032-returns-and-refunds.md), accepted after its review):
 a paid order found from its receipt, lines returned whole or in part, each refunded what was
-paid for it and never more, in cash out of the drawer. Each in the kernel, the bindings and the
-Android register. Step 5, availability, is next.
+paid for it and never more, in cash out of the drawer; step 5, availability
+([ADR-0033](./adr/0033-availability.md), accepted after its review): an item or a modifier 86'd
+for the day or until put back on any register, sold out on every register of the store within a
+second through the hub, and refused when rung. Each in the kernel, the bindings and the Android
+register. Step 6, the kitchen, is next.
 
 **CI is out of minutes for the month**: the work since is verified here as CI would verify it,
 but for the app's instrumented tests, which need an emulator. Step 3 changed them, and fixed
@@ -91,18 +94,25 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
+The MVP's step 6, the kitchen: routing to stations, kitchen tickets and a KDS, ticket aging,
+fallbacks (D-01…D-03, D-06, D-07, D-11). Next: its design.
+
+Waiting on CI's minutes: the Android app's instrumented tests, steps 3, 4 and 5's among them, and
+the three of step 2 the scrolling ticket pane should mend.
+
+## Completed
+
+### Availability: MVP step 5 (2026-11-13)
+
 The MVP's step 5, availability: a global 86 in-store, within 10 s (G-06)
-([ADR-0033](./adr/0033-availability.md), proposed), is built in three slices, each verified as it
-lands, then reviewed together:
+([ADR-0033](./adr/0033-availability.md), accepted after its review), was built in three slices,
+each verified as it landed, then reviewed together:
 
 1. **The domain and the store** (built 2026-11-13): `availability.changed`, its fold and
    commands, the projection.
 2. **The register** (built 2026-11-13): the runtime's 86 and un-86, the menu's availability,
    the refusal when ringing, the bindings, the propagation test.
-3. **The shell** (built 2026-11-13): the Android register's 86. Next: the review.
-
-Waiting on CI's minutes: the Android app's instrumented tests, steps 3 and 4's among them, and
-the three of step 2 the scrolling ticket pane should mend.
+3. **The shell** (built 2026-11-13): the Android register's 86.
 
 Built in slice 1:
 
@@ -161,8 +171,33 @@ Built in slice 3:
     put-back from the menu, a double tap, the 86 sheet's modifiers, another register's 86 reaching
     the menu and the open sheet, an 86 expiring, the approval. An instrumented test 86s the
     bottled water until put back and puts it back; it waits for an emulator.
+- **Verified**: `cargo fmt`, clippy with all features and none, the docs, every workspace test
+  with the exhaustive sweeps, the wasm build, the planted bugs' staleness check, the Kotlin
+  bindings' tests, `:register:jvmTest`, `:kernel:testDebugUnitTest` and the app's builds.
 
-## Completed
+The review (2026-11-13), the kernel and the Android shell each by a reviewer who hadn't built
+them; ADR-0033's As built lists what it found and what remains. Fixed, each with a test:
+
+- **Ringing**: more of a line sold out since it was rung is refused, for its variant or any
+  modifier on it; fewer, or as many, is not.
+- **The runtime**: an 86's day's end is that of the change's own time, read once; what is sold out
+  is looked up in the catalog by identifier, whatever kind the change names; the re-decision
+  inside the write appends what it decides.
+- **Tests**: the propagation test holds the hub to 1 s and checks the later change stands, 86
+  against 86, 86 against put-back, and the reverse; an 86 for the day at 2 am, and on the night
+  the clocks go back.
+- **The register**: a poll applies what it reads to the state as it is, keeping choices made on
+  the sheet meanwhile and the error shown, and says nothing when a read fails; a tap made
+  marking never rings; an item 86'd with its sheet open closes it, saying so; the 86 sheet works
+  until it shows the change; the sheets show their refusals; a publication refreshes the open
+  sheets; the fake till refuses an unknown item put back; the instrumented test opens the Food
+  page, 86s the water for the day, and puts back what a run before left.
+- **Planted bugs**: 3 more in `keel-runtime`, each caught, and 3 re-aimed at the changed code.
+- **Verified**, as CI would, CI's minutes being spent: `cargo fmt`, clippy with all features and
+  none, the docs, every workspace test with the exhaustive sweeps, the wasm build, the planted
+  bugs' staleness check, the Kotlin bindings' tests, `:register:jvmTest`,
+  `:kernel:testDebugUnitTest` and the app's builds. The instrumented test waits for an emulator.
+
 
 ### Returns and refunds: MVP step 4 (2026-11-13)
 

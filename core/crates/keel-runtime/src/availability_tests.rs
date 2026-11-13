@@ -247,3 +247,56 @@ fn an_item_the_catalog_lacks_is_refused() {
     ));
     assert_eq!(runtime.availability_version().unwrap(), 0);
 }
+
+#[test]
+fn a_line_rung_before_an_86_stays_but_doesnt_grow() {
+    let scratch = Scratch::new();
+    let mut runtime = cashier(&scratch);
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    let espresso_line =
+        runtime.add_item(order, id(ESPRESSO), &[], NonZeroU32::MIN).unwrap().lines[0].line;
+    let ticket = runtime.add_item(order, id(0x403), &big_latte(), NonZeroU32::MIN).unwrap();
+    let latte_line = ticket.lines[1].line;
+    runtime.eighty_six(espresso(), Until::EndOfDay, None).unwrap();
+    runtime.eighty_six(oat_milk(), Until::EndOfDay, None).unwrap();
+    let two = NonZeroU32::new(2).unwrap();
+    // More of either is refused: the espresso is sold out, and so is the latte's oat milk.
+    assert!(matches!(
+        runtime.change_quantity(order, espresso_line, two),
+        Err(RuntimeError::SoldOut(name)) if name == "Espresso"
+    ));
+    assert!(matches!(
+        runtime.change_quantity(order, latte_line, two),
+        Err(RuntimeError::SoldOut(name)) if name == "Oat milk"
+    ));
+    // Fewer, or as many, is no sale.
+    runtime.put_back(espresso()).unwrap();
+    runtime.change_quantity(order, espresso_line, two).unwrap();
+    runtime.eighty_six(espresso(), Until::EndOfDay, None).unwrap();
+    runtime.change_quantity(order, espresso_line, NonZeroU32::MIN).unwrap();
+    assert_eq!(runtime.ticket(order).unwrap().lines.len(), 2);
+}
+
+#[test]
+fn an_86_after_midnight_lasts_until_that_mornings_cutoff() {
+    // 2 am on 3 October belongs to the business day of 2 October: it ends at 4 am, not a day on.
+    let scratch = Scratch::new();
+    let mut runtime = crate::tests::register_at(&scratch, demo().unwrap(), "2026-10-03T06:00:00Z");
+    runtime.sign_in(id(0x502), "2468").unwrap();
+    runtime.eighty_six(espresso(), Until::EndOfDay, None).unwrap();
+    assert_eq!(runtime.sold_out().unwrap()[0].until, Some(end_of_day()));
+    // On the night the clocks go back, 1:30 am, before or after, ends at 4 am standard time.
+    for now in ["2026-11-01T05:30:00Z", "2026-11-01T06:30:00Z"] {
+        let scratch = Scratch::new();
+        let mut runtime = crate::tests::register_at(&scratch, demo().unwrap(), now);
+        runtime.sign_in(id(0x502), "2468").unwrap();
+        runtime.eighty_six(espresso(), Until::EndOfDay, None).unwrap();
+        let back = LocalTime { date: BusinessDate::new(2026, 11, 1).unwrap(), hour: 4, minute: 0 };
+        assert_eq!(runtime.sold_out().unwrap()[0].until, Some(back), "{now}");
+        let ends = Timestamp::from_micros(1_793_523_600_000_000).unwrap(); // 2026-11-01T09:00:00Z
+        runtime.clock().set(Timestamp::from_micros(ends.as_micros() - 1).unwrap());
+        assert_eq!(runtime.sold_out().unwrap().len(), 1, "{now}");
+        runtime.clock().set(ends);
+        assert!(runtime.sold_out().unwrap().is_empty(), "{now}");
+    }
+}

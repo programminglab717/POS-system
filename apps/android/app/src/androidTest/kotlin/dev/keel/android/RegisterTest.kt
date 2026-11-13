@@ -60,23 +60,32 @@ class RegisterTest {
     }
 
     /**
-     * A cashier 86s the bottled water until it is put back (ADR-0033): the menu shows it sold out,
-     * ringing it is refused, and once put back it is on sale again. Put back at the end, as the
-     * app's store outlives the test.
+     * A cashier 86s the bottled water for the day (ADR-0033): the menu shows it sold out, ringing
+     * it is refused, and once put back it is on sale again. For the day, and put back first if a
+     * run before left it sold out: the app's store outlives the test. Found in review: on the
+     * Food page, it was never shown on the first.
      */
     @Test
     fun a_cashier_86s_an_item_and_puts_it_back() {
         val water = demoId(0x409)
         compose.tap("member:Sam", wait = 20_000)
         compose.enterPin("2468")
+        compose.tap("page:Food")
         compose.tap("mark")
         compose.tap("button:$water")
-        compose.tap("mark:$water:back")
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(hasTestTag("mark:$water:day")).fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodes(hasTestTag("mark:$water:put-back")).fetchSemanticsNodes().isNotEmpty()
+        }
+        if (compose.onAllNodes(hasTestTag("mark:$water:put-back")).fetchSemanticsNodes().isNotEmpty()) {
+            compose.tap("mark:$water:put-back")
+        }
+        compose.tap("mark:$water:day")
         compose.waitFor("mark:$water:put-back")
         compose.tap("mark:done")
         compose.tap("mark")
         compose.waitFor("sold-out")
-        assertTrue(compose.shown("sold-out").contains("Bottled water (until put back)"), compose.shown("sold-out"))
+        assertTrue(compose.shown("sold-out").contains("Bottled water (until "), compose.shown("sold-out"))
         compose.tap("button:$water")
         compose.waitFor("error")
         assertTrue(compose.shown("error").contains("sold out"), compose.shown("error"))

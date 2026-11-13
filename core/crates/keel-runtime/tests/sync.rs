@@ -473,7 +473,8 @@ fn an_86_reaches_the_other_device_within_10_seconds() {
     let until_heard = |location: &mut Location, heard: &dyn Fn(&Location) -> bool| {
         let mut waited = Duration::ZERO;
         while !heard(location) {
-            assert!(waited < Duration::from_secs(8), "not heard after {waited:?}");
+            // In-store, within a second (offline and sync §6.5).
+            assert!(waited <= Duration::from_secs(1), "not heard after {waited:?}");
             location.run(step, 1);
             waited += step;
         }
@@ -498,16 +499,36 @@ fn an_86_reaches_the_other_device_within_10_seconds() {
     assert!(waited + Duration::from_secs(2) <= Duration::from_secs(10), "{waited:?}");
     location.register.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
 
-    // Changed on both at once: each device ends with the same, the later by HLC.
+    // Changed on both at once: each device ends with the same, the later by HLC: the register's,
+    // until the day ends.
     location.hub.eighty_six(espresso, Until::PutBack, None).unwrap();
     location.register.clock().advance(Duration::from_millis(1)).unwrap();
     location.register.eighty_six(espresso, Until::EndOfDay, None).unwrap();
-    location.run(step, 32);
+    location.run(step, 8);
     let hub = location.hub.sold_out().unwrap();
     assert_eq!(hub, location.register.sold_out().unwrap());
     assert_eq!(hub.len(), 1);
+    assert!(hub[0].until.is_some(), "the later change stands: {hub:?}");
     assert_eq!(
         location.hub.availability_version().unwrap(),
         location.register.availability_version().unwrap()
     );
+    // Put back on one and 86'd on the other at once: the 86, the later, stands on both.
+    location.hub.clock().advance(Duration::from_millis(1)).unwrap();
+    location.hub.put_back(espresso).unwrap();
+    location.register.clock().advance(Duration::from_millis(2)).unwrap();
+    location.register.eighty_six(espresso, Until::PutBack, None).unwrap();
+    location.run(step, 8);
+    let hub = location.hub.sold_out().unwrap();
+    assert_eq!(hub, location.register.sold_out().unwrap());
+    assert_eq!(hub.len(), 1);
+    assert_eq!(hub[0].until, None, "{hub:?}");
+    // And the other way: an 86 and a later put-back leave it on sale on both.
+    location.register.clock().advance(Duration::from_millis(1)).unwrap();
+    location.register.eighty_six(espresso, Until::EndOfDay, None).unwrap();
+    location.hub.clock().advance(Duration::from_millis(5)).unwrap();
+    location.hub.put_back(espresso).unwrap();
+    location.run(step, 8);
+    assert!(location.hub.sold_out().unwrap().is_empty());
+    assert!(location.register.sold_out().unwrap().is_empty());
 }

@@ -1059,8 +1059,8 @@ BUGS = [
     (
         "availability: a modifier chosen isn't looked at",
         "src/availability.rs",
-        "            if sold_out.contains_key(&choice.modifier.cast()) {",
-        "            if false && sold_out.contains_key(&choice.modifier.cast()) {",
+        "            modifiers.push(choice.modifier);\n",
+        "",
     ),
     (
         "availability: choices under a choice aren't looked at",
@@ -1071,14 +1071,14 @@ BUGS = [
     (
         "availability: an 86 for the day lasts until put back",
         "src/availability.rs",
-        "                Some(day.window(day.business_date_of(now)?)?.1)",
+        "                Some(day.window(day.business_date_of(meta.now)?)?.1)",
         "                None",
     ),
     (
         "availability: an 86 for the day ends when it began",
         "src/availability.rs",
-        "                Some(day.window(day.business_date_of(now)?)?.1)",
-        "                Some(day.window(day.business_date_of(now)?)?.0)",
+        "                Some(day.window(day.business_date_of(meta.now)?)?.1)",
+        "                Some(day.window(day.business_date_of(meta.now)?)?.0)",
     ),
     (
         "availability: an 86 isn't gated",
@@ -1113,7 +1113,25 @@ BUGS = [
     (
         "availability: a modifier's 86 is listed under the variant's identifier",
         "src/availability.rs",
-        "                    (ItemRef::Modifier(modifier), found.name.clone())",
-        "                    (ItemRef::Variant(modifier.cast()), found.name.clone())",
+        "                (ItemRef::Modifier(modifier), found.name.clone())",
+        "                (ItemRef::Variant(modifier.cast()), found.name.clone())",
+    ),
+    (
+        "availability: more of a line sold out since it was rung",
+        "src/runtime.rs",
+        "        if more {\n            self.check_line_on_sale(now)?;\n        }\n",
+        "",
+    ),
+    (
+        "availability: a line's modifiers aren't looked at when it grows",
+        "src/availability.rs",
+        "            modifiers.push(chosen.modifier);\n",
+        "",
+    ),
+    (
+        "availability: an 86 for the day ends at the calendar day's cutoff",
+        "src/availability.rs",
+        "                Some(day.window(day.business_date_of(meta.now)?)?.1)",
+        "                Some(day.window(day.local_time(meta.now)?.date)?.1)",
     ),
 ]

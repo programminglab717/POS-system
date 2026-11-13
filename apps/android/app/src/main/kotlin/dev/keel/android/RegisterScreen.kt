@@ -97,8 +97,8 @@ fun RegisterScreen(model: RegisterModel) {
                 else -> Register(state, model)
             }
         }
-        state.sheet?.let { SheetDialog(it, model) }
-        state.mark?.let { MarkDialog(it, model) }
+        state.sheet?.let { SheetDialog(it, state.error, model) }
+        state.mark?.let { MarkDialog(it, state.error, model) }
         state.tender?.let { TenderDialog(it, model) }
         state.discount?.let { DiscountDialog(it, state.error, model) }
         state.price?.let { PriceDialog(it, state.error, model) }
@@ -164,7 +164,12 @@ private fun Register(state: RegisterState, model: RegisterModel) {
             if (state.pages.isNotEmpty()) {
                 PrimaryScrollableTabRow(selectedTabIndex = state.page) {
                     state.pages.forEachIndexed { index, page ->
-                        Tab(selected = index == state.page, onClick = { model.showPage(index) }, text = { Text(page.name) })
+                        Tab(
+                            selected = index == state.page,
+                            onClick = { model.showPage(index) },
+                            text = { Text(page.name) },
+                            modifier = Modifier.testTag("page:${page.name}"),
+                        )
                     }
                 }
             }
@@ -631,7 +636,7 @@ private fun DiscountDialog(sheet: DiscountSheet, error: String?, model: Register
 }
 
 @Composable
-private fun SheetDialog(sheet: ModifierSheet, model: RegisterModel) {
+private fun SheetDialog(sheet: ModifierSheet, error: String?, model: RegisterModel) {
     AlertDialog(
         onDismissRequest = model::closeSheet,
         title = { Text("${sheet.item.name} ${sheet.item.price}") },
@@ -666,6 +671,8 @@ private fun SheetDialog(sheet: ModifierSheet, model: RegisterModel) {
                         }
                     }
                 }
+                // Its refusals show on it, not behind it. Found in review.
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp).testTag("sheet:error")) }
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 12.dp)) {
                     Text("How many", Modifier.weight(1f))
                     TextButton(onClick = { model.sheetQuantity(sheet.quantity - 1) }) { Text("−") }
@@ -683,7 +690,7 @@ private fun SheetDialog(sheet: ModifierSheet, model: RegisterModel) {
 
 /** The 86 sheet (ADR-0033): the item, and each modifier it offers, 86'd for the day or until put back, or put back. */
 @Composable
-private fun MarkDialog(sheet: MarkSheet, model: RegisterModel) {
+private fun MarkDialog(sheet: MarkSheet, error: String?, model: RegisterModel) {
     AlertDialog(
         onDismissRequest = model::closeMark,
         title = { Text("86: ${sheet.button.name}") },
@@ -696,6 +703,7 @@ private fun MarkDialog(sheet: MarkSheet, model: RegisterModel) {
                 for (option in sheet.modifiers) {
                     MarkRow(option.modifier, option.name, true, option.soldOut, option.backAt, sheet.working, model)
                 }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp).testTag("mark:error")) }
             }
         },
         confirmButton = { TextButton(onClick = model::closeMark, modifier = Modifier.testTag("mark:done")) { Text("Done") } },

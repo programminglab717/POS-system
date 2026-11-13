@@ -320,14 +320,28 @@ class RegisterModel(
         val availability = availability()
         val pages = till.menu()
         val soldOut = till.soldOut()
-        val sheet = current.sheet?.let { open -> open.refreshed(till.item(open.item.variant)) }
-        val mark = current.mark?.let { open -> marked(open.button.variant, pages) }
-        mutable.update {
-            it.copy(
-                pages = pages, page = it.page.coerceIn(0, (pages.size - 1).coerceAtLeast(0)), soldOut = soldOut,
+        val read = current.sheet?.let { till.item(it.item.variant) }
+        val mark = current.mark?.let { marked(it.button.variant, pages) }
+        // Applied to the state as it is now, not as it was read: what the cashier chose on the
+        // sheet meanwhile stays. Found in review: a refresh put back the sheet it began with.
+        mutable.update { state ->
+            val open = state.sheet
+            val button = open?.let { sheet -> pages.flatMap { it.buttons }.firstOrNull { it.variant == sheet.item.variant } }
+            // The item itself sold out, or gone from the menu: its sheet closes, saying so.
+            val gone = open != null && (button == null || button.soldOut)
+            val sheet = when {
+                open == null || gone -> null
+                read != null && read.variant == open.item.variant -> open.refreshed(read)
+                else -> open
+            }
+            state.copy(
+                pages = pages, page = state.page.coerceIn(0, (pages.size - 1).coerceAtLeast(0)), soldOut = soldOut,
                 availabilityVersion = availability,
-                sheet = if (it.sheet != null) sheet else null,
-                mark = if (it.mark != null) mark?.copy(working = false) else null,
+                sheet = sheet,
+                mark = state.mark?.let { now ->
+                    if (mark != null && mark.button.variant == now.button.variant) mark.copy(working = now.working) else now
+                },
+                error = if (gone) "${open?.item?.name} just sold out." else state.error,
             )
         }
     }
@@ -365,12 +379,14 @@ class RegisterModel(
         if (sheet.working) return
         mutable.update { it.copy(mark = sheet.copy(working = true), error = null) }
         perform {
+            // Working until the sheet shows what the change did. Found in review: its buttons came
+            // back before it did, for a second tap to be refused.
             try {
                 change()
+                readAvailability()
             } finally {
                 mutable.update { state -> state.copy(mark = state.mark?.copy(working = false)) }
             }
-            readAvailability()
         }
     }
 
@@ -498,11 +514,18 @@ class RegisterModel(
      * Rings [button]'s item, or opens its modifier sheet if it has modifiers to choose; while
      * marking, opens its 86 sheet instead. An item sold out isn't rung (ADR-0033).
      */
-    fun tap(button: MenuButton) = perform {
-        if (current.marking) {
-            val sheet = marked(button.variant, current.pages) ?: return@perform
+    fun tap(button: MenuButton) {
+        // Marking or not as at the tap, not when the worker gets to it. Found in review: a tap
+        // made marking, then Done, rang the item.
+        val marking = current.marking
+        perform { tapped(button, marking) }
+    }
+
+    private fun tapped(button: MenuButton, marking: Boolean) {
+        if (marking) {
+            val sheet = marked(button.variant, current.pages) ?: return
             mutable.update { it.copy(mark = sheet) }
-            return@perform
+            return
         }
         if (button.soldOut) throw TillException("${button.name} is sold out ${backWords(button.backAt)}.")
         if (button.choices) {
@@ -1018,7 +1041,17 @@ class RegisterModel(
         } catch (_: Exception) {
             false
         }
-        if (moved) perform { readAvailability() }
+        // Read on the worker, as intents are, but as a poll: an error the cashier is reading
+        // stays, and a read that fails says nothing. Found in review: each 86 in the store
+        // cleared it, and a failed read showed every 2 s.
+        if (!moved) return@launch
+        try {
+            withContext(worker) { readAvailability() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Read again at the next poll.
+        }
     }
 
     /**
@@ -1045,6 +1078,8 @@ class RegisterModel(
                 profileVersion = version,
             )
         }
+        // The new catalog's items, on the open sheets too. Found in review.
+        readAvailability()
     }
 
     /** Back to the register from today's orders or the printer. */
