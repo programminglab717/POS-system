@@ -91,8 +91,15 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
-The MVP's step 5, availability: a global 86 in-store, within 10 s (G-06). To be designed in an
-ADR, then built in slices.
+The MVP's step 5, availability: a global 86 in-store, within 10 s (G-06)
+([ADR-0033](./adr/0033-availability.md), proposed), is built in three slices, each verified as it
+lands, then reviewed together:
+
+1. **The domain and the store**: `availability.changed`, its fold and commands, the projection.
+   Next.
+2. **The register**: the runtime's 86 and un-86, the menu's availability, the refusal when
+   ringing, the bindings, the propagation test.
+3. **The shell**: the Android register's 86.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 and 4's among them, and
 the three of step 2 the scrolling ticket pane should mend.
