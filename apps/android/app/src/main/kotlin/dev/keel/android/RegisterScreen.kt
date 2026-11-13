@@ -1105,6 +1105,7 @@ private fun PrinterPage(state: RegisterState, model: RegisterModel) {
                     val kind = when (job.kind) {
                         JobKind.RECEIPT -> "Receipt"
                         JobKind.DRAWER -> "Cash drawer"
+                        JobKind.KITCHEN -> "Kitchen ticket"
                     }
                     val where = when (job.state) {
                         JobState.QUEUED -> if (job.attempts == 0) "Waiting" else "Waiting, tried ${job.attempts}×"

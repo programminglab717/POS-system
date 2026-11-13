@@ -357,6 +357,7 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
                 when (job.kind) {
                     KernelJobKind.RECEIPT -> JobKind.RECEIPT
                     KernelJobKind.DRAWER -> JobKind.DRAWER
+                    KernelJobKind.KITCHEN -> JobKind.KITCHEN
                 },
                 when (job.state) {
                     KernelJobState.QUEUED -> JobState.QUEUED

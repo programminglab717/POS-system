@@ -229,7 +229,7 @@ data class SyncInfo(
 )
 
 /** What a print job prints. */
-enum class JobKind { RECEIPT, DRAWER }
+enum class JobKind { RECEIPT, DRAWER, KITCHEN }
 
 /** Where a print job is. */
 enum class JobState {

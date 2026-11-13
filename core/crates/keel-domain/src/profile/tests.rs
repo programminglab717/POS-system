@@ -685,6 +685,8 @@ fn the_largest_catalog_is_accepted() {
             .collect();
         d.menu.pages[0].buttons = vec![d.catalog.items[0].variants[0].id];
         d.menu.pages.truncate(1);
+        // The demo's kitchen routes the demo's items, which this catalog hasn't.
+        d.kitchen = None;
     })
     .unwrap();
     let decoded = Profile::decode(&profile.encode()).unwrap();
