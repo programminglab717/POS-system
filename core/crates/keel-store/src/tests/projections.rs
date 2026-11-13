@@ -546,3 +546,53 @@ fn refunds_are_projected_and_found_by_order_and_date() {
     );
     assert_eq!(summary.conflicts, 1);
 }
+
+/// An item's availability is projected (ADR-0033): whether it is sold out at a time, the items
+/// that are, and a version that moves with every change.
+#[test]
+fn availability_is_projected_and_sold_out_items_found() {
+    use keel_domain::availability::{
+        Availability, AvailabilityChanged, AvailabilityEvent, ItemKind,
+    };
+    use keel_types::Timestamp;
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let at = |minutes: i64| {
+        Timestamp::from_micros(1_794_560_400_000_000 + minutes * 60_000_000).unwrap()
+    };
+    let change = |available, until| {
+        AvailabilityEvent::Changed(AvailabilityChanged {
+            kind: ItemKind::Variant,
+            available,
+            until,
+            reason: None,
+        })
+    };
+    let (espresso, latte): (Id<Availability>, Id<Availability>) = (id(0x401), id(0x402));
+    assert_eq!(store.availability_version().unwrap(), 0);
+    assert_eq!(store.availability(espresso).unwrap(), None);
+    // The espresso 86'd until 9:00, the latte until put back.
+    append(
+        &mut store,
+        vec![
+            domain_draft(espresso.cast(), &change(false, Some(at(60)))),
+            domain_draft(latte.cast(), &change(false, None)),
+        ],
+        at(0),
+    );
+    assert_eq!(store.availability_version().unwrap(), 2);
+    let summary = store.availability(espresso).unwrap().unwrap();
+    assert_eq!(summary.latest, Some((ItemKind::Variant, false, Some(at(60)))));
+    assert!(summary.sold_out_at(at(59)) && !summary.sold_out_at(at(60)));
+    let sold_out =
+        |now| store.sold_out(now).unwrap().into_iter().map(|item| item.id).collect::<Vec<_>>();
+    assert_eq!(sold_out(at(30)), [espresso, latte]);
+    assert_eq!(sold_out(at(60)), [latte], "the espresso is back at 9:00");
+    // The latte put back: nothing sold out, and the version moved.
+    append(&mut store, vec![domain_draft(latte.cast(), &change(true, None))], at(1));
+    assert_eq!(store.availability_version().unwrap(), 3);
+    assert_eq!(store.sold_out(at(90)).unwrap(), []);
+    store.rebuild_projections().unwrap();
+    assert_eq!(store.availability(espresso).unwrap(), Some(summary));
+    assert_eq!(store.availability_version().unwrap(), 3);
+}

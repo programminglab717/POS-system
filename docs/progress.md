@@ -95,14 +95,31 @@ The MVP's step 5, availability: a global 86 in-store, within 10 s (G-06)
 ([ADR-0033](./adr/0033-availability.md), proposed), is built in three slices, each verified as it
 lands, then reviewed together:
 
-1. **The domain and the store**: `availability.changed`, its fold and commands, the projection.
-   Next.
+1. **The domain and the store** (built 2026-11-13): `availability.changed`, its fold and
+   commands, the projection.
 2. **The register**: the runtime's 86 and un-86, the menu's availability, the refusal when
-   ringing, the bindings, the propagation test.
+   ringing, the bindings, the propagation test. Next.
 3. **The shell**: the Android register's 86.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 and 4's among them, and
 the three of step 2 the scrolling ticket pane should mend.
+
+Built in slice 1:
+
+- **`keel-domain`'s availability**: an aggregate per item, its one schema `availability.changed`
+  (v1: kind, available, until, reason), written by any device; the latest change in canonical
+  order stands, so concurrent 86s and un-86s resolve alike everywhere. A change at another
+  location doesn't apply; one naming the other kind applies; both are reported. Sold out at a
+  time is a query of the change that stands. Commands refuse a change that changes nothing, an
+  86 ending by its own time, the other kind, another location, and an item put back until a
+  time. A time is encoded as microseconds since the Unix epoch.
+  - Known answers: an 86 until 9:00 put back by another device and 86'd again; each conflict and
+    refusal; the payload pinned as `cbor2` encodes it.
+  - Properties: the fold against a model of positions, and sold out at any time; the commands
+    against a model of the rules; the payload model knows the schema, with booleans and times.
+- **`keel-store`'s `availability` projection**: each item's standing change, the items sold out
+  at a time, and a version (the number of availability events) that moves with every change,
+  whatever its HLC; rebuilt from the events, no new store schema.
 
 ## Completed
 

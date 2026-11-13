@@ -516,3 +516,30 @@ pub(crate) fn any_drawer_event() -> BoxedStrategy<keel_domain::drawer::DrawerEve
         })
         .boxed()
 }
+
+/// Any availability event (ADR-0033): an 86 until a time, or until put back, or an item put back,
+/// with or without a reason.
+pub(crate) fn any_availability_event() -> BoxedStrategy<keel_domain::availability::AvailabilityEvent>
+{
+    use keel_domain::availability::{AvailabilityChanged, AvailabilityEvent, ItemKind};
+    use keel_types::Timestamp;
+    let until = prop_oneof![
+        Just(Timestamp::MIN.as_micros()),
+        Just(Timestamp::MAX.as_micros()),
+        1_700_000_000_000_000_i64..1_900_000_000_000_000,
+    ]
+    .prop_map(|micros| Timestamp::from_micros(micros).unwrap());
+    let kind = prop::sample::select(vec![ItemKind::Variant, ItemKind::Modifier]);
+    let changed = prop_oneof![
+        (kind.clone(), prop::option::of(until), prop::option::of(any_reason())).prop_map(
+            |(kind, until, reason)| AvailabilityChanged { kind, available: false, until, reason }
+        ),
+        (kind, prop::option::of(any_reason())).prop_map(|(kind, reason)| AvailabilityChanged {
+            kind,
+            available: true,
+            until: None,
+            reason
+        }),
+    ];
+    changed.prop_map(AvailabilityEvent::Changed).boxed()
+}

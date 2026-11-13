@@ -3276,4 +3276,59 @@ BUGS = [
         "                if self.refunds().contains(&refunded.refund) {",
         "                if false {",
     ),
+    # Availability (ADR-0033).
+    (
+        "availability: an 86 never ends",
+        "src/availability/state.rs",
+        "latest.changed.until.is_none_or(|until| now < until)",
+        "latest.changed.until.is_none_or(|_| true)",
+    ),
+    (
+        "availability: an 86 ends a moment late",
+        "src/availability/state.rs",
+        "latest.changed.until.is_none_or(|until| now < until)",
+        "latest.changed.until.is_none_or(|until| now <= until)",
+    ),
+    (
+        "availability: a change at another location applies",
+        "src/availability/state.rs",
+        "            Some(location) if location != meta.location => {",
+        "            Some(location) if location != meta.location && false => {",
+    ),
+    (
+        "availability: a change of kind isn't reported",
+        "src/availability/state.rs",
+        "        if kind.is_some_and(|kind| kind != changed.kind) {",
+        "        if false {",
+    ),
+    (
+        "availability: putting back an item on sale is recorded",
+        "src/availability/commands.rs",
+        "        if (changed.available && !sold_out) || (!changed.available && sold_out && same_until) {",
+        "        if !changed.available && sold_out && same_until {",
+    ),
+    (
+        "availability: an 86 ending now is recorded",
+        "src/availability/commands.rs",
+        "        if changed.until.is_some_and(|until| until <= now) {",
+        "        if changed.until.is_some_and(|until| until < now) {",
+    ),
+    (
+        "availability: a change of the other kind is recorded",
+        "src/availability/commands.rs",
+        "            && latest.changed.kind != changed.kind",
+        "            && false",
+    ),
+    (
+        "availability: an item put back until a time decodes",
+        "src/availability/events.rs",
+        "        if changed.available && changed.until.is_some() {",
+        "        if false {",
+    ),
+    (
+        "availability: a note without a reason decodes",
+        "src/availability/events.rs",
+        """            (None, Some(_)) => return Err(PayloadError::Invalid("note").into()),""",
+        "            (None, Some(_)) => None,",
+    ),
 ]

@@ -27,7 +27,7 @@ use core::fmt;
 use core::num::{NonZeroU8, NonZeroU16};
 
 use keel_events::cbor::{Map, Value};
-use keel_types::{Currency, Id, Money, Quantity, Unit};
+use keel_types::{Currency, Id, Money, Quantity, Timestamp, Unit};
 
 /// Why a payload doesn't match its schema.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -238,6 +238,18 @@ impl Field for Quantity {
         let [micros, unit] = value.as_array()? else { return None };
         let unit = Unit::from_code(unit.as_text()?).ok()?;
         Some(Quantity::from_micros(micros.as_i64()?, unit))
+    }
+}
+
+/// A time: microseconds since the Unix epoch, an integer within the range a [`Timestamp`] has
+/// (ADR-0033).
+impl Field for Timestamp {
+    fn to_value(&self) -> Value {
+        Value::integer(self.as_micros())
+    }
+
+    fn from_value(value: &Value) -> Option<Timestamp> {
+        Timestamp::from_micros(value.as_i64()?).ok()
     }
 }
 

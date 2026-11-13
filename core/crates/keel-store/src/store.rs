@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use keel_domain::aggregate::Aggregate;
+use keel_domain::availability::Availability;
 use keel_domain::drawer::Drawer;
 use keel_domain::hub::Term;
 use keel_domain::order::Order;
@@ -19,6 +20,7 @@ use keel_events::log::{LogConfig, LogHead, LogWriter};
 use keel_types::{BusinessDate, Entropy, Hlc, Id, Timestamp};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
+use crate::availability::{self, AVAILABILITY_COLUMNS, AvailabilitySummary};
 use crate::check::{self, Problem};
 use crate::drawers::{self, DRAWER_COLUMNS, DrawerState, DrawerSummary};
 use crate::error::StoreError;
@@ -704,6 +706,58 @@ impl<S: Signer, E: Entropy> Store<S, E> {
                 [&payment.to_bytes()[..]],
                 |row| row.get(0),
             )?)
+        })
+    }
+
+    /// Item `id`'s availability, as the `availability` projection keeps it; `None` if its
+    /// availability never changed: on sale (ADR-0033).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn availability(
+        &self,
+        id: Id<Availability>,
+    ) -> Result<Option<AvailabilitySummary>, StoreError> {
+        self.read(|db| {
+            db.query_row(
+                &format!("SELECT {AVAILABILITY_COLUMNS} FROM availability WHERE item_id = ?1"),
+                [&id.to_bytes()[..]],
+                availability::availability_summary,
+            )
+            .optional()?
+            .transpose()
+        })
+    }
+
+    /// The items sold out at `now`: 86'd, and not yet back on sale (ADR-0033).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn sold_out(&self, now: Timestamp) -> Result<Vec<AvailabilitySummary>, StoreError> {
+        self.read(|db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT {AVAILABILITY_COLUMNS} FROM availability WHERE available = 0 \
+                 AND (until IS NULL OR until > ?1) ORDER BY item_id"
+            ))?;
+            let rows =
+                statement.query_map([now.as_micros()], availability::availability_summary)?;
+            rows.map(|row| row?).collect()
+        })
+    }
+
+    /// How many availability events the store holds: it moves with every change of any item's
+    /// availability, whatever its HLC, so a shell that follows it reads the menu again when one
+    /// arrives (ADR-0033).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn availability_version(&self) -> Result<u64, StoreError> {
+        self.read(|db| {
+            let events: i64 =
+                db.query_row("SELECT COALESCE(SUM(events), 0) FROM availability", [], |row| {
+                    row.get(0)
+                })?;
+            u64::try_from(events).map_err(|_| StoreError::Corrupt("a count"))
         })
     }
 

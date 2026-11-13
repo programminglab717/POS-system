@@ -1605,4 +1605,16 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         "    let sums = match (money(8)?, money(9)?, money(10)?, money(11)?, money(20)?) {",
         "    let sums = match (money(8)?, money(9)?, money(10)?, money(11)?, money(11)?) {",
     ),
+    (
+        "availability: an 86 past its time is listed as sold out",
+        "src/store.rs",
+        "                 AND (until IS NULL OR until > ?1) ORDER BY item_id",
+        "                 AND (until IS NULL OR until > ?1 - 3600000000) ORDER BY item_id",
+    ),
+    (
+        "availability: the version counts items, not changes",
+        "src/store.rs",
+        """db.query_row("SELECT COALESCE(SUM(events), 0) FROM availability", [], |row| {""",
+        """db.query_row("SELECT COUNT(*) FROM availability", [], |row| {""",
+    ),
 ]

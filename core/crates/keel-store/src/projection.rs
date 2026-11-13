@@ -60,8 +60,15 @@ pub(crate) struct Projection {
 }
 
 /// Every projection.
-pub(crate) const ALL: [Projection; 6] =
-    [ORDERS, PAYMENTS, SEQUENCE, CLAIMS, crate::drawers::DRAWERS, crate::refunds::REFUNDS];
+pub(crate) const ALL: [Projection; 7] = [
+    ORDERS,
+    PAYMENTS,
+    SEQUENCE,
+    CLAIMS,
+    crate::drawers::DRAWERS,
+    crate::refunds::REFUNDS,
+    crate::availability::AVAILABILITY,
+];
 
 impl Projection {
     /// Replaces the rows of stream `id`, given its events in canonical order.

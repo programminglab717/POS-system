@@ -51,6 +51,7 @@
 //! Unlike the kernel's portable crates, this one does I/O and links C code, SQLCipher's and
 //! OpenSSL's, so it isn't built for `wasm32`: browsers are clients, never replicas.
 
+mod availability;
 mod check;
 mod drawers;
 mod error;
@@ -70,6 +71,7 @@ mod write;
 #[cfg(test)]
 mod tests;
 
+pub use availability::AvailabilitySummary;
 pub use check::Problem;
 pub use drawers::{DrawerState, DrawerSummary};
 pub use error::StoreError;

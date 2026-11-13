@@ -20,7 +20,8 @@
 //!   lines returned;
 //! - [`payment`]: money moving against a check, in cash or by card;
 //! - [`drawer`]: a drawer session's cash, from its float to its blind close (ADR-0031);
-//! - [`refund`]: money paid back for lines returned (ADR-0032).
+//! - [`refund`]: money paid back for lines returned (ADR-0032);
+//! - [`availability`]: whether an item is on sale, or 86'd (ADR-0033).
 //!
 //! [`checkout`] holds the rules that span an order and its payments: what each check still owes,
 //! starting a payment, closing a check, and money that doesn't fit the order. [`sequence`] holds
@@ -35,6 +36,7 @@
 //! `wasm32`.
 
 pub mod aggregate;
+pub mod availability;
 pub mod checkout;
 pub mod codec;
 pub mod drawer;

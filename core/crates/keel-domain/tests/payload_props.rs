@@ -31,9 +31,9 @@ use keel_events::hash::EventHash;
 use keel_types::{Currency, Id, Money, Unit};
 use proptest::prelude::*;
 use support::{
-    any_captured, any_check_closed, any_drawer_event, any_event, any_line_added, any_line_changed,
-    any_lines_allocated, any_lines_returned, any_ownership_event, any_payment_event,
-    any_refund_event, modifiers,
+    any_availability_event, any_captured, any_check_closed, any_drawer_event, any_event,
+    any_line_added, any_line_changed, any_lines_allocated, any_lines_returned, any_ownership_event,
+    any_payment_event, any_refund_event, modifiers,
 };
 
 /// An event of any aggregate.
@@ -43,6 +43,7 @@ enum Event {
     Payment(PaymentEvent),
     Drawer(keel_domain::drawer::DrawerEvent),
     Refund(keel_domain::refund::RefundEvent),
+    Availability(keel_domain::availability::AvailabilityEvent),
     Sequence(SequenceEvent),
     Hub(HubEvent),
 }
@@ -54,6 +55,7 @@ impl Event {
             Event::Payment(event) => event.schema(),
             Event::Drawer(event) => event.schema(),
             Event::Refund(event) => event.schema(),
+            Event::Availability(event) => event.schema(),
             Event::Sequence(event) => event.schema(),
             Event::Hub(event) => event.schema(),
         }
@@ -65,6 +67,7 @@ impl Event {
             Event::Payment(event) => event.to_value(),
             Event::Drawer(event) => event.to_value(),
             Event::Refund(event) => event.to_value(),
+            Event::Availability(event) => event.to_value(),
             Event::Sequence(event) => event.to_value(),
             Event::Hub(event) => event.to_value(),
         }
@@ -78,6 +81,9 @@ fn decode(schema: &SchemaRef, payload: &Value) -> Result<Value, DecodeError> {
         PaymentEvent::from_value(schema, payload).map(|event| event.to_value())
     } else if name.starts_with("drawer.") {
         keel_domain::drawer::DrawerEvent::from_value(schema, payload).map(|event| event.to_value())
+    } else if name.starts_with("availability.") {
+        keel_domain::availability::AvailabilityEvent::from_value(schema, payload)
+            .map(|event| event.to_value())
     } else if name.starts_with("refund.") {
         keel_domain::refund::RefundEvent::from_value(schema, payload).map(|event| event.to_value())
     } else if name.starts_with("sequence.") {
@@ -96,6 +102,7 @@ fn any_any_event() -> impl Strategy<Value = Event> {
         1 => any_payment_event().prop_map(Event::Payment),
         1 => any_drawer_event().prop_map(Event::Drawer).boxed(),
         1 => any_refund_event().prop_map(Event::Refund).boxed(),
+        1 => any_availability_event().prop_map(Event::Availability).boxed(),
         1 => any_assigned().prop_map(|record| Event::Sequence(SequenceEvent::Assigned(record))),
         1 => any_claimed().prop_map(|claimed| Event::Hub(HubEvent::Claimed(claimed))),
     ]
@@ -138,6 +145,10 @@ enum Kind {
     TaxCharges,
     /// Lines returned, and what each refunds (ADR-0032).
     LinesReturned,
+    /// True or false.
+    Bool,
+    /// A time: microseconds since the Unix epoch, from 0001 to 9999 (ADR-0033).
+    Time,
     /// A sequencing record's epoch or number, or a position in a log: from 1 to [`LARGEST`]. A
     /// grant's lease and epoch, and a claim's epoch, too.
     Number,
@@ -154,8 +165,8 @@ enum Kind {
 use Kind::*;
 use Presence::{Clearable, Optional, Required};
 
-/// The documented keys of each drawer and refund schema, and of a return (ADR-0031, ADR-0032), or
-/// `None` for another schema.
+/// The documented keys of each drawer, refund and availability schema, and of a return
+/// (ADR-0031, ADR-0032, ADR-0033), or `None` for another schema.
 fn drawer_rules(schema: &str) -> Option<Vec<(u64, Kind, Presence)>> {
     Some(match schema {
         "drawer.opened" => vec![(1, Money, Required)],
@@ -167,6 +178,13 @@ fn drawer_rules(schema: &str) -> Option<Vec<(u64, Kind, Presence)>> {
         "drawer.closed" => vec![(1, Money, Required), (2, Money, Required)],
         "refund.initiated" => vec![(1, Id, Required), (2, Code(1), Required), (3, Money, Required)],
         "refund.completed" => vec![(1, Money, Required), (2, Money, Optional)],
+        "availability.changed" => vec![
+            (1, Code(1), Required),
+            (2, Bool, Required),
+            (3, Time, Optional),
+            (4, Reason, Optional),
+            (5, Note, Optional),
+        ],
         "order.lines_returned" => vec![
             (1, Id, Required),
             (2, LinesReturned, Required),
@@ -550,6 +568,11 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
         LineCharges => records(value, &[Id, Money, Money, Money]).is_some(),
         TaxCharges => records(value, &[Id, Money, Money]).is_some(),
         LinesReturned => records(value, &[Id, Quantity, Money, Money]).is_some(),
+        Bool => value.as_bool().is_some(),
+        Time => as_i64(value).is_some_and(|micros| {
+            (keel_types::Timestamp::MIN.as_micros()..=keel_types::Timestamp::MAX.as_micros())
+                .contains(&micros)
+        }),
         Number => value.as_u64().is_some_and(|n| (1..=LARGEST).contains(&n)),
         Lease => value.as_u64().is_some_and(|n| n <= LARGEST),
         Runs => runs_valid(value),
@@ -673,6 +696,11 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
             money(get(2).unwrap()).unwrap().0 > 0
         }
         "order.lines_returned" => returned_valid(get(2).unwrap()),
+        // An item put back has no time it comes back; a note comes with a reason.
+        "availability.changed" => {
+            (get(2).unwrap().as_bool() == Some(false) || get(3).is_none())
+                && (get(5).is_none() || get(4).is_some())
+        }
         "refund.initiated" => money(get(3).unwrap()).unwrap().0 > 0,
         "refund.completed" => {
             let (amount, currency) = money(get(1).unwrap()).unwrap();
@@ -715,6 +743,29 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
 
 fn schema_ref(event: &Event) -> SchemaRef {
     event.schema().to_ref().unwrap()
+}
+
+/// Values close to a bool: either, or what a bool is easily mistaken for.
+fn bool_near_miss() -> BoxedStrategy<Value> {
+    prop_oneof![
+        Just(Value::Bool(true)),
+        Just(Value::Bool(false)),
+        (0_u64..2).prop_map(Value::Unsigned),
+        Just(Value::from("true")),
+    ]
+    .boxed()
+}
+
+/// Values close to a time: its range's ends, just inside and just outside, and beyond an `i64`.
+fn time_near_miss() -> BoxedStrategy<Value> {
+    let (min, max) =
+        (keel_types::Timestamp::MIN.as_micros(), keel_types::Timestamp::MAX.as_micros());
+    prop_oneof![
+        prop::sample::select(vec![min - 1, min, max, max + 1, 0, -1]).prop_map(Value::integer),
+        Just(Value::Unsigned(u64::MAX)),
+        Just(Value::integer(i64::MIN)),
+    ]
+    .boxed()
 }
 
 /// Values close to what a field of `kind` holds: valid, nearly valid, or anything.
@@ -777,6 +828,8 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
         .boxed(),
         LineCharges => charges_near_miss(3),
         LinesReturned => returned_near_miss(),
+        Bool => bool_near_miss(),
+        Time => time_near_miss(),
         TaxCharges => charges_near_miss(4),
         Modifiers => prop_oneof![
             2 => support::any_currency()
@@ -1711,6 +1764,15 @@ proptest! {
         accepted_exactly_when_valid(&event, &change)?;
     }
 
+    /// The same for availability (ADR-0033), on its own, so that each of its fields, and the
+    /// rules across them, are tried often.
+    #[test]
+    fn changed_availability_payloads_are_accepted_exactly_when_valid(
+        (event, change) in any_case(any_availability_event().prop_map(Event::Availability)),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
     /// The same for discounts (ADR-0030), on their own, so that each of their fields, and the
     /// rules across them, are tried often.
     #[test]
@@ -2140,7 +2202,7 @@ proptest! {
         let schema = schema_ref(&event);
         let newer = SchemaRef { name: schema.name.clone(), version: version.try_into().unwrap() };
         prop_assert_eq!(decode(&newer, &event.to_value()), Err(DecodeError::UnknownSchema));
-        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown", "drawer.unknown", "refund.unknown"] {
+        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown", "drawer.unknown", "refund.unknown", "availability.unknown"] {
             let renamed = SchemaRef { name: SchemaName::new(name).unwrap(), version: schema.version };
             prop_assert_eq!(decode(&renamed, &event.to_value()), Err(DecodeError::UnknownSchema));
         }
@@ -2152,13 +2214,16 @@ proptest! {
         let as_hub = HubEvent::from_value(&schema, &payload).map(|_| ());
         let as_drawer = keel_domain::drawer::DrawerEvent::from_value(&schema, &payload).map(|_| ());
         let as_refund = keel_domain::refund::RefundEvent::from_value(&schema, &payload).map(|_| ());
+        let as_availability =
+            keel_domain::availability::AvailabilityEvent::from_value(&schema, &payload).map(|_| ());
         let crossed = match &event {
-            Event::Order(_) => [as_payment, as_sequence, as_hub, as_drawer, as_refund],
-            Event::Payment(_) => [as_order, as_sequence, as_hub, as_drawer, as_refund],
-            Event::Sequence(_) => [as_order, as_payment, as_hub, as_drawer, as_refund],
-            Event::Hub(_) => [as_order, as_payment, as_sequence, as_drawer, as_refund],
-            Event::Drawer(_) => [as_order, as_payment, as_sequence, as_hub, as_refund],
-            Event::Refund(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer],
+            Event::Order(_) => [as_payment, as_sequence, as_hub, as_drawer, as_refund, as_availability],
+            Event::Payment(_) => [as_order, as_sequence, as_hub, as_drawer, as_refund, as_availability],
+            Event::Sequence(_) => [as_order, as_payment, as_hub, as_drawer, as_refund, as_availability],
+            Event::Hub(_) => [as_order, as_payment, as_sequence, as_drawer, as_refund, as_availability],
+            Event::Drawer(_) => [as_order, as_payment, as_sequence, as_hub, as_refund, as_availability],
+            Event::Refund(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_availability],
+            Event::Availability(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_refund],
         };
         for decoded in crossed {
             prop_assert_eq!(decoded, Err(DecodeError::UnknownSchema));

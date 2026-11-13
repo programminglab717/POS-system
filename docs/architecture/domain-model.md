@@ -263,6 +263,12 @@ classDiagram
 - **Availability** is a first-class, event-sourced state per `(item|variant|modifier, location,
   channel)`: available, 86'd until end of day, 86'd until a time, limited-quantity countdown, or
   hidden. It supports "auto-86 when stock hits 0".
+- **As built** ([ADR-0033](../adr/0033-availability.md)): an item's availability, a variant's or
+  a modifier's, is its own stream of `availability.changed` v1 events, written by any device; the
+  latest in canonical order stands. An 86 lasts until a time (by default the next business day's
+  start) or until put back, and an item is sold out at a time if the change that stands says so
+  of it. The store projects it, with a version that moves with every change. Countdowns,
+  channels and auto-86 are not built yet.
 - **Layouts** (button grids, colors, images, sizes and keyboard/scanner mappings) are part of the
   menu and can differ per device role and per staff role.
 
