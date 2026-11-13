@@ -1,6 +1,6 @@
 # ADR-0034: The kitchen: tickets per station, routed by the profile, shown on a KDS and printed when it isn't
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-13
 
 ## Context
@@ -127,6 +127,48 @@ What is built shapes it:
   ticket no screen showed unprinted, though every device shows it unshown.
 - A register that can't hear the hub prints every ticket it sends, 10 s on, whether or not a
   screen it can't hear showed it.
+
+## As built
+
+Built in three slices on 2026-11-13, each verified as it landed, then reviewed: the kernel and the
+Android shell each by a reviewer who hadn't built them. A ticket the register pushes is on a
+screen through the hub with no time passing, and the screen's showing stops its reroute. What
+the review found, and what was done:
+
+- **A long note refused a payment, and jammed the print loop**: 500 characters beyond Latin-1
+  passed a document's limit, and a station no screen shows, or a reroute, built one. A ticket's
+  texts are clipped, its items capped, and a reroute that fails holds up no other job.
+- **A reroute printed lines voided since**, with no VOID: it prints only what is still to make,
+  and goes nowhere when nothing is.
+- **Lines no station makes fired nothing**: a send with no tickets left them pending. They fire.
+- **Any device could send an order**, and two sent its stations two tickets: only its owner
+  does.
+- **Kitchen jobs waited for the register's printer's word**, which a kitchen printer of
+  another model may not give: they are confirmed by a clean close.
+- **The cloud's editor refused deleting a routed item**: routes forget what an edit deletes.
+- **On the register and the screen**: a press while a bump was read bumped again, refused; a
+  second Recall recalled the ticket before; a publication that signed the cashier out lost the
+  kitchen, and none read it again; a held key bumped ticket after ticket; reads piled up on the
+  worker, and a failing one froze the screen silently; a sent line's notes could be edited,
+  which the kernel refuses; alerts showed on the register alone; the instrumented test counted
+  cards a grid hadn't drawn. Each is fixed, most with a model test; the fake till now fires on
+  payment, voids a dropped order's lines, and refuses notes on a sent line, as the kernel does.
+
+Gaps that remain:
+
+- **A ticket's fallback runs on the device that sent it**: one switched off within 10 s leaves a
+  ticket no screen showed unprinted, though every device shows it unshown.
+- **Clock skew**: a ticket's age and its 10 s are by the sender's HLC, which a faster peer can
+  push ahead: a reroute can come up to the HLC's drift late, and a screen show an age of 0.
+- **Components**: a modifier chosen under two parents goes once; a nested one's quantity leaves
+  out its parent's; a weighed line's takes the line's unit; placement (half and half) isn't on
+  the ticket.
+- **Kitchen printers are taken to be as wide as the register's**, or 80 mm, and no Android test
+  sends a kitchen job to a printer's address.
+- **Open tickets aren't limited to a day**: one never bumped stays on the screen.
+- **A reroute that fails** holds up no other job, but no test makes one fail now that a ticket's
+  texts are clipped: the guard is untested.
+- **The Android register's instrumented test** waits for an emulator, as steps 3 to 5's do.
 
 ## Alternatives considered
 

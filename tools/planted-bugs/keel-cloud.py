@@ -139,4 +139,16 @@ BUGS = [
         "            .field(\"pin\", &self.pin.as_ref().map(|_| \"..\"))",
         "            .field(\"pin\", &self.pin)",
     ),
+    (
+        "catalog: a deleted item stays in the kitchen's routes",
+        "src/catalog.rs",
+        "            route.items.retain(|item| items.contains(item));",
+        "            route.items.retain(|_| true);",
+    ),
+    (
+        "catalog: a route naming nothing stays",
+        "src/catalog.rs",
+        "        kitchen.routes.retain(|route| !route.items.is_empty() || !route.modifiers.is_empty());",
+        "",
+    ),
 ]

@@ -1148,8 +1148,10 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// # Errors
     /// [`RuntimeError::Store`] if the store can't be read or written.
     pub fn next_print_job(&mut self) -> Result<Option<PrintJob>, RuntimeError> {
-        // Tickets no screen showed in time print first, wherever this register's printer is.
-        self.reroute_overdue()?;
+        // Tickets no screen showed in time print first, wherever this register's printer is. A
+        // reroute that fails is tried again at the next call, and holds up no other job. Found
+        // in review: one that failed jammed the loop.
+        let _rerouted = self.reroute_overdue();
         if self.sending.is_some() {
             return Ok(None);
         }
@@ -1157,6 +1159,10 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         // Kitchen printers are taken to be as wide as the register's, or 80 mm with none.
         let own = self.printer;
         let printer = own.unwrap_or(PrinterProfile::EPSON_80MM);
+        // A kitchen printer is of a model the register doesn't know: its job is confirmed by a
+        // clean close alone, which every printer gives. Found in review: one that couldn't
+        // answer the register's way left every kitchen job unconfirmed.
+        let kitchen_printer = PrinterProfile { confirm: keel_doc::Confirm::Nothing, ..printer };
         let now = self.clock.now();
         let latest = print::after(now, print::MAX_WAIT)?;
         let mut pending: Vec<_> = self
@@ -1189,6 +1195,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             };
             let started = self.store.write(|w| w.start(&key, now))?;
             self.sending = Some(job);
+            let printer = if to.is_some() { kitchen_printer } else { printer };
             return Ok(Some(PrintJob {
                 job,
                 kind,

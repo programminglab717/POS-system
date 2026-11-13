@@ -262,6 +262,27 @@ fn ids<T>(texts: &[String], what: &str) -> Result<Vec<Id<T>>, EditError> {
     texts.iter().map(|text| id(text, what)).collect()
 }
 
+/// The kitchen's routes of `data` without what its catalog no longer has, and with no route
+/// left naming nothing: the editor doesn't edit routes yet (ADR-0034). Found in review: deleting
+/// a routed item was refused.
+fn prune_routes(data: &mut keel_domain::profile::ProfileData) {
+    let items: std::collections::BTreeSet<_> =
+        data.catalog.items.iter().map(|item| item.id).collect();
+    let modifiers: std::collections::BTreeSet<_> = data
+        .catalog
+        .groups
+        .iter()
+        .flat_map(|group| group.modifiers.iter().map(|modifier| modifier.id))
+        .collect();
+    if let Some(kitchen) = data.kitchen.as_mut() {
+        for route in &mut kitchen.routes {
+            route.items.retain(|item| items.contains(item));
+            route.modifiers.retain(|modifier| modifiers.contains(modifier));
+        }
+        kitchen.routes.retain(|route| !route.items.is_empty() || !route.modifiers.is_empty());
+    }
+}
+
 /// `profile` with the catalog and menu of `edit`, checked whole.
 ///
 /// # Errors
@@ -367,6 +388,7 @@ pub fn apply(profile: &Profile, edit: &CatalogEdit) -> Result<Profile, EditError
         })
         .collect::<Result<_, EditError>>()?;
     data.catalog = Catalog { items, groups };
+    prune_routes(&mut data);
     data.menu = Menu { pages };
     Profile::new(data).map_err(|error| EditError::Profile(error.to_string()))
 }
@@ -437,6 +459,41 @@ mod tests {
             edit.pages[0].buttons.push("0192f0c1-0000-7000-8000-00000000dead".into());
         });
         assert!(matches!(button, EditError::Profile(_)));
+    }
+
+    /// The kitchen (ADR-0034): an item deleted leaves the routes naming it, and the items kept
+    /// keep their allergens, which the editor doesn't edit yet. Found in review: deleting a
+    /// routed item was refused.
+    #[test]
+    fn an_item_deleted_leaves_the_kitchens_routes_and_the_rest_keep_their_allergens() {
+        let profile = demo().unwrap();
+        let mut edit = edit(&view(&profile, version(&profile)));
+        let espresso = "0192f0c1-0000-7000-8000-000000000301";
+        edit.items.retain(|item| item.id != espresso);
+        for page in &mut edit.pages {
+            page.buttons.retain(|button| button != "0192f0c1-0000-7000-8000-000000000401");
+        }
+        let written = apply(&profile, &edit).unwrap();
+        let kitchen = written.kitchen().unwrap();
+        let espresso: Id<keel_domain::refs::Item> = Id::parse(espresso).unwrap();
+        assert!(kitchen.routes.iter().all(|route| !route.items.contains(&espresso)));
+        assert_eq!(kitchen.routes.len(), 2, "the bar still makes the lattes and drip coffee");
+        let latte =
+            written.data().catalog.items.iter().find(|item| item.name.as_str() == "Latte").unwrap();
+        assert!(latte.allergens.contains(&keel_domain::profile::Allergen::Milk));
+        // The bar's last items deleted too, and the page left empty: its route goes.
+        edit.items.retain(|item| item.name != "Latte" && item.name != "Drip coffee");
+        let kept: Vec<String> = edit
+            .items
+            .iter()
+            .flat_map(|item| item.variants.iter().map(|variant| variant.id.clone()))
+            .collect();
+        for page in &mut edit.pages {
+            page.buttons.retain(|button| kept.contains(button));
+        }
+        edit.pages.retain(|page| !page.buttons.is_empty());
+        let emptied = apply(&profile, &edit).unwrap();
+        assert_eq!(emptied.kitchen().unwrap().routes.len(), 1, "the kitchen's alone");
     }
 
     #[test]

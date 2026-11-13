@@ -296,7 +296,8 @@ designed in an ADR of its own when it begins, built in slices, and reviewed:
    for CI's minutes.*
 6. **The kitchen**: routing to stations, kitchen tickets and a KDS, ticket aging, fallbacks
    (D-01…D-03, D-06, D-07, D-11). *Status: designed in
-   [ADR-0034](./adr/0034-the-kitchen.md).*
+   [ADR-0034](./adr/0034-the-kitchen.md); done 2026-11-13, reviewed; its emulator test waits
+   for CI's minutes.*
 7. **Card payments**: a processor-agnostic connector, semi-integrated terminals, tips; built
    against a simulated terminal until gate G2 chooses the processor (I-01, I-02, I-05, I-07).
 8. **Inventory**: the movement ledger (K-01).

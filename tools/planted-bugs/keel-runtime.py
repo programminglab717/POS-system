@@ -1228,7 +1228,7 @@ BUGS = [
     (
         "kitchen: the print loop doesn't reroute",
         "src/runtime.rs",
-        "        self.reroute_overdue()?;\n",
+        "        let _rerouted = self.reroute_overdue();\n",
         "",
     ),
     (
@@ -1254,5 +1254,35 @@ BUGS = [
         "src/runtime.rs",
         "            if loaded.lines().iter().any(keel_domain::order::Line::was_fired) {",
         "            if false && loaded.lines().iter().any(keel_domain::order::Line::was_fired) {",
+    ),
+    (
+        "kitchen: a long text isn't clipped",
+        "src/kitchen.rs",
+        "    if text.chars().count() <= MOST_CHARS {",
+        "    if text.chars().count() <= MOST_CHARS * 10 {",
+    ),
+    (
+        "kitchen: a reroute prints what was voided since",
+        "src/kitchen.rs",
+        "                _ if live.is_empty() => (RerouteTo::Nowhere, None),\n",
+        "",
+    ),
+    (
+        "kitchen: a device that doesn't own an order sends it",
+        "src/kitchen.rs",
+        "            && owner.device != self.device",
+        "            && owner.device != owner.device",
+    ),
+    (
+        "kitchen: a kitchen job waits for the register's printer's word",
+        "src/runtime.rs",
+        "            let printer = if to.is_some() { kitchen_printer } else { printer };",
+        "            let printer = if to.is_some() { printer } else { kitchen_printer };",
+    ),
+    (
+        "kitchen: lines no station makes aren't fired",
+        "src/kitchen.rs",
+        "    let loaded = w.load(Order::new(firing.order))?;",
+        "    if firing.tickets.is_empty() {\n        return Ok(());\n    }\n    let loaded = w.load(Order::new(firing.order))?;",
     ),
 ]

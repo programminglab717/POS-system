@@ -6,7 +6,7 @@
 
 ## Where we are
 
-**The MVP, steps 1 to 5 of 10, are done.** Step 1, staff, roles and approvals
+**The MVP, steps 1 to 6 of 10, are done.** Step 1, staff, roles and approvals
 ([ADR-0029](./adr/0029-staff-roles-and-approvals.md)); step 2, selling at the register
 ([ADR-0030](./adr/0030-selling-at-the-register.md)): discounts with reasons and limits, prices
 set by hand, line notes, split checks and partial cash payments, and orders parked on one
@@ -18,8 +18,11 @@ a paid order found from its receipt, lines returned whole or in part, each refun
 paid for it and never more, in cash out of the drawer; step 5, availability
 ([ADR-0033](./adr/0033-availability.md), accepted after its review): an item or a modifier 86'd
 for the day or until put back on any register, sold out on every register of the store within a
-second through the hub, and refused when rung. Each in the kernel, the bindings and the Android
-register. Step 6, the kitchen, is next.
+second through the hub, and refused when rung; step 6, the kitchen
+([ADR-0034](./adr/0034-the-kitchen.md), accepted after its review): tickets per station, routed by
+the location's profile, shown on a kitchen screen that bumps and recalls them, and printed where
+no screen showed them. Each in the kernel, the bindings and the Android register. Step 7, card
+payments, is next.
 
 **CI is out of minutes for the month**: the work since is verified here as CI would verify it,
 but for the app's instrumented tests, which need an emulator. Step 3 changed them, and fixed
@@ -94,9 +97,20 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
+The MVP's step 7, card payments: a processor-agnostic connector, semi-integrated terminals, tips;
+built against a simulated terminal until gate G2 chooses the processor (I-01, I-02, I-05, I-07).
+Next: its design.
+
+Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 6's among them, and the
+three of step 2 the scrolling ticket pane should mend.
+
+## Completed
+
+### The kitchen: MVP step 6 (2026-11-13)
+
 The MVP's step 6, the kitchen: routing to stations, kitchen tickets and a KDS, ticket aging,
-fallbacks (D-01…D-03, D-06, D-07, D-11) ([ADR-0034](./adr/0034-the-kitchen.md), proposed), is
-built in three slices, each verified as it lands, then reviewed together:
+fallbacks (D-01…D-03, D-06, D-07, D-11) ([ADR-0034](./adr/0034-the-kitchen.md), accepted after its
+review), was built in three slices, each verified as it landed, then reviewed together:
 
 1. **The domain and the store** (built 2026-11-13): profile format 3 (stations, routes,
    allergens), routing, the kitchen ticket aggregate and its five schemas, the projection.
@@ -104,7 +118,7 @@ built in three slices, each verified as it lands, then reviewed together:
    slips, the KDS's queries and intents, the fallback print jobs and the kitchen ticket's
    document, the bindings.
 3. **The shell** (built 2026-11-13): the Android register's Send and voids, and the app as a
-   KDS. Next: the review.
+   KDS.
 
 Built in slice 1:
 
@@ -179,10 +193,26 @@ Built in slice 3:
     selection, reroutes told, a location without a kitchen. An instrumented test sends a water,
     bumps and recalls it on the kitchen screen; it waits for an emulator.
 
-Waiting on CI's minutes: the Android app's instrumented tests, steps 3, 4 and 5's among them, and
-the three of step 2 the scrolling ticket pane should mend.
+The review (2026-11-13), the kernel and the Android shell each by a reviewer who hadn't built
+them; ADR-0034's As built lists what it found and what remains. Fixed, each with a test:
 
-## Completed
+- **The kitchen ticket's document**: texts clipped and items capped, so a long note neither
+  refuses a payment nor, rerouted, jams the print loop; a reroute that fails holds up no job.
+- **Reroutes** print only what is still to make, or nothing; kitchen jobs are confirmed by a
+  clean close.
+- **Firing**: lines no station makes fire; only an order's owner sends it.
+- **The cloud's editor**: routes forget what an edit deletes.
+- **The register and the screen**: a ticket bumped once while its read runs; Recall once; the
+  kitchen kept, and read again, on a publication; a held key acts once; reads don't pile up, and
+  a failing one says so; a sent line's notes stay; alerts on every screen; the fake till fires
+  on payment and voids a dropped order's lines; the instrumented test counts bumps, not cards.
+- **Planted bugs**: 7 more, in `keel-runtime` and `keel-cloud`, each caught; one dropped as
+  untestable now (a reroute that fails, which clipped texts no longer make).
+- **Verified**, as CI would, CI's minutes being spent: `cargo fmt`, clippy with all features and
+  none, the docs, every workspace test with the exhaustive sweeps, the wasm build, the planted
+  bugs' staleness check, the Kotlin bindings' tests, `:register:jvmTest`,
+  `:kernel:testDebugUnitTest` and the app's builds. The instrumented test waits for an emulator.
+
 
 ### Availability: MVP step 5 (2026-11-13)
 

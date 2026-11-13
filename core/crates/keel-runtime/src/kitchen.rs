@@ -48,6 +48,7 @@ pub(crate) struct Planned {
 
 /// A fire planned before its write: the lines it fires, and the tickets it sends.
 pub(crate) struct Firing {
+    order: Id<Order>,
     lines: IdSet<Line>,
     tickets: Vec<Planned>,
 }
@@ -282,6 +283,24 @@ pub(crate) fn allergen_words(allergens: &BTreeSet<Allergen>) -> String {
 
 /// A kitchen ticket's document: its station, its order's code and mode and when it was sent,
 /// and each item, its modifiers, notes and allergens; marked rerouted, or void, as it is.
+/// The most characters of a text a kitchen ticket prints: a note of 500 characters beyond
+/// Latin-1, or a component named after a long line, mustn't pass a block's limit. Found in
+/// review: one refused the payment, and jammed the print loop.
+const MOST_CHARS: usize = 240;
+
+/// The most blocks a kitchen ticket's items take: a long order's expo ticket says how many more
+/// there are, rather than pass a document's limit.
+const MOST_ITEM_BLOCKS: usize = 900;
+
+/// `text`, clipped to [`MOST_CHARS`] characters, ending in "..." when it was longer.
+fn clip(text: &str) -> String {
+    if text.chars().count() <= MOST_CHARS {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(MOST_CHARS.saturating_sub(3)).collect();
+    format!("{kept}...")
+}
+
 pub(crate) fn ticket_doc(
     station: &StationConfig,
     sent: &TicketSent,
@@ -294,22 +313,32 @@ pub(crate) fn ticket_doc(
     // Tall and bold, but not wide: a reroute's reason fits a line.
     if let Some(mark) = mark {
         blocks.push(Block::text(
-            mark,
+            clip(mark),
             Align::Center,
             Style { bold: true, wide: false, tall: true },
         ));
     }
-    blocks.push(Block::text(station.name.as_str(), Align::Center, large));
+    blocks.push(Block::text(clip(station.name.as_str()), Align::Center, large));
     blocks.push(Block::row(format!("Order {}", code(sent.order)), at.to_string()));
     blocks.push(Block::text(mode_words(sent.mode), Align::Left, bold));
     blocks.push(Block::Rule);
-    for item in &sent.items {
+    let before = blocks.len();
+    for (at, item) in sent.items.iter().enumerate() {
+        if blocks.len().saturating_sub(before) > MOST_ITEM_BLOCKS {
+            let more = sent.items.len().saturating_sub(at);
+            blocks.push(Block::text(
+                format!("... and {more} more: see the screen"),
+                Align::Left,
+                bold,
+            ));
+            break;
+        }
         let name = match &item.component_of {
             Some(line) => format!("{} {} (for {line})", how_many(item.quantity), item.name),
             None => format!("{} {}", how_many(item.quantity), item.name),
         };
         blocks.push(Block::Row {
-            left: name,
+            left: clip(&name),
             right: String::new(),
             indent: 0,
             style: Style { bold: true, wide: false, tall: true },
@@ -318,7 +347,7 @@ pub(crate) fn ticket_doc(
             let indent = modifier.depth.get().saturating_mul(2);
             let style = if modifier.prefix == Prefix::Plain { Style::default() } else { bold };
             blocks.push(Block::Row {
-                left: modifier_words(modifier),
+                left: clip(&modifier_words(modifier)),
                 right: String::new(),
                 indent,
                 style,
@@ -326,7 +355,7 @@ pub(crate) fn ticket_doc(
         }
         if let Some(notes) = &item.notes {
             blocks.push(Block::Row {
-                left: format!("NOTE: {notes}"),
+                left: clip(&format!("NOTE: {notes}")),
                 right: String::new(),
                 indent: 2,
                 style: bold,
@@ -409,7 +438,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         }
         let lines = IdSet::new(pending.iter().map(|line| line.id()))
             .map_err(keel_domain::order::CommandError::Invalid)?;
-        Ok(Some(Firing { lines, tickets }))
+        Ok(Some(Firing { order: order.id(), lines, tickets }))
     }
 
     /// Sends `order`'s pending lines to the kitchen (ADR-0034, decision 3): fires them, and
@@ -423,6 +452,13 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let meta = self.meta()?;
         let loaded = self.store.load(Order::new(order))?;
         known(&loaded)?;
+        // Only the order's owner sends it, as only it pays it: two devices sending one order
+        // would send its stations two tickets. Found in review.
+        if let Some(owner) = loaded.ownership()
+            && owner.device != self.device
+        {
+            return Err(keel_domain::order::CommandError::NotOwner(owner.device).into());
+        }
         let firing = self.plan_firing(&loaded, None, meta.now)?;
         let payments = self.payments(order)?;
         let (location, device) = (self.location(), self.device);
@@ -715,7 +751,22 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             let ticket = self.store.load(KitchenTicket::new(summary.id))?;
             let Some((sent, moment)) = ticket.sent() else { continue };
             let Some(station) = kitchen.station(sent.station) else { continue };
+            // What was voided since isn't printed: the kitchen would make it. Found in review.
+            let order = self.store.load(Order::new(sent.order))?;
+            let voided = matches!(order.status(), OrderStatus::Voided(_));
+            let live: Vec<KitchenItem> = sent
+                .items
+                .iter()
+                .filter(|item| {
+                    !voided
+                        && order.line(item.line).is_some_and(|line| {
+                            !matches!(line.status(), LineStatus::Voided(_) | LineStatus::Removed)
+                        })
+                })
+                .cloned()
+                .collect();
             let (to, printer) = match (&station.printer, &kitchen.fallback_printer) {
+                _ if live.is_empty() => (RerouteTo::Nowhere, None),
                 (Some(printer), _) => (RerouteTo::StationPrinter, Some(printer.clone())),
                 (None, Some(printer)) => (RerouteTo::FallbackPrinter, Some(printer.clone())),
                 (None, None) => (RerouteTo::Nowhere, None),
@@ -724,11 +775,14 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 self.profile.business_day().local_time(moment.at().ok_or(RuntimeError::Time)?)?;
             let mark = format!("REROUTED: {}'s screen didn't show it", station.name);
             let print = match printer {
-                Some(printer) => Some((
-                    self.ids.generate(now)?,
-                    printer,
-                    ticket_doc(station, sent, at, Some(&mark))?,
-                )),
+                Some(printer) => {
+                    let printing = TicketSent { items: live, ..sent.clone() };
+                    Some((
+                        self.ids.generate(now)?,
+                        printer,
+                        ticket_doc(station, &printing, at, Some(&mark))?,
+                    ))
+                }
                 None => None,
             };
             planned.push((summary.id, to, print));
@@ -818,12 +872,11 @@ pub(crate) fn write_firing<S: Signer, E: Entropy>(
     device: Id<Device>,
     meta: &Meta,
 ) -> Result<(), RuntimeError> {
-    let Some(first) = firing.tickets.first().map(|planned| planned.sent.order) else {
-        return Ok(());
-    };
-    let loaded = w.load(Order::new(first))?;
+    // The lines fire whether or not any station makes them: water no cook makes is sent too.
+    // Found in review: with no ticket, nothing fired.
+    let loaded = w.load(Order::new(firing.order))?;
     let event = loaded.decide(location, device, OrderCommand::FireLines(firing.lines.clone()))?;
-    append(w, first.cast(), &event, meta)?;
+    append(w, firing.order.cast(), &event, meta)?;
     for planned in &firing.tickets {
         let ticket = w.load(KitchenTicket::new(planned.ticket))?;
         let event = ticket.decide(location, KitchenCommand::Send(planned.sent.clone()))?;

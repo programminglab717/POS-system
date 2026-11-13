@@ -434,3 +434,110 @@ fn a_modifier_left_out_adds_no_allergens_and_a_component_counts_its_applications
     let item = &shots.tickets[0].items[0].item;
     assert_eq!((item.name.as_str(), item.quantity.micros()), ("Shot", 6_000_000));
 }
+
+/// Found in review: a note of 500 characters beyond Latin-1 made the kitchen ticket's document
+/// refuse the payment, and a rerouted one jammed the print loop for good.
+#[test]
+fn a_long_note_neither_refuses_a_payment_nor_jams_the_print_loop() {
+    let scratch = Scratch::new();
+    let mut runtime = cashier(&scratch, printed());
+    let order = breakfast(&mut runtime, Mode::DineIn);
+    let lines: Vec<_> = runtime.ticket(order).unwrap().lines.iter().map(|line| line.line).collect();
+    let long = keel_domain::codec::Note::new(&"日".repeat(500)).unwrap();
+    for line in &lines[..2] {
+        runtime.set_line_notes(order, *line, Some(long.clone())).unwrap();
+    }
+    let total = runtime.ticket(order).unwrap().total.money;
+    runtime.pay_cash(order, total).unwrap();
+    // The kitchen's printed at once, its note clipped; the bar's, rerouted 10 s on, too.
+    runtime.clock().advance(Duration::from_secs(10)).unwrap();
+    let job = runtime.next_print_job().unwrap();
+    assert!(job.is_some(), "the loop goes on");
+    let jobs = kitchen_jobs(&runtime);
+    assert!(jobs.iter().any(|(host, text)| host == "10.0.0.21" && text.contains("REROUTED")));
+    // Clipped: a code page without the characters prints each as "?", fewer than the note's 500.
+    for (_, text) in &jobs {
+        assert!(text.contains("NOTE:"), "{text}");
+        assert!(text.matches('?').count() < 500, "{text}");
+    }
+}
+
+/// Found in review: a ticket rerouted after its line was voided printed it, with no VOID.
+#[test]
+fn a_reroute_leaves_out_what_was_voided_since() {
+    let scratch = Scratch::new();
+    let mut runtime = cashier(&scratch, printed());
+    let order = breakfast(&mut runtime, Mode::DineIn);
+    let latte = runtime.ticket(order).unwrap().lines[0].line;
+    runtime.send(order).unwrap();
+    runtime.kitchen_screen(&[station(EXPO)]).unwrap();
+    runtime.clock().advance(Duration::from_secs(5)).unwrap();
+    runtime.void_line(order, latte, reason("customer")).unwrap();
+    runtime.clock().advance(Duration::from_secs(5)).unwrap();
+    runtime.next_print_job().unwrap();
+    // The bar had the latte alone: nothing left to make, nothing printed, and staff told.
+    assert!(kitchen_jobs(&runtime).iter().all(|(host, _)| host != "10.0.0.21"));
+    let alerts = runtime.kitchen_alerts().unwrap();
+    assert_eq!(
+        alerts.iter().map(|alert| (alert.station.as_str(), alert.to)).collect::<Vec<_>>(),
+        [("Bar", RerouteTo::Nowhere)]
+    );
+}
+
+/// Found in review: a send of lines no station makes fired nothing.
+#[test]
+fn lines_no_station_makes_are_sent_all_the_same() {
+    let scratch = Scratch::new();
+    let profile = demo_with(|data| {
+        let kitchen = data.kitchen.as_mut().unwrap();
+        kitchen.stations.retain(|station| !station.expo);
+    });
+    let mut runtime = cashier(&scratch, profile);
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(order, id(0x409), &[], NonZeroU32::MIN).unwrap();
+    let sent = runtime.send(order).unwrap();
+    assert!(sent.lines[0].sent, "the water is sent, to no one");
+    assert!(tickets(&runtime, order).is_empty());
+}
+
+#[test]
+fn a_kitchen_ticket_printed_again_keeps_its_printer_and_says_so_and_slips_follow_reroutes() {
+    let scratch = Scratch::new();
+    let mut runtime = cashier(&scratch, printed());
+    let order = breakfast(&mut runtime, Mode::DineIn);
+    let lines: Vec<_> = runtime.ticket(order).unwrap().lines.iter().map(|line| line.line).collect();
+    runtime.send(order).unwrap();
+    // The kitchen's ticket, unconfirmed, printed again: at its printer, marked.
+    let job = runtime.next_print_job().unwrap().unwrap();
+    assert_eq!(
+        job.confirm,
+        keel_doc::Confirm::Nothing,
+        "a kitchen printer's word is a clean close"
+    );
+    runtime
+        .print_outcome(job.job, keel_print::Outcome::Unconfirmed(keel_print::Unconfirmed::Closed))
+        .unwrap();
+    runtime.resolve(job.job, crate::Resolution::Again).unwrap();
+    let again = runtime.next_print_job().unwrap().unwrap();
+    assert_eq!(again.to, Some(printer("10.0.0.22")));
+    assert!(String::from_utf8_lossy(&again.bytes).contains("REPRINT"));
+    runtime.print_outcome(again.job, keel_print::Outcome::Printed { paper_low: false }).unwrap();
+    // The bar's rerouted to its printer; the latte voided then slips there.
+    runtime.kitchen_screen(&[station(EXPO)]).unwrap();
+    runtime.clock().advance(Duration::from_secs(10)).unwrap();
+    runtime.next_print_job().unwrap();
+    runtime.void_line(order, lines[0], reason("customer")).unwrap();
+    let slips: Vec<_> =
+        kitchen_jobs(&runtime).into_iter().filter(|(_, text)| text.contains("VOID")).collect();
+    assert_eq!(slips.iter().map(|(host, _)| host.as_str()).collect::<Vec<_>>(), ["10.0.0.21"]);
+    // Dropped, once a manager approves, the order slips the rest where its tickets printed: the
+    // bagel at the kitchen's.
+    assert!(matches!(runtime.abandon(order), Err(RuntimeError::ApprovalRequired(_))));
+    runtime.approve(id(0x501), "1234").unwrap();
+    runtime.abandon(order).unwrap();
+    let slips: Vec<_> =
+        kitchen_jobs(&runtime).into_iter().filter(|(_, text)| text.contains("VOID")).collect();
+    // The latte's, slipped before, and the bagel's: the water went to expo's screen alone.
+    assert_eq!(slips.len(), 2, "{slips:?}");
+    assert!(slips.iter().any(|(host, text)| host == "10.0.0.22" && text.contains("Bagel")));
+}

@@ -555,6 +555,25 @@ fn a_ticket_reaches_a_screen_through_the_hub_and_its_showing_stops_the_reroute()
     let frames = location.hub.take_frames().unwrap();
     location.send(HUB, frames);
     location.deliver();
+    // Only the order's owner sends it. Found in review: two devices sending one order sent its
+    // stations two tickets.
+    location.hub.sign_in(id(0x501), "1234").unwrap();
+    location.register.add_item(order, id(0x401), &[], NonZeroU32::MIN).unwrap();
+    let frames = location.register.take_frames().unwrap();
+    location.send(REGISTER, frames);
+    location.deliver();
+    assert!(matches!(
+        location.hub.send(order),
+        Err(RuntimeError::Order(keel_domain::order::CommandError::NotOwner(_)))
+    ));
+    location.register.send(order).unwrap();
+    let frames = location.register.take_frames().unwrap();
+    location.send(REGISTER, frames);
+    location.deliver();
+    location.hub.kitchen_screen(&[bar, expo]).unwrap();
+    let frames = location.hub.take_frames().unwrap();
+    location.send(HUB, frames);
+    location.deliver();
     // 10 s on, the register reroutes nothing: it heard the screen show it.
     location.run(Duration::from_millis(250), 44);
     location.register.next_print_job().unwrap();
@@ -567,12 +586,15 @@ fn a_ticket_reaches_a_screen_through_the_hub_and_its_showing_stops_the_reroute()
     location.register.clock().advance(Duration::from_secs(10)).unwrap();
     location.register.next_print_job().unwrap();
     let alerts = location.register.kitchen_alerts().unwrap();
-    assert_eq!(alerts.len(), 2, "the bar's and expo's: {alerts:?}");
+    assert_eq!(alerts.len(), 2, "the bar's and expo's: {alerts:#?}");
     let frames = location.register.take_frames().unwrap();
     location.send(REGISTER, frames);
     location.deliver();
-    assert_eq!(location.hub.kitchen_alerts().unwrap().len(), 2);
+    let heard = location.hub.kitchen_alerts().unwrap();
+    assert_eq!(heard.len(), 2, "{heard:#?}");
+    // The bar's three: the first order's two sendings, shown, and the third, rerouted.
     let screen = location.hub.kitchen_screen(&[bar]).unwrap();
-    assert_eq!(screen.tickets.len(), 2);
-    assert!(screen.tickets[1].rerouted.is_some());
+    assert_eq!(screen.tickets.len(), 3);
+    assert!(screen.tickets[..2].iter().all(|ticket| ticket.rerouted.is_none()));
+    assert!(screen.tickets[2].rerouted.is_some());
 }
