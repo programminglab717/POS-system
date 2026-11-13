@@ -28,6 +28,7 @@ use crate::outbox::{self, EffectState, Queued};
 use crate::projection::{
     self, ORDER_COLUMNS, OrderState, OrderSummary, PAYMENT_COLUMNS, PaymentSummary, Projection,
 };
+use crate::refunds::{self, REFUND_COLUMNS, RefundSummary};
 use crate::rows;
 use crate::schema;
 use crate::sequencing::{self, Sequenced, StoreSeq};
@@ -703,6 +704,54 @@ impl<S: Signer, E: Entropy> Store<S, E> {
                 [&payment.to_bytes()[..]],
                 |row| row.get(0),
             )?)
+        })
+    }
+
+    /// The refund `id`, as the `refunds` projection keeps it; `None` if the store holds no event
+    /// of it (ADR-0032).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn refund(&self, id: Id<Refund>) -> Result<Option<RefundSummary>, StoreError> {
+        self.read(|db| {
+            db.query_row(
+                &format!("SELECT {REFUND_COLUMNS} FROM refunds WHERE refund_id = ?1"),
+                [&id.to_bytes()[..]],
+                refunds::refund_summary,
+            )
+            .optional()?
+            .transpose()
+        })
+    }
+
+    /// The refunds of order `order`, the earliest first (ADR-0032).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn refunds_of(&self, order: Id<Order>) -> Result<Vec<RefundSummary>, StoreError> {
+        self.read(|db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT {REFUND_COLUMNS} FROM refunds WHERE order_id = ?1 \
+                 ORDER BY first_hlc, refund_id"
+            ))?;
+            let rows = statement.query_map([&order.to_bytes()[..]], refunds::refund_summary)?;
+            rows.map(|row| row?).collect()
+        })
+    }
+
+    /// The refunds started on business date `date`, of every order, the earliest first
+    /// (ADR-0032).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn refunds_on(&self, date: BusinessDate) -> Result<Vec<RefundSummary>, StoreError> {
+        self.read(|db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT {REFUND_COLUMNS} FROM refunds WHERE business_date = ?1 \
+                 ORDER BY first_hlc, refund_id"
+            ))?;
+            let rows = statement.query_map([date.to_string()], refunds::refund_summary)?;
+            rows.map(|row| row?).collect()
         })
     }
 

@@ -119,6 +119,18 @@ interface Till {
     /** Prints today's X or Z report. */
     fun printReport(z: Boolean)
 
+    /** The paid orders whose receipt code is [code], whatever its case: the latest first (ADR-0032). */
+    fun findOrders(code: String): List<String>
+
+    /** What is left to return of paid order [order]. */
+    fun returnable(order: String): Returnable
+
+    /**
+     * Returns [lines] of paid order [order], for [reason]: each refunded what was paid for it, in
+     * cash out of the drawer. A line given no count returns all that is left of it.
+     */
+    fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund
+
     /** This register's device: the owner a ticket names when this register owns it. */
     fun deviceId(): String = ""
 
@@ -364,6 +376,7 @@ data class Drawer(
     val paidIn: String? = null,
     val paidOut: String? = null,
     val dropped: String? = null,
+    val refunded: String? = null,
     val noSales: Long,
     val expected: String? = null,
     val counted: String? = null,
@@ -390,6 +403,51 @@ data class DayReport(
     val drawers: List<Drawer>,
     /** Cash taken with no drawer open, if any: "Cash with no drawer (1)" and how much. */
     val withoutDrawer: Pair<String, String>? = null,
+    /** Each tender's refunds (ADR-0032): "Cash refunds (2)" and what was handed back. */
+    val refunds: List<Pair<String, String>> = emptyList(),
+    /** Cash refunded with no drawer open, if any: "Refunded with no drawer (1)" and how much. */
+    val refundedWithoutDrawer: Pair<String, String>? = null,
+)
+
+/** A paid order's lines, and what is left of each to return (ADR-0032). */
+data class Returnable(
+    val order: String,
+    val lines: List<ReturnableLine>,
+    /** What its returns refunded so far. */
+    val refunded: String,
+    /** Whether it was paid in cash alone, as a refund in cash needs. */
+    val cashOnly: Boolean,
+)
+
+/** A line of a paid order, and what is left of it to return. */
+data class ReturnableLine(
+    val line: String,
+    val name: String,
+    val leftText: String,
+    /** How many are left, for a line sold by the each; null for one sold by measure, returned whole. */
+    val leftCount: Long?,
+    val anyLeft: Boolean,
+    /** What it was charged, tax included. */
+    val charged: String,
+)
+
+/** How much of a line to return: [count] of one sold by the each, or all that is left with none. */
+data class ReturnPick(val line: String, val count: Long?)
+
+/** What a return did: what it refunded, and the cash handed back. */
+data class Refund(
+    val amount: String,
+    val handed: String,
+    /** Each line returned: what and how much, and what it refunded. */
+    val lines: List<Pair<String, String>>,
+)
+
+/** The reasons the register offers for a return. */
+val RETURN_REASONS = listOf(
+    DiscountReason("damaged", "Damaged"),
+    DiscountReason("wrong_item", "Wrong item"),
+    DiscountReason("changed_mind", "Changed their mind"),
+    DiscountReason("other", "Other"),
 )
 
 /** The reasons the register offers for cash paid in or out, dropped, or a no-sale. */

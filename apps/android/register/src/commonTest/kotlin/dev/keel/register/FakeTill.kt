@@ -91,7 +91,7 @@ class FakeTill : Till {
 
     override fun approvers() =
         if (voidNeedsApproval || discountLimit != null || priceNeedsApproval || paidOutLimit != null ||
-            noSaleNeedsApproval || varianceLimit != null
+            noSaleNeedsApproval || varianceLimit != null || refundLimit != null
         ) {
             listOf("alex")
         } else {
@@ -261,6 +261,7 @@ class FakeTill : Till {
     private var drawerIn = 0L
     private var drawerOut = 0L
     private var drawerDropped = 0L
+    private var drawerRefunded = 0L
     private var drawerSales = 0L
     private var drawerNoSales = 0L
     var paidOutLimit: Long? = null
@@ -277,13 +278,14 @@ class FakeTill : Till {
 
     private fun drawerView(closedWith: Long? = null): Drawer {
         val float = drawerFloat ?: 0
-        val expected = float + drawerSales + drawerIn - drawerOut - drawerDropped
+        val expected = float + drawerSales + drawerIn - drawerOut - drawerDropped - drawerRefunded
         // Blind while open, as the kernel's.
         val shown = closedWith != null
         return Drawer(
             open = !shown, float = money(float), taken = money(drawerSales).takeIf { shown },
             paidIn = money(drawerIn).takeIf { shown }, paidOut = money(drawerOut).takeIf { shown },
-            dropped = money(drawerDropped).takeIf { shown }, noSales = drawerNoSales,
+            dropped = money(drawerDropped).takeIf { shown }, refunded = money(drawerRefunded).takeIf { shown },
+            noSales = drawerNoSales,
             expected = closedWith?.let { money(expected) }, counted = closedWith?.let(::money),
             variance = closedWith?.let { money(it - expected) },
         )
@@ -294,7 +296,7 @@ class FakeTill : Till {
     override fun openDrawer(floatMinor: Long): Drawer {
         if (drawerFloat != null) throw TillException("The drawer is open already.")
         drawerFloat = floatMinor
-        drawerIn = 0; drawerOut = 0; drawerDropped = 0; drawerSales = 0; drawerNoSales = 0
+        drawerIn = 0; drawerOut = 0; drawerDropped = 0; drawerSales = 0; drawerNoSales = 0; drawerRefunded = 0
         return drawerView()
     }
 
@@ -333,7 +335,7 @@ class FakeTill : Till {
         if (drawerFloat == null) throw TillException("No drawer is open.")
         val closed = drawerView(countedMinor)
         val limit = varianceLimit
-        val variance = countedMinor - ((drawerFloat ?: 0) + drawerSales + drawerIn - drawerOut - drawerDropped)
+        val variance = countedMinor - ((drawerFloat ?: 0) + drawerSales + drawerIn - drawerOut - drawerDropped - drawerRefunded)
         if (limit != null && kotlin.math.abs(variance) > limit) {
             if (approvedBy == null) throw TillException("Closing over or short needs a manager's approval.", approval = "drawer.variance")
             approvedBy = null
@@ -462,6 +464,54 @@ class FakeTill : Till {
     override fun openOrders() = orders.keys.filter { states[it] == OrderState.OPEN }.map(::ticket)
 
     override fun printJobs() = jobs.toList()
+
+    /** How much of each line was returned (ADR-0032). */
+    private val returned = mutableMapOf<String, Long>()
+    private val refundedOf = mutableMapOf<String, Long>()
+
+    /** The most a refund may be without a manager, as `refund.issue`; null for any. */
+    var refundLimit: Long? = null
+
+    /** The reason the last return was made for. */
+    var lastReturnReason: String? = null
+
+    override fun findOrders(code: String) =
+        states.filterValues { it == OrderState.CLOSED }.keys.filter { it.endsWith(code.lowercase()) }.reversed()
+
+    override fun returnable(order: String): Returnable {
+        if (states[order] != OrderState.CLOSED) throw TillException("the order isn't closed")
+        val lines = orders.getValue(order).map { line ->
+            val left = line.count.toLong() - (returned[line.id] ?: 0)
+            ReturnableLine(line.id, line.variant, left.toString(), left, left > 0, money(unitPrice(line) * line.count))
+        }
+        return Returnable(order, lines, money(refundedOf[order] ?: 0), cashOnly = true)
+    }
+
+    override fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund {
+        // As the kernel's order: only a closed one, each line once, no more than is left.
+        if (states[order] != OrderState.CLOSED) throw TillException("the order isn't closed")
+        if (lines.isEmpty() || lines.map { it.line }.toSet().size != lines.size) throw TillException("invalid event: lines")
+        val each = lines.map { pick ->
+            val line = orders.getValue(order).find { it.id == pick.line } ?: throw TillException("no line ${pick.line}")
+            val left = line.count.toLong() - (returned[line.id] ?: 0)
+            val count = pick.count ?: left
+            if (count <= 0 || count > left) throw TillException("more of line ${line.id} than is left to return")
+            Triple(line, count, unitPrice(line) * count)
+        }
+        val total = each.sumOf { it.third }
+        val limit = refundLimit
+        if (limit != null && total > limit) {
+            if (approvedBy == null) throw TillException("A refund needs a manager's approval.", approval = "refund.issue")
+            approvedBy = null
+        }
+        for ((line, count, _) in each) returned[line.id] = (returned[line.id] ?: 0) + count
+        refundedOf[order] = (refundedOf[order] ?: 0) + total
+        if (drawerFloat != null) drawerRefunded += total
+        lastReturnReason = reason
+        jobs += PrintJob("drawer:refund:$order", JobKind.DRAWER, JobState.QUEUED, 0)
+        jobs += PrintJob("refund:$order", JobKind.RECEIPT, JobState.QUEUED, 0)
+        return Refund(money(total), money(total), each.map { (line, count, amount) -> "$count ${line.variant}" to money(amount) })
+    }
 
     override fun resolve(job: String, printed: Boolean) {
         val index = jobs.indexOfFirst { it.job == job && it.state == JobState.UNCONFIRMED }

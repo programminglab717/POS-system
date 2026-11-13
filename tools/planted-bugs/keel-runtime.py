@@ -977,4 +977,59 @@ BUGS = [
         "                    info.location == location && info.float.currency() == currency",
         "                    info.location == location",
     ),
+    # Returns at the register (ADR-0032).
+    (
+        "return: a refund isn't gated",
+        "src/returns.rs",
+        "            self.gate(request, Some(order.cast()))?",
+        "            {\n                let _ = request;\n                None\n            }",
+    ),
+    (
+        "return: a refund is gated for no amount",
+        "src/returns.rs",
+        "                Request { action: Action::RefundIssue, amount: Some(total), percent: None };",
+        "                Request { action: Action::RefundIssue, amount: None, percent: None };",
+    ),
+    (
+        "return: the cash handed back isn't rounded",
+        "src/returns.rs",
+        "        let handed = cash.due;",
+        "        let handed = total;",
+    ),
+    (
+        "return: the refund isn't taken out of the drawer",
+        "src/returns.rs",
+        "            if let Some(open) = drawer_session.filter(|_| handed.is_positive()) {",
+        "            if let Some(open) = drawer_session.filter(|_| false) {",
+    ),
+    (
+        "return: the drawer doesn't open for a refund",
+        "src/returns.rs",
+        "            if handed.is_positive() {",
+        "            if false {",
+    ),
+    (
+        "return: what is left counts nothing returned",
+        "src/returns.rs",
+        "            let left = line.quantity().checked_sub(returned)?;",
+        "            let left = line.quantity();",
+    ),
+    (
+        "return: open orders are found from a receipt",
+        "src/returns.rs",
+        "            .orders(OrderState::Closed)?",
+        "            .orders(OrderState::Active)?",
+    ),
+    (
+        "report: a refund's amount, not the cash handed back",
+        "src/report.rs",
+        "            let Some(handed) = completed.handed().filter(|handed| handed.currency() == currency)",
+        "            let Some(handed) = Some(completed.amount).filter(|handed| handed.currency() == currency)",
+    ),
+    (
+        "report: a refund a drawer paid is reported as with no drawer",
+        "src/report.rs",
+        "            if info.tender == Tender::Cash && !self.store.refund_in_drawer(refund.id)? {",
+        "            if info.tender == Tender::Cash {",
+    ),
 ]

@@ -205,6 +205,7 @@ fn drawer_report(report: &DrawerView, location: &str) -> Result<Doc, RuntimeErro
         row("Paid in", &report.paid_in),
         row("Paid out", &report.paid_out),
         row("Dropped", &report.dropped),
+        row("Refunds", &report.refunded),
         Block::row("No sales", report.no_sales.to_string()),
         Block::Rule,
     ];

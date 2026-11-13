@@ -46,6 +46,10 @@ class OpeningTill(open: () -> Till) : Till {
     override fun closeDrawer(countedMinor: Long) = till.closeDrawer(countedMinor)
     override fun dayReport(z: Boolean) = till.dayReport(z)
     override fun printReport(z: Boolean) = till.printReport(z)
+    override fun findOrders(code: String) = till.findOrders(code)
+    override fun returnable(order: String) = till.returnable(order)
+    override fun returnLines(order: String, lines: List<dev.keel.register.ReturnPick>, reason: String) =
+        till.returnLines(order, lines, reason)
     override fun takeOver(order: String) = till.takeOver(order)
     override fun deviceId() = till.deviceId()
     override fun abandon(order: String) = till.abandon(order)

@@ -60,8 +60,8 @@ pub(crate) struct Projection {
 }
 
 /// Every projection.
-pub(crate) const ALL: [Projection; 5] =
-    [ORDERS, PAYMENTS, SEQUENCE, CLAIMS, crate::drawers::DRAWERS];
+pub(crate) const ALL: [Projection; 6] =
+    [ORDERS, PAYMENTS, SEQUENCE, CLAIMS, crate::drawers::DRAWERS, crate::refunds::REFUNDS];
 
 impl Projection {
     /// Replaces the rows of stream `id`, given its events in canonical order.
@@ -155,7 +155,7 @@ pub(crate) fn count(n: usize) -> Result<i64, StoreError> {
 }
 
 /// A stable code, such as a channel's, as stored.
-fn code(code: Option<u64>) -> Result<Option<i64>, StoreError> {
+pub(crate) fn code(code: Option<u64>) -> Result<Option<i64>, StoreError> {
     code.map(|code| i64::try_from(code).map_err(|_| StoreError::OutOfRange("a code"))).transpose()
 }
 
@@ -725,7 +725,7 @@ impl Columns<'_> {
     }
 }
 
-fn currency(code: &str) -> Result<Currency, StoreError> {
+pub(crate) fn currency(code: &str) -> Result<Currency, StoreError> {
     Currency::from_code(code).map_err(|_| StoreError::Corrupt("a currency"))
 }
 

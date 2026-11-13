@@ -6,7 +6,7 @@ use keel_domain::codec::Name;
 use keel_domain::order::Prefix;
 use keel_domain::payment::Payment;
 use keel_domain::profile::Profile;
-use keel_types::{LocalTime, Locale, Money};
+use keel_types::{Id, LocalTime, Locale, Money};
 
 use crate::error::RuntimeError;
 use crate::views::{Ticket, TicketDiscount};
@@ -36,6 +36,11 @@ struct Words {
     more: &'static str,
     see_register: &'static str,
     prefixes: [&'static str; 6],
+    /// A refund's receipt (ADR-0032): its title, what it refunded, and the cash handed back
+    /// when rounding made it another amount.
+    refund: &'static str,
+    refunded: &'static str,
+    handed: &'static str,
 }
 
 const ENGLISH: Words = Words {
@@ -54,6 +59,9 @@ const ENGLISH: Words = Words {
     more: "more lines",
     see_register: "The register shows this order in full.",
     prefixes: ["", "No", "Extra", "Light", "Side", "Sub"],
+    refund: "REFUND",
+    refunded: "REFUNDED",
+    handed: "Cash handed back",
 };
 
 const SPANISH: Words = Words {
@@ -72,6 +80,9 @@ const SPANISH: Words = Words {
     more: "líneas más",
     see_register: "La caja muestra esta orden completa.",
     prefixes: ["", "Sin", "Extra", "Poco", "Aparte", "Cambio a"],
+    refund: "REEMBOLSO",
+    refunded: "REEMBOLSADO",
+    handed: "Efectivo devuelto",
 };
 
 fn words(locale: Locale) -> &'static Words {
@@ -318,4 +329,47 @@ fn block_size(block: &Block) -> usize {
         Block::Row { left, right, .. } => left.len().saturating_add(right.len()).saturating_add(10),
         _ => 4,
     }
+}
+
+/// A refund's receipt (ADR-0032): the location, the order it returns from, each line returned and
+/// what it refunded, and what was refunded, with the cash handed back when rounding made it
+/// another amount.
+pub(crate) fn refund(
+    refunded: &crate::returns::Refunded,
+    order: Id<keel_domain::order::Order>,
+    at: LocalTime,
+    profile: &Profile,
+    locale: Locale,
+) -> Result<Doc, RuntimeError> {
+    let words = words(locale);
+    let data = profile.data();
+    let mut blocks = vec![Block::text(data.name.as_str(), Align::Center, Style::LARGE)];
+    for line in &data.address {
+        blocks.push(Block::text(line.as_str(), Align::Center, Style::default()));
+    }
+    blocks.push(Block::text(words.refund, Align::Center, Style::LARGE));
+    blocks.push(Block::Rule);
+    let id = order.to_string();
+    let short = id.get(id.len().saturating_sub(6)..).unwrap_or_default().to_uppercase();
+    blocks.push(Block::row(format!("{} {short}", words.order), at.to_string()));
+    blocks.push(Block::Rule);
+    for line in &refunded.lines {
+        blocks.push(Block::row(
+            format!("{} {}", line.quantity_text, line.name),
+            line.amount.text.clone(),
+        ));
+    }
+    blocks.push(Block::Rule);
+    blocks.push(Block::Row {
+        left: words.refunded.to_owned(),
+        right: refunded.amount.text.clone(),
+        indent: 0,
+        style: Style { bold: true, wide: false, tall: true },
+    });
+    if refunded.handed != refunded.amount {
+        blocks.push(Block::row(words.handed, refunded.handed.text.clone()));
+    }
+    blocks.push(Block::Feed(2));
+    blocks.push(Block::Cut);
+    Ok(Doc::new(blocks)?)
 }

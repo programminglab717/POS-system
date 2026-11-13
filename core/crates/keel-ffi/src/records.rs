@@ -372,6 +372,13 @@ pub struct DayReport {
     pub cash_without_drawer: Amount,
     /// How many cash payments were captured with no drawer open.
     pub payments_without_drawer: u64,
+    /// What each tender refunded on the day (ADR-0032): `cash` or `card`, how many refunds, how
+    /// much was handed back.
+    pub refunds: Vec<TenderLine>,
+    /// Cash handed back with no drawer open.
+    pub cash_refunded_without_drawer: Amount,
+    /// How many cash refunds were handed back with no drawer open.
+    pub refunds_without_drawer: u64,
 }
 
 /// What one tender captured on a day.
@@ -383,6 +390,20 @@ pub struct TenderLine {
     pub payments: u64,
     /// What they captured, tips included.
     pub amount: Amount,
+}
+
+impl From<&runtime::TenderLine> for TenderLine {
+    fn from(line: &runtime::TenderLine) -> TenderLine {
+        TenderLine {
+            tender: match line.tender {
+                keel_domain::payment::Tender::Cash => "cash",
+                keel_domain::payment::Tender::Card => "card",
+            }
+            .to_owned(),
+            payments: line.payments,
+            amount: (&line.amount).into(),
+        }
+    }
 }
 
 impl From<ReportKind> for runtime::ReportKind {
@@ -409,23 +430,14 @@ impl From<&runtime::DayReport> for DayReport {
             net: (&report.net).into(),
             tax: (&report.tax).into(),
             total: (&report.total).into(),
-            tenders: report
-                .tenders
-                .iter()
-                .map(|line| TenderLine {
-                    tender: match line.tender {
-                        keel_domain::payment::Tender::Cash => "cash",
-                        keel_domain::payment::Tender::Card => "card",
-                    }
-                    .to_owned(),
-                    payments: line.payments,
-                    amount: (&line.amount).into(),
-                })
-                .collect(),
+            tenders: report.tenders.iter().map(TenderLine::from).collect(),
             voided: report.voided,
             drawers: report.drawers.iter().map(DrawerView::from).collect(),
             cash_without_drawer: (&report.cash_without_drawer).into(),
             payments_without_drawer: report.payments_without_drawer,
+            refunds: report.refunds.iter().map(TenderLine::from).collect(),
+            cash_refunded_without_drawer: (&report.cash_refunded_without_drawer).into(),
+            refunds_without_drawer: report.refunds_without_drawer,
         }
     }
 }
@@ -459,6 +471,8 @@ pub struct DrawerView {
     pub paid_out: Option<Amount>,
     /// Once closed: cash dropped to the safe.
     pub dropped: Option<Amount>,
+    /// Once closed: cash handed back for refunds (ADR-0032).
+    pub refunded: Option<Amount>,
     /// How many times it was opened with no sale.
     pub no_sales: u64,
     /// Once closed: what it should have held.
@@ -479,6 +493,7 @@ impl From<&runtime::DrawerView> for DrawerView {
             paid_in: view.paid_in.as_ref().map(Amount::from),
             paid_out: view.paid_out.as_ref().map(Amount::from),
             dropped: view.dropped.as_ref().map(Amount::from),
+            refunded: view.refunded.as_ref().map(Amount::from),
             no_sales: view.no_sales,
             expected: view.expected.as_ref().map(Amount::from),
             counted: view.counted.as_ref().map(Amount::from),
@@ -984,4 +999,110 @@ pub struct SyncState {
     /// The version of the profile the register rings from, 64 hexadecimal digits: the one
     /// provisioned until the cloud publishes another. When it changes, the menu is read again.
     pub profile_version: String,
+}
+
+/// A line of a closed order, and what is left of it to return (ADR-0032).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ReturnableLine {
+    /// The line's identifier.
+    pub line: String,
+    /// What it sold.
+    pub name: String,
+    /// How much is left to return, as the locale shows it.
+    pub left_text: String,
+    /// How many are left, for a line sold by the each; `None` for one sold by measure, which is
+    /// returned whole.
+    pub left_count: Option<u32>,
+    /// Whether anything is left of it to return.
+    pub any_left: bool,
+    /// What its order's checks charged it, its net and tax.
+    pub charged: Amount,
+}
+
+/// A closed order's lines, and what was refunded of it (ADR-0032).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Returnable {
+    /// The order's identifier.
+    pub order: String,
+    /// Its lines.
+    pub lines: Vec<ReturnableLine>,
+    /// What its returns refunded so far.
+    pub refunded: Amount,
+    /// Whether it was paid in cash alone, as a refund in cash needs.
+    pub cash_only: bool,
+}
+
+/// How much of a line to return: `count` of one sold by the each, or, with `count` absent, all
+/// that is left of it.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ReturnLine {
+    /// The line's identifier.
+    pub line: String,
+    /// How many, for a line sold by the each; absent for all that is left.
+    pub count: Option<u32>,
+}
+
+/// A line returned, and what it refunded.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct RefundedLine {
+    /// What it sold.
+    pub name: String,
+    /// How much was returned, as the locale shows it.
+    pub quantity_text: String,
+    /// What it refunded: its net and tax.
+    pub amount: Amount,
+}
+
+/// What a return did (ADR-0032).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Refunded {
+    /// The refund's identifier.
+    pub refund: String,
+    /// Each line returned.
+    pub lines: Vec<RefundedLine>,
+    /// What the return refunds.
+    pub amount: Amount,
+    /// What was handed back in cash, rounded as the location rounds cash.
+    pub handed: Amount,
+}
+
+impl From<&runtime::Returnable> for Returnable {
+    fn from(returnable: &runtime::Returnable) -> Returnable {
+        Returnable {
+            order: returnable.order.to_string(),
+            lines: returnable
+                .lines
+                .iter()
+                .map(|line| ReturnableLine {
+                    line: line.line.to_string(),
+                    name: line.name.to_string(),
+                    left_text: line.left_text.clone(),
+                    left_count: line.left_count,
+                    any_left: line.left.is_positive(),
+                    charged: (&line.charged).into(),
+                })
+                .collect(),
+            refunded: (&returnable.refunded).into(),
+            cash_only: returnable.cash_only,
+        }
+    }
+}
+
+impl From<&runtime::Refunded> for Refunded {
+    fn from(refunded: &runtime::Refunded) -> Refunded {
+        Refunded {
+            refund: refunded.refund.to_string(),
+            lines: refunded
+                .lines
+                .iter()
+                .map(|line| RefundedLine {
+                    name: line.name.to_string(),
+                    quantity_text: line.quantity_text.clone(),
+                    amount: (&line.amount).into(),
+                })
+                .collect(),
+            amount: (&refunded.amount).into(),
+            handed: (&refunded.handed).into(),
+        }
+    }
 }

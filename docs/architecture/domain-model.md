@@ -701,6 +701,9 @@ rules that span an order and its payments. The payloads' key tables are in
   a tender, and `refund.completed`, with any cash rounding; single-writer, the device that made
   the return. A completion by another device, or for more than the refund was started for,
   applies and is reported.
+- **At the register** (ADR-0032), a closed order is found from its receipt's code; a return,
+  gated as `refund.issue` for what it refunds, records the return, its refund and the drawer's
+  cash in one write. An order a card paid waits for card refunds.
 - **Not yet built:** card refunds and disputes; store-and-forward and asynchronous rails;
   tip adjustment and incremental authorization; other tenders; receipt details such as card
   brand, entry mode and EMV data, which come with the first connector.

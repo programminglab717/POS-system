@@ -196,6 +196,30 @@ class RegisterTest {
     }
 
     /**
+     * A manager sells an espresso in the exact cash, $3.54, finds it among today's orders, and
+     * returns it, refunded what was paid (ADR-0032).
+     */
+    @Test
+    fun a_paid_espresso_is_returned_and_refunded() {
+        compose.tap("member:Alex", wait = 20_000)
+        compose.enterPin("1234")
+        compose.tap("button:${demoId(0x401)}")
+        compose.tap("sheet:add")
+        compose.tap("pay")
+        compose.tap("offer:0")
+        compose.waitFor("change")
+        compose.tap("orders")
+        compose.tapStarting("return:0")
+        compose.tapStarting("return-more:")
+        compose.tap("return-reason:damaged")
+        compose.tap("return:refund")
+        compose.waitUntil(10_000) { compose.shown("return:handed").contains("$3.54") }
+        compose.tap("back")
+        compose.tap("back")
+        compose.tap("sign-out")
+    }
+
+    /**
      * A printer in the test's process that takes [jobs] connections, one after the other, each
      * answered as a ready Epson that printed what it was sent; and what each brought, waited for.
      */

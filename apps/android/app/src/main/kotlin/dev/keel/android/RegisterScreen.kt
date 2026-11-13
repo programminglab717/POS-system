@@ -55,6 +55,8 @@ import dev.keel.register.DiscountSheet
 import dev.keel.register.NotesSheet
 import dev.keel.register.PRICE_REASONS
 import dev.keel.register.PriceSheet
+import dev.keel.register.RETURN_REASONS
+import dev.keel.register.ReturnableLine
 import dev.keel.register.TicketDiscount
 import dev.keel.register.percentWords
 import dev.keel.register.JobKind
@@ -87,6 +89,7 @@ fun RegisterScreen(model: RegisterModel) {
                 state.screen == Screen.ORDERS -> Orders(state, model)
                 state.screen == Screen.PRINTER -> PrinterPage(state, model)
                 state.screen == Screen.DRAWER -> DrawerPage(state, model)
+                state.screen == Screen.RETURN -> ReturnPage(state, model)
                 else -> Register(state, model)
             }
         }
@@ -409,6 +412,8 @@ private fun DrawerPage(state: RegisterState, model: RegisterModel) {
             for ((tender, amount) in report.tenders) ReportRow(tender, amount)
             ReportRow("Voided orders", report.voided.toString())
             report.withoutDrawer?.let { (words, amount) -> ReportRow(words, amount) }
+            for ((words, amount) in report.refunds) ReportRow(words, amount)
+            report.refundedWithoutDrawer?.let { (words, amount) -> ReportRow(words, amount) }
             // Each drawer of the day, with its over or short once counted. Found in review: only
             // the printed report had them.
             report.drawers.forEachIndexed { index, each ->
@@ -429,6 +434,7 @@ private fun DrawerFigures(drawer: Drawer) {
     drawer.paidIn?.let { ReportRow("Paid in", it) }
     drawer.paidOut?.let { ReportRow("Paid out", it) }
     drawer.dropped?.let { ReportRow("Dropped", it) }
+    drawer.refunded?.let { ReportRow("Refunds", it) }
     ReportRow("No sales", drawer.noSales.toString())
     drawer.expected?.let { ReportRow("Expected", it) }
     drawer.counted?.let { ReportRow("Counted", it) }
@@ -766,6 +772,19 @@ private fun Orders(state: RegisterState, model: RegisterModel) {
             Text("Today's orders", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             TextButton(onClick = model::showRegister, modifier = Modifier.testTag("back")) { Text("Back") }
         }
+        // A paid order found from its receipt's code, to return (ADR-0032).
+        var code by rememberSaveable { mutableStateOf("") }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it.take(6) },
+                label = { Text("Receipt code") },
+                singleLine = true,
+                modifier = Modifier.weight(1f).testTag("return:code"),
+            )
+            TextButton(onClick = { model.findReturn(code) }, modifier = Modifier.testTag("return:find")) { Text("Find") }
+        }
+        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (state.orders.isEmpty()) Text("None yet today.")
         LazyColumn {
             items(state.orders.reversed(), key = { it.order }) { order ->
@@ -778,10 +797,74 @@ private fun Orders(state: RegisterState, model: RegisterModel) {
                     hubDown = state.sync?.hubReachable == false,
                     onOpen = { model.resume(order) },
                     onReprint = { model.reprint(order) },
+                    onReturn = { model.beginReturn(order) },
                     onTakeOver = { model.takeOver(order) },
                 )
             }
         }
+    }
+}
+
+/**
+ * A return (ADR-0032): each line of the paid order with what is left of it, picked one at a time,
+ * or whole for one sold by measure; a reason; and the refund, with what to hand back.
+ */
+@Composable
+private fun ReturnPage(state: RegisterState, model: RegisterModel) {
+    val sheet = state.returning ?: return
+    Column(Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Return", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            TextButton(onClick = model::closeReturn, modifier = Modifier.testTag("back")) { Text("Back") }
+        }
+        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("return:error")) }
+        if (!sheet.returnable.cashOnly) {
+            Text("A card paid this order: it is refunded to the card, which the register can't do yet.")
+        }
+        for (line in sheet.returnable.lines) ReturnRow(line, sheet.picks[line.line], line.line in sheet.picks, model)
+        Text("Refunded so far: ${sheet.returnable.refunded}", style = MaterialTheme.typography.bodySmall)
+        Text("Why", style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (reason in RETURN_REASONS) {
+                FilterChip(
+                    selected = sheet.reason == reason.code,
+                    onClick = { model.returnReason(reason.code) },
+                    label = { Text(reason.words) },
+                    modifier = Modifier.testTag("return-reason:${reason.code}"),
+                )
+            }
+        }
+        Button(
+            onClick = model::confirmReturn,
+            enabled = sheet.picks.isNotEmpty() && sheet.returnable.cashOnly,
+            modifier = Modifier.fillMaxWidth().testTag("return:refund"),
+        ) { Text("Refund in cash") }
+        state.refund?.let { refund ->
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            for ((what, amount) in refund.lines) ReportRow(what, amount)
+            ReportRow("Refunded", refund.amount, Modifier.testTag("return:amount"))
+            Text("Hand back ${refund.handed}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("return:handed"))
+        }
+    }
+}
+
+@Composable
+private fun ReturnRow(line: ReturnableLine, picked: Long?, isPicked: Boolean, model: RegisterModel) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().testTag("return-line:${line.line}")) {
+        Column(Modifier.weight(1f)) {
+            Text(line.name)
+            Text("${line.leftText} left of ${line.charged}", style = MaterialTheme.typography.bodySmall)
+        }
+        TextButton(onClick = { model.pickFewer(line) }, enabled = isPicked, modifier = Modifier.testTag("return-fewer:${line.line}")) { Text("−") }
+        Text(
+            when {
+                !isPicked -> "0"
+                picked == null -> "All"
+                else -> picked.toString()
+            },
+            modifier = Modifier.testTag("return-picked:${line.line}"),
+        )
+        TextButton(onClick = { model.pickMore(line) }, enabled = line.anyLeft, modifier = Modifier.testTag("return-more:${line.line}")) { Text("+") }
     }
 }
 
@@ -793,6 +876,7 @@ private fun OrderRow(
     hubDown: Boolean,
     onOpen: () -> Unit,
     onReprint: () -> Unit,
+    onReturn: () -> Unit,
     onTakeOver: () -> Unit,
 ) {
     val state = if (order.state == OrderState.OPEN && elsewhere) {
@@ -817,6 +901,7 @@ private fun OrderRow(
         Text(order.total)
         if (order.state == OrderState.CLOSED) {
             TextButton(onClick = onReprint, modifier = Modifier.testTag("reprint:${order.order}")) { Text("Reprint") }
+            TextButton(onClick = onReturn, modifier = Modifier.testTag("return:${order.order}")) { Text("Return") }
         }
         // Parked on another register: tapping it recalls it through the hub; a manager can take it
         // over when the hub can't be reached.

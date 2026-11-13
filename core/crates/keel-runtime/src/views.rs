@@ -141,6 +141,8 @@ pub struct DrawerView {
     pub paid_out: Option<Amount>,
     /// Once closed: cash dropped to the safe.
     pub dropped: Option<Amount>,
+    /// Once closed: cash handed back for refunds (ADR-0032).
+    pub refunded: Option<Amount>,
     /// How many times it was opened with no sale.
     pub no_sales: u64,
     /// Once closed: what it should have held.
@@ -179,6 +181,7 @@ impl DrawerView {
             paid_in: None,
             paid_out: None,
             dropped: None,
+            refunded: None,
             no_sales: session.no_sales(),
             expected: None,
             counted: None,
@@ -192,6 +195,7 @@ impl DrawerView {
             view.paid_in = Some(amount(sums.paid_in));
             view.paid_out = Some(amount(sums.paid_out));
             view.dropped = Some(amount(sums.dropped));
+            view.refunded = Some(amount(sums.refunded));
             view.expected = Some(amount(closed.expected));
             view.counted = Some(amount(closed.counted));
             view.variance = Some(amount(variance));

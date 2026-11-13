@@ -1262,7 +1262,7 @@ fn is_reprint(doc: &Doc) -> bool {
 }
 
 /// Fails unless `order` was created.
-fn known(order: &Order) -> Result<(), RuntimeError> {
+pub(crate) fn known(order: &Order) -> Result<(), RuntimeError> {
     order.info().map(|_| ()).ok_or(RuntimeError::UnknownOrder(order.id()))
 }
 

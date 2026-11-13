@@ -1066,3 +1066,55 @@ fn a_sync_step_takes_in_what_is_waiting_within_its_budget() {
         Err("damaged")
     );
 }
+
+/// A return through the register (ADR-0032): an order found from its receipt's code, one of its
+/// three espressos returned once a manager approves, then the rest, each refunded what was paid.
+#[test]
+fn espressos_are_returned_through_the_register() {
+    let scratch = Scratch::new();
+    let register: Arc<Register> = Register::open(config(&scratch)).unwrap();
+    register.sign_in(demo_id(0x502), "2468".into()).unwrap();
+    let order = register.start_order(Mode::Takeout).unwrap().order;
+    register.add_item(order.clone(), demo_id(0x401), vec![], 3).unwrap();
+    register.pay_cash(order.clone(), 1_062).unwrap();
+    let code = order[order.len() - 6..].to_uppercase();
+    assert_eq!(register.find_orders(code).unwrap(), core::slice::from_ref(&order));
+    let returnable = register.returnable(order.clone()).unwrap();
+    let line = returnable.lines[0].line.clone();
+    assert_eq!((returnable.lines[0].left_count, returnable.cash_only), (Some(3), true));
+    let one = vec![ReturnLine { line: line.clone(), count: Some(1) }];
+    assert_eq!(
+        register.return_lines(order.clone(), one.clone(), "damaged".into(), None),
+        Err(KeelError::ApprovalRequired { action: "refund.issue".into() })
+    );
+    register.approve(demo_id(0x501), "1234".into()).unwrap();
+    let refunded = register.return_lines(order.clone(), one, "damaged".into(), None).unwrap();
+    assert_eq!((refunded.amount.minor, refunded.handed.minor), (354, 354));
+    assert_eq!(refunded.lines[0].name, "Espresso");
+    // The rest: what is left, with no count.
+    let rest = vec![ReturnLine { line: line.clone(), count: None }];
+    assert!(matches!(
+        register.return_lines(order.clone(), rest.clone(), "damaged".into(), None),
+        Err(KeelError::ApprovalRequired { .. })
+    ));
+    register.approve(demo_id(0x501), "1234".into()).unwrap();
+    let refunded = register.return_lines(order.clone(), rest, "damaged".into(), None).unwrap();
+    assert_eq!(refunded.amount.minor, 708);
+    let returnable = register.returnable(order.clone()).unwrap();
+    assert_eq!((returnable.lines[0].any_left, returnable.refunded.minor), (false, 1_062));
+    // Nothing more, and a line the order doesn't have.
+    let again = vec![ReturnLine { line, count: Some(1) }];
+    assert!(matches!(
+        register.return_lines(order.clone(), again, "damaged".into(), None),
+        Err(KeelError::Refused { .. })
+    ));
+    let unknown = vec![ReturnLine { line: demo_id(0x999), count: Some(1) }];
+    assert!(matches!(
+        register.return_lines(order.clone(), unknown, "damaged".into(), None),
+        Err(KeelError::Refused { .. })
+    ));
+    let report = register.day_report(ReportKind::X, None).unwrap();
+    assert_eq!(report.refunds.len(), 1);
+    assert_eq!((report.refunds[0].payments, report.refunds[0].amount.minor), (2, 1_062));
+    assert_eq!(report.refunds_without_drawer, 2);
+}

@@ -28,6 +28,7 @@ mod print;
 mod publication;
 mod receipt;
 mod report;
+mod returns;
 mod runtime;
 mod staff;
 mod sync;
@@ -45,6 +46,8 @@ mod print_tests;
 #[cfg(test)]
 mod publication_tests;
 #[cfg(test)]
+mod returns_tests;
+#[cfg(test)]
 mod staff_tests;
 #[cfg(test)]
 mod tests;
@@ -52,6 +55,7 @@ mod tests;
 pub use error::RuntimeError;
 pub use print::{DRAWER, Job, JobKind, JobState, JobView, PrintJob, RECEIPT, Resolution};
 pub use report::{DayReport, ReportKind, TenderLine};
+pub use returns::{Refunded, RefundedLine, Returnable, ReturnableLine};
 pub use runtime::{CASH_OFFERS, Identity, MOST_CHECKS, Runtime};
 pub use staff::{APPROVAL_LIFE, FIRST_LOCK, LONGEST_LOCK, PIN_TRIES, QUIET};
 pub use sync::{ISLAND_AFTER, SyncStatus};

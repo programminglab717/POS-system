@@ -55,6 +55,13 @@ pub struct DayReport {
     pub cash_without_drawer: Amount,
     /// How many cash payments no drawer session took.
     pub payments_without_drawer: u64,
+    /// What each tender refunded on the day, by the day each refund was made, with how many
+    /// refunds: what was handed back, cash rounding included (ADR-0032).
+    pub refunds: Vec<TenderLine>,
+    /// Cash handed back on the day that no drawer session paid out, as with none open.
+    pub cash_refunded_without_drawer: Amount,
+    /// How many cash refunds no drawer session paid out.
+    pub refunds_without_drawer: u64,
 }
 
 /// A day's sales, added up.
@@ -103,6 +110,9 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let Sales { orders, voided, gross, discounts, net, tax, total } = self.sales(date)?;
         let (mut tenders, cash_without_drawer, payments_without_drawer) = self.tenders(date)?;
         tenders.sort_by_key(|(tender, _, _)| tender.code());
+        let (mut refunds, cash_refunded_without_drawer, refunds_without_drawer) =
+            self.refunds(date)?;
+        refunds.sort_by_key(|(tender, _, _)| tender.code());
         let mut views = Vec::new();
         for summary in self.store.drawers_on(date)? {
             let session = self.store.load(Drawer::new(summary.id))?;
@@ -128,7 +138,41 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             drawers: views,
             cash_without_drawer: amount(cash_without_drawer),
             payments_without_drawer,
+            refunds: refunds
+                .into_iter()
+                .map(|(tender, payments, sum)| TenderLine { tender, payments, amount: amount(sum) })
+                .collect(),
+            cash_refunded_without_drawer: amount(cash_refunded_without_drawer),
+            refunds_without_drawer,
         })
+    }
+
+    /// What each tender refunded on business date `date`, by the day each refund was made, in
+    /// the location's currency: what was handed back, cash rounding included. And the cash no
+    /// drawer session paid out, with how many refunds (ADR-0032).
+    fn refunds(&self, date: BusinessDate) -> Result<Tenders, RuntimeError> {
+        let currency = self.profile.data().currency;
+        let mut refunds: Vec<(Tender, u64, Money)> = Vec::new();
+        let (mut without, mut refunds_without) = (Money::zero(currency), 0_u64);
+        for refund in self.store.refunds_on(date)? {
+            let (Some(info), Some(completed)) = (refund.info, refund.completed) else { continue };
+            let Some(handed) = completed.handed().filter(|handed| handed.currency() == currency)
+            else {
+                continue;
+            };
+            match refunds.iter_mut().find(|(tender, _, _)| *tender == info.tender) {
+                Some((_, count, sum)) => {
+                    *count = count.saturating_add(1);
+                    *sum = sum.checked_add(handed)?;
+                }
+                None => refunds.push((info.tender, 1, handed)),
+            }
+            if info.tender == Tender::Cash && !self.store.refund_in_drawer(refund.id)? {
+                without = without.checked_add(handed)?;
+                refunds_without = refunds_without.saturating_add(1);
+            }
+        }
+        Ok((refunds, without, refunds_without))
     }
 
     /// What each tender took on business day `date`, by the day each payment was taken, of every
@@ -296,6 +340,7 @@ fn report_doc(report: &DayReport, location: &str) -> Result<Doc, RuntimeError> {
                 blocks.push(sum("Paid in", &drawer.paid_in));
                 blocks.push(sum("Paid out", &drawer.paid_out));
                 blocks.push(sum("Dropped", &drawer.dropped));
+                blocks.push(sum("Refunds", &drawer.refunded));
                 blocks.push(row("Expected", expected));
                 blocks.push(row("Counted", counted));
                 blocks.push(row("Over/short", variance));
@@ -309,6 +354,25 @@ fn report_doc(report: &DayReport, location: &str) -> Result<Doc, RuntimeError> {
             format!("Cash with no drawer ({})", report.payments_without_drawer),
             report.cash_without_drawer.text.clone(),
         ));
+    }
+    if !report.refunds.is_empty() {
+        blocks.push(Block::Rule);
+        for refund in &report.refunds {
+            let name = match refund.tender {
+                Tender::Cash => "Cash refunds",
+                Tender::Card => "Card refunds",
+            };
+            blocks.push(Block::row(
+                format!("{name} ({})", refund.payments),
+                refund.amount.text.clone(),
+            ));
+        }
+        if report.refunds_without_drawer > 0 {
+            blocks.push(Block::row(
+                format!("Refunded with no drawer ({})", report.refunds_without_drawer),
+                report.cash_refunded_without_drawer.text.clone(),
+            ));
+        }
     }
     blocks.push(Block::Feed(2));
     blocks.push(Block::Cut);

@@ -26,7 +26,20 @@ enum class Screen {
 
     /** The drawer: its movements, its close, and the day's reports (ADR-0031). */
     DRAWER,
+
+    /** A return: a paid order's lines, what of each to return, and its refund (ADR-0032). */
+    RETURN,
 }
+
+/**
+ * A return being made (ADR-0032): the order's lines and what is left of each, how many of each
+ * are picked to return, and why. A line sold by measure is picked whole: its count is null.
+ */
+data class ReturnSheet(
+    val returnable: Returnable,
+    val picks: Map<String, Long?> = emptyMap(),
+    val reason: String = RETURN_REASONS.first().code,
+)
 
 /**
  * What the drawer screen is typing an amount for: a float to open it, a movement, or the blind
@@ -135,6 +148,10 @@ data class RegisterState(
     val report: DayReport? = null,
     /** Whether the register asks to open the drawer: once someone signs in and none is open. */
     val askDrawer: Boolean = false,
+    /** The return being made, on the return screen (ADR-0032). */
+    val returning: ReturnSheet? = null,
+    /** What the last return refunded, to hand back. */
+    val refund: Refund? = null,
     /** The change handed back for the last order paid, until the next is begun. */
     val change: String? = null,
     val orders: List<Ticket> = emptyList(),
@@ -708,6 +725,78 @@ class RegisterModel(
         till.reprint(order.order)
         val jobs = till.printJobs()
         mutable.update { it.copy(jobs = jobs) }
+    }
+
+    /**
+     * Finds the paid order whose receipt code is [code], and begins its return; the latest, if
+     * more than one has it (ADR-0032).
+     */
+    fun findReturn(code: String) = perform {
+        val order = till.findOrders(code).firstOrNull() ?: throw TillException("No paid order has that code.")
+        openReturn(till.returnable(order))
+    }
+
+    /** Begins a return of paid order [order]. */
+    fun beginReturn(order: Ticket) = perform {
+        if (order.state != OrderState.CLOSED) throw TillException("Only a paid order is returned.")
+        openReturn(till.returnable(order.order))
+    }
+
+    private fun openReturn(returnable: Returnable) {
+        mutable.update { it.copy(screen = Screen.RETURN, returning = ReturnSheet(returnable), refund = null) }
+    }
+
+    /** Picks one more of [line] to return, up to what is left; a line sold by measure, whole. */
+    fun pickMore(line: ReturnableLine) = mutable.update { state ->
+        val sheet = state.returning ?: return@update state
+        if (!line.anyLeft) return@update state
+        val left = line.leftCount
+        val picks = if (left == null) {
+            sheet.picks + (line.line to null)
+        } else {
+            val now = sheet.picks[line.line] ?: 0
+            sheet.picks + (line.line to minOf(now + 1, left))
+        }
+        state.copy(returning = sheet.copy(picks = picks), error = null)
+    }
+
+    /** Picks one fewer of [line]: none, for a line sold by measure. */
+    fun pickFewer(line: ReturnableLine) = mutable.update { state ->
+        val sheet = state.returning ?: return@update state
+        val now = sheet.picks[line.line]
+        val picks = if (now == null || now <= 1) sheet.picks - line.line else sheet.picks + (line.line to now - 1)
+        state.copy(returning = sheet.copy(picks = picks))
+    }
+
+    /** Why the lines are returned. */
+    fun returnReason(code: String) = mutable.update { state ->
+        state.copy(returning = state.returning?.copy(reason = code))
+    }
+
+    /**
+     * Returns what is picked, for the reason chosen, and shows what to hand back. Read once the
+     * taps before it are in, and tried again as it was once a manager approves.
+     */
+    fun confirmReturn() = perform {
+        val sheet = current.returning ?: return@perform
+        if (sheet.picks.isEmpty()) {
+            mutable.update { it.copy(error = "Choose what is returned.") }
+            return@perform
+        }
+        val picks = sheet.picks.map { (line, count) -> ReturnPick(line, count) }
+        val order = sheet.returnable.order
+        perform {
+            val refund = till.returnLines(order, picks, sheet.reason)
+            val returnable = till.returnable(order)
+            val jobs = till.printJobs()
+            mutable.update { it.copy(refund = refund, returning = ReturnSheet(returnable, reason = sheet.reason), jobs = jobs) }
+        }
+    }
+
+    /** Leaves the return: back to today's orders. */
+    fun closeReturn() = perform {
+        val orders = listed()
+        mutable.update { it.copy(screen = Screen.ORDERS, orders = orders, returning = null, refund = null) }
     }
 
     /** Shows the printer: its address, and its jobs. */

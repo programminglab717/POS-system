@@ -868,4 +868,61 @@ class RegisterModelTest {
         assertNull(model.state.value.drawer)
         assertEquals("-$5.01", model.state.value.closedDrawer?.variance)
     }
+
+    /**
+     * A paid order found from its receipt's code, its tea returned once a manager approves, for a
+     * reason (ADR-0032): picked no more than is left, refunded, and nothing left after.
+     */
+    @Test
+    fun a_paid_tea_is_returned_once_a_manager_approves() = runTest {
+        val till = FakeTill().apply {
+            pins = mapOf("alex" to "1234")
+            refundLimit = 0
+        }
+        val model = signedIn(object : Till by till {
+            override fun team() = listOf(Member("sam", "Sam"), Member("alex", "Alex", "Manager", true))
+        })
+        model.tap(model.button("Tea"))
+        testScheduler.advanceUntilIdle()
+        model.openTender()
+        testScheduler.advanceUntilIdle()
+        model.pay(model.state.value.tender!!.offers[0])
+        testScheduler.advanceUntilIdle()
+        // Not found by a code no receipt has; found by the end of its own.
+        model.showOrders()
+        testScheduler.advanceUntilIdle()
+        model.findReturn("zz")
+        testScheduler.advanceUntilIdle()
+        assertEquals("No paid order has that code.", model.state.value.error)
+        model.findReturn("ER1")
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.RETURN, model.state.value.screen)
+        val line = model.state.value.returning!!.returnable.lines.single()
+        // Nothing picked: nothing to refund.
+        model.confirmReturn()
+        testScheduler.advanceUntilIdle()
+        assertEquals("Choose what is returned.", model.state.value.error)
+        // One tea, and no more than the one there is.
+        model.pickMore(line)
+        model.pickMore(line)
+        assertEquals(mapOf(line.line to 1L), model.state.value.returning?.picks)
+        model.returnReason("wrong_item")
+        model.confirmReturn()
+        testScheduler.advanceUntilIdle()
+        assertEquals("refund.issue", model.state.value.approval?.action)
+        model.chooseApprover(model.approvers().single())
+        model.approve("1234")
+        testScheduler.advanceUntilIdle()
+        assertEquals("$3.00", model.state.value.refund?.handed)
+        assertEquals("wrong_item", till.lastReturnReason)
+        val after = model.state.value.returning!!
+        assertEquals(emptyMap(), after.picks)
+        assertEquals(false, after.returnable.lines.single().anyLeft)
+        assertEquals("$3.00", after.returnable.refunded)
+        // Back to today's orders.
+        model.closeReturn()
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.ORDERS, model.state.value.screen)
+        assertNull(model.state.value.returning)
+    }
 }

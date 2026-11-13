@@ -59,6 +59,7 @@ mod key;
 mod outbox;
 mod ownership;
 mod projection;
+mod refunds;
 mod rows;
 mod schema;
 mod sequencing;
@@ -78,6 +79,7 @@ pub use outbox::{
     Effect, EffectError, EffectKind, EffectState, Enqueued, MAX_KEY, MAX_PAYLOAD, Queued,
 };
 pub use projection::{OrderState, OrderSummary, PaymentState, PaymentSummary};
+pub use refunds::{RefundState, RefundSummary};
 pub use schema::init_sqlite;
 pub use sequencing::{Sequenced, StoreSeq};
 pub use store::{Store, StoreConfig};

@@ -185,7 +185,9 @@ impl From<RuntimeError> for KeelError {
             | RuntimeError::Split
             | RuntimeError::DrawerOpen
             | RuntimeError::NoDrawer
-            | RuntimeError::Drawer(_) => KeelError::Refused { reason },
+            | RuntimeError::Drawer(_)
+            | RuntimeError::CardRefund
+            | RuntimeError::Refund(_) => KeelError::Refused { reason },
             RuntimeError::TenderShort { due } => KeelError::TenderShort {
                 due: Amount {
                     minor: due.minor(),

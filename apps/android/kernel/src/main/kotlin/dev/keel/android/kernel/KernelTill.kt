@@ -50,6 +50,11 @@ import dev.keel.kernel.CashMovement as KernelMovement
 import dev.keel.kernel.DrawerView as KernelDrawer
 import dev.keel.kernel.ReportKind as KernelReportKind
 import dev.keel.register.TicketDiscount
+import dev.keel.kernel.ReturnLine as KernelReturnLine
+import dev.keel.register.Refund
+import dev.keel.register.ReturnPick
+import dev.keel.register.Returnable
+import dev.keel.register.ReturnableLine
 import dev.keel.register.percentWords
 import dev.keel.register.reasonWords
 
@@ -193,11 +198,44 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
             drawers = report.drawers.map { it.toDrawer() },
             withoutDrawer = report.cashWithoutDrawer.takeIf { report.paymentsWithoutDrawer > 0uL }
                 ?.let { "Cash with no drawer (${report.paymentsWithoutDrawer})" to it.text },
+            refunds = report.refunds.map { refund ->
+                val name = if (refund.tender == "cash") "Cash refunds" else "Card refunds"
+                "$name (${refund.payments})" to refund.amount.text
+            },
+            refundedWithoutDrawer = report.cashRefundedWithoutDrawer.takeIf { report.refundsWithoutDrawer > 0uL }
+                ?.let { "Refunded with no drawer (${report.refundsWithoutDrawer})" to it.text },
         )
     }
 
     override fun printReport(z: Boolean) =
         call { register.printReport(if (z) KernelReportKind.Z else KernelReportKind.X, null) }.let { }
+
+    override fun findOrders(code: String): List<String> = call { register.findOrders(code) }
+
+    override fun returnable(order: String): Returnable = call {
+        val returnable = register.returnable(order)
+        Returnable(
+            order = returnable.order,
+            lines = returnable.lines.map { line ->
+                ReturnableLine(
+                    line = line.line, name = line.name, leftText = line.leftText,
+                    leftCount = line.leftCount?.toLong(), anyLeft = line.anyLeft, charged = line.charged.text,
+                )
+            },
+            refunded = returnable.refunded.text,
+            cashOnly = returnable.cashOnly,
+        )
+    }
+
+    override fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund = call {
+        val picked = lines.map { KernelReturnLine(it.line, it.count?.toUInt()) }
+        val refunded = register.returnLines(order, picked, reason, null)
+        Refund(
+            amount = refunded.amount.text,
+            handed = refunded.handed.text,
+            lines = refunded.lines.map { "${it.quantityText} ${it.name}" to it.amount.text },
+        )
+    }
 
     override fun recall(order: String): Ticket = call { register.recall(order).toTicket() }
 
@@ -342,6 +380,7 @@ private fun KernelDrawer.toDrawer() = Drawer(
     paidIn = paidIn?.text,
     paidOut = paidOut?.text,
     dropped = dropped?.text,
+    refunded = refunded?.text,
     noSales = noSales.toLong(),
     expected = expected?.text,
     counted = counted?.text,

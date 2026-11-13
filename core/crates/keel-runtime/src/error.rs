@@ -74,6 +74,13 @@ pub enum RuntimeError {
     /// The drawer refused the change.
     #[error(transparent)]
     Drawer(#[from] keel_domain::drawer::DrawerError),
+    /// The order was paid in part by card: it is refunded to the card, which card refunds will
+    /// do (ADR-0032).
+    #[error("a card paid the order: it is refunded to the card, which isn't built yet")]
+    CardRefund,
+    /// The refund refused the change.
+    #[error(transparent)]
+    Refund(#[from] keel_domain::refund::RefundError),
     /// A discount takes more than is left of its line: it would take more as the line grew. Found
     /// in review (ADR-0030).
     #[error("only {left} is left to take off")]

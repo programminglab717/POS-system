@@ -27,8 +27,8 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use crate::error::KeelError;
 use crate::records::{
     Amount, CashMovement, CashPaid, Choice, DayReport, DrawerView, Item, Job, Member, Menu, Mode,
-    NewDevice, Outcome, PrintJob, Printer, RegisterConfig, ReportKind, Resolution, SyncKit,
-    SyncState, Ticket, Waits,
+    NewDevice, Outcome, PrintJob, Printer, Refunded, RegisterConfig, ReportKind, Resolution,
+    ReturnLine, Returnable, SyncKit, SyncState, Ticket, Waits,
 };
 
 /// The runtime as a device runs it: the system's clock and the operating system's randomness,
@@ -538,6 +538,67 @@ impl Register {
             runtime.close_drawer(counted)
         })
         .map(|view| (&view).into())
+    }
+
+    /// The closed orders whose receipt code, the last six characters of their identifier, is
+    /// `code`, whatever its case: the latest first (ADR-0032).
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read.
+    pub fn find_orders(&self, code: String) -> Result<Vec<String>, KeelError> {
+        self.with(|runtime| runtime.find_orders(&code))
+            .map(|orders| orders.iter().map(ToString::to_string).collect())
+    }
+
+    /// What is left to return of closed order `order` (ADR-0032).
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] for an identifier that isn't one; [`KeelError::UnknownOrder`]
+    /// if the register holds no such order.
+    pub fn returnable(&self, order: String) -> Result<Returnable, KeelError> {
+        let order = id(&order)?;
+        self.with(|runtime| runtime.returnable(order)).map(|returnable| (&returnable).into())
+    }
+
+    /// Returns `lines` of closed order `order`, for `reason`, with an optional `note`: each
+    /// refunded what was paid for it, in cash out of the drawer (ADR-0032). A line given no count
+    /// returns all that is left of it.
+    ///
+    /// # Errors
+    /// [`KeelError::ApprovalRequired`] if the member's role doesn't permit the refund;
+    /// [`KeelError::Refused`] for an order that isn't closed or that a card paid, or more of a
+    /// line than is left; [`KeelError::InvalidArgument`] for an identifier, a line or a reason
+    /// that isn't one.
+    pub fn return_lines(
+        &self,
+        order: String,
+        lines: Vec<ReturnLine>,
+        reason: String,
+        note: Option<String>,
+    ) -> Result<Refunded, KeelError> {
+        let order = id(&order)?;
+        let reason = self::reason(&reason, note)?;
+        let asked: Vec<(Id<keel_domain::order::Line>, Option<u32>)> = lines
+            .iter()
+            .map(|line| Ok((id(&line.line)?, line.count)))
+            .collect::<Result<_, KeelError>>()?;
+        self.with(|runtime| {
+            let returnable = runtime.returnable(order)?;
+            let mut quantities = Vec::with_capacity(asked.len());
+            for (line, count) in &asked {
+                let known = returnable.lines.iter().find(|known| known.line == *line);
+                let quantity = match (known, count) {
+                    (Some(known), None) => known.left,
+                    (Some(known), Some(count)) => {
+                        keel_types::Quantity::from_whole(i64::from(*count), known.quantity.unit())?
+                    }
+                    (None, _) => keel_types::Quantity::zero(keel_types::Unit::Each),
+                };
+                quantities.push((*line, quantity));
+            }
+            runtime.return_lines(order, &quantities, reason)
+        })
+        .map(|refunded| (&refunded).into())
     }
 
     /// The report of today's business day, or of `date` (`YYYY-MM-DD`) when given (ADR-0031).

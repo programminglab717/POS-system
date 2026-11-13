@@ -500,3 +500,49 @@ fn drawers_are_projected_and_found_by_device_and_date() {
     assert_eq!((summary.state, summary.info, summary.sums), (DrawerState::Unopened, None, None));
     assert_eq!(summary.conflicts, 1);
 }
+
+/// A refund's events are projected (ADR-0032): found by its order and by its business date.
+#[test]
+fn refunds_are_projected_and_found_by_order_and_date() {
+    use keel_domain::refund::{Refund, RefundCompleted, RefundEvent, RefundInitiated};
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let order = order_id();
+    let refund: Id<Refund> = id(0x8100);
+    let draft = |event: &RefundEvent| domain_draft(refund.cast(), event);
+    let initiated =
+        RefundEvent::Initiated(RefundInitiated { order, tender: Tender::Cash, amount: usd(708) });
+    let events = append(&mut store, vec![draft(&initiated)], at(0));
+    let summary = store.refund(refund).unwrap().unwrap();
+    assert_eq!(summary.state, RefundState::Initiated);
+    let info = summary.info.unwrap();
+    assert_eq!((info.order, info.tender, info.amount), (order, Tender::Cash, usd(708)));
+    assert_eq!(info.initiated_by, events[0].body().event_id);
+    assert_eq!(
+        (summary.completed, summary.business_date),
+        (None, Some("2026-09-28".parse().unwrap()))
+    );
+    // Paid back, with two cents of rounding.
+    let paid = RefundCompleted { amount: usd(708), rounding: Some(usd(2)) };
+    append(&mut store, vec![draft(&RefundEvent::Completed(paid))], at(1));
+    let summary = store.refund(refund).unwrap().unwrap();
+    assert_eq!((summary.state, summary.completed), (RefundState::Completed, Some(paid)));
+    assert_eq!(store.refunds_of(order).unwrap(), core::slice::from_ref(&summary));
+    assert!(store.refunds_of(id(0x7001)).unwrap().is_empty());
+    assert_eq!(
+        store.refunds_on("2026-09-28".parse().unwrap()).unwrap(),
+        core::slice::from_ref(&summary)
+    );
+    assert!(store.refunds_on("2026-09-29".parse().unwrap()).unwrap().is_empty());
+    store.rebuild_projections().unwrap();
+    assert_eq!(store.refund(refund).unwrap(), Some(summary));
+    // A completion before the start: unstarted, with a conflict.
+    let early: Id<Refund> = id(0x8101);
+    append(&mut store, vec![domain_draft(early.cast(), &RefundEvent::Completed(paid))], at(2));
+    let summary = store.refund(early).unwrap().unwrap();
+    assert_eq!(
+        (summary.state, summary.info, summary.completed),
+        (RefundState::Unstarted, None, None)
+    );
+    assert_eq!(summary.conflicts, 1);
+}

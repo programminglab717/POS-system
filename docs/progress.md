@@ -95,9 +95,9 @@ verified as it lands, then reviewed together:
 
 1. **The domain** (built 2026-11-13): `order.lines_returned`, the refund aggregate and
    `drawer.cash_refunded`, their folds and commands; the store's `drawers` projection's version 3.
-2. **The register**: the projections, the runtime's lookup, return and refund, the refund
-   receipt, the reports, the bindings. Next.
-3. **The shell**: the Android register's returns.
+2. **The register** (built 2026-11-13): the projections, the runtime's lookup, return and
+   refund, the refund receipt, the reports, the bindings.
+3. **The shell** (built 2026-11-13): the Android register's returns. Then the review: next.
 
 Waiting on CI's minutes: the Android app's instrumented tests, step 3's drawer test among them,
 and the three of step 2 the scrolling ticket pane should mend.
@@ -125,6 +125,33 @@ Built in slice 1:
     the drawer's models know refunds; the payload model knows the four schemas.
   - Planted bugs: 20 in `keel-domain` and 2 in `keel-store`; three re-aimed that reopening's
     refusal had moved.
+
+Built in slices 2 and 3:
+
+- **`keel-store`'s `refunds` projection**: a refund's order, tender, amount, state, business
+  date and completion, found by order and by date; rebuilt from the events, no new store schema.
+- **`keel-runtime`**: `find_orders` by the receipt's short code, closed orders only;
+  `returnable`, each live line with what is left of it and what it was charged; `return_lines`,
+  gated as `refund.issue` for what it refunds, refusing an order a card paid until card refunds
+  arrive, which records the return, the refund started and completed, the drawer's cash handed
+  back (rounded as the location rounds cash), the drawer's kick and the refund's receipt in one
+  write; a return that refunds nothing pays nothing back and opens no drawer. The drawer's close
+  and the day's reports list refunds; a day's reports list each tender's refunds, by the day each
+  was made, and the cash refunded with no drawer open.
+  - Known answers: three espressos returned one, then two, for $3.54 and $7.08, $10.62 in all,
+    each approved by a manager; $3.54 handed back as $3.55 where cash rounds to five cents; a free
+    line refunding nothing; an open order and an unknown one refused; a role refunding up to
+    $5.00; the day's refunds, one with no drawer.
+- **`keel-ffi`**: `find_orders`, `returnable`, `return_lines` (a count, or all that is left),
+  the reports' refunds, the drawer's; tested through the register.
+- **The Android register**: a paid order found by its receipt code, or from today's orders; a
+  return page picking each line, one at a time or whole for one sold by measure, a reason, the
+  refund, and what to hand back; refunds on the drawer page and the reports. Model test: a tea
+  returned once a manager approves, no more than is left. An instrumented test, for CI's
+  emulator: an espresso sold and returned.
+- **Verified**: `cargo fmt`, clippy with all features and none, the docs, every workspace test,
+  the wasm build, the planted bugs (9 more in `keel-runtime`, each caught), the Kotlin bindings'
+  tests, `:register:jvmTest`, `:kernel:testDebugUnitTest` and the app's builds.
 
 ## Completed
 
