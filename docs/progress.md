@@ -98,8 +98,20 @@ Step 6 was built in four slices, each ending with a review
 ## Current slice
 
 The MVP's step 7, card payments: a processor-agnostic connector, semi-integrated terminals, tips;
-built against a simulated terminal until gate G2 chooses the processor (I-01, I-02, I-05, I-07).
-Next: its design.
+built against a simulated terminal until gate G2 chooses the processor (I-01, I-02, I-05, I-07),
+and the card refunds returns left for it (I-08), designed in
+[ADR-0035](./adr/0035-card-payments.md) (proposed). Its slices:
+
+1. **The domain and the store**: `payment.captured` v2 (the card), `refund.initiated` v2 (the
+   payment refunded to) and `refund.failed`, their folds and commands; profile format 4 and its
+   tipping; the `payment.resolve` action; the payments and refunds projections at version 2.
+2. **The register**: the connector's requests and outcomes, the sale and refund effects, status
+   queries and resolving by hand, tips on the pre-tax subtotal, receipts and reports, a model
+   terminal's property test, the bindings.
+3. **The shell**: the Android register's card tender, tip prompt, waiting, partial and unknown
+   states, card refunds, the terminal setting, and a simulated terminal.
+
+Next: slice 1.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 6's among them, and the
 three of step 2 the scrolling ticket pane should mend.
