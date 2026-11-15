@@ -66,8 +66,9 @@ What is built shapes it:
      first, up to what the sale asked, and the rest is the tip, wherever it was chosen; once the
      check's payments cover it, it closes, its receipt prints, and what of it is pending fires
      to the kitchen, as a cash payment does;
-   - **approved in part**, for less than the sale asked: so captured, the tip dropped, and the
-     rest stays due, for any tender (I-07);
+   - **approved in part**, for less than the check's amount: so captured, with no tip, and the
+     rest stays due, for any tender (I-07); approved for less than the amount and the tip, but
+     more than the amount, the check is paid and the tip is what is left;
    - **declined**: failed, for its reason; the check can be paid again;
    - **unknown**: nothing is recorded; the payment stays unresolved, so the check takes no other
      payment, and the sale becomes a status query, asked after the outcome's wait, or 5 s,
@@ -101,7 +102,8 @@ What is built shapes it:
    preset's amount is that percentage of the payment's share of its check's pre-tax subtotal:
    `amount paid × the check's net ÷ its total`, rounded half up, so a check paid at once tips on
    its net. The register offers *No tip*, each preset as a percentage and an amount, and
-   *Custom*, alike. A tip is more than zero and no more than the amount it tips on. Where the
+   *Custom*, alike. A tip is more than zero and no more than the payment it rides on: a guard
+   against a slip. Where the
    terminal asks, the request carries the presets, and the tip is what the terminal says;
    where it can't ask, the register does. A profile with tipping is written as format 4; one
    without, byte for byte as before.
