@@ -112,7 +112,7 @@ fun RegisterScreen(model: RegisterModel) {
         state.voiding?.let { VoidDialog(it, model) }
         state.mark?.let { MarkDialog(it, state.error, model) }
         state.tender?.let { TenderDialog(it, model) }
-        state.card?.let { CardDialog(it, model) }
+        state.card?.let { CardDialog(it, state.error, model) }
         state.discount?.let { DiscountDialog(it, state.error, model) }
         state.price?.let { PriceDialog(it, state.error, model) }
         state.cash?.let { CashDialog(it, state.error, model) }
@@ -531,6 +531,11 @@ private fun DrawerPage(state: RegisterState, model: RegisterModel) {
             report.withoutDrawer?.let { (words, amount) -> ReportRow(words, amount) }
             for ((words, amount) in report.refunds) ReportRow(words, amount)
             report.refundedWithoutDrawer?.let { (words, amount) -> ReportRow(words, amount) }
+            report.cardRefundsOwed?.let { (words, amount) -> ReportRow(words, amount) }
+            if (report.tips.isNotEmpty()) {
+                Text("Tips", style = MaterialTheme.typography.titleSmall)
+                for ((who, amount) in report.tips) ReportRow(who, amount)
+            }
             // Each drawer of the day, with its over or short once counted. Found in review: only
             // the printed report had them.
             report.drawers.forEachIndexed { index, each ->
@@ -956,13 +961,15 @@ private fun TenderDialog(tender: Tender, model: RegisterModel) {
  * payment as the terminal answers it. A simulated terminal shows the customer's choices.
  */
 @Composable
-private fun CardDialog(sheet: CardSheet, model: RegisterModel) {
+private fun CardDialog(sheet: CardSheet, error: String?, model: RegisterModel) {
     val payment = sheet.payment
     AlertDialog(
         onDismissRequest = {},
         title = { Text((sheet.check?.let { "Check ${it.number}, card" } ?: "Card")) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Refusals show here, above the dialog's scrim. Found in review.
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("card:error")) }
                 when {
                     sheet.asksTip && sheet.custom -> CustomTip(sheet, model)
                     sheet.asksTip -> {
@@ -1059,7 +1066,8 @@ private fun CardPaymentState(payment: CardPayment, model: RegisterModel) {
         is CardState.Approved -> {
             val tip = state.tip?.let { " with a ${it.text} tip" }.orEmpty()
             val card = payment.card?.let { " on $it" }.orEmpty()
-            Text("Approved: ${state.applied.text}$tip$card", modifier = Modifier.testTag("card:approved"))
+            val how = if (state.byHand) ", settled by hand" else ""
+            Text("Approved: ${state.applied.text}$tip$card$how", modifier = Modifier.testTag("card:approved"))
             if (state.applied.minor < payment.amount.minor) {
                 Text("Approved in part: the rest is still due, by card or in cash.", color = MaterialTheme.colorScheme.error)
             }
@@ -1142,11 +1150,26 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
             TextButton(onClick = model::closeReturn, modifier = Modifier.testTag("back")) { Text("Back") }
         }
         val toCard = sheet.returnable.cards.firstOrNull { it.payment == sheet.toCard }
-        val refundable = sheet.returnable.cashOnly || toCard != null
-        if (toCard != null) {
-            Text("A card paid this order: it is refunded to ${toCard.card ?: "the card"}, up to ${toCard.left.text}.")
+        val cash = sheet.returnable.cashOnly || sheet.returnable.cashLeft != null
+        val refundable = cash || toCard != null
+        // Where it goes: cash, up to what the order took, or one of its cards (ADR-0035).
+        if (sheet.returnable.cards.isNotEmpty()) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (cash) {
+                    val left = sheet.returnable.cashLeft?.let { " (up to ${it.text})" }.orEmpty()
+                    FilterChip(selected = sheet.toCard == null, onClick = { model.refundTo(null) }, label = { Text("Cash$left") }, modifier = Modifier.testTag("refund-to:cash"))
+                }
+                for (card in sheet.returnable.cards) {
+                    FilterChip(
+                        selected = sheet.toCard == card.payment,
+                        onClick = { model.refundTo(card.payment) },
+                        label = { Text("${card.card ?: "Card"} (up to ${card.left.text})") },
+                        modifier = Modifier.testTag("refund-to:${card.payment}"),
+                    )
+                }
+            }
         } else if (!refundable) {
-            Text("A card settled by hand paid this order: it can't be refunded to the card.")
+            Text("This register can't refund this order: a payment of it isn't known here yet, or a card settled by hand paid it.")
         }
         val picking = refundable && !sheet.refunding
         for (line in sheet.returnable.lines) ReturnRow(line, sheet.picks[line.line], line.line in sheet.picks, picking, model)
@@ -1166,14 +1189,13 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
             onClick = model::confirmReturn,
             enabled = sheet.picks.isNotEmpty() && sheet.reason != null && refundable && !sheet.refunding,
             modifier = Modifier.fillMaxWidth().testTag("return:refund"),
-        ) { Text(if (toCard != null) "Refund to the card" else "Refund in cash") }
+        ) { Text(if (sheet.toCard != null) "Refund to the card" else "Refund in cash") }
         state.refund?.let { refund ->
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             for ((what, amount) in refund.lines) ReportRow(what, amount)
             ReportRow("Refunded", refund.amount, Modifier.testTag("return:amount"))
-            val card = refund.card
-            if (card != null) {
-                Text("Sent to $card: the terminal refunds it", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("return:card"))
+            if (refund.toCard) {
+                Text("Sent to ${refund.card ?: "the card"}: the terminal refunds it", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("return:card"))
             } else {
                 Text("Hand back ${refund.handed}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("return:handed"))
             }

@@ -576,9 +576,10 @@ impl Register {
     ///
     /// # Errors
     /// [`KeelError::ApprovalRequired`] if the member's role doesn't permit the refund;
-    /// [`KeelError::Refused`] for an order that isn't closed or that a card paid, or more of a
-    /// line than is left; [`KeelError::InvalidArgument`] for an identifier, a line or a reason
-    /// that isn't one.
+    /// [`KeelError::Refused`] for an order that isn't closed, more of a line than is left, or
+    /// more than is left to refund in cash, as for an order a card paid (refunded to the card
+    /// with `return_lines_to_card`); [`KeelError::InvalidArgument`] for an identifier, a line or
+    /// a reason that isn't one.
     pub fn return_lines(
         &self,
         order: String,
@@ -591,7 +592,9 @@ impl Register {
         let asked = asked_lines(&lines)?;
         self.with(|runtime| {
             let quantities = quantities(runtime, order, &asked)?;
-            runtime.return_lines(order, &quantities, reason)
+            // In cash, up to what the order took less its cash refunds, whatever else paid it
+            // (ADR-0035). Found in review: an order a card paid too couldn't be refunded in cash.
+            runtime.return_lines_to(order, &quantities, reason, keel_runtime::RefundTo::Cash)
         })
         .map(|refunded| (&refunded).into())
     }
@@ -713,6 +716,15 @@ impl Register {
             let currency = runtime.profile().data().currency;
             runtime.card_outcome(&key, outcome.of(currency))
         })
+    }
+
+    /// Takes back the card request the connector holds, as when its terminal stopped answering:
+    /// it is asked about later, never performed again (ADR-0035).
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be written.
+    pub fn release_card_request(&self) -> Result<(), KeelError> {
+        self.with(DeviceRuntime::release_card_request)
     }
 
     /// Settles by hand the card payment `payment`, which no terminal can answer for, on a

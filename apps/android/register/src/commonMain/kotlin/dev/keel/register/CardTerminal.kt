@@ -1,5 +1,6 @@
 package dev.keel.register
 
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -68,18 +69,29 @@ interface CardTerminal {
      */
     suspend fun take(request: TerminalRequest): TerminalOutcome
 
-    /** Asks it to stop waiting for the card: it answers the sale declined, `cancelled`, unless the card was read first. */
-    fun cancel()
+    /**
+     * Asks it to stop waiting for the card for the request with [key]: it answers that sale
+     * declined, `cancelled`, unless the card was read first. A request it doesn't hold is left
+     * alone. Found in review: a cancel with no key ended whatever the terminal held.
+     */
+    fun cancel(key: String)
 }
 
 /** What the simulated terminal does with the next request it is asked to perform. */
 enum class SimulatedAnswer { APPROVE, APPROVE_PART, DECLINE, NO_ANSWER }
 
+/** An answer given for the customer, or a cancel from the register. */
+private sealed interface Given {
+    data class Answer(val answer: SimulatedAnswer) : Given
+    data object Cancelled : Given
+}
+
 /**
  * A terminal in software, for demonstrations and tests until a processor is chosen (ADR-0035): it
  * keeps a ledger by key, so a status query answers truthfully, and never performs a key twice.
- * Each request it is asked to perform waits for [answer], as a customer at a terminal would,
- * unless [auto] answers it at once.
+ * Each sale it is asked to perform waits for [answer], as a customer at a terminal would,
+ * unless [auto] answers it at once; a refund, by reference, needs no customer, and is approved at
+ * once. Its ledger lasts as long as the process: after a restart it knows of nothing.
  */
 class SimulatedTerminal(
     override val asksTip: Boolean = true,
@@ -88,7 +100,14 @@ class SimulatedTerminal(
     private val auto: SimulatedAnswer? = null,
 ) : CardTerminal {
     private val ledger = mutableMapOf<String, TerminalOutcome>()
-    private var waiting: CompletableDeferred<SimulatedAnswer>? = null
+
+    /** The wait for the customer, written by the loop's thread and read by the screen's. */
+    @Volatile
+    private var waiting: Pair<String, CompletableDeferred<Given>>? = null
+
+    /** Sales cancelled before the terminal took them: cancelled as they come. */
+    @Volatile
+    private var cancelled: Set<String> = emptySet()
     private val asked = MutableStateFlow<TerminalRequest?>(null)
 
     /** The request waiting for the customer, for the screen to show it. */
@@ -96,34 +115,49 @@ class SimulatedTerminal(
 
     /** Answers the request waiting for the customer as [answer] says. */
     fun answer(answer: SimulatedAnswer) {
-        waiting?.complete(answer)
+        waiting?.second?.complete(Given.Answer(answer))
     }
 
-    override fun cancel() {
-        waiting?.cancel()
+    override fun cancel(key: String) {
+        val now = waiting
+        if (now != null && now.first == key) {
+            now.second.complete(Given.Cancelled)
+        } else {
+            // Not taken yet: cancelled as it comes. Found in review: a cancel before the loop
+            // took the sale was lost, and the sale went on.
+            cancelled = cancelled + key
+        }
     }
 
     override suspend fun take(request: TerminalRequest): TerminalOutcome {
         // Asked about it: the ledger says, and nothing is performed.
         if (request.status) return ledger[request.key] ?: TerminalOutcome.NotFound
         ledger[request.key]?.let { return it }
-        val answer = auto ?: run {
-            val wait = CompletableDeferred<SimulatedAnswer>()
-            waiting = wait
-            asked.value = request
-            try {
-                wait.await()
-            } catch (_: kotlinx.coroutines.CancellationException) {
-                // A cancel from the register ends the wait: the sale is declined, cancelled.
-                null
-            } finally {
-                waiting = null
-                asked.value = null
+        val early = request.key in cancelled
+        if (early) cancelled = cancelled - request.key
+        val answer = when {
+            early -> null
+            request.kind == TerminalRequest.Kind.REFUND -> SimulatedAnswer.APPROVE
+            auto != null -> auto
+            else -> {
+                val wait = CompletableDeferred<Given>()
+                waiting = request.key to wait
+                asked.value = request
+                // The loop's own cancellation passes on: it isn't the customer's.
+                val given = try {
+                    wait.await()
+                } finally {
+                    waiting = null
+                    asked.value = null
+                }
+                (given as? Given.Answer)?.answer
             }
         }
+        // Asked for the tip, the customer chooses the terminal's first preset.
+        val tip = request.presets.firstOrNull()?.let { (request.amountMinor * it + 5_000) / 10_000 } ?: 0
         val outcome = when (answer) {
             null -> TerminalOutcome.Declined("cancelled")
-            SimulatedAnswer.APPROVE -> approved(request.totalMinor)
+            SimulatedAnswer.APPROVE -> approved(request.totalMinor + tip)
             SimulatedAnswer.APPROVE_PART ->
                 if (request.partial && request.kind == TerminalRequest.Kind.SALE) {
                     approved((request.amountMinor / 2).coerceAtLeast(1))
@@ -133,7 +167,7 @@ class SimulatedTerminal(
             SimulatedAnswer.DECLINE -> TerminalOutcome.Declined("declined", "Declined by the simulated terminal")
             // The terminal charges, but the register never hears: it will ask.
             SimulatedAnswer.NO_ANSWER -> {
-                ledger[request.key] = approved(request.totalMinor)
+                ledger[request.key] = approved(request.totalMinor + tip)
                 return TerminalOutcome.Unknown
             }
         }

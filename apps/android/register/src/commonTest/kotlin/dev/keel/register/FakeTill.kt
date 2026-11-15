@@ -665,7 +665,7 @@ class FakeTill : Till {
         } else {
             emptyList()
         }
-        return Returnable(order, lines, money(refundedOf[order] ?: 0), cashOnly = order !in cardPaid, cards = cards)
+        return Returnable(order, lines, money(refundedOf[order] ?: 0), cashOnly = order !in cardPaid, cards = cards, cashLeft = if (order in cardPaid) null else amount(0))
     }
 
     override fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund {
@@ -701,7 +701,7 @@ class FakeTill : Till {
     /** Where the register asks for a tip, or null for none. */
     var tipping: TipPrompt? = TipPrompt.SCREEN
     val cardPays = mutableListOf<Pair<String, CardPayment>>()
-    private val cardApplied = mutableMapOf<String, Long>()
+    val cardApplied = mutableMapOf<String, Long>()
     private val cardTip = mutableMapOf<String, Long?>()
     val cardTips = mutableListOf<CardTip>()
     val cardRefunds = mutableListOf<OwedRefund>()
@@ -714,8 +714,12 @@ class FakeTill : Till {
 
     override fun payCard(order: String, check: String?, partMinor: Long?, tip: CardTip, partial: Boolean): Ticket {
         open(order)
-        if (cardPayments(order).any { it.state == CardState.Waiting || it.state == CardState.Checking }) {
+        // As the kernel's checkout: per check, and a tip no more than the payment.
+        if (cardPayments(order).any { it.check == (check ?: order) && (it.state == CardState.Waiting || it.state == CardState.Checking) }) {
             throw TillException("a payment on the check is unresolved")
+        }
+        if (tip is CardTip.Amount && (tip.minor <= 0 || tip.minor > (partMinor ?: due(order)))) {
+            throw TillException("the tip isn't one the register takes")
         }
         if (tip !is CardTip.None && tipping == null) throw TillException("the location doesn't take that tip")
         if (tip is CardTip.Terminal && tipping != TipPrompt.TERMINAL) throw TillException("the location doesn't take that tip")
@@ -752,6 +756,7 @@ class FakeTill : Till {
 
     override fun settleCard(payment: String, charged: Boolean): Ticket {
         val (order, now) = cardPays.first { it.second.payment == payment }
+        if (now.state == CardState.Waiting) throw TillException("the terminal has the payment: wait for its answer")
         if (now.state != CardState.Checking) throw TillException("not a card payment this register is waiting on")
         if (approvedBy == null) throw TillException("Settling a card payment needs a manager's approval.", approval = "payment.resolve")
         approvedBy = null
@@ -768,12 +773,18 @@ class FakeTill : Till {
     }
 
     override fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String): Refund {
-        if (order !in cardPaid) throw TillException("not a card payment of the order")
+        if (order !in cardPaid || payment != "card:$order") throw TillException("not a card payment of the order")
+        val left = (cardApplied[order] ?: 0) - (refundedOf[order] ?: 0)
+        val asked = lines.sumOf { pick ->
+            val line = orders.getValue(order).find { it.id == pick.line } ?: return@sumOf 0L
+            unitPrice(line) * (pick.count ?: (line.count.toLong() - (returned[line.id] ?: 0)))
+        }
+        if (asked > left) throw TillException("only ${money(left)} is left to refund that way")
         cardPaid -= order
         try {
             val refund = returnLines(order, lines, reason)
             cardRefunds += OwedRefund("refund:$order", order, amount(0), pending = true, failures = 0, failure = null)
-            return refund.copy(handed = money(0), card = "Visa •••• 4242")
+            return refund.copy(handed = money(0), card = "Visa •••• 4242", toCard = true)
         } finally {
             cardPaid += order
         }

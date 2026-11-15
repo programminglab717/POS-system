@@ -515,6 +515,10 @@ data class DayReport(
     val refunds: List<Pair<String, String>> = emptyList(),
     /** Cash refunded with no drawer open, if any: "Refunded with no drawer (1)" and how much. */
     val refundedWithoutDrawer: Pair<String, String>? = null,
+    /** The day's tips, by who took them (ADR-0035): "Alex (3)" and how much. */
+    val tips: List<Pair<String, String>> = emptyList(),
+    /** Card refunds still owed, if any: "Card refunds owed (1)" and how much. */
+    val cardRefundsOwed: Pair<String, String>? = null,
 )
 
 /** A paid order's lines, and what is left of each to return (ADR-0032). */
@@ -527,6 +531,8 @@ data class Returnable(
     val cashOnly: Boolean,
     /** Its card payments a return can go back to, by reference (ADR-0035). */
     val cards: List<RefundableCard> = emptyList(),
+    /** What is left to refund in cash; null if a payment of it isn't known here, or it took none. */
+    val cashLeft: Amount? = null,
 )
 
 /** A card payment a return can be refunded to, and what is left to refund to it. */
@@ -553,8 +559,10 @@ data class Refund(
     val handed: String,
     /** Each line returned: what and how much, and what it refunded. */
     val lines: List<Pair<String, String>>,
-    /** The card a card refund goes back to, as a receipt shows it; null for cash (ADR-0035). */
+    /** The card a card refund goes back to, as a receipt shows it, if the terminal said (ADR-0035). */
     val card: String? = null,
+    /** Whether it goes back to a card: found in review, it was told by the card's text. */
+    val toCard: Boolean = false,
 )
 
 /** Where a customer is asked for a tip (ADR-0035). */

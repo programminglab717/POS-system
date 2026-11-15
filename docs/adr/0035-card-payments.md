@@ -1,6 +1,6 @@
 # ADR-0035: Card payments: a sale through a semi-integrated terminal, as an effect, resolved before any retry
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-14
 
 ## Context
@@ -173,6 +173,52 @@ What is built shapes it:
 - Four new schema versions, a new schema and a profile format, which every replica's kernel
   must know before any device writes them.
 - Counter service only: a tip on the slip, after the card, waits for v1.
+
+## As built
+
+Built in three slices on 2026-11-15, each verified as it landed, then reviewed: the kernel and the
+Android shell each by a reviewer who hadn't built them. A property test runs sales through a
+model terminal that loses requests and replies across restarts, and finds no key charged twice
+and the store agreeing with the terminal's ledger. `approval.granted` gained a version 2, as
+decision 3 says, since version 1 never decoded `payment.resolve`. The register ships with the
+simulated terminal, whose customer's answers the card sheet gives, until G2 chooses a processor.
+What the review found, and what was done:
+
+- **An answer the kernel couldn't record froze every card request**: an approval whose card's
+  details weren't valid, or of nothing, was refused and left with the shell. What a payment
+  can't hold of an answer is dropped, never the answer; one that can't be at all is asked about
+  later. The shell can release a request, and the payment loop does when the terminal takes more
+  than three minutes, or the loop stops.
+- **An order a card settled by hand paid passed for cash**, and its return refunded nothing:
+  such an order isn't refunded at the register. A cash refund of an order a card paid too is
+  capped at the cash it took, and goes out of the drawer; one of an order cash paid alone is as
+  before.
+- **A request this kernel couldn't read was failed**, its payment blocked for good: it is left
+  for a manager to settle by hand. An outcome that fails to record is asked about after a wait,
+  not at once; a first attempt goes at once after the clock was set back. A card refund approved
+  short leaves the rest owed in the day's report.
+- **On the register**: closing the card sheet lost a payment still with the terminal, and Card
+  started another, refused: Card opens it again, where a manager settles it, and the ticket
+  follows it meanwhile; a second tap started a second payment; refreshes every second cleared
+  the error a cashier was reading, and the card sheet showed none; a cancel ended whatever the
+  terminal held, and one tapped before the terminal took the sale was lost; the simulated
+  terminal waited for a customer on a refund; a split check paid by card left its sheet open; a
+  return always went to the first card; the report dropped the day's tips. Each is fixed, most
+  with a model test.
+- **Tests the planted bugs asked for**: a card sale sends its lines to the kitchen; a refund to
+  a card is no more than is left of it and hands back no cash; a member's tips add up.
+
+Gaps that remain:
+
+- **A real connector**, and pairing a real terminal, wait for G2; the terminal is the device's
+  only by the app's choice, with no setting yet. The simulated terminal's ledger lasts as long
+  as the process.
+- **"Settled by hand" is inferred** from a capture with no card and no reference: a terminal
+  approval with neither reads so, and isn't refunded at the register.
+- **A card refund approved for more than asked** is recorded as asked: what moved beyond it isn't.
+- **Card refunds owed** are reported by the day they were started; a pending one shows no banner.
+- **The ticket** doesn't list a check's card payments: the card sheet does, opened again by Card.
+- **The Android register's instrumented test** waits for an emulator, as steps 3 to 6's do.
 
 ## Alternatives considered
 

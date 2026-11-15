@@ -305,6 +305,9 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
             },
             refundedWithoutDrawer = report.cashRefundedWithoutDrawer.takeIf { report.refundsWithoutDrawer > 0uL }
                 ?.let { "Refunded with no drawer (${report.refundsWithoutDrawer})" to it.text },
+            tips = report.tips.map { "${it.name ?: "No one"} (${it.payments})" to it.amount.text },
+            cardRefundsOwed = report.cardRefundsOwedAmount.takeIf { report.cardRefundsOwed > 0uL }
+                ?.let { "Card refunds owed (${report.cardRefundsOwed})" to it.text },
         )
     }
 
@@ -326,6 +329,7 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
             refunded = returnable.refunded.text,
             cashOnly = returnable.cashOnly,
             cards = returnable.cards.map { RefundableCard(it.payment, it.card, it.left.toAmount()) },
+            cashLeft = returnable.cashLeft?.toAmount()?.takeIf { it.minor > 0 },
         )
     }
 
@@ -337,6 +341,7 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
             handed = refunded.handed.text,
             lines = refunded.lines.map { "${it.quantityText} ${it.name}" to it.amount.text },
             card = refunded.card,
+            toCard = true,
         )
     }
 

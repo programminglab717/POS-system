@@ -207,6 +207,11 @@ data class RegisterState(
     val card: CardSheet? = null,
     /** The card refunds this register owes, whose latest attempt failed, as last read. */
     val owedRefunds: List<OwedRefund> = emptyList(),
+    /**
+     * The order whose card payment still waits for the terminal, or is checked, after its sheet
+     * closed: its ticket follows the payment until it is answered. Found in review.
+     */
+    val watching: String? = null,
     /** The discount sheet open for the order or one of its lines, if any. */
     val discount: DiscountSheet? = null,
     /** The price sheet open for a line, if any. */
@@ -967,10 +972,24 @@ class RegisterModel(
      * sale goes to the terminal at once, asking it for the tip where the location says.
      */
     fun openCard(check: TicketCheck? = null) = perform {
+        // A second tap while one opens does nothing. Found in review: it lost the first payment.
+        if (current.card != null) return@perform
         val ticket = current.ticket ?: return@perform
         val terminal = terminal ?: throw TillException("This register has no card terminal.")
         val now = check?.let { drawn -> ticket.checks.firstOrNull { it.check == drawn.check } }
         if (check != null && (now == null || !now.open)) return@perform
+        // A payment still with the terminal, or checked, is opened again, never started anew: the
+        // check takes no other payment until it is answered, or settled by hand. Found in review:
+        // a sheet closed lost it, and nothing could settle it.
+        val unresolved = till.cardPayments(ticket.order).lastOrNull { payment ->
+            (now == null || payment.check == now.check) &&
+                (payment.state == CardState.Waiting || payment.state == CardState.Checking)
+        }
+        if (unresolved != null) {
+            val sheet = CardSheet(ticket.order, now, TipOffers(null, unresolved.amount, emptyList()), payment = unresolved)
+            mutable.update { it.copy(card = sheet, tender = null, watching = null) }
+            return@perform
+        }
         val offers = till.tipOffers(ticket.order, now?.check, null)
         // A terminal that can't ask leaves the tip to the register's screen.
         val onScreen = offers.prompt == TipPrompt.SCREEN || (offers.prompt == TipPrompt.TERMINAL && !terminal.asksTip)
@@ -993,7 +1012,8 @@ class RegisterModel(
         val sheet = current.card ?: return@perform
         val typed = (sheet.typed?.minor ?: 0) * 10 + digit.coerceIn(0, 9)
         if (typed > MAX_TYPED) return@perform
-        val amount = till.amount(typed)
+        // A tip of nothing is no tip: found in review, "Add $0.00" was offered.
+        val amount = if (typed == 0L) null else till.amount(typed)
         mutable.update { state -> state.copy(card = state.card?.copy(typed = amount)) }
     }
 
@@ -1022,22 +1042,53 @@ class RegisterModel(
         }
     }
 
+    /** Whether a card read is running: one at a time, so ticks don't pile up on the worker. */
+    private var cardReading = false
+
     /**
      * Reads where the card payment open stands, as the terminal answers it: once approved for
-     * all its check owes, the order or the check is paid, and the sheet closes; approved in part,
-     * the rest is due, for any tender; declined, it can be tried again.
+     * all its check owes, the check is paid, and the sheet closes; approved in part, the rest is
+     * due, for any tender; declined, it can be tried again. With the sheet closed on a payment
+     * still unanswered, the ticket follows it. Silent, and one read at a time, as the kitchen's:
+     * found in review, a tick every second cleared the error a cashier was reading.
      */
-    fun refreshCard() = perform {
-        val sheet = current.card ?: return@perform
-        val started = sheet.payment ?: return@perform
-        val payment = till.cardPayments(sheet.order).firstOrNull { it.payment == started.payment } ?: return@perform
-        if (payment == started) return@perform
+    fun refreshCard() = scope.launch {
+        if (cardReading) return@launch
+        val order = current.card?.order ?: current.watching ?: return@launch
+        cardReading = true
+        try {
+            withContext(worker) { readCard(order) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Read again at the next tick.
+        } finally {
+            cardReading = false
+        }
+    }
+
+    private fun readCard(order: String) {
+        val sheet = current.card
+        if (sheet == null) {
+            val pending = till.cardPayments(order).any { it.state == CardState.Waiting || it.state == CardState.Checking }
+            val ticket = till.ticket(order)
+            mutable.update { state ->
+                val shown = if (state.ticket?.order == order) ticket.takeIf { it.state == OrderState.OPEN } else state.ticket
+                state.copy(ticket = shown, watching = if (pending && state.watching == order) order else null)
+            }
+            return
+        }
+        val started = sheet.payment ?: return
+        val payment = till.cardPayments(sheet.order).firstOrNull { it.payment == started.payment } ?: return
+        if (payment == started) return
         val ticket = till.ticket(sheet.order)
-        val paid = payment.state is CardState.Approved && ticket.state != OrderState.OPEN
+        // Paid is its check paid, for a split order: found in review, the order's state was read.
+        val checkPaid = sheet.check?.let { check -> ticket.checks.firstOrNull { it.check == check.check }?.open == false }
+        val paid = payment.state is CardState.Approved && (checkPaid ?: (ticket.state != OrderState.OPEN))
         mutable.update { state ->
             when {
                 state.card?.payment?.payment != payment.payment -> state
-                paid -> state.copy(ticket = null, card = null, change = null)
+                paid -> state.copy(ticket = ticket.takeIf { it.state == OrderState.OPEN }, card = null, change = null)
                 else -> state.copy(ticket = ticket, card = state.card.copy(payment = payment))
             }
         }
@@ -1045,7 +1096,9 @@ class RegisterModel(
 
     /** Asks the terminal to stop waiting for the card: it answers declined, unless the card was read. */
     fun cancelCard() {
-        terminal?.cancel()
+        val payment = current.card?.payment ?: return
+        // This payment's sale alone: the terminal may hold another request. Found in review.
+        terminal?.cancel(payment.payment)
     }
 
     /** Another card, after a decline or for what a partial approval left: the tips are offered afresh. */
@@ -1076,13 +1129,32 @@ class RegisterModel(
         perform(retryAs = retry) { retry() }
     }
 
-    /** Closes the card sheet: a payment still waiting goes on at the terminal, and blocks its check. */
-    fun closeCard() = mutable.update { it.copy(card = null) }
+    /**
+     * Closes the card sheet: a payment still waiting goes on at the terminal, and blocks its
+     * check, its ticket following it until it is answered; Card opens it again.
+     */
+    fun closeCard() = mutable.update { state ->
+        val payment = state.card?.payment
+        val pending = payment != null && (payment.state == CardState.Waiting || payment.state == CardState.Checking)
+        state.copy(card = null, watching = if (pending) state.card?.order else null)
+    }
 
-    /** Reads the card refunds this register owes whose latest attempt failed. */
-    fun refreshOwedRefunds() = perform {
-        val owed = till.owedCardRefunds().filter { it.failures > 0 && !it.pending }
-        if (owed != current.owedRefunds) mutable.update { it.copy(owedRefunds = owed) }
+    private var refundsReading = false
+
+    /** Reads the card refunds this register owes whose latest attempt failed: silently, one read at a time. */
+    fun refreshOwedRefunds() = scope.launch {
+        if (refundsReading) return@launch
+        refundsReading = true
+        try {
+            val owed = withContext(worker) { till.owedCardRefunds() }.filter { it.failures > 0 && !it.pending }
+            if (owed != current.owedRefunds) mutable.update { it.copy(owedRefunds = owed) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Read again at the next tick.
+        } finally {
+            refundsReading = false
+        }
     }
 
     /** Tries again a card refund whose latest attempt failed: `refund.issue`, approved if need be. */
@@ -1255,8 +1327,8 @@ class RegisterModel(
     /** Picks one more of [line] to return, up to what is left; a line sold by measure, whole. */
     fun pickMore(line: ReturnableLine) = mutable.update { state ->
         val sheet = state.returning ?: return@update state
-        // Cash for an order cash paid alone; a card's for one a card paid (ADR-0035).
-        val refundable = sheet.returnable.cashOnly || sheet.returnable.cards.isNotEmpty()
+        // Cash for an order that took some; a card's for one a card paid (ADR-0035).
+        val refundable = sheet.returnable.cashOnly || sheet.returnable.cashLeft != null || sheet.returnable.cards.isNotEmpty()
         if (!line.anyLeft || sheet.refunding || !refundable) return@update state
         val left = line.leftCount
         val picks = if (left == null) {
@@ -1275,6 +1347,16 @@ class RegisterModel(
         val now = sheet.picks[line.line]
         val picks = if (now == null || now <= 1) sheet.picks - line.line else sheet.picks + (line.line to now - 1)
         state.copy(returning = sheet.copy(picks = picks))
+    }
+
+    /**
+     * Where the refund goes: a card payment of the order, or cash when [payment] is null, up to
+     * what is left of each (ADR-0035). Found in review: it always went to the first card.
+     */
+    fun refundTo(payment: String?) = mutable.update { state ->
+        val sheet = state.returning ?: return@update state
+        if (sheet.refunding) return@update state
+        state.copy(returning = sheet.copy(toCard = payment), error = null)
     }
 
     /** Why the lines are returned. */

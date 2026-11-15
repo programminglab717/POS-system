@@ -40,6 +40,6 @@ supersedes the old one.
 | [0032](./0032-returns-and-refunds.md) | Returns and refunds: lines returned on the original order, refunds as their own aggregate, never beyond what was paid | Accepted |
 | [0033](./0033-availability.md) | Availability: an 86 as an event per item, the latest by HLC winning, in-store within 10 s | Accepted |
 | [0034](./0034-the-kitchen.md) | The kitchen: tickets per station, routed by the profile, shown on a KDS and printed when it isn't | Accepted |
-| [0035](./0035-card-payments.md) | Card payments: a sale through a semi-integrated terminal, as an effect, resolved before any retry | Proposed |
+| [0035](./0035-card-payments.md) | Card payments: a sale through a semi-integrated terminal, as an effect, resolved before any retry | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

@@ -97,10 +97,19 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
+The MVP's step 8, inventory: the movement ledger (K-01). Next: its design.
+
+Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
+three of step 2 the scrolling ticket pane should mend.
+
+## Completed
+
+### Card payments: MVP step 7 (2026-11-15)
+
 The MVP's step 7, card payments: a processor-agnostic connector, semi-integrated terminals, tips;
 built against a simulated terminal until gate G2 chooses the processor (I-01, I-02, I-05, I-07),
 and the card refunds returns left for it (I-08), designed in
-[ADR-0035](./adr/0035-card-payments.md) (proposed). Its slices:
+[ADR-0035](./adr/0035-card-payments.md), accepted after its review. Its slices:
 
 1. **The domain and the store**: `payment.captured` v2 (the card), `refund.initiated` v2 (the
    payment refunded to) and `refund.failed`, their folds and commands; profile format 4 and its
@@ -128,13 +137,9 @@ banner for failed card refunds, the payment loop beside the print loop, and a si
 whose answers the screen gives for the customer. Verified: every kernel test, the ignored sweeps
 included; both clippy runs; the docs; the wasm build; the Kotlin bindings' tests; the register's
 63 model tests and the Android build, its instrumented test assembled (not run: no emulator).
-The kernel review's findings are fixed (below, in the ADR's As built, once the Android review is
-in). Next: the Android review, then acceptance.
-
-Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 6's among them, and the
-three of step 2 the scrolling ticket pane should mend.
-
-## Completed
+Both reviews' findings are fixed, as the ADR's As built records, each kernel fix with a test and
+a planted bug (51 more in the runtime and the bindings, all caught), and the register's with
+model tests; the gaps that remain are there too.
 
 ### The kitchen: MVP step 6 (2026-11-13)
 

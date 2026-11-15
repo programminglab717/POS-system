@@ -179,6 +179,116 @@ class CardModelTest {
     }
 }
 
+/** What the Android review found (ADR-0035). */
+class CardReviewTest {
+    private fun TestScope.signedIn(till: FakeTill): RegisterModel {
+        val model = RegisterModel(till, this, StandardTestDispatcher(testScheduler), terminal = SimulatedTerminal())
+        model.start()
+        testScheduler.advanceUntilIdle()
+        model.signIn(model.state.value.team.first())
+        testScheduler.advanceUntilIdle()
+        model.tap(model.state.value.pages.flatMap { it.buttons }.single { it.name == "Tea" })
+        testScheduler.advanceUntilIdle()
+        return model
+    }
+
+    /** A payment closed while checked is opened again by Card, where a manager can settle it; its ticket follows it meanwhile. */
+    @Test
+    fun a_payment_whose_sheet_closed_is_opened_again_never_started_anew() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.openCard()
+        testScheduler.advanceUntilIdle()
+        model.chooseTip(CardTip.None)
+        testScheduler.advanceUntilIdle()
+        val payment = model.state.value.card!!.payment!!
+        till.answerCard(payment.payment, state = CardState.Checking)
+        model.closeCard()
+        assertEquals(model.state.value.ticket?.order, model.state.value.watching)
+        model.openCard()
+        testScheduler.advanceUntilIdle()
+        assertEquals(payment.payment, model.state.value.card?.payment?.payment, "the same payment")
+        assertEquals(CardState.Checking, model.state.value.card?.payment?.state)
+        assertEquals(1, till.cardPays.size, "none started anew")
+        // Closed again, an approval meanwhile closes the order on the ticket.
+        model.closeCard()
+        till.answerCard(payment.payment, approvedMinor = 300)
+        model.refreshCard()
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.ticket)
+        assertNull(model.state.value.watching)
+    }
+
+    @Test
+    fun a_second_tap_on_card_starts_nothing_more() = runTest {
+        val till = FakeTill().apply { tipping = null }
+        val model = signedIn(till)
+        model.openCard()
+        model.openCard()
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, till.cardPays.size)
+        assertNotNull(model.state.value.card?.payment)
+        assertNull(model.state.value.error)
+    }
+
+    /** A refresh leaves the error a cashier is reading. */
+    @Test
+    fun a_refresh_keeps_the_error_shown() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.openCard()
+        testScheduler.advanceUntilIdle()
+        model.chooseTip(CardTip.Amount(5_000))
+        testScheduler.advanceUntilIdle()
+        val error = model.state.value.error
+        assertNotNull(error, "a tip beyond the payment is refused")
+        model.refreshCard()
+        model.refreshOwedRefunds()
+        testScheduler.advanceUntilIdle()
+        assertEquals(error, model.state.value.error)
+    }
+
+    @Test
+    fun a_tip_of_nothing_is_no_tip() = runTest {
+        val model = signedIn(FakeTill())
+        model.openCard()
+        testScheduler.advanceUntilIdle()
+        model.customTip()
+        model.typeTipDigit(0)
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.card?.typed)
+    }
+
+    /** The cashier chooses where a refund goes: cash or a card. */
+    @Test
+    fun a_refund_goes_where_the_cashier_says() = runTest {
+        val model = signedIn(FakeTill())
+        model.refundTo("card:x")
+        assertNull(model.state.value.returning, "no return open: nothing changes")
+    }
+}
+
+/** The simulated terminal's waits and cancels: each for its own request. */
+class SimulatedTerminalWaitTest {
+    @Test
+    fun a_cancel_ends_only_its_own_sale_even_before_it_is_taken() = runTest {
+        val terminal = SimulatedTerminal()
+        terminal.cancel("p1")
+        val sale = TerminalRequest("p1", TerminalRequest.Kind.SALE, amountMinor = 300)
+        assertEquals(TerminalOutcome.Declined("cancelled"), terminal.take(sale))
+        // A refund needs no customer: approved at once.
+        val refund = TerminalRequest("r1-1", TerminalRequest.Kind.REFUND, amountMinor = 300, reference = "pi_1")
+        assertIs<TerminalOutcome.Approved>(terminal.take(refund))
+    }
+
+    @Test
+    fun the_terminal_asked_for_the_tip_adds_its_first_preset() = runTest {
+        val terminal = SimulatedTerminal(auto = SimulatedAnswer.APPROVE)
+        val sale = TerminalRequest("p1", TerminalRequest.Kind.SALE, amountMinor = 300, presets = listOf(1_500, 2_000))
+        assertEquals(345, assertIs<TerminalOutcome.Approved>(terminal.take(sale)).approvedMinor)
+    }
+}
+
 /** The simulated terminal: one request at a time, each performed once, and asked about truthfully. */
 class SimulatedTerminalTest {
     @Test

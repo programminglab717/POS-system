@@ -14,7 +14,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -29,6 +31,8 @@ class PaymentLoop(
     private val kernel: CoroutineDispatcher,
     private val terminal: CardTerminal,
     private val idle: Duration = 1.seconds,
+    /** How long the terminal may take: beyond it, its request is released, to be asked about. */
+    private val patience: Duration = 3.minutes,
 ) {
     /** Runs until cancelled: call it on a thread that may block, such as `Dispatchers.IO`. */
     suspend fun run() {
@@ -45,8 +49,17 @@ class PaymentLoop(
                 continue
             }
             val outcome = try {
-                terminal.take(request.toTerminal()).toKernel()
+                // A terminal that hangs holds up no other request: its own is released, asked
+                // about later, and can be settled by hand. Found in review.
+                withTimeoutOrNull(patience) { terminal.take(request.toTerminal()).toKernel() } ?: run {
+                    terminal.cancel(request.key)
+                    CardOutcome.Unknown(null)
+                }
             } catch (cancelled: CancellationException) {
+                // The loop stopping hands the request back: in doubt, asked about when it starts again.
+                withContext(kotlinx.coroutines.NonCancellable + kernel) {
+                    runCatching { register.releaseCardRequest() }
+                }
                 throw cancelled
             } catch (_: Exception) {
                 // What the terminal did is unknown: the kernel asks it later, and never sends it again.

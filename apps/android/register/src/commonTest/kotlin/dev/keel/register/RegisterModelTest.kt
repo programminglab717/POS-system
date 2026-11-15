@@ -980,7 +980,10 @@ class RegisterModelTest {
     /** An order a card paid is refunded to its card, by reference, not in cash (ADR-0035). */
     @Test
     fun an_order_a_card_paid_is_refunded_to_its_card() = runTest {
-        val till = FakeTill().apply { cardPaid += "order1" }
+        val till = FakeTill().apply {
+            cardPaid += "order1"
+            cardApplied["order1"] = 10_000
+        }
         val model = returning(till)
         val sheet = model.state.value.returning!!
         assertEquals(false, sheet.returnable.cashOnly)
