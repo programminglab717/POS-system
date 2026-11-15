@@ -100,16 +100,14 @@ BUGS = [
     (
         "runtime: a cash payment captures what is due after rounding",
         "src/runtime.rs",
-        """                let captured = PaymentCaptured {
-                    amount: applied,""",
-        """                let captured = PaymentCaptured {
-                    amount: cash.due,""",
+        "                let captured = in_cash(applied, tendered, cash.rounding);",
+        "                let captured = in_cash(cash.due, tendered, cash.rounding);",
     ),
     (
         "runtime: a cash payment records no rounding",
         "src/runtime.rs",
-        """                        rounding: (!cash.rounding.is_zero()).then_some(cash.rounding),""",
-        """                        rounding: None,""",
+        "    let rounding = (!rounding.is_zero()).then_some(rounding);\n    let cash = Some(CashTendered { tendered, rounding });",
+        "    let rounding = None::<Money>.filter(|_| !rounding.is_zero());\n    let cash = Some(CashTendered { tendered, rounding });",
         # Caught when cash rounds down: the cash tendered is then less than the payment's amount.
     ),
     (
@@ -757,8 +755,8 @@ BUGS = [
     (
         "split: a part closes the check",
         "src/runtime.rs",
-        "            if checkout.balance(check)?.due.is_positive() {",
-        "            if false {",
+        "    if checkout.balance(check)?.due.is_positive() {",
+        "    if false {",
     ),
     # Park and recall (ADR-0030).
     (
@@ -847,8 +845,8 @@ BUGS = [
     (
         "review: pay_cash pays the main check",
         "src/runtime.rs",
-        "            [only] => *only,",
-        "            [_] => order.cast(),",
+        "            [only] => Ok(*only),",
+        "            [_] => Ok(order.cast()),",
     ),
     (
         "review: a ticket lists no lone check but the main",
@@ -993,14 +991,14 @@ BUGS = [
     (
         "return: the cash handed back isn't rounded",
         "src/returns.rs",
-        "        let rounded = cash_due(&self.profile, owed)?.due;",
-        "        let rounded = owed;",
+        "    let rounded = cash_due(profile, cash_owed)?.due;",
+        "    let rounded = cash_owed;",
     ),
     (
         "return: cash is rounded return by return",
         "src/returns.rs",
-        "        let handed = most.checked_sub(handed_before)?;",
-        "        let handed = cash_due(&self.profile, total)?.due;\n        let _ = (most, handed_before);",
+        "    let handed = most.checked_sub(sums.handed)?;",
+        "    let handed = cash_due(profile, total)?.due;\n    let _ = most;",
     ),
     (
         "return: a return split in parts passes the role's limit",
@@ -1284,5 +1282,120 @@ BUGS = [
         "src/kitchen.rs",
         "    let loaded = w.load(Order::new(firing.order))?;",
         "    if firing.tickets.is_empty() {\n        return Ok(());\n    }\n    let loaded = w.load(Order::new(firing.order))?;",
+    ),
+    # Card payments (ADR-0035).
+    (
+        "card: a request started before is sent again",
+        "src/card.rs",
+        "CardRequest { key: key_of(&read.ask), ask: read.ask, status: started.attempts > 1 };",
+        "CardRequest { key: key_of(&read.ask), ask: read.ask, status: started.attempts > 99 };",
+    ),
+    (
+        "card: a request in doubt isn't asked about",
+        "src/card.rs",
+        "                EffectState::Running => self.store.write(|w| w.retry(&key, now))?,",
+        "                EffectState::Running if self.charging.is_some() => self.store.write(|w| w.retry(&key, now))?,",
+    ),
+    (
+        "card: a second request goes out while the shell has one",
+        "src/card.rs",
+        "        if self.charging.is_some() {\n            return Ok(None);\n        }\n        let now = self.clock.now();\n        // A request due far",
+        "        let now = self.clock.now();\n        // A request due far",
+    ),
+    (
+        "card: an unknown outcome is asked about at once",
+        "src/card.rs",
+        "            let due = print::after(self.clock.now(), wait)?;",
+        "            let due = print::after(self.clock.now(), wait.min(Duration::ZERO))?;",
+    ),
+    (
+        "card: an approval beyond what was asked is applied whole",
+        "src/card.rs",
+        "                    if approved.compare(info.amount)?.is_gt() { info.amount } else { approved };\n                let tip = approved",
+        "                    approved;\n                let tip = approved",
+    ),
+    (
+        "card: a sale approved doesn't settle its check",
+        "src/card.rs",
+        "            settle(w, &closing, &paid, meta, profile, locale)?;\n            Ok(())",
+        "            let _ = (&closing, &paid, profile, locale);\n            Ok(())",
+    ),
+    (
+        "card: a sale approved fires nothing to the kitchen",
+        "src/card.rs",
+        "            if let Some(firing) = &firing {\n                crate::kitchen::write_firing(w, firing, location, device, meta)?;\n            }",
+        "            let _ = &firing;",
+    ),
+    (
+        "card: a payment settled by hand loses its tip",
+        "src/card.rs",
+        "                amount: info.amount,\n                tip,\n                reference: None,",
+        "                amount: info.amount,\n                tip: tip.filter(|_| false),\n                reference: None,",
+    ),
+    (
+        "card: settling by hand needs no manager",
+        "src/card.rs",
+        "        let granted = self.gate(Request::of(Action::PaymentResolve), Some(payment.cast()))?;",
+        "        let granted = self.gate(Request::of(Action::ReceiptReprint), Some(payment.cast()))?;",
+    ),
+    (
+        "card: a tip beyond what it tips on is taken",
+        "src/card.rs",
+        "                    || tip.compare(amount).is_ok_and(core::cmp::Ordering::is_gt)",
+        "                    || tip.compare(amount).is_ok_and(|_| false)",
+    ),
+    (
+        "card: the terminal asks for the tip where the register does",
+        "src/card.rs",
+        "                Some(tipping) if tipping.prompt == TipPrompt::Terminal => {",
+        "                Some(tipping) => {",
+    ),
+    (
+        "tips: a preset is a percentage of the total, tax included",
+        "src/card.rs",
+        "        let base = share(paying, shown.subtotal.money.minor(), shown.total.money.minor())",
+        "        let base = share(paying, shown.total.money.minor(), shown.total.money.minor())",
+    ),
+    (
+        "tips: a preset's amount rounds down",
+        "src/card.rs",
+        "    let rounded = product.checked_add(denominator / 2)?.checked_div(denominator)?;",
+        "    let rounded = product.checked_div(denominator)?;",
+    ),
+    (
+        "refund: a card refund takes more than is left of it",
+        "src/returns.rs",
+        "            Some((card, _)) => Some(card.left.money),",
+        "            Some((_, _)) => None,",
+    ),
+    (
+        "refund: what is left of a card counts its tip",
+        "src/returns.rs",
+        "                    let mut left = captured.amount;",
+        "                    let mut left = captured.amount.checked_add(captured.tip.unwrap_or(Money::zero(captured.amount.currency())))?;",
+    ),
+    (
+        "refund: a card refund declined prints its receipt",
+        "src/card.rs",
+        "            if let Some(doc) = receipt.filter(|_| completes) {",
+        "            if let Some(doc) = receipt {\n                let _ = completes;",
+    ),
+    (
+        "refund: a card refund is tried again as its failed attempt",
+        "src/card.rs",
+        "        let attempt = failures.saturating_add(1);",
+        "        let attempt = failures;",
+    ),
+    (
+        "refund: a card refund hands back cash",
+        "src/returns.rs",
+        "        let handed = if card.is_some() {\n            Money::zero(total.currency())\n        } else {",
+        "        let handed = if card.is_some() && card.is_none() {\n            Money::zero(total.currency())\n        } else {",
+    ),
+    (
+        "report: tips aren't by who took them",
+        "src/report.rs",
+        "            match tips.iter_mut().find(|(member, _, _)| *member == payment.member) {",
+        "            match tips.iter_mut().find(|(member, _, _)| *member == payment.member.filter(|_| false)) {",
     ),
 ]

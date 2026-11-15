@@ -203,6 +203,7 @@ fn authorize(amount: i64) -> PaymentCommand {
 
 fn capture(amount: i64, tip: Option<i64>) -> PaymentCommand {
     PaymentCommand::Capture(PaymentCaptured {
+        card: None,
         amount: usd(amount),
         tip: tip.map(usd),
         reference: None,
@@ -212,6 +213,7 @@ fn capture(amount: i64, tip: Option<i64>) -> PaymentCommand {
 
 fn in_cash(amount: i64, tendered: i64) -> PaymentCommand {
     PaymentCommand::Capture(PaymentCaptured {
+        card: None,
         amount: usd(amount),
         tip: None,
         reference: None,

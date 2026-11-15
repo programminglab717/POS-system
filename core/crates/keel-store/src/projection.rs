@@ -24,7 +24,7 @@ use keel_domain::order::{Channel, Lease, Mode, Order, OrderInfo, OrderStatus, Ow
 use keel_domain::payment::{Payment, PaymentInfo, PaymentStatus, Tender};
 use keel_domain::schema::DomainEvent;
 use keel_domain::sequence::{self, SequenceEvent};
-use keel_events::envelope::{self, Event, StreamRef};
+use keel_events::envelope::{self, Event, StreamRef, TeamMember};
 use keel_events::event::SignedEvent;
 use keel_types::{BusinessDate, Currency, Hlc, Id, Money};
 use rusqlite::types::Value;
@@ -452,7 +452,7 @@ fn read_order(values: &[Value]) -> Result<OrderSummary, StoreError> {
 
 const PAYMENTS: Projection = Projection {
     name: "payments",
-    version: 1,
+    version: 2,
     kind: "payment",
     key: "payment_id",
     order: "payment_id",
@@ -475,7 +475,8 @@ const PAYMENTS: Projection = Projection {
             unreadable INTEGER NOT NULL,
             events INTEGER NOT NULL,
             first_hlc BLOB NOT NULL CHECK (length(first_hlc) = 8),
-            last_hlc BLOB NOT NULL CHECK (length(last_hlc) = 8)
+            last_hlc BLOB NOT NULL CHECK (length(last_hlc) = 8),
+            member BLOB CHECK (member IS NULL OR length(member) = 16)
         ) STRICT;
         CREATE INDEX payments_by_order ON payments (order_id, first_hlc, payment_id);
     ",
@@ -557,6 +558,9 @@ pub struct PaymentSummary {
     pub captured: Option<Money>,
     /// Once captured: the tip on top, if any.
     pub tip: Option<Money>,
+    /// The team member who took it: who initiated it, unless the system did (version 2, for
+    /// tips by member: ADR-0035).
+    pub member: Option<Id<TeamMember>>,
     /// The conflicts in its history, for a person to look at.
     pub conflicts: u64,
     /// Its events this kernel couldn't read: a newer kernel wrote them.
@@ -584,8 +588,8 @@ fn project_payment(
     db.execute(
         "INSERT OR REPLACE INTO payments (payment_id, state, location, order_id, check_id, tender, \
          amount, currency, initiated_by, business_date, captured, tip, conflicts, unreadable, \
-         events, first_hlc, last_hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
-         ?12, ?13, ?14, ?15, ?16, ?17)",
+         events, first_hlc, last_hlc, member) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
+         ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             &payment.id().to_bytes()[..],
             PaymentState::of(&payment).code(),
@@ -604,21 +608,31 @@ fn project_payment(
             span.events,
             &span.first[..],
             &span.last[..],
+            bytes(info.and_then(|info| member_of(events, info.initiated_by))),
         ],
     )?;
     Ok(())
 }
 
+/// The team member who recorded `event`, if a member did.
+fn member_of(events: &[SignedEvent], event: Id<Event>) -> Option<Id<TeamMember>> {
+    let stored = events.iter().find(|stored| stored.body().event_id == event)?;
+    match stored.body().actor {
+        envelope::Actor::TeamMember(member) => Some(member),
+        _ => None,
+    }
+}
+
 /// The columns a payment summary is read from, in order.
 pub(crate) const PAYMENT_COLUMNS: &str = "payment_id, state, location, order_id, check_id, \
     tender, amount, currency, initiated_by, business_date, captured, tip, conflicts, unreadable, \
-    events, first_hlc, last_hlc";
+    events, first_hlc, last_hlc, member";
 
 /// Reads a payment summary from a row of [`PAYMENT_COLUMNS`].
 pub(crate) fn payment_summary(
     row: &Row<'_>,
 ) -> rusqlite::Result<Result<PaymentSummary, StoreError>> {
-    let values: Vec<Value> = (0..17).map(|column| row.get(column)).collect::<Result<_, _>>()?;
+    let values: Vec<Value> = (0..18).map(|column| row.get(column)).collect::<Result<_, _>>()?;
     Ok(read_payment(&values))
 }
 
@@ -655,6 +669,7 @@ fn read_payment(values: &[Value]) -> Result<PaymentSummary, StoreError> {
         business_date: at.optional_date(9)?,
         captured: money(10)?,
         tip: money(11)?,
+        member: at.optional_blob(17)?.map(|member| id(&member)).transpose()?,
         info,
         conflicts: at.unsigned(12)?,
         unreadable: at.unsigned(13)?,

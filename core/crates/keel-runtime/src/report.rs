@@ -3,8 +3,10 @@
 //! was taken; voids; drawer sessions; and cash no drawer took.
 
 use keel_doc::{Align, Block, Doc, Style};
+use keel_domain::codec::Name;
 use keel_domain::drawer::Drawer;
 use keel_domain::payment::{Payment, PaymentCaptured, Tender};
+use keel_events::envelope::TeamMember;
 use keel_events::keys::Signer;
 use keel_store::{OrderState, PaymentState};
 use keel_types::{BusinessDate, Clock, Entropy, Id, Money};
@@ -62,6 +64,25 @@ pub struct DayReport {
     pub cash_refunded_without_drawer: Amount,
     /// How many cash refunds no drawer session paid out.
     pub refunds_without_drawer: u64,
+    /// The tips taken on the day, by the member who took them, the most first (ADR-0035).
+    pub tips: Vec<TipLine>,
+    /// The card refunds started on the day and not yet paid back, with what they owe.
+    pub card_refunds_owed: u64,
+    /// What those card refunds owe.
+    pub card_refunds_owed_amount: Amount,
+}
+
+/// The tips one member took on a day (ADR-0035).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TipLine {
+    /// The member: `None` for tips no member took.
+    pub member: Option<Id<TeamMember>>,
+    /// Their name, as the profile has it.
+    pub name: Option<Name>,
+    /// How many payments tipped.
+    pub payments: u64,
+    /// What the tips came to.
+    pub amount: Amount,
 }
 
 /// A day's sales, added up.
@@ -118,6 +139,8 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             let session = self.store.load(Drawer::new(summary.id))?;
             views.extend(DrawerView::of(&session, self.locale));
         }
+        let tips = self.tips(date)?;
+        let (owed, owed_amount) = self.card_refunds_owed(date)?;
         let comps = gross.checked_sub(discounts)?.checked_sub(net)?;
         let amount = |money: Money| Amount::new(money, self.locale);
         Ok(DayReport {
@@ -144,7 +167,64 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 .collect(),
             cash_refunded_without_drawer: amount(cash_refunded_without_drawer),
             refunds_without_drawer,
+            tips,
+            card_refunds_owed: owed,
+            card_refunds_owed_amount: amount(owed_amount),
         })
+    }
+
+    /// The tips taken on business day `date`, by the day each payment was taken, in the
+    /// location's currency, by the member who took each payment: the most first, then by name.
+    fn tips(&self, date: BusinessDate) -> Result<Vec<TipLine>, RuntimeError> {
+        let currency = self.profile.data().currency;
+        let mut tips: Vec<(Option<Id<TeamMember>>, u64, Money)> = Vec::new();
+        for payment in self.store.payments_on(date)? {
+            let (PaymentState::Captured, Some(tip)) = (payment.state, payment.tip) else {
+                continue;
+            };
+            if tip.currency() != currency {
+                continue;
+            }
+            match tips.iter_mut().find(|(member, _, _)| *member == payment.member) {
+                Some((_, count, sum)) => {
+                    *count = count.saturating_add(1);
+                    *sum = sum.checked_add(tip)?;
+                }
+                None => tips.push((payment.member, 1, tip)),
+            }
+        }
+        let mut lines: Vec<TipLine> = tips
+            .into_iter()
+            .map(|(member, payments, sum)| TipLine {
+                member,
+                name: member.and_then(|member| self.profile.member(member)).map(|m| m.name.clone()),
+                payments,
+                amount: Amount::new(sum, self.locale),
+            })
+            .collect();
+        lines.sort_by(|a, b| {
+            b.amount.money.minor().cmp(&a.amount.money.minor()).then_with(|| a.name.cmp(&b.name))
+        });
+        Ok(lines)
+    }
+
+    /// The card refunds started on business day `date` and not yet paid back: how many, and
+    /// what they owe (ADR-0035).
+    fn card_refunds_owed(&self, date: BusinessDate) -> Result<(u64, Money), RuntimeError> {
+        let currency = self.profile.data().currency;
+        let (mut count, mut owed) = (0_u64, Money::zero(currency));
+        for refund in self.store.refunds_on(date)? {
+            let Some(info) = refund.info else { continue };
+            if info.tender != Tender::Card
+                || refund.completed.is_some()
+                || info.amount.currency() != currency
+            {
+                continue;
+            }
+            count = count.saturating_add(1);
+            owed = owed.checked_add(info.amount)?;
+        }
+        Ok((count, owed))
     }
 
     /// What each tender refunded on business date `date`, by the day each refund was made, in
@@ -295,6 +375,23 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     }
 }
 
+/// The day's tips, by the member who took them (ADR-0035), when there are any.
+fn tip_rows(blocks: &mut Vec<Block>, tips: &[TipLine]) {
+    if tips.is_empty() {
+        return;
+    }
+    blocks.push(Block::text("Tips", Align::Left, Style::default()));
+    for tip in tips {
+        let name = tip.name.as_ref().map_or("No one", Name::as_str);
+        blocks.push(Block::Row {
+            left: format!("{name} ({})", tip.payments),
+            right: tip.amount.text.clone(),
+            indent: 1,
+            style: Style::default(),
+        });
+    }
+}
+
 /// The report as it prints.
 fn report_doc(report: &DayReport, location: &str) -> Result<Doc, RuntimeError> {
     let row = |left: &str, amount: &Amount| Block::row(left, amount.text.clone());
@@ -332,6 +429,7 @@ fn report_doc(report: &DayReport, location: &str) -> Result<Doc, RuntimeError> {
         blocks
             .push(Block::row(format!("{name} ({})", tender.payments), tender.amount.text.clone()));
     }
+    tip_rows(&mut blocks, &report.tips);
     blocks.push(Block::row("Voided orders", report.voided.to_string()));
     for (n, drawer) in (1_u32..).zip(&report.drawers) {
         blocks.push(Block::Rule);
@@ -369,6 +467,12 @@ fn report_doc(report: &DayReport, location: &str) -> Result<Doc, RuntimeError> {
             blocks.push(Block::row(
                 format!("{name} ({})", refund.payments),
                 refund.amount.text.clone(),
+            ));
+        }
+        if report.card_refunds_owed > 0 {
+            blocks.push(Block::row(
+                format!("Card refunds owed ({})", report.card_refunds_owed),
+                report.card_refunds_owed_amount.text.clone(),
             ));
         }
         if report.refunds_without_drawer > 0 {

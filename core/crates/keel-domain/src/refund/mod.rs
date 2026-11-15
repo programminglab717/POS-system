@@ -1,9 +1,10 @@
-//! Refunds (ADR-0032): money paid back for lines returned, to the tender that paid.
+//! Refunds (ADR-0032): money paid back for lines returned, to the tender that paid; a card's
+//! through its connector, back to the card payment it names (ADR-0035).
 //!
 //! A refund is its own aggregate, single-writer: the device that made the return alone appends
 //! to it. Its identifier is the one the return names (`order.lines_returned`).
 //!
-//! - [`RefundEvent`] lists what can happen to a refund, and its payloads (schemas version 1).
+//! - [`RefundEvent`] lists what can happen to a refund, and its payloads.
 //! - [`Refund`] is the state folded from those events.
 //! - [`RefundCommand`] is what the device records; [`Refund::decide`] checks it.
 
@@ -14,5 +15,5 @@ mod state;
 mod tests;
 
 pub use commands::{RefundCommand, RefundError};
-pub use events::{RefundCompleted, RefundEvent, RefundInitiated};
+pub use events::{RefundCompleted, RefundEvent, RefundFailed, RefundInitiated};
 pub use state::{Conflict, ConflictKind, Refund, RefundInfo};

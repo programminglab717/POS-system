@@ -707,12 +707,18 @@ rules that span an order and its payments. The payloads' key tables are in
   a tender, and `refund.completed`, with any cash rounding; single-writer, the device that made
   the return. A completion by another device, or for more than the refund was started for,
   applies and is reported.
+- **Card payments** (ADR-0035): `payment.captured` version 2 tells of the card, its brand,
+  last four digits, entry and authorization code, and Keel never holds more of it; a capture
+  without a card is written as version 1. A card refund names the card payment it goes back
+  to, as `refund.initiated` version 2, and an attempt that moved nothing is `refund.failed`:
+  the refund stays owed, and a completion after a failure applies, while a failure after a
+  completion doesn't, and is reported. A cash refund never fails, nor names a payment.
 - **At the register** (ADR-0032), a closed order is found from its receipt's code; a return,
   gated as `refund.issue` for what it refunds, records the return, its refund and the drawer's
   cash in one write. An order a card paid waits for card refunds.
-- **Not yet built:** card refunds and disputes; store-and-forward and asynchronous rails;
-  tip adjustment and incremental authorization; other tenders; receipt details such as card
-  brand, entry mode and EMV data, which come with the first connector.
+- **Not yet built:** disputes; store-and-forward and asynchronous rails; tip adjustment and
+  incremental authorization; other tenders; EMV receipt data beyond the card's brand, last
+  four, entry and authorization code.
 
 Outcomes recorded concurrently fold by these rules, and every event stays in the log:
 
@@ -1007,8 +1013,9 @@ One state machine covers goods that are **in someone else's custody**:
   and each member's role and PIN, are part of the location's profile, in its format 2, published
   as the catalog is. A permission is one of ten actions (`order.void`, `line.remove`,
   `discount.apply`, `price.override`, `refund.issue`, `drawer.no_sale`, `drawer.variance`,
-  `drawer.paid_out`, `receipt.reprint`, `item.availability`) with a most amount and, for
-  discounts, a most percentage. Beyond a role, another member whose role permits it approves:
+  `drawer.paid_out`, `receipt.reprint`, `item.availability`), or since card payments an
+  eleventh, `payment.resolve` (ADR-0035), which needs profile format 4 and whose approval is
+  `approval.granted` version 2, with a most amount and, for discounts, a most percentage. Beyond a role, another member whose role permits it approves:
   never the one who asked. An approval is an `approval.granted` event, written with what it
   approves. A PIN is 4 to 8 digits, kept as its Argon2id hash. A profile without roles, format 1,
   lets every member do everything with no PIN. On a device, five wrong PINs lock PIN entry for

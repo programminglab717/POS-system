@@ -24,10 +24,10 @@ mod support;
 use core::time::Duration;
 
 use keel_domain::aggregate::{Aggregate, EventMeta, fold};
-use keel_domain::codec::{Note, ProcessorRef, ReasonCode};
+use keel_domain::codec::{LastFour, Name, Note, ProcessorRef, ReasonCode};
 use keel_domain::order::Reason;
 use keel_domain::payment::{
-    CashTendered, ConflictKind, Outcome, Payment, PaymentAuthorized, PaymentCaptured,
+    Card, CashTendered, ConflictKind, Entry, Outcome, Payment, PaymentAuthorized, PaymentCaptured,
     PaymentCommand, PaymentEnded, PaymentError, PaymentEvent, PaymentInfo, PaymentInitiated,
     PaymentStatus, Tender,
 };
@@ -270,7 +270,7 @@ fn fold_captured() -> impl Strategy<Value = PaymentCaptured> {
                 rounding: None,
             });
             let reference = if cash.is_some() { None } else { reference(n) };
-            PaymentCaptured { amount, tip, reference, cash }
+            PaymentCaptured { card: None, amount, tip, reference, cash }
         },
     )
 }
@@ -376,7 +376,14 @@ fn command(
                     CashTendered { tendered: paid.checked_add(extra).unwrap(), rounding }
                 }
             });
-            PaymentCommand::Capture(PaymentCaptured { amount, tip, reference, cash })
+            // Every third step tells of a card, whichever the tender.
+            let card = step.amount.is_multiple_of(3).then(|| Card {
+                brand: Name::new("Visa").unwrap(),
+                last_four: LastFour::new("4242").unwrap(),
+                entry: Entry::Tap,
+                auth_code: None,
+            });
+            PaymentCommand::Capture(PaymentCaptured { card, amount, tip, reference, cash })
         }
         2 => PaymentCommand::Fail(PaymentEnded { reason: reason(step.amount), reference }),
         _ => PaymentCommand::Void(PaymentEnded { reason: reason(step.amount), reference }),
@@ -470,7 +477,10 @@ fn refusal(
             }
         }
         PaymentCommand::Capture(captured) => {
-            if cash != captured.cash.is_some() || cash && captured.reference.is_some() {
+            // Cash has no processor reference and no card (ADR-0035).
+            if cash != captured.cash.is_some()
+                || cash && (captured.reference.is_some() || captured.card.is_some())
+            {
                 Some(Refusal::WrongTender)
             } else {
                 within(captured.amount, authorized.unwrap_or(info.amount))
@@ -505,7 +515,7 @@ fn edges(info: &PaymentInfo, status: &PaymentStatus) -> Vec<PaymentCommand> {
     for amount in amounts {
         commands.push(PaymentCommand::Authorize(PaymentAuthorized { amount, reference: None }));
         for cash in [None, Some(CashTendered { tendered: amount, rounding: None })] {
-            let captured = PaymentCaptured { amount, tip: None, reference: None, cash };
+            let captured = PaymentCaptured { card: None, amount, tip: None, reference: None, cash };
             commands.push(PaymentCommand::Capture(captured));
         }
     }

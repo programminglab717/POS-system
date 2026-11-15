@@ -1,7 +1,7 @@
 //! The demo profile: a café's, for tests, the simulator and the register shell before a location
 //! has its own.
 
-use core::num::{NonZeroU8, NonZeroU32};
+use core::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 use std::collections::BTreeSet;
 
 use keel_pricing::{Rules, Tax, TaxRounding, TaxScope};
@@ -10,7 +10,7 @@ use keel_types::{Currency, Id, Money, Rate, RoundingMode};
 use super::{
     Aging, Allergen, BusinessDay, Catalog, CatalogGroup, CatalogItem, CatalogModifier,
     CatalogVariant, Kitchen, Member, Menu, Page, Profile, ProfileData, ProfileError, Route,
-    Station,
+    Station, TipPrompt, Tipping,
 };
 use crate::codec::Name;
 use crate::order::Prefix;
@@ -197,6 +197,16 @@ pub fn demo() -> Result<Profile, ProfileError> {
         ],
         roles: roles()?,
         kitchen: Some(kitchen()?),
+        // Tips asked for on the register's screen, as a percentage and an amount (ADR-0035).
+        tipping: Some(Tipping {
+            presets: [1_000, 1_500, 2_000]
+                .into_iter()
+                .map(|preset| {
+                    NonZeroU16::new(preset).ok_or(ProfileError::Invalid("a tip preset of 0"))
+                })
+                .collect::<Result<_, _>>()?,
+            prompt: TipPrompt::Screen,
+        }),
     })
 }
 

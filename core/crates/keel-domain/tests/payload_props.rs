@@ -169,10 +169,43 @@ enum Kind {
     Cuts,
     /// A discount's percentage, in basis points: from 1 to 10,000.
     Percent,
+    /// The card a payment was captured from: `{1 brand, 2 last four, 3 entry, 4 code}`
+    /// (ADR-0035).
+    Card,
 }
 
 use Kind::*;
 use Presence::{Clearable, Optional, Required};
+
+/// The documented keys of each payment schema (ADR-0015, ADR-0035), or `None` for another.
+fn payment_rules(schema: &str) -> Option<Vec<(u64, Kind, Presence)>> {
+    Some(match schema {
+        "payment.initiated" => {
+            vec![(1, Id, Required), (2, Id, Required), (3, Code(1), Required), (4, Money, Required)]
+        }
+        "payment.authorized" => vec![(1, Money, Required), (2, Reference, Optional)],
+        "payment.captured" => vec![
+            (1, Money, Required),
+            (2, Money, Optional),
+            (3, Reference, Optional),
+            (4, Money, Optional),
+            (5, Money, Optional),
+        ],
+        // Version 2 tells of the card (ADR-0035).
+        "payment.captured/2" => vec![
+            (1, Money, Required),
+            (2, Money, Optional),
+            (3, Reference, Optional),
+            (4, Money, Optional),
+            (5, Money, Optional),
+            (6, Card, Required),
+        ],
+        "payment.failed" | "payment.voided" => {
+            vec![(1, Reason, Required), (2, Note, Optional), (3, Reference, Optional)]
+        }
+        _ => return None,
+    })
+}
 
 /// The documented keys of each drawer, refund and availability schema, and of a return
 /// (ADR-0031, ADR-0032, ADR-0033), or `None` for another schema.
@@ -187,6 +220,13 @@ fn drawer_rules(schema: &str) -> Option<Vec<(u64, Kind, Presence)>> {
         "drawer.closed" => vec![(1, Money, Required), (2, Money, Required)],
         "refund.initiated" => vec![(1, Id, Required), (2, Code(1), Required), (3, Money, Required)],
         "refund.completed" => vec![(1, Money, Required), (2, Money, Optional)],
+        // Version 2 names the card payment it goes back to (ADR-0035).
+        "refund.initiated/2" => {
+            vec![(1, Id, Required), (2, Code(1), Required), (3, Money, Required), (4, Id, Required)]
+        }
+        "refund.failed" => {
+            vec![(1, Reason, Required), (2, Note, Optional), (3, Reference, Optional)]
+        }
         "availability.changed" => vec![
             (1, Code(1), Required),
             (2, Bool, Required),
@@ -232,7 +272,7 @@ const DISCOUNT_APPLIED: &[(u64, Kind, Presence)] = &[
 
 /// The documented keys of each schema: the model.
 fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
-    if let Some(rules) = drawer_rules(schema) {
+    if let Some(rules) = drawer_rules(schema).or_else(|| payment_rules(schema)) {
         return rules;
     }
     match schema {
@@ -293,20 +333,6 @@ fn rules(schema: &str) -> Vec<(u64, Kind, Presence)> {
             (5, Money, Required),
             (6, IdSet, Optional),
         ],
-        "payment.initiated" => {
-            vec![(1, Id, Required), (2, Id, Required), (3, Code(1), Required), (4, Money, Required)]
-        }
-        "payment.authorized" => vec![(1, Money, Required), (2, Reference, Optional)],
-        "payment.captured" => vec![
-            (1, Money, Required),
-            (2, Money, Optional),
-            (3, Reference, Optional),
-            (4, Money, Optional),
-            (5, Money, Optional),
-        ],
-        "payment.failed" | "payment.voided" => {
-            vec![(1, Reason, Required), (2, Note, Optional), (3, Reference, Optional)]
-        }
         "sequence.assigned" => {
             vec![(1, Number, Required), (2, Number, Required), (3, Runs, Required)]
         }
@@ -516,6 +542,82 @@ fn returned_valid(value: &Value) -> bool {
 /// the first at depth 1 and none more than one deeper than the one before nor deeper than 5;
 /// and optionally notes, allergens (codes 0 to 13, ascending, at least one) and the name of the
 /// line it is a component of.
+/// Whether `value` is a card: a name, four ASCII digits, an entry from 0 to 3, and optionally 1
+/// to 12 ASCII letters and digits, at keys 1 to 4 and no others.
+fn card_valid(value: &Value) -> bool {
+    let Some(map) = value.as_map() else { return false };
+    let get = |key: u64| map.get(&Value::Unsigned(key));
+    let known = map.iter().all(|(key, _)| key.as_u64().is_some_and(|key| (1..=4).contains(&key)));
+    let digits = |text: &str| text.len() == 4 && text.bytes().all(|byte| byte.is_ascii_digit());
+    let code = |text: &str| {
+        (1..=12).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    };
+    known
+        && get(1).is_some_and(|brand| valid_value(Name, brand))
+        && get(2).and_then(Value::as_text).is_some_and(digits)
+        && get(3).is_some_and(|entry| valid_value(Code(3), entry))
+        && get(4).is_none_or(|auth| auth.as_text().is_some_and(code))
+}
+
+/// Processor references, and text close to one: at and past each length limit, with a space,
+/// empty, beyond ASCII, or with a control character.
+fn reference_near_miss() -> BoxedStrategy<Value> {
+    let text = |pattern: &'static str| pattern.prop_map(Value::Text);
+    prop_oneof![
+        text("[!-~]{1,3}"),
+        text("[!-~]{99,101}"),
+        text("[a-z]{1,4} [a-z]{1,4}"),
+        Just(Value::from("")),
+        Just(Value::from("pi_é")),
+        Just(Value::from("tab\there")),
+    ]
+    .boxed()
+}
+
+/// Cards, and things close to one: a valid card, or one with a field wrong, missing or extra.
+fn card_near_miss() -> BoxedStrategy<Value> {
+    let text = |pattern: &'static str| pattern.prop_map(Value::Text);
+    let card = |brand: Value, last: Value, entry: Value, code: Option<Value>, extra: bool| {
+        let mut entries = vec![
+            (Value::Unsigned(1), brand),
+            (Value::Unsigned(2), last),
+            (Value::Unsigned(3), entry),
+        ];
+        entries.extend(code.map(|code| (Value::Unsigned(4), code)));
+        if extra {
+            entries.push((Value::Unsigned(5), Value::from("x")));
+        }
+        Value::Map(Map::from_entries(entries).unwrap())
+    };
+    let brand = prop_oneof![
+        4 => text("[A-Z][a-z]{2,8}"),
+        1 => Just(Value::from("")),
+        1 => Just(Value::from("Vi\tsa")),
+    ];
+    let last = prop_oneof![
+        4 => text("[0-9]{4}"),
+        1 => text("[0-9]{3}|[0-9]{5}"),
+        1 => text("[0-9]{3}[a-z]"),
+        1 => Just(Value::Unsigned(4242)),
+    ];
+    let entry =
+        prop_oneof![4 => (0_u64..4).prop_map(Value::Unsigned), 1 => Just(Value::Unsigned(4))];
+    let code = prop::option::of(prop_oneof![
+        4 => text("[A-Z0-9]{1,12}"),
+        1 => text("[A-Z0-9]{13}"),
+        1 => Just(Value::from("")),
+        1 => Just(Value::from("12 34")),
+        1 => Just(Value::from("A1-B2")),
+    ]);
+    prop_oneof![
+        8 => (brand, last, entry, code, prop::bool::weighted(0.1))
+            .prop_map(move |(brand, last, entry, code, extra)| card(brand, last, entry, code, extra)),
+        1 => Just(Value::Map(Map::from_entries(vec![(Value::Unsigned(1), Value::from("Visa"))]).unwrap())),
+        1 => Just(Value::from("Visa 4242")),
+    ]
+    .boxed()
+}
+
 fn kitchen_items_valid(value: &Value) -> bool {
     let Some(items) = value.as_array() else { return false };
     (1..=500).contains(&items.len()) && items.iter().all(kitchen_item_valid)
@@ -643,6 +745,7 @@ fn valid_value(kind: Kind, value: &Value) -> bool {
         TaxCharges => records(value, &[Id, Money, Money]).is_some(),
         LinesReturned => records(value, &[Id, Quantity, Money, Money]).is_some(),
         KitchenItems => kitchen_items_valid(value),
+        Card => card_valid(value),
         Bool => value.as_bool().is_some(),
         Time => as_i64(value).is_some_and(|micros| {
             (keel_types::Timestamp::MIN.as_micros()..=keel_types::Timestamp::MAX.as_micros())
@@ -777,6 +880,10 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
                 && (get(5).is_none() || get(4).is_some())
         }
         "refund.initiated" => money(get(3).unwrap()).unwrap().0 > 0,
+        // Only a card refund names a payment.
+        "refund.initiated/2" => {
+            money(get(3).unwrap()).unwrap().0 > 0 && get(2).unwrap().as_u64() == Some(1)
+        }
         "refund.completed" => {
             let (amount, currency) = money(get(1).unwrap()).unwrap();
             amount > 0
@@ -798,6 +905,8 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
         "payment.initiated" => money(get(4).unwrap()).unwrap().0 > 0,
         "payment.authorized" => money(get(1).unwrap()).unwrap().0 > 0,
         "payment.captured" => capture_valid(map),
+        // A card pays no cash.
+        "payment.captured/2" => capture_valid(map) && get(4).is_none(),
         // The last number the record assigns is the largest at most.
         "sequence.assigned" => {
             u128::from(get(2).unwrap().as_u64().unwrap()) + events_in(get(3).unwrap()) - 1
@@ -813,6 +922,15 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
             }
         }
         _ => true,
+    }
+}
+
+/// The name the rules know `schema` by: its name for version 1, and `name/version` for a later
+/// one, such as `payment.captured/2`.
+fn named(schema: &SchemaRef) -> String {
+    match schema.version.get() {
+        1 => schema.name.as_str().to_owned(),
+        version => format!("{}/{version}", schema.name.as_str()),
     }
 }
 
@@ -892,18 +1010,11 @@ fn near_miss(kind: Kind) -> BoxedStrategy<Value> {
         ]
         .boxed(),
         Hash32 => prop::collection::vec(any::<u8>(), 31..=33).prop_map(Value::Bytes).boxed(),
-        Reference => prop_oneof![
-            text("[!-~]{1,3}"),
-            text("[!-~]{99,101}"),
-            text("[a-z]{1,4} [a-z]{1,4}"),
-            Just(Value::from("")),
-            Just(Value::from("pi_é")),
-            Just(Value::from("tab\there")),
-        ]
-        .boxed(),
+        Reference => reference_near_miss(),
         LineCharges => charges_near_miss(3),
         LinesReturned => returned_near_miss(),
         KitchenItems => kitchen_items_near_miss(),
+        Card => card_near_miss(),
         Bool => bool_near_miss(),
         Time => time_near_miss(),
         TaxCharges => charges_near_miss(4),
@@ -1702,8 +1813,8 @@ fn reprice(value: &Value, target: usize, seen: &mut usize) -> Value {
 /// valid, and then has exactly one encoding.
 fn accepted_exactly_when_valid(event: &Event, change: &FieldChange) -> Result<(), TestCaseError> {
     let schema = schema_ref(event);
-    let payload = changed(schema.name.as_str(), &event.to_value(), change);
-    let valid = valid_payload(schema.name.as_str(), &payload);
+    let payload = changed(named(&schema).as_str(), &event.to_value(), change);
+    let valid = valid_payload(named(&schema).as_str(), &payload);
     match decode(&schema, &payload) {
         Ok(decoded) => {
             prop_assert!(valid, "accepted an invalid payload");
@@ -1835,19 +1946,19 @@ proptest! {
         claimed in any_claimed(),
     ) {
         let (schema, payload) = event.encode().unwrap();
-        prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
+        prop_assert!(valid_payload(named(&schema).as_str(), &payload.value().unwrap()));
         prop_assert_eq!(OrderEvent::decode(&schema, &payload), Ok(event));
         let (schema, payload) = payment.encode().unwrap();
-        prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
+        prop_assert!(valid_payload(named(&schema).as_str(), &payload.value().unwrap()));
         prop_assert_eq!(PaymentEvent::decode(&schema, &payload), Ok(payment));
         let sequenced = SequenceEvent::Assigned(record.clone());
         let (schema, payload) = sequenced.encode().unwrap();
-        prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
+        prop_assert!(valid_payload(named(&schema).as_str(), &payload.value().unwrap()));
         prop_assert_eq!(SequenceEvent::decode(&schema, &payload), Ok(sequenced));
         prop_assert_eq!(Assigned::new(record.epoch, record.first, record.runs.clone()), Ok(record));
         let claim = HubEvent::Claimed(claimed.clone());
         let (schema, payload) = claim.encode().unwrap();
-        prop_assert!(valid_payload(schema.name.as_str(), &payload.value().unwrap()));
+        prop_assert!(valid_payload(named(&schema).as_str(), &payload.value().unwrap()));
         prop_assert_eq!(HubEvent::decode(&schema, &payload), Ok(claim));
         prop_assert_eq!(
             Claimed::new(claimed.epoch, claimed.priority, claimed.succeeds.clone()),
@@ -2102,9 +2213,9 @@ proptest! {
     ) {
         let change = if emptied { FieldChange::KeepOnlyRequired } else { FieldChange::AddText };
         let schema = schema_ref(&event);
-        let payload = changed(schema.name.as_str(), &event.to_value(), &change);
+        let payload = changed(named(&schema).as_str(), &event.to_value(), &change);
         if emptied {
-            prop_assert!(!valid_payload(schema.name.as_str(), &payload));
+            prop_assert!(!valid_payload(named(&schema).as_str(), &payload));
         }
         accepted_exactly_when_valid(&event, &change)?;
     }
@@ -2124,7 +2235,7 @@ proptest! {
         whole_field in any::<bool>(),
     ) {
         let schema = schema_ref(&event);
-        let name = schema.name.as_str();
+        let name = &named(&schema);
         let original = event.to_value();
         let payload = if whole_field {
             let priced = priced_keys(name);
@@ -2246,6 +2357,19 @@ proptest! {
         prop_assert_eq!(decode(&schema, &payload).is_ok(), valid_payload("order.check_closed", &payload));
     }
 
+    /// A card is a name, four ASCII digits, an entry code and maybe a code of 1 to 12 ASCII
+    /// letters and digits (ADR-0035): cards and near misses, in a version 2 capture, decode
+    /// exactly when the model says so.
+    #[test]
+    fn a_capture_decodes_its_card_exactly_when_it_is_valid(card in card_near_miss()) {
+        let amount = Value::Array(vec![Value::integer(1_089), Value::from("USD")]);
+        let entries = vec![(Value::Unsigned(1), amount), (Value::Unsigned(6), card.clone())];
+        let payload = Value::Map(Map::from_entries(entries).unwrap());
+        let v2 = SchemaRef { version: 2.try_into().unwrap(), ..schema_named("payment.captured") };
+        prop_assert_eq!(decode(&v2, &payload).is_ok(), card_valid(&card));
+        prop_assert_eq!(valid_payload("payment.captured/2", &payload), card_valid(&card));
+    }
+
     /// Cash covers what is paid: the amount, the tip and the rounding, which add up to zero or
     /// more. What was tendered, a unit or two either side of that, and roundings around zero,
     /// with or without what was tendered, decode exactly when the model says so.
@@ -2350,7 +2474,11 @@ proptest! {
     #[test]
     fn unknown_schemas_are_reported(event in any_any_event(), version in 2_u32..5) {
         let schema = schema_ref(&event);
-        let newer = SchemaRef { name: schema.name.clone(), version: version.try_into().unwrap() };
+        // Beyond any version a schema has yet: `payment.captured` has two.
+        let newer = SchemaRef {
+            name: schema.name.clone(),
+            version: (schema.version.get() + version).try_into().unwrap(),
+        };
         prop_assert_eq!(decode(&newer, &event.to_value()), Err(DecodeError::UnknownSchema));
         for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown", "drawer.unknown", "refund.unknown", "availability.unknown", "kitchen.unknown"] {
             let renamed = SchemaRef { name: SchemaName::new(name).unwrap(), version: schema.version };

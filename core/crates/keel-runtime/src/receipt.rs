@@ -41,6 +41,14 @@ struct Words {
     refund: &'static str,
     refunded: &'static str,
     handed: &'static str,
+    /// A card payment's lines (ADR-0035): the tender, its tip, what the card was charged, the
+    /// authorization code, one settled by hand, and how the card was read, by entry code.
+    card: &'static str,
+    tip: &'static str,
+    charged: &'static str,
+    auth: &'static str,
+    by_hand: &'static str,
+    entries: [&'static str; 4],
 }
 
 const ENGLISH: Words = Words {
@@ -62,6 +70,12 @@ const ENGLISH: Words = Words {
     refund: "REFUND",
     refunded: "REFUNDED",
     handed: "Cash handed back",
+    card: "Card",
+    tip: "Tip",
+    charged: "Charged",
+    auth: "Auth",
+    by_hand: "Settled by hand",
+    entries: ["Tap", "Chip", "Swipe", "Keyed"],
 };
 
 const SPANISH: Words = Words {
@@ -83,10 +97,53 @@ const SPANISH: Words = Words {
     refund: "REEMBOLSO",
     refunded: "REEMBOLSADO",
     handed: "Efectivo devuelto",
+    card: "Tarjeta",
+    tip: "Propina",
+    charged: "Cobrado",
+    auth: "Autorización",
+    by_hand: "Liquidado a mano",
+    entries: ["Sin contacto", "Chip", "Banda", "Tecleada"],
 };
 
 fn words(locale: Locale) -> &'static Words {
     if locale.tag().starts_with("es") { &SPANISH } else { &ENGLISH }
+}
+
+/// A card payment's rows on a receipt: the card, how it was read and what it applied; its tip and
+/// what the card was charged, when it tipped; its authorization code; or that it was settled by
+/// hand (ADR-0035). Keel never holds more of a card than its brand and last four digits.
+fn card_rows(
+    blocks: &mut Vec<Block>,
+    captured: &keel_domain::payment::PaymentCaptured,
+    words: &Words,
+    money: &dyn Fn(Money) -> String,
+) -> Result<(), RuntimeError> {
+    let label = match &captured.card {
+        Some(card) => {
+            let entry = usize::try_from(card.entry.code())
+                .ok()
+                .and_then(|code| words.entries.get(code))
+                .copied()
+                .unwrap_or_default();
+            format!("{} ({entry})", crate::card::card_text(card))
+        }
+        None => words.card.to_owned(),
+    };
+    blocks.push(Block::row(label, money(captured.amount)));
+    if let Some(tip) = captured.tip {
+        blocks.push(Block::row(words.tip, money(tip)));
+        blocks.push(Block::row(words.charged, money(captured.amount.checked_add(tip)?)));
+    }
+    match &captured.card {
+        Some(card) => {
+            if let Some(code) = &card.auth_code {
+                blocks.push(Block::row(format!("{} {code}", words.auth), ""));
+            }
+        }
+        None if captured.reference.is_none() => blocks.push(Block::row(words.by_hand, "")),
+        None => {}
+    }
+    Ok(())
 }
 
 /// The banner a reprint carries above and below, in `locale`'s language.
@@ -161,6 +218,10 @@ pub(crate) fn receipt(
     });
     for payment in closing.payments {
         let Some(captured) = payment.captured() else { continue };
+        if payment.info().is_some_and(|info| info.tender == keel_domain::payment::Tender::Card) {
+            card_rows(&mut blocks, captured, words, &money)?;
+            continue;
+        }
         let Some(cash) = captured.cash else { continue };
         blocks.push(Block::row(words.cash, money(cash.tendered)));
         if let Some(rounding) = cash.rounding {
@@ -366,8 +427,13 @@ pub(crate) fn refund(
         indent: 0,
         style: Style { bold: true, wide: false, tall: true },
     });
-    if refunded.handed != refunded.amount {
-        blocks.push(Block::row(words.handed, refunded.handed.text.clone()));
+    match &refunded.card {
+        // A card refund goes back to the card that paid (ADR-0035).
+        Some(card) => blocks.push(Block::row(words.card, card.clone())),
+        None if refunded.handed != refunded.amount => {
+            blocks.push(Block::row(words.handed, refunded.handed.text.clone()));
+        }
+        None => {}
     }
     blocks.push(Block::Feed(2));
     blocks.push(Block::Cut);

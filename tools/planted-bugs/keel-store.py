@@ -1653,4 +1653,35 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         "            \"rerouted IS NOT NULL AND rerouted_at >= ?1 ORDER BY rerouted_at DESC, ticket_id\",",
         "            \"rerouted IS NOT NULL AND (rerouted_at >= ?1 OR 1) ORDER BY rerouted_at DESC, ticket_id\",",
     ),
+    # Card payments (ADR-0035).
+    (
+        "refunds: a card refund's payment isn't kept",
+        "src/refunds.rs",
+        "            bytes(info.and_then(|info| info.payment)),",
+        "            bytes(info.and_then(|_| None::<keel_types::Id<keel_domain::payment::Payment>>)),",
+    ),
+    (
+        "refunds: failed attempts aren't counted",
+        "src/refunds.rs",
+        "            refund.failures(),",
+        "            0_u32,",
+    ),
+    (
+        "refunds: a failure's reason isn't kept",
+        "src/refunds.rs",
+        "            refund.failed().map(|failed| failed.reason.code.as_str().to_owned()),",
+        "            None::<String>,",
+    ),
+    (
+        "payments: who took a payment isn't kept",
+        "src/projection.rs",
+        "            bytes(info.and_then(|info| member_of(events, info.initiated_by))),",
+        "            bytes(None::<keel_types::Id<TeamMember>>),",
+    ),
+    (
+        "payments: who took a payment is read from its last event",
+        "src/projection.rs",
+        "    let stored = events.iter().find(|stored| stored.body().event_id == event)?;",
+        "    let stored = events.iter().rev().find(|stored| stored.body().event_id != event || true)?;",
+    ),
 ]

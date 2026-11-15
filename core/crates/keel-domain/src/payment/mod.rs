@@ -2,7 +2,8 @@
 //!
 //! A payment is its own aggregate, so a terminal capturing a payment never conflicts with a
 //! server adding a line. Its identifier is the idempotency key the terminal or processor sees,
-//! so a crash, a replay or a retry can never charge twice. Version 1 has cash and card.
+//! so a crash, a replay or a retry can never charge twice. Version 1 has cash and card; a
+//! card capture's version 2 tells of the card (ADR-0035).
 //!
 //! - [`PaymentEvent`] lists what can happen to a payment, and its payloads (schemas version 1).
 //! - [`Payment`] is the state folded from those events: a state machine that keeps money that
@@ -19,7 +20,7 @@ mod tests;
 
 pub use commands::{PaymentCommand, PaymentError};
 pub use events::{
-    CashTendered, PaymentAuthorized, PaymentCaptured, PaymentEnded, PaymentEvent, PaymentInitiated,
-    Tender,
+    Card, CashTendered, Entry, PaymentAuthorized, PaymentCaptured, PaymentEnded, PaymentEvent,
+    PaymentInitiated, Tender,
 };
 pub use state::{Conflict, ConflictKind, Outcome, Payment, PaymentInfo, PaymentStatus};

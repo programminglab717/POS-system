@@ -111,7 +111,17 @@ and the card refunds returns left for it (I-08), designed in
 3. **The shell**: the Android register's card tender, tip prompt, waiting, partial and unknown
    states, card refunds, the terminal setting, and a simulated terminal.
 
-Next: slice 1.
+Slice 1 built 2026-11-15: `payment.captured` v2 with the card, `refund.initiated` v2 and
+`refund.failed`, `approval.granted` v2 for `payment.resolve` (version 1 still refuses it),
+profile format 4 with tipping (the demo re-pinned from `profile.py`, at 2912 bytes), the payments
+and refunds projections at version 2. Verified: every kernel test, the ignored sweeps included;
+both clippy runs; the docs; 41 new planted bugs in the domain and the store, all caught once three
+misses each got a test (the card's last four, its authorization code, the approval's version).
+
+Slice 2 under way: the runtime's sale and refund effects, outcomes, status queries, settling by
+hand, tips on the pre-tax subtotal, card receipts, tips by member in the day's report, and a
+property test against a model terminal that loses requests and answers across restarts, all
+built and passing; 19 planted bugs in its card code. Next: the bindings.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 6's among them, and the
 three of step 2 the scrolling ticket pane should mend.

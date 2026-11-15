@@ -6,7 +6,8 @@ use keel_types::{Currency, Hlc, Id, Money};
 
 use super::*;
 use crate::aggregate::{Aggregate, EventMeta};
-use crate::codec::PayloadError;
+use crate::codec::{Note, PayloadError, ProcessorRef, ReasonCode};
+use crate::order::Reason;
 use crate::payment::Tender;
 use crate::schema::{DecodeError, DomainEvent};
 
@@ -27,7 +28,7 @@ fn location() -> Id<Location> {
 }
 
 fn initiated(amount: Money) -> RefundInitiated {
-    RefundInitiated { order: id(0xA1), tender: Tender::Cash, amount }
+    RefundInitiated { order: id(0xA1), tender: Tender::Cash, amount, payment: None }
 }
 
 fn completed(amount: Money) -> RefundCompleted {
@@ -153,8 +154,8 @@ fn bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-/// The refund payloads, pinned forever: one example of each schema. Python's `cbor2` encoded
-/// each from the key tables (ADR-0032). If this test fails, a payload format changed, and stored
+/// The refund payloads, pinned forever: one example of each schema and version. Python's `cbor2`
+/// encoded each from the key tables (ADR-0032, ADR-0035). If this test fails, a payload format changed, and stored
 /// events would no longer decode.
 #[test]
 fn the_payload_formats_are_pinned() {
@@ -163,6 +164,27 @@ fn the_payload_formats_are_pinned() {
             RefundEvent::Initiated(initiated(usd(708))),
             "refund.initiated",
             "a301500192f0c10000700080000000000000a1020003821902c463555344",
+        ),
+        (
+            // Version 2: a card refund, back to the payment it names.
+            RefundEvent::Initiated(RefundInitiated {
+                tender: Tender::Card,
+                payment: Some(id(0xB1)),
+                ..initiated(usd(708))
+            }),
+            "refund.initiated",
+            "a401500192f0c10000700080000000000000a1020103821902c46355534404500192f0c10000700080000000000000b1",
+        ),
+        (
+            RefundEvent::Failed(RefundFailed {
+                reason: Reason {
+                    code: ReasonCode::new("declined").unwrap(),
+                    note: Some(Note::new("card expired").unwrap()),
+                },
+                reference: Some(ProcessorRef::new("re_3Keel01").unwrap()),
+            }),
+            "refund.failed",
+            "a301686465636c696e6564026c636172642065787069726564036a72655f334b65656c3031",
         ),
         (
             RefundEvent::Completed(RefundCompleted { amount: usd(708), rounding: Some(usd(2)) }),
@@ -174,6 +196,9 @@ fn the_payload_formats_are_pinned() {
     for (event, name, hex) in pinned {
         let (schema, payload) = event.encode().unwrap();
         assert_eq!(schema.name.as_str(), name);
+        let version =
+            if matches!(&event, RefundEvent::Initiated(i) if i.payment.is_some()) { 2 } else { 1 };
+        assert_eq!(schema.version.get(), version, "{name}");
         assert_eq!(payload.as_bytes(), bytes(hex).as_slice(), "{name}");
         assert_eq!(RefundEvent::decode(&schema, &payload), Ok(event), "{name}");
     }
@@ -195,4 +220,63 @@ fn payloads_keep_their_rules() {
     assert!(decode(&rounded(usd(-2))).is_ok(), "rounding can take away");
     assert_eq!(decode(&rounded(usd(0))), invalid("rounding"));
     assert_eq!(decode(&rounded(eur(2))), invalid("rounding"));
+    // Only a card refund names a payment; version 2 always names one, and version 1 never.
+    let cash_named = RefundInitiated { payment: Some(id(0xB1)), ..initiated(usd(100)) };
+    assert_eq!(decode(&RefundEvent::Initiated(cash_named)), invalid("payment"));
+    let card =
+        RefundInitiated { tender: Tender::Card, payment: Some(id(0xB1)), ..initiated(usd(100)) };
+    let (schema, payload) = RefundEvent::Initiated(card).encode().unwrap();
+    let v1 = keel_events::envelope::SchemaRef { version: 1.try_into().unwrap(), ..schema.clone() };
+    assert!(RefundEvent::decode(&v1, &payload).is_err());
+    let unnamed = RefundInitiated { payment: None, ..card };
+    let (_, payload) = RefundEvent::Initiated(unnamed).encode().unwrap();
+    assert!(RefundEvent::decode(&schema, &payload).is_err());
+}
+
+/// A card refund that fails stays owed, and counts its failed attempts; once paid back, a
+/// failure doesn't apply, and is reported. A cash refund never fails (ADR-0035).
+#[test]
+fn a_card_refund_can_fail_and_be_tried_again() {
+    let card =
+        RefundInitiated { tender: Tender::Card, payment: Some(id(0xB1)), ..initiated(usd(708)) };
+    let failed = RefundFailed {
+        reason: Reason { code: ReasonCode::new("declined").unwrap(), note: None },
+        reference: None,
+    };
+    let mut script = Script::new();
+    let record = |script: &mut Script, command: RefundCommand| {
+        let event = script.refund.decide(location(), id(0xD1), command)?;
+        script.apply(&event);
+        Ok::<_, RefundError>(())
+    };
+    assert_eq!(
+        record(&mut script, RefundCommand::Fail(failed.clone())),
+        Err(RefundError::NotInitiated)
+    );
+    let unnamed = RefundInitiated { payment: None, ..card };
+    assert_eq!(
+        record(&mut script, RefundCommand::Initiate(unnamed)),
+        Err(RefundError::WrongTender)
+    );
+    record(&mut script, RefundCommand::Initiate(card)).unwrap();
+    record(&mut script, RefundCommand::Fail(failed.clone())).unwrap();
+    record(&mut script, RefundCommand::Fail(failed.clone())).unwrap();
+    assert_eq!(script.refund.failures(), 2);
+    assert_eq!(script.refund.failed(), Some(&failed));
+    assert!(script.refund.is_owed());
+    assert_eq!(script.refund.info().unwrap().payment, Some(id(0xB1)));
+    record(&mut script, RefundCommand::Complete(completed(usd(708)))).unwrap();
+    assert!(!script.refund.is_owed());
+    assert_eq!(script.refund.failed(), None);
+    assert_eq!(
+        record(&mut script, RefundCommand::Fail(failed.clone())),
+        Err(RefundError::AlreadyCompleted)
+    );
+    let late = script.apply(&RefundEvent::Failed(failed.clone()));
+    assert_eq!(script.kinds(), [(late, ConflictKind::FailedAfterCompletion)]);
+    assert_eq!(script.refund.failures(), 2);
+
+    let mut cash = Script::new();
+    record(&mut cash, RefundCommand::Initiate(initiated(usd(5)))).unwrap();
+    assert_eq!(record(&mut cash, RefundCommand::Fail(failed)), Err(RefundError::WrongTender));
 }

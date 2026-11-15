@@ -1,13 +1,18 @@
 //! Payment events, version 1, and their payloads.
 //!
-//! Every schema below is version 1. Keys and encodings follow [`crate::codec`]; "optional" fields
-//! are omitted when absent.
+//! Every schema below is version 1 but `payment.captured`, which is version 2 (ADR-0035). Keys and
+//! encodings follow [`crate::codec`]; "optional" fields are omitted when absent.
 //!
 //! | Schema | Keys |
 //! |---|---|
 //! | `payment.initiated` | 1 order, 2 check, 3 tender, 4 amount |
 //! | `payment.authorized` | 1 amount, 2 processor reference (optional) |
-//! | `payment.captured` | 1 amount, 2 tip (optional), 3 processor reference (optional), 4 amount tendered (optional), 5 cash rounding (optional) |
+//! | `payment.captured` | 1 amount, 2 tip (optional), 3 processor reference (optional), 4 amount tendered (optional), 5 cash rounding (optional), 6 card (optional; version 2) |
+//!
+//! A card is `{1 brand, 2 last four, 3 entry, 4 authorization code (optional)}`. Version 1 of
+//! `payment.captured` is version 2 without a card, and a capture without one is written as
+//! version 1, so a cash payment's bytes are as before, and a kernel that knows version 1 alone
+//! reads it.
 //! | `payment.failed` | 1 reason code, 2 note (optional), 3 processor reference (optional) |
 //! | `payment.voided` | 1 reason code, 2 note (optional), 3 processor reference (optional) |
 //!
@@ -15,13 +20,16 @@
 //! - amounts are more than zero, and so is a tip; a cash rounding isn't zero;
 //! - all the amounts in one payload are in the same currency;
 //! - a cash rounding comes with the amount tendered; the amount, the tip and the rounding add up
-//!   to zero or more, and the amount tendered covers them.
+//!   to zero or more, and the amount tendered covers them;
+//! - a card is only on a capture that isn't in cash.
 
 use keel_events::cbor::Value;
 use keel_events::envelope::SchemaRef;
 use keel_types::{Id, Money};
 
-use crate::codec::{Fields, PayloadError, ProcessorRef, Record, code_enum};
+use crate::codec::{
+    AuthCode, Field, Fields, LastFour, Name, PayloadError, ProcessorRef, Record, code_enum,
+};
 use crate::order::{Check, Order, Reason};
 use crate::schema::{DecodeError, DomainEvent, SchemaId};
 
@@ -69,6 +77,59 @@ pub struct PaymentCaptured {
     pub reference: Option<ProcessorRef>,
     /// For cash: what the customer handed over, and any cash rounding.
     pub cash: Option<CashTendered>,
+    /// For a card: what the terminal told of it (version 2).
+    pub card: Option<Card>,
+}
+
+code_enum! {
+    /// How a card was read.
+    pub enum Entry {
+        /// Tapped: contactless, a card or a wallet.
+        Tap = 0,
+        /// Its chip, inserted.
+        Chip = 1,
+        /// Its stripe, swiped.
+        Swipe = 2,
+        /// Its number, keyed in on the terminal.
+        Keyed = 3,
+    }
+}
+
+/// What a terminal tells of the card that paid: what a receipt shows, and never more. Keel never
+/// sees a card's number (ADR-0035).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Card {
+    /// Its brand, such as `Visa`.
+    pub brand: Name,
+    /// The last four digits of its number.
+    pub last_four: LastFour,
+    /// How it was read.
+    pub entry: Entry,
+    /// The issuer's authorization code.
+    pub auth_code: Option<AuthCode>,
+}
+
+impl Field for Card {
+    fn to_value(&self) -> Value {
+        Record::default()
+            .field(1, &self.brand)
+            .field(2, &self.last_four)
+            .field(3, &self.entry)
+            .optional(4, self.auth_code.as_ref())
+            .build()
+    }
+
+    fn from_value(value: &Value) -> Option<Card> {
+        let mut fields = Fields::read(value).ok()?;
+        let card = Card {
+            brand: fields.required(1, "brand").ok()?,
+            last_four: fields.required(2, "last four").ok()?,
+            entry: fields.required(3, "entry").ok()?,
+            auth_code: fields.optional(4, "authorization code").ok()?,
+        };
+        fields.finish().ok()?;
+        Some(card)
+    }
 }
 
 /// What a customer paid in cash.
@@ -117,6 +178,9 @@ impl PaymentCaptured {
             return Err(PayloadError::Invalid("tip"));
         }
         let Some(cash) = self.cash else { return Ok(()) };
+        if self.card.is_some() {
+            return Err(PayloadError::Invalid("card"));
+        }
         if cash
             .rounding
             .is_some_and(|rounding| rounding.currency() != currency || rounding.is_zero())
@@ -152,19 +216,23 @@ pub enum PaymentEvent {
 /// The schemas, in the order of `PaymentEvent`'s variants.
 const INITIATED: SchemaId = SchemaId { name: "payment.initiated", version: 1 };
 const AUTHORIZED: SchemaId = SchemaId { name: "payment.authorized", version: 1 };
-const CAPTURED: SchemaId = SchemaId { name: "payment.captured", version: 1 };
+const CAPTURED_V1: SchemaId = SchemaId { name: "payment.captured", version: 1 };
+const CAPTURED: SchemaId = SchemaId { name: "payment.captured", version: 2 };
 const FAILED: SchemaId = SchemaId { name: "payment.failed", version: 1 };
 const VOIDED: SchemaId = SchemaId { name: "payment.voided", version: 1 };
 
 impl DomainEvent for PaymentEvent {
     const STREAM: &'static str = "payment";
 
-    const SCHEMAS: &'static [SchemaId] = &[INITIATED, AUTHORIZED, CAPTURED, FAILED, VOIDED];
+    const SCHEMAS: &'static [SchemaId] =
+        &[INITIATED, AUTHORIZED, CAPTURED_V1, CAPTURED, FAILED, VOIDED];
 
     fn schema(&self) -> SchemaId {
         match self {
             PaymentEvent::Initiated(_) => INITIATED,
             PaymentEvent::Authorized(_) => AUTHORIZED,
+            // Written as the oldest version that holds it: a capture without a card, as version 1.
+            PaymentEvent::Captured(captured) if captured.card.is_none() => CAPTURED_V1,
             PaymentEvent::Captured(_) => CAPTURED,
             PaymentEvent::Failed(_) => FAILED,
             PaymentEvent::Voided(_) => VOIDED,
@@ -187,7 +255,8 @@ impl DomainEvent for PaymentEvent {
                 .optional(2, captured.tip.as_ref())
                 .optional(3, captured.reference.as_ref())
                 .optional(4, captured.cash.as_ref().map(|cash| &cash.tendered))
-                .optional(5, captured.cash.as_ref().and_then(|cash| cash.rounding.as_ref())),
+                .optional(5, captured.cash.as_ref().and_then(|cash| cash.rounding.as_ref()))
+                .optional(6, captured.card.as_ref()),
             PaymentEvent::Failed(ended) | PaymentEvent::Voided(ended) => record
                 .field(1, &ended.reason.code)
                 .optional(2, ended.reason.note.as_ref())
@@ -221,8 +290,10 @@ impl DomainEvent for PaymentEvent {
                 return Err(PayloadError::Invalid("amount").into());
             }
             PaymentEvent::Authorized(authorized)
+        } else if CAPTURED_V1.matches(schema) {
+            PaymentEvent::Captured(read_captured(&mut fields, false)?)
         } else if CAPTURED.matches(schema) {
-            PaymentEvent::Captured(read_captured(&mut fields)?)
+            PaymentEvent::Captured(read_captured(&mut fields, true)?)
         } else if FAILED.matches(schema) || VOIDED.matches(schema) {
             let ended = PaymentEnded {
                 reason: Reason {
@@ -244,18 +315,24 @@ impl DomainEvent for PaymentEvent {
     }
 }
 
-fn read_captured(fields: &mut Fields<'_>) -> Result<PaymentCaptured, PayloadError> {
+/// Reads a capture, with a card if `with_card`: version 2. A version 2 payload without a card
+/// isn't valid, since it is written as version 1: each capture has one encoding.
+fn read_captured(
+    fields: &mut Fields<'_>,
+    with_card: bool,
+) -> Result<PaymentCaptured, PayloadError> {
     let amount = fields.required(1, "amount")?;
     let tip = fields.optional(2, "tip")?;
     let reference = fields.optional(3, "reference")?;
     let tendered = fields.optional(4, "tendered")?;
     let rounding = fields.optional(5, "rounding")?;
+    let card = if with_card { Some(fields.required(6, "card")?) } else { None };
     let cash = match (tendered, rounding) {
         (Some(tendered), rounding) => Some(CashTendered { tendered, rounding }),
         (None, None) => None,
         (None, Some(_)) => return Err(PayloadError::Invalid("rounding")),
     };
-    let captured = PaymentCaptured { amount, tip, reference, cash };
+    let captured = PaymentCaptured { amount, tip, reference, cash, card };
     captured.validate()?;
     Ok(captured)
 }

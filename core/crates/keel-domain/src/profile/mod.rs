@@ -37,6 +37,11 @@
 //! A format-1 profile has no roles: every member may do everything, and signs in with no PIN.
 //! In format 2, every member has a role of the profile's, and a PIN.
 //!
+//! Format 3 adds key 13, the kitchen, and allergens in the catalog (ADR-0034); its roles are
+//! optional. Format 4 adds key 14, tipping ([`Tipping`]), and the `payment.resolve` action in a
+//! role's permissions (ADR-0035); its roles and kitchen are optional, as in format 3. Each
+//! profile is written in the earliest format that holds it, so it has one encoding.
+//!
 //! The pricing rules: `{1: extension rounding, 2: discount rounding, 3: taxes, 4: [tax rounding
 //! scope, mode]}`. A tax is `{1: identifier, 2: name, 3: rate, 4: tax categories, 5: dining}`:
 //! its rate a decimal fraction in text, `0.08875` for 8.875%, with no trailing zeros; its tax
@@ -62,6 +67,7 @@ mod kitchen;
 mod rules;
 #[cfg(test)]
 mod tests;
+mod tipping;
 
 use core::num::{NonZeroU8, NonZeroU32};
 use std::collections::{BTreeMap, BTreeSet};
@@ -80,6 +86,7 @@ pub use kitchen::{
     Aging, Allergen, Kitchen, MAX_HOST, MAX_ROUTED, MAX_ROUTES, MAX_STATIONS, Printer, Route,
     Routed, Station,
 };
+pub use tipping::{MAX_PRESET, MAX_PRESETS, TipPrompt, Tipping};
 
 use crate::codec::{
     CatalogVersion, CodeSet, Field, Fields, Name, PayloadError, Record, RulesVersion,
@@ -97,6 +104,10 @@ pub const FORMAT_ROLES: u64 = 2;
 
 /// The profile format of a profile with a kitchen, or allergens, and roles or none (ADR-0034).
 pub const FORMAT_KITCHEN: u64 = 3;
+
+/// The profile format of a profile with tipping, or a role that may resolve a payment by hand,
+/// and a kitchen, allergens and roles or none (ADR-0035).
+pub const FORMAT_PAYMENTS: u64 = 4;
 
 /// The most roles a profile has.
 pub const MAX_ROLES: usize = 100;
@@ -195,6 +206,8 @@ pub struct ProfileData {
     pub roles: Vec<Role>,
     /// Its kitchen, if it has one (ADR-0034).
     pub kitchen: Option<Kitchen>,
+    /// How it takes tips: `None` for no tips (ADR-0035).
+    pub tipping: Option<Tipping>,
 }
 
 /// A location profile, checked whole.
@@ -273,6 +286,9 @@ impl Profile {
         if let Some(kitchen) = &data.kitchen {
             kitchen::check(kitchen, &data.catalog, &index)?;
         }
+        if let Some(tipping) = &data.tipping {
+            tipping::check(tipping)?;
+        }
         let catalog_version =
             CatalogVersion::from_bytes(sha256(&catalog_value(&data.catalog).encode()));
         let rules_version =
@@ -289,11 +305,12 @@ impl Profile {
         let value = cbor::decode(bytes)?;
         let mut fields = Fields::read(&value)?;
         let format: u64 = fields.required(key::FORMAT, "profile format")?;
-        if format != FORMAT && format != FORMAT_ROLES && format != FORMAT_KITCHEN {
+        if ![FORMAT, FORMAT_ROLES, FORMAT_KITCHEN, FORMAT_PAYMENTS].contains(&format) {
             return Err(ProfileError::Format(format));
         }
-        // Format 2 has roles, and format 1 none: its key 12 is unknown. Format 3 has them or
-        // not, and its kitchen or not; keys 12 and 13 are unknown before it.
+        // Format 2 has roles, and format 1 none: its key 12 is unknown. Formats 3 and 4 have them
+        // or not, and a kitchen or not; keys 12 and 13 are unknown before them, and key 14,
+        // tipping, before format 4.
         let roles = match format {
             FORMAT_ROLES => {
                 let roles: Vec<Role> = fields.required(key::ROLES, "roles")?;
@@ -302,7 +319,7 @@ impl Profile {
                 }
                 roles
             }
-            FORMAT_KITCHEN => {
+            FORMAT_KITCHEN | FORMAT_PAYMENTS => {
                 let roles: Option<Vec<Role>> = fields.optional(key::ROLES, "roles")?;
                 if roles.as_ref().is_some_and(Vec::is_empty) {
                     return Err(ProfileError::Invalid("a profile's roles, written and empty"));
@@ -312,7 +329,12 @@ impl Profile {
             _ => Vec::new(),
         };
         let kitchen: Option<Kitchen> =
-            if format == FORMAT_KITCHEN { fields.optional(key::KITCHEN, "kitchen")? } else { None };
+            if format >= FORMAT_KITCHEN { fields.optional(key::KITCHEN, "kitchen")? } else { None };
+        let tipping: Option<Tipping> = if format == FORMAT_PAYMENTS {
+            fields.optional(key::TIPPING, "tipping")?
+        } else {
+            None
+        };
         let business_day: BusinessDay = fields.required(key::BUSINESS_DAY, "business day")?;
         let rules = fields.required::<RulesField>(key::RULES, "pricing rules")?.0;
         let catalog = fields.required::<CatalogField>(key::CATALOG, "catalog")?.0;
@@ -331,18 +353,16 @@ impl Profile {
             team: fields.required(key::TEAM, "team")?,
             roles,
             kitchen,
+            tipping,
         };
         fields.finish()?;
-        // A profile has one encoding: format 3 only with what needs it, and allergens only in
-        // format 3, which older kernels refuse whole rather than misread.
-        let needs = needs_kitchen_format(&data);
-        if format == FORMAT_KITCHEN && !needs {
+        // A profile has one encoding: the earliest format that holds it. Allergens need format 3
+        // or later, and a role that may resolve a payment format 4, which older kernels refuse
+        // whole rather than misread.
+        if format != format_of(&data) {
             return Err(ProfileError::Invalid(
-                "a format-3 profile with no kitchen and no allergens",
+                "a profile not in the earliest format that holds it",
             ));
-        }
-        if format != FORMAT_KITCHEN && has_allergens(&data.catalog) {
-            return Err(ProfileError::Invalid("allergens in a profile before format 3"));
         }
         Profile::new(data)
     }
@@ -350,15 +370,8 @@ impl Profile {
     /// The profile's canonical encoding.
     pub fn encode(&self) -> Vec<u8> {
         let data = &self.data;
-        // A profile without roles is written as format 1, and one without a kitchen or
-        // allergens as format 1 or 2, byte for byte as before.
-        let format = if needs_kitchen_format(data) {
-            FORMAT_KITCHEN
-        } else if data.roles.is_empty() {
-            FORMAT
-        } else {
-            FORMAT_ROLES
-        };
+        // A profile is written in the earliest format that holds it, byte for byte as before.
+        let format = format_of(data);
         let roles = (!data.roles.is_empty()).then_some(&data.roles);
         Record::default()
             .field(key::FORMAT, &format)
@@ -374,6 +387,7 @@ impl Profile {
             .field(key::TEAM, &data.team)
             .optional(key::ROLES, roles)
             .optional(key::KITCHEN, data.kitchen.as_ref())
+            .optional(key::TIPPING, data.tipping.as_ref())
             .build()
             .encode()
     }
@@ -724,11 +738,26 @@ mod key {
     pub(super) const TEAM: u64 = 11;
     pub(super) const ROLES: u64 = 12;
     pub(super) const KITCHEN: u64 = 13;
+    pub(super) const TIPPING: u64 = 14;
 }
 
-/// Whether `data` is written as format 3: it has a kitchen, or allergens.
-fn needs_kitchen_format(data: &ProfileData) -> bool {
-    data.kitchen.is_some() || has_allergens(&data.catalog)
+/// The earliest format that holds `data`: 4 with tipping, or a role that may resolve a payment
+/// by hand (ADR-0035); 3 with a kitchen or allergens (ADR-0034); 2 with roles; 1 otherwise.
+fn format_of(data: &ProfileData) -> u64 {
+    let resolves = data
+        .roles
+        .iter()
+        .flat_map(|role| &role.permissions)
+        .any(|permission| permission.action.since_payments());
+    if data.tipping.is_some() || resolves {
+        FORMAT_PAYMENTS
+    } else if data.kitchen.is_some() || has_allergens(&data.catalog) {
+        FORMAT_KITCHEN
+    } else if data.roles.is_empty() {
+        FORMAT
+    } else {
+        FORMAT_ROLES
+    }
 }
 
 /// Whether any item or modifier of `catalog` gives allergens.

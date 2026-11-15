@@ -8,9 +8,11 @@
 //!   percentage, in basis points, each absent when unlimited.
 //! - **A request** ([`Request`]) is an action with the amount or percentage it is for. A role
 //!   permits it if it lists the action and the request is within its limits.
-//! - **An approval** is an event, `approval.granted` v1, in a stream of its own of kind
+//! - **An approval** is an event, `approval.granted`, in a stream of its own of kind
 //!   [`STREAM`], written with the events of the action it approves, which name it in their
-//!   envelope.
+//!   envelope. Version 1 approves the actions of ADR-0029; version 2, the same keys, an action
+//!   that came later too (ADR-0035). An approval is written as version 1 when it can be, so a
+//!   kernel that knows version 1 alone reads it, and one of a later action as version 2.
 //!
 //! | Schema | Keys |
 //! |---|---|
@@ -52,6 +54,7 @@ const PASSES: u32 = 2;
 const LANES: u32 = 1;
 
 const GRANTED: SchemaId = SchemaId { name: "approval.granted", version: 1 };
+const GRANTED_V2: SchemaId = SchemaId { name: "approval.granted", version: 2 };
 
 code_enum! {
     /// What a member may do, or be approved to do (ADR-0029, decision 3).
@@ -76,6 +79,9 @@ code_enum! {
         ReceiptReprint = 8,
         /// Mark an item available or not (86).
         ItemAvailability = 9,
+        /// Say by hand whether a card payment no terminal can answer for was charged
+        /// (ADR-0035). Only in a format-4 profile.
+        PaymentResolve = 10,
     }
 }
 
@@ -93,7 +99,14 @@ impl Action {
             Action::DrawerPaidOut => "drawer.paid_out",
             Action::ReceiptReprint => "receipt.reprint",
             Action::ItemAvailability => "item.availability",
+            Action::PaymentResolve => "payment.resolve",
         }
+    }
+
+    /// Whether the action came with card payments (ADR-0035), so a role that permits it needs
+    /// a format-4 profile, which older kernels refuse whole rather than misread.
+    pub const fn since_payments(self) -> bool {
+        matches!(self, Action::PaymentResolve)
     }
 
     /// The action named `name`.
@@ -447,10 +460,11 @@ pub enum ApprovalEvent {
 impl DomainEvent for ApprovalEvent {
     const STREAM: &'static str = STREAM;
 
-    const SCHEMAS: &'static [SchemaId] = &[GRANTED];
+    const SCHEMAS: &'static [SchemaId] = &[GRANTED, GRANTED_V2];
 
     fn schema(&self) -> SchemaId {
         match self {
+            ApprovalEvent::Granted(granted) if granted.action.since_payments() => GRANTED_V2,
             ApprovalEvent::Granted(_) => GRANTED,
         }
     }
@@ -468,12 +482,18 @@ impl DomainEvent for ApprovalEvent {
     }
 
     fn from_value(schema: &SchemaRef, payload: &Value) -> Result<ApprovalEvent, DecodeError> {
-        if !GRANTED.matches(schema) {
+        let later = GRANTED_V2.matches(schema);
+        if !GRANTED.matches(schema) && !later {
             return Err(DecodeError::UnknownSchema);
         }
         let mut fields = Fields::read(payload)?;
         let approver = fields.required(1, "approver")?;
-        let action = fields.required(2, "action")?;
+        let action: Action = fields.required(2, "action")?;
+        // Each version approves its own actions: version 1 those of ADR-0029, as it always
+        // has, and version 2 those that came later, so each approval has one encoding.
+        if action.since_payments() != later {
+            return Err(PayloadError::Invalid("action").into());
+        }
         let amount = fields.optional(3, "amount")?;
         let percent: Option<Number> = fields.optional(4, "percent")?;
         let subject = fields.optional(5, "subject")?;

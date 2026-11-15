@@ -179,6 +179,7 @@ fn payments_are_projected_and_found_by_their_order() {
         amount: usd(750),
     });
     let captured = PaymentEvent::Captured(PaymentCaptured {
+        card: None,
         amount: usd(750),
         tip: Some(usd(100)),
         reference: None,
@@ -420,7 +421,8 @@ const GOLDEN_PAYMENTS: &str = "Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 
     Integer(450) | Text(\"USD\") | \
     Blob([1, 160, 229, 79, 176, 0, 117, 219, 191, 218, 190, 134, 203, 190, 170, 17]) | \
     Text(\"2026-09-28\") | Null | Null | Integer(0) | Integer(0) | Integer(1) | \
-    Blob([1, 160, 229, 79, 176, 0, 0, 4]) | Blob([1, 160, 229, 79, 176, 0, 0, 4])";
+    Blob([1, 160, 229, 79, 176, 0, 0, 4]) | Blob([1, 160, 229, 79, 176, 0, 0, 4]) | \
+    Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 3, 0])";
 
 /// A drawer session's events are projected (ADR-0031): found by its device and state, and by
 /// its business date.
@@ -510,8 +512,12 @@ fn refunds_are_projected_and_found_by_order_and_date() {
     let order = order_id();
     let refund: Id<Refund> = id(0x8100);
     let draft = |event: &RefundEvent| domain_draft(refund.cast(), event);
-    let initiated =
-        RefundEvent::Initiated(RefundInitiated { order, tender: Tender::Cash, amount: usd(708) });
+    let initiated = RefundEvent::Initiated(RefundInitiated {
+        order,
+        tender: Tender::Cash,
+        amount: usd(708),
+        payment: None,
+    });
     let events = append(&mut store, vec![draft(&initiated)], at(0));
     let summary = store.refund(refund).unwrap().unwrap();
     assert_eq!(summary.state, RefundState::Initiated);
@@ -545,6 +551,77 @@ fn refunds_are_projected_and_found_by_order_and_date() {
         (RefundState::Unstarted, None, None)
     );
     assert_eq!(summary.conflicts, 1);
+}
+
+/// Who took a payment is who initiated it, whoever recorded its outcome: a card's terminal, as
+/// the system, records its capture (ADR-0035).
+#[test]
+fn a_payment_is_the_members_who_initiated_it() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let order = order_id();
+    let payment: Id<Payment> = id(0x8300);
+    let initiated = PaymentEvent::Initiated(PaymentInitiated {
+        order,
+        check: order.cast(),
+        tender: Tender::Card,
+        amount: usd(450),
+    });
+    let captured = PaymentEvent::Captured(PaymentCaptured {
+        amount: usd(450),
+        tip: Some(usd(50)),
+        reference: None,
+        cash: None,
+        card: None,
+    });
+    let mut by_terminal = payment_draft(payment, &captured);
+    by_terminal.actor = Actor::System(keel_events::envelope::Component::new("terminal").unwrap());
+    append(&mut store, vec![payment_draft(payment, &initiated), by_terminal], at(0));
+    let summary = store.payment(payment).unwrap().unwrap();
+    assert_eq!((summary.member, summary.tip), (Some(id(0x300)), Some(usd(50))));
+}
+
+/// A card refund is projected with the payment it goes back to, and its failed attempts: owed
+/// while they fail, with the latest reason, and none once it completes (ADR-0035).
+#[test]
+fn a_card_refund_is_projected_with_its_payment_and_failures() {
+    use keel_domain::codec::ReasonCode;
+    use keel_domain::order::Reason;
+    use keel_domain::refund::{
+        Refund, RefundCompleted, RefundEvent, RefundFailed, RefundInitiated,
+    };
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let order = order_id();
+    let refund: Id<Refund> = id(0x8200);
+    let paid_by: Id<Payment> = id(0x8000);
+    let draft = |event: &RefundEvent| domain_draft(refund.cast(), event);
+    let initiated = RefundEvent::Initiated(RefundInitiated {
+        order,
+        tender: Tender::Card,
+        amount: usd(450),
+        payment: Some(paid_by),
+    });
+    let failed = |code: &str| {
+        RefundEvent::Failed(RefundFailed {
+            reason: Reason { code: ReasonCode::new(code).unwrap(), note: None },
+            reference: None,
+        })
+    };
+    append(&mut store, vec![draft(&initiated), draft(&failed("timeout"))], at(0));
+    append(&mut store, vec![draft(&failed("declined"))], at(1));
+    let summary = store.refund(refund).unwrap().unwrap();
+    assert_eq!(summary.state, RefundState::Initiated);
+    assert_eq!(summary.info.unwrap().payment, Some(paid_by));
+    assert_eq!(summary.failures, 2);
+    assert_eq!(summary.failure, Some(ReasonCode::new("declined").unwrap()));
+    store.rebuild_projections().unwrap();
+    assert_eq!(store.refund(refund).unwrap(), Some(summary));
+    let paid = RefundCompleted { amount: usd(450), rounding: None };
+    append(&mut store, vec![draft(&RefundEvent::Completed(paid))], at(2));
+    let summary = store.refund(refund).unwrap().unwrap();
+    assert_eq!((summary.state, summary.completed), (RefundState::Completed, Some(paid)));
+    assert_eq!((summary.failures, summary.failure), (2, None));
 }
 
 /// An item's availability is projected (ADR-0033): whether it is sold out at a time, the items

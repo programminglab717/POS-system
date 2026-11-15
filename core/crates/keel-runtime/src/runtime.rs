@@ -88,6 +88,8 @@ pub struct Runtime<S, E, C, I> {
     printer: Option<PrinterProfile>,
     /// The job with the driver, if one is.
     sending: Option<Id<Job>>,
+    /// The key of the card request with the shell, if one is (ADR-0035).
+    pub(crate) charging: Option<Vec<u8>>,
     /// Its replication, once started.
     pub(crate) sync: Option<crate::sync::Sync>,
     /// Whose publications the runtime takes, and how far into their log it has looked.
@@ -165,6 +167,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             asked: None,
             printer: None,
             sending: None,
+            charging: None,
             key: public_key,
             sync: None,
             published: crate::publication::Watch::default(),
@@ -604,8 +607,17 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         order: Id<Order>,
         tendered: Money,
     ) -> Result<CashPaid, RuntimeError> {
-        // The one open check that holds something, wherever its lines went: found in review, an
-        // order whose lines had all moved off its main check couldn't be paid.
+        let check = self.holding_check(order)?;
+        self.pay_check_cash(order, check, None, tendered)
+    }
+
+    /// The one open check of `order` that holds something, wherever its lines went, or its main
+    /// check when none does: found in review, an order whose lines had all moved off its main
+    /// check couldn't be paid.
+    ///
+    /// # Errors
+    /// [`RuntimeError::Split`] if more than one open check holds something.
+    pub(crate) fn holding_check(&self, order: Id<Order>) -> Result<Id<Check>, RuntimeError> {
         let loaded = self.store.load(Order::new(order))?;
         known(&loaded)?;
         let holding: Vec<Id<Check>> = loaded
@@ -614,12 +626,11 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             .filter(|check| check.is_open() && loaded.lines_on(check.id()).next().is_some())
             .map(Check::id)
             .collect();
-        let check = match holding.as_slice() {
-            [] => order.cast(),
-            [only] => *only,
-            _ => return Err(RuntimeError::Split),
-        };
-        self.pay_check_cash(order, check, None, tendered)
+        match holding.as_slice() {
+            [] => Ok(order.cast()),
+            [only] => Ok(*only),
+            _ => Err(RuntimeError::Split),
+        }
     }
 
     /// Takes `tendered` in cash toward `check` of `order`: `part` of what it owes, or all of it,
@@ -697,15 +708,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                     applied,
                 )?;
                 append(w, payment.cast(), &started, &meta)?;
-                let captured = PaymentCaptured {
-                    amount: applied,
-                    tip: None,
-                    reference: None,
-                    cash: Some(CashTendered {
-                        tendered,
-                        rounding: (!cash.rounding.is_zero()).then_some(cash.rounding),
-                    }),
-                };
+                let captured = in_cash(applied, tendered, cash.rounding);
                 let paying = w.load(Payment::new(payment))?;
                 let event = paying.decide(location, PaymentCommand::Capture(captured))?;
                 let captured = append(w, payment.cast(), &event, &meta)?;
@@ -731,24 +734,19 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                     meta.now,
                 )?;
             }
-            let checkout = Checkout::new(&loaded, paid.iter(), rules, profile.rules_version());
-            if checkout.balance(check)?.due.is_positive() {
-                let ticket = ticket::ticket(&loaded, &paid, profile, locale)?;
-                return Ok(CashPaid { change: Amount::new(change, locale), ticket });
-            }
-            let closed = checkout.close_check(location, device, check)?;
-            let closing = append(w, order.cast(), &closed, &meta)?;
-            let loaded = w.load(Order::new(order))?;
-            // The order closes with the last of its checks that hold something.
-            if finished(&loaded) {
-                let event = loaded.decide(location, device, OrderCommand::Close)?;
-                append(w, order.cast(), &event, &meta)?;
-            }
-            let loaded = w.load(Order::new(order))?;
-            let ticket = ticket::ticket(&loaded, &paid, profile, locale)?;
-            let receipt =
-                CheckReceipt { job: receipt_job, check, cashier: cashier.as_ref(), at: closed_at };
-            enqueue_receipt(w, &ticket, &paid, &receipt, closing, profile, locale, meta.now)?;
+            let closing = Settle {
+                order,
+                check,
+                location,
+                device,
+                receipt: CheckReceipt {
+                    job: receipt_job,
+                    check,
+                    cashier: cashier.as_ref(),
+                    at: closed_at,
+                },
+            };
+            let ticket = settle(w, &closing, &paid, &meta, profile, locale)?;
             Ok(CashPaid { change: Amount::new(change, locale), ticket })
         })
     }
@@ -1434,11 +1432,54 @@ fn finished(order: &Order) -> bool {
 }
 
 /// The receipt of a check just closed, to print: its job, the check, and who closed it when.
-struct CheckReceipt<'a> {
-    job: Id<Job>,
-    check: Id<Check>,
-    cashier: Option<&'a keel_domain::codec::Name>,
-    at: keel_types::LocalTime,
+pub(crate) struct CheckReceipt<'a> {
+    pub(crate) job: Id<Job>,
+    pub(crate) check: Id<Check>,
+    pub(crate) cashier: Option<&'a keel_domain::codec::Name>,
+    pub(crate) at: keel_types::LocalTime,
+}
+
+/// What a payment's write settles once the payment is recorded: `check` of `order`, from
+/// `device` at `location`, and the receipt it prints if it closes.
+pub(crate) struct Settle<'a> {
+    pub(crate) order: Id<Order>,
+    pub(crate) check: Id<Check>,
+    pub(crate) location: Id<keel_events::envelope::Location>,
+    pub(crate) device: Id<Device>,
+    pub(crate) receipt: CheckReceipt<'a>,
+}
+
+/// Settles a check in the write `w` that recorded a payment toward it, whose order's payments
+/// are now `paid`: once they cover the check, it closes and its receipt prints, and the order
+/// closes with the last of its checks that hold something. Answers with the order's ticket.
+pub(crate) fn settle<S: Signer, E: Entropy>(
+    w: &mut Writing<'_, S, E>,
+    closing: &Settle<'_>,
+    paid: &[Payment],
+    meta: &Meta,
+    profile: &Profile,
+    locale: Locale,
+) -> Result<Ticket, RuntimeError> {
+    let (order, check) = (closing.order, closing.check);
+    let (location, device) = (closing.location, closing.device);
+    let loaded = w.load(Order::new(order))?;
+    let rules = &profile.data().rules;
+    let checkout = Checkout::new(&loaded, paid.iter(), rules, profile.rules_version());
+    if checkout.balance(check)?.due.is_positive() {
+        return ticket::ticket(&loaded, paid, profile, locale);
+    }
+    let closed = checkout.close_check(location, device, check)?;
+    let closed_by = append(w, order.cast(), &closed, meta)?;
+    let loaded = w.load(Order::new(order))?;
+    // The order closes with the last of its checks that hold something.
+    if finished(&loaded) {
+        let event = loaded.decide(location, device, OrderCommand::Close)?;
+        append(w, order.cast(), &event, meta)?;
+    }
+    let loaded = w.load(Order::new(order))?;
+    let ticket = ticket::ticket(&loaded, paid, profile, locale)?;
+    enqueue_receipt(w, &ticket, paid, &closing.receipt, closed_by, profile, locale, meta.now)?;
+    Ok(ticket)
 }
 
 /// Enqueues the receipt of `receipt.check`, which `closing` closed: the check's own, for a split
@@ -1476,4 +1517,11 @@ fn enqueue_receipt<S: Signer, E: Entropy>(
         .map_or_else(|| receipt::short(shown, &closing_info, profile, locale), Ok)?;
     w.enqueue(&print::effect(receipt.job, JobKind::Receipt, &doc, Some(closing))?, now)?;
     Ok(())
+}
+
+/// A capture of `amount` in cash: `tendered` handed over, with the cash `rounding`, if any.
+fn in_cash(amount: Money, tendered: Money, rounding: Money) -> PaymentCaptured {
+    let rounding = (!rounding.is_zero()).then_some(rounding);
+    let cash = Some(CashTendered { tendered, rounding });
+    PaymentCaptured { amount, tip: None, reference: None, cash, card: None }
 }

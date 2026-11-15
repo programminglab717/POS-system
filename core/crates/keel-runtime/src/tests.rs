@@ -93,6 +93,26 @@ fn open_register(scratch: &Scratch, profile: Profile, now: &str, locale: Locale)
     .unwrap()
 }
 
+/// The demo café's register opened again on the same store, its clock reading `now`, drawing
+/// identifiers from `seed`, so that they are new.
+pub(crate) fn register_again(scratch: &Scratch, now: &str, seed: u64) -> TestRuntime {
+    let identity = Identity {
+        device: id::<Device>(0xd1),
+        signer: SoftwareSigner::from_secret(SignatureAlgorithm::EdDsa, &[7; 32]).unwrap(),
+    };
+    Runtime::open(
+        scratch.db(),
+        StoreKey::new(&mut [0x4b; 32]),
+        identity,
+        demo().unwrap(),
+        ManualClock::new(now.parse().unwrap()),
+        SeededEntropy::new(seed),
+        SeededEntropy::new(seed.wrapping_add(1)),
+        Locale::EN_US,
+    )
+    .unwrap()
+}
+
 /// The demo café's profile, changed by `change`.
 pub(crate) fn demo_with(change: impl FnOnce(&mut ProfileData)) -> Profile {
     let mut data = demo().unwrap().data().clone();

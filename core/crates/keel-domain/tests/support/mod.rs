@@ -5,7 +5,8 @@
 use core::num::{NonZeroU8, NonZeroU16};
 
 use keel_domain::codec::{
-    CatalogVersion, Change, IdSet, Name, Note, ProcessorRef, ReasonCode, RulesVersion,
+    AuthCode, CatalogVersion, Change, IdSet, LastFour, Name, Note, ProcessorRef, ReasonCode,
+    RulesVersion,
 };
 use keel_domain::order::{
     Allocation, AttributesChanged, Channel, CheckClosed, ChosenModifier, DiscountApplied,
@@ -14,8 +15,8 @@ use keel_domain::order::{
     Placement, Prefix, Reason, Refusal, TaxCharge,
 };
 use keel_domain::payment::{
-    CashTendered, PaymentAuthorized, PaymentCaptured, PaymentEnded, PaymentEvent, PaymentInitiated,
-    Tender,
+    Card, CashTendered, Entry, PaymentAuthorized, PaymentCaptured, PaymentEnded, PaymentEvent,
+    PaymentInitiated, Tender,
 };
 use keel_types::{Currency, Id, Money, Quantity, Unit};
 use proptest::prelude::*;
@@ -299,9 +300,25 @@ fn any_ended() -> impl Strategy<Value = PaymentEnded> {
         .prop_map(|(reason, reference)| PaymentEnded { reason, reference })
 }
 
+/// The card a terminal tells of (ADR-0035): any brand, four digits, any entry, and maybe a code.
+pub(crate) fn any_card() -> impl Strategy<Value = Card> {
+    (
+        any_name(),
+        "[0-9]{4}",
+        any_code(Entry::ALL),
+        prop::option::of(prop_oneof!["[A-Z0-9]{6}", "[A-Za-z0-9]{1,12}"]),
+    )
+        .prop_map(|(brand, last, entry, code)| Card {
+            brand,
+            last_four: LastFour::new(&last).unwrap(),
+            entry,
+            auth_code: code.map(|code| AuthCode::new(&code).unwrap()),
+        })
+}
+
 /// A capture that satisfies the payload rules: for cash, what was tendered covers the amount,
-/// the tip and the rounding.
-pub(crate) fn any_captured() -> impl Strategy<Value = PaymentCaptured> {
+/// the tip and the rounding; a card's, half the time, tells of the card.
+pub(crate) fn any_captured() -> BoxedStrategy<PaymentCaptured> {
     any_currency().prop_flat_map(|currency| {
         let cash = prop::option::of((0_i64..10_000, prop::option::of(1_i64..=100), any::<bool>()));
         (
@@ -309,8 +326,10 @@ pub(crate) fn any_captured() -> impl Strategy<Value = PaymentCaptured> {
             prop::option::of(positive(currency)),
             prop::option::of(any_reference()),
             cash,
+            prop::option::of(any_card()),
         )
-            .prop_map(move |(amount, tip, reference, cash)| {
+            .prop_map(move |(amount, tip, reference, cash, card)| {
+                let card = card.filter(|_| cash.is_none());
                 let due = tip.map_or(amount, |tip| amount.checked_add(tip).unwrap());
                 let cash = cash.map(|(extra, rounding, down)| {
                     // Rounded down by no more than what is due.
@@ -326,9 +345,11 @@ pub(crate) fn any_captured() -> impl Strategy<Value = PaymentCaptured> {
                         rounding,
                     }
                 });
-                PaymentCaptured { amount, tip, reference, cash }
+                PaymentCaptured { card, amount, tip, reference, cash }
             })
     })
+    // Boxed: unboxed, its value tree's size overflowed a test's stack.
+    .boxed()
 }
 
 /// Any payment event, of any kind.
@@ -454,24 +475,28 @@ pub(crate) fn any_lines_returned() -> BoxedStrategy<LinesReturned> {
 }
 
 /// Any refund event (ADR-0032): started for more than zero by either tender, completed for more
-/// than zero, with or without a rounding other than zero in its currency.
+/// than zero, with or without a rounding other than zero in its currency; or a failed attempt.
 pub(crate) fn any_refund_event() -> BoxedStrategy<keel_domain::refund::RefundEvent> {
-    use keel_domain::refund::{RefundCompleted, RefundEvent, RefundInitiated};
+    use keel_domain::refund::{RefundCompleted, RefundEvent, RefundFailed, RefundInitiated};
     any_currency()
         .prop_flat_map(|currency| {
             let rounding = prop_oneof![-1_000_i64..=-1, 1_i64..=1_000]
                 .prop_map(move |minor| Money::from_minor(minor, currency));
             prop_oneof![
-                (any_id(), any_code(Tender::ALL), positive(currency)).prop_map(
-                    |(order, tender, amount)| RefundEvent::Initiated(RefundInitiated {
-                        order,
-                        tender,
-                        amount
-                    })
-                ),
+                (any_id(), any_code(Tender::ALL), positive(currency), prop::option::of(any_id()))
+                    .prop_map(|(order, tender, amount, payment)| {
+                        // Only a card refund names a payment (ADR-0035).
+                        let payment = payment.filter(|_| tender == Tender::Card);
+                        RefundEvent::Initiated(RefundInitiated { order, tender, amount, payment })
+                    }),
                 (positive(currency), prop::option::of(rounding)).prop_map(|(amount, rounding)| {
                     RefundEvent::Completed(RefundCompleted { amount, rounding })
                 }),
+                (any_reason(), prop::option::of(any_reference())).prop_map(
+                    |(reason, reference)| {
+                        RefundEvent::Failed(RefundFailed { reason, reference })
+                    }
+                ),
             ]
         })
         .boxed()

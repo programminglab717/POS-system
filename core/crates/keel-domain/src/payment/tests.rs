@@ -7,7 +7,7 @@ use keel_types::{Currency, Hlc, Id, Money};
 
 use super::*;
 use crate::aggregate::{Aggregate, EventMeta};
-use crate::codec::{Note, PayloadError, ProcessorRef, ReasonCode};
+use crate::codec::{AuthCode, LastFour, Name, Note, PayloadError, ProcessorRef, ReasonCode};
 use crate::order::Reason;
 use crate::schema::{DecodeError, DomainEvent};
 
@@ -47,11 +47,18 @@ fn authorized(amount: Money) -> PaymentEvent {
 }
 
 fn captured(amount: Money) -> PaymentCaptured {
-    PaymentCaptured { amount, tip: None, reference: Some(reference("pi_1")), cash: None }
+    PaymentCaptured {
+        card: None,
+        amount,
+        tip: None,
+        reference: Some(reference("pi_1")),
+        cash: None,
+    }
 }
 
 fn in_cash(amount: Money, tendered: Money, rounding: Option<Money>) -> PaymentCaptured {
     PaymentCaptured {
+        card: None,
         amount,
         tip: None,
         reference: None,
@@ -262,7 +269,7 @@ fn events_outside_the_payment_are_not_applied() {
     let meta = script.meta_at(location());
     let newer = SchemaRef {
         name: SchemaName::new("payment.captured").unwrap(),
-        version: 2.try_into().unwrap(),
+        version: 3.try_into().unwrap(),
     };
     script.payment.skip(&meta, &newer, &DecodeError::UnknownSchema);
     assert!(script.payment.needs_update());
@@ -431,12 +438,29 @@ fn the_payload_formats_are_pinned() {
         ),
         (
             PaymentEvent::Captured(PaymentCaptured {
+                card: None,
                 amount: usd(1089),
                 tip: Some(usd(200)),
                 reference: Some(reference("pi_3Keel01")),
                 cash: None,
             }),
             "a3018219044163555344028218c863555344036a70695f334b65656c3031",
+        ),
+        (
+            // Version 2: a card capture that tells of its card (ADR-0035).
+            PaymentEvent::Captured(PaymentCaptured {
+                card: Some(Card {
+                    brand: Name::new("Visa").unwrap(),
+                    last_four: LastFour::new("4242").unwrap(),
+                    entry: Entry::Tap,
+                    auth_code: Some(AuthCode::new("A1B2C3").unwrap()),
+                }),
+                amount: usd(1089),
+                tip: Some(usd(200)),
+                reference: Some(reference("pi_3Keel01")),
+                cash: None,
+            }),
+            "a4018219044163555344028218c863555344036a70695f334b65656c303106a401645669736102643432343203000466413142324333",
         ),
         (
             PaymentEvent::Captured(in_cash(cad(1652), cad(2000), Some(cad(-2)))),
@@ -454,18 +478,85 @@ fn the_payload_formats_are_pinned() {
         ),
         (PaymentEvent::Voided(ended("cancelled")), "a1016963616e63656c6c6564"),
     ];
-    let mut covered: Vec<&str> = Vec::new();
+    let mut covered: Vec<(&str, u32)> = Vec::new();
     for (event, hex) in pinned {
         let (schema, payload) = event.encode().unwrap();
         assert_eq!(payload.as_bytes(), bytes(hex).as_slice(), "{}", schema.name);
         assert_eq!(PaymentEvent::decode(&schema, &payload), Ok(event));
         covered.push(event_name(&schema));
     }
+    covered.sort_unstable();
     covered.dedup();
-    let names: Vec<&str> = PaymentEvent::SCHEMAS.iter().map(|schema| schema.name).collect();
+    let mut names: Vec<(&str, u32)> =
+        PaymentEvent::SCHEMAS.iter().map(|schema| (schema.name, schema.version)).collect();
+    names.sort_unstable();
     assert_eq!(covered, names);
 }
 
-fn event_name(schema: &SchemaRef) -> &'static str {
-    PaymentEvent::SCHEMAS.iter().find(|known| known.matches(schema)).unwrap().name
+fn event_name(schema: &SchemaRef) -> (&'static str, u32) {
+    let known = PaymentEvent::SCHEMAS.iter().find(|known| known.matches(schema)).unwrap();
+    (known.name, known.version)
+}
+
+/// A capture is written as the oldest version that holds it: without a card as version 1, with
+/// one as version 2; and version 2 without a card, or version 1 with one, doesn't decode, so a
+/// capture has one encoding (ADR-0035).
+#[test]
+fn a_capture_has_one_version() {
+    let plain = captured(usd(1089));
+    let (schema, payload) = PaymentEvent::Captured(plain.clone()).encode().unwrap();
+    assert_eq!(schema.version.get(), 1);
+    let v2 = SchemaRef { version: 2.try_into().unwrap(), ..schema.clone() };
+    assert!(PaymentEvent::decode(&v2, &payload).is_err());
+    let card = Card {
+        brand: Name::new("Mastercard").unwrap(),
+        last_four: LastFour::new("0005").unwrap(),
+        entry: Entry::Chip,
+        auth_code: None,
+    };
+    let carded = PaymentEvent::Captured(PaymentCaptured { card: Some(card), ..plain });
+    let (schema, payload) = carded.encode().unwrap();
+    assert_eq!(schema.version.get(), 2);
+    assert_eq!(PaymentEvent::decode(&schema, &payload), Ok(carded));
+    let v1 = SchemaRef { version: 1.try_into().unwrap(), ..schema };
+    assert!(PaymentEvent::decode(&v1, &payload).is_err());
+}
+
+/// A card is never on a cash capture: the payload refuses it, and so does the command.
+#[test]
+fn cash_has_no_card() {
+    let card = Card {
+        brand: Name::new("Visa").unwrap(),
+        last_four: LastFour::new("4242").unwrap(),
+        entry: Entry::Tap,
+        auth_code: None,
+    };
+    let cash = PaymentCaptured { card: Some(card), ..in_cash(usd(500), usd(500), None) };
+    assert_eq!(
+        PaymentEvent::Captured(cash.clone()).encode().map(|_| ()),
+        Ok(()),
+        "encoding doesn't check the rules; decoding does"
+    );
+    let (schema, payload) = PaymentEvent::Captured(cash.clone()).encode().unwrap();
+    assert!(PaymentEvent::decode(&schema, &payload).is_err());
+    let script = Script::initiated(Tender::Cash);
+    assert_eq!(decide(&script, PaymentCommand::Capture(cash)), Err(PaymentError::WrongTender));
+}
+
+/// A card's last four are four ASCII digits, and an authorization code 1 to 12 ASCII letters and
+/// digits: what a receipt may show, and nothing more (ADR-0035).
+#[test]
+fn a_card_holds_what_a_receipt_shows_and_no_more() {
+    for good in ["0000", "4242", "9999"] {
+        assert!(LastFour::new(good).is_ok(), "{good}");
+    }
+    for bad in ["", "424", "42424", "424a", "４２４２", " 424", "4242 "] {
+        assert!(LastFour::new(bad).is_err(), "{bad:?}");
+    }
+    for good in ["A", "a1B2c3", "123456789012"] {
+        assert!(AuthCode::new(good).is_ok(), "{good}");
+    }
+    for bad in ["", "1234567890123", "A1-B2", "A1 B2", "Ä1", "A1_B2"] {
+        assert!(AuthCode::new(bad).is_err(), "{bad:?}");
+    }
 }

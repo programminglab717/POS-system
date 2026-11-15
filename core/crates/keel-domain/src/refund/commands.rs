@@ -1,25 +1,30 @@
 //! What a device records of a refund, checked against the refund as it sees it (ADR-0032). Each
 //! refuses what the fold would report: a refund written by another device or at another
 //! location, started twice, completed twice, before it is started, in another currency, or for
-//! more than it was started for.
+//! more than it was started for; a failure after it was completed. A card refund names the
+//! payment it goes back to, and a cash refund names none, nor fails: it is paid back as it is
+//! started (ADR-0035).
 
 use core::cmp::Ordering;
 
 use keel_events::envelope::{Device, Location};
 use keel_types::Id;
 
-use super::events::{RefundCompleted, RefundEvent, RefundInitiated};
+use super::events::{RefundCompleted, RefundEvent, RefundFailed, RefundInitiated};
 use super::state::Refund;
 use crate::codec::PayloadError;
+use crate::payment::Tender;
 use crate::schema::{SchemaError, Unrecordable, check_recordable};
 
 /// What a device asks to record of a refund.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RefundCommand {
     /// Start it.
     Initiate(RefundInitiated),
     /// Record that the money was paid back.
     Complete(RefundCompleted),
+    /// Record that an attempt to pay it back failed.
+    Fail(RefundFailed),
 }
 
 /// Why a refund command was refused.
@@ -47,6 +52,10 @@ pub enum RefundError {
     /// More than the refund was started for.
     #[error("more than the refund is for")]
     BeyondInitiated,
+    /// A card refund that names no payment, a cash refund that names one, or a cash refund's
+    /// failure.
+    #[error("not for the refund's tender")]
+    WrongTender,
     /// The event wouldn't satisfy its schema, such as an amount of zero.
     #[error("invalid event: {0}")]
     Invalid(PayloadError),
@@ -81,19 +90,13 @@ impl Refund {
                 if self.info().is_some() {
                     return Err(RefundError::AlreadyInitiated);
                 }
+                if (initiated.tender == Tender::Card) != initiated.payment.is_some() {
+                    return Err(RefundError::WrongTender);
+                }
                 RefundEvent::Initiated(initiated)
             }
             RefundCommand::Complete(completed) => {
-                let info = self.info().ok_or(RefundError::NotInitiated)?;
-                if info.location != location {
-                    return Err(RefundError::WrongLocation);
-                }
-                if info.device != device {
-                    return Err(RefundError::NotInitiator);
-                }
-                if self.completed().is_some() {
-                    return Err(RefundError::AlreadyCompleted);
-                }
+                let info = self.writable(location, device)?;
                 match completed.amount.compare(info.amount) {
                     Err(_) => return Err(RefundError::WrongCurrency),
                     Ok(Ordering::Greater) => return Err(RefundError::BeyondInitiated),
@@ -101,9 +104,36 @@ impl Refund {
                 }
                 RefundEvent::Completed(completed)
             }
+            RefundCommand::Fail(failed) => {
+                let info = self.writable(location, device)?;
+                if info.tender != Tender::Card {
+                    return Err(RefundError::WrongTender);
+                }
+                RefundEvent::Failed(failed)
+            }
         };
         event.validate().map_err(RefundError::Invalid)?;
         check_recordable(&event)?;
         Ok(event)
+    }
+
+    /// What the refund was started with, if `device` at `location` may record its outcome: it
+    /// started it, there, and it is still owed.
+    fn writable(
+        &self,
+        location: Id<Location>,
+        device: Id<Device>,
+    ) -> Result<&super::state::RefundInfo, RefundError> {
+        let info = self.info().ok_or(RefundError::NotInitiated)?;
+        if info.location != location {
+            return Err(RefundError::WrongLocation);
+        }
+        if info.device != device {
+            return Err(RefundError::NotInitiator);
+        }
+        if self.completed().is_some() {
+            return Err(RefundError::AlreadyCompleted);
+        }
+        Ok(info)
     }
 }

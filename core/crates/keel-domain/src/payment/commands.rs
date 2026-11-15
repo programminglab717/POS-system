@@ -6,7 +6,7 @@
 //! - only a card is authorized, once, for no more than was asked for;
 //! - a capture is for no more than the authorization, or than was asked for;
 //! - a cash capture records the amount tendered, and a card capture doesn't; cash never has a
-//!   processor reference.
+//!   processor reference or a card.
 
 use keel_events::envelope::Location;
 use keel_types::Id;
@@ -112,7 +112,9 @@ impl Payment {
                 PaymentEvent::Authorized(authorized)
             }
             PaymentCommand::Capture(captured) => {
-                if cash != captured.cash.is_some() || cash && captured.reference.is_some() {
+                if cash != captured.cash.is_some()
+                    || cash && (captured.reference.is_some() || captured.card.is_some())
+                {
                     return Err(PaymentError::WrongTender);
                 }
                 if !in_currency(captured.amount) {

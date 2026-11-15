@@ -145,6 +145,7 @@ fn actions_keep_their_codes_and_names() {
         (Action::DrawerPaidOut, 7, "drawer.paid_out"),
         (Action::ReceiptReprint, 8, "receipt.reprint"),
         (Action::ItemAvailability, 9, "item.availability"),
+        (Action::PaymentResolve, 10, "payment.resolve"),
     ];
     assert_eq!(pinned.len(), Action::ALL.len());
     for (action, code, name) in pinned {
@@ -153,7 +154,7 @@ fn actions_keep_their_codes_and_names() {
         assert_eq!(Action::from_code(code), Some(action));
     }
     assert_eq!(Action::named("order.refund"), None);
-    assert_eq!(Action::from_code(10), None);
+    assert_eq!(Action::from_code(11), None);
 }
 
 #[test]
@@ -189,8 +190,9 @@ fn a_cashier_asks_a_manager_who_never_approves_their_own_request() {
 fn a_profile_without_roles_lets_every_member_do_everything_with_no_pin() {
     let mut data = demo().unwrap().data().clone();
     data.roles.clear();
-    // Nor a kitchen, nor allergens, which format 3 alone writes.
+    // Nor a kitchen, nor allergens, which format 3 writes, nor tipping, which format 4 does.
     data.kitchen = None;
+    data.tipping = None;
     for item in &mut data.catalog.items {
         item.allergens.clear();
     }
@@ -279,12 +281,18 @@ fn the_approval_payload_is_pinned() {
             Granted::new(id(0x501), Request::of(Action::OrderVoid), None).unwrap(),
             "a201500192f0c10000700080000000000005010200",
         ),
+        (
+            // Version 2: an action that came with card payments (ADR-0035).
+            Granted::new(id(0x501), Request::of(Action::PaymentResolve), None).unwrap(),
+            "a201500192f0c1000070008000000000000501020a",
+        ),
     ];
     for (granted, hex) in pinned {
         let event = ApprovalEvent::Granted(granted);
         let (schema, payload) = event.encode().unwrap();
         assert_eq!(schema.name.as_str(), "approval.granted");
-        assert_eq!(schema.version.get(), 1);
+        let version = if granted.request().action.since_payments() { 2 } else { 1 };
+        assert_eq!(schema.version.get(), version);
         assert_eq!(payload.as_bytes(), bytes(hex).as_slice());
         assert_eq!(ApprovalEvent::decode(&schema, &payload), Ok(event));
     }
@@ -292,7 +300,7 @@ fn the_approval_payload_is_pinned() {
 
 #[test]
 fn the_registry_lists_the_schema_once_and_refuses_what_breaks_a_rule() {
-    assert_eq!(ApprovalEvent::SCHEMAS, &[GRANTED]);
+    assert_eq!(ApprovalEvent::SCHEMAS, &[GRANTED, GRANTED_V2]);
     assert_eq!(ApprovalEvent::STREAM, "approval");
     let schema = |name: &str, version: u32| SchemaRef {
         name: SchemaName::new(name).unwrap(),
@@ -306,7 +314,14 @@ fn the_registry_lists_the_schema_once_and_refuses_what_breaks_a_rule() {
     let approver = Field::to_value(&id::<TeamMember>(0x501));
     let ok = map(vec![(1, approver.clone()), (2, Value::Unsigned(0))]);
     assert!(ApprovalEvent::from_value(&schema("approval.granted", 1), &ok).is_ok());
-    for (name, version) in [("approval.granted", 2), ("approval.denied", 1)] {
+    // Version 2 approves only the actions that came later: `payment.resolve`, code 10.
+    let resolve = map(vec![(1, approver.clone()), (2, Value::Unsigned(10))]);
+    assert!(ApprovalEvent::from_value(&schema("approval.granted", 2), &resolve).is_ok());
+    assert!(matches!(
+        ApprovalEvent::from_value(&schema("approval.granted", 2), &ok),
+        Err(DecodeError::Malformed(_))
+    ));
+    for (name, version) in [("approval.granted", 3), ("approval.denied", 1)] {
         assert_eq!(
             ApprovalEvent::from_value(&schema(name, version), &ok),
             Err(DecodeError::UnknownSchema),
@@ -320,8 +335,9 @@ fn the_registry_lists_the_schema_once_and_refuses_what_breaks_a_rule() {
         // A percentage on an action without one, and one over 100%.
         map(vec![(1, approver.clone()), (2, Value::Unsigned(4)), (4, Value::Unsigned(10))]),
         map(vec![(1, approver.clone()), (2, Value::Unsigned(2)), (4, Value::Unsigned(10_001))]),
-        // An action this kernel doesn't know, and an unknown key.
+        // An action version 1 doesn't know, one this kernel doesn't, and an unknown key.
         map(vec![(1, approver.clone()), (2, Value::Unsigned(10))]),
+        map(vec![(1, approver.clone()), (2, Value::Unsigned(11))]),
         map(vec![(1, approver.clone()), (2, Value::Unsigned(0)), (6, Value::Unsigned(0))]),
         // No approver.
         map(vec![(2, Value::Unsigned(0))]),

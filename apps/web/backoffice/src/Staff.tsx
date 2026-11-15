@@ -16,6 +16,7 @@ const WORDS: Record<string, string> = {
   "drawer.paid_out": "Pay out of the drawer",
   "receipt.reprint": "Print a receipt again",
   "item.availability": "Mark an item out (86)",
+  "payment.resolve": "Settle a card payment no terminal can answer for",
 };
 
 interface MemberRow {

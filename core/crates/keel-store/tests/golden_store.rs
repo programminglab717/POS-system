@@ -107,6 +107,7 @@ fn stock(store: &mut TestStore) {
             });
             w.append(domain_draft(payment().cast(), &initiated, 0), at(20_000))?;
             let captured = PaymentEvent::Captured(PaymentCaptured {
+                card: None,
                 amount: usd(450),
                 tip: Some(usd(50)),
                 reference: None,

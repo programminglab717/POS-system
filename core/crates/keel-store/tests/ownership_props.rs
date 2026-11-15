@@ -162,6 +162,7 @@ fn peer_log(p: usize, specs: &[Spec]) -> Vec<SignedEvent> {
                     })
                 } else {
                     PaymentEvent::Captured(PaymentCaptured {
+                        card: None,
                         amount: usd(450),
                         tip: None,
                         reference: None,

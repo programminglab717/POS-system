@@ -1,7 +1,9 @@
 //! The `refunds` projection (ADR-0032): one row per refund, so a register finds an order's
-//! refunds, and a day's report finds the day's, without reading every event.
+//! refunds, and a day's report finds the day's, without reading every event. Version 2 adds the
+//! card payment a card refund goes back to, and its failed attempts (ADR-0035).
 
 use keel_domain::aggregate::{Aggregate, fold};
+use keel_domain::codec::ReasonCode;
 use keel_domain::payment::Tender;
 use keel_domain::refund::{Refund, RefundCompleted, RefundInfo};
 use keel_events::envelope;
@@ -17,7 +19,7 @@ use crate::schema::{hlc, id};
 /// The `refunds` projection.
 pub(crate) const REFUNDS: Projection = Projection {
     name: "refunds",
-    version: 1,
+    version: 2,
     kind: "refund",
     key: "refund_id",
     order: "refund_id",
@@ -39,7 +41,10 @@ pub(crate) const REFUNDS: Projection = Projection {
             unreadable INTEGER NOT NULL,
             events INTEGER NOT NULL,
             first_hlc BLOB NOT NULL CHECK (length(first_hlc) = 8),
-            last_hlc BLOB NOT NULL CHECK (length(last_hlc) = 8)
+            last_hlc BLOB NOT NULL CHECK (length(last_hlc) = 8),
+            payment_id BLOB CHECK (payment_id IS NULL OR length(payment_id) = 16),
+            failures INTEGER NOT NULL,
+            failure TEXT
         ) STRICT;
         CREATE INDEX refunds_by_order ON refunds (order_id, first_hlc);
         CREATE INDEX refunds_by_date ON refunds (business_date, first_hlc);
@@ -102,6 +107,10 @@ pub struct RefundSummary {
     pub business_date: Option<BusinessDate>,
     /// Its completion, once paid back.
     pub completed: Option<RefundCompleted>,
+    /// How many attempts to pay it back failed.
+    pub failures: u64,
+    /// Why the latest attempt failed, while it is owed.
+    pub failure: Option<ReasonCode>,
     /// The conflicts in its history, for a person to look at.
     pub conflicts: u64,
     /// Its events this kernel couldn't read: a newer kernel wrote them.
@@ -129,8 +138,8 @@ fn project_refund(
     db.execute(
         "INSERT OR REPLACE INTO refunds (refund_id, state, location, device, order_id, tender, \
          amount, currency, initiated_by, business_date, refunded, rounding, conflicts, \
-         unreadable, events, first_hlc, last_hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, \
-         ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+         unreadable, events, first_hlc, last_hlc, payment_id, failures, failure) VALUES (?1, ?2, \
+         ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             &refund.stream_id().to_bytes()[..],
             RefundState::of(&refund).code(),
@@ -149,6 +158,9 @@ fn project_refund(
             span.events,
             &span.first[..],
             &span.last[..],
+            bytes(info.and_then(|info| info.payment)),
+            refund.failures(),
+            refund.failed().map(|failed| failed.reason.code.as_str().to_owned()),
         ],
     )?;
     Ok(())
@@ -157,11 +169,11 @@ fn project_refund(
 /// The columns a refund summary is read from, in order.
 pub(crate) const REFUND_COLUMNS: &str = "refund_id, state, location, device, order_id, tender, \
     amount, currency, initiated_by, business_date, refunded, rounding, conflicts, unreadable, \
-    events, first_hlc, last_hlc";
+    events, first_hlc, last_hlc, payment_id, failures, failure";
 
 /// Reads a refund summary from a row of [`REFUND_COLUMNS`].
 pub(crate) fn refund_summary(row: &Row<'_>) -> rusqlite::Result<Result<RefundSummary, StoreError>> {
-    let values: Vec<Value> = (0..17).map(|column| row.get(column)).collect::<Result<_, _>>()?;
+    let values: Vec<Value> = (0..20).map(|column| row.get(column)).collect::<Result<_, _>>()?;
     Ok(read_refund(&values))
 }
 
@@ -180,6 +192,7 @@ fn read_refund(values: &[Value]) -> Result<RefundSummary, StoreError> {
                 tender: Tender::from_code(at.unsigned(5)?)
                     .ok_or(StoreError::Corrupt("a refund's tender"))?,
                 amount: Money::from_minor(at.integer(6)?, currency),
+                payment: at.optional_blob(17)?.map(|payment| id(&payment)).transpose()?,
                 initiated_by: id(&at.blob(8)?)?,
             })
         }
@@ -203,6 +216,12 @@ fn read_refund(values: &[Value]) -> Result<RefundSummary, StoreError> {
         info,
         business_date: at.optional_date(9)?,
         completed,
+        failures: at.unsigned(18)?,
+        failure: at
+            .optional_text(19)?
+            .map(|code| ReasonCode::new(&code))
+            .transpose()
+            .map_err(|_| StoreError::Corrupt("a refund's failure"))?,
         conflicts: at.unsigned(12)?,
         unreadable: at.unsigned(13)?,
         events: at.unsigned(14)?,

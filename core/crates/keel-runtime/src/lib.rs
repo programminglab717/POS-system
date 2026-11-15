@@ -14,6 +14,10 @@
 //!   write that closes the order; [`Runtime::next_print_job`] hands them to a driver one at a
 //!   time, and [`Runtime::print_outcome`] records what happened. A job some of which may have been
 //!   sent is never sent again by itself: staff [`Runtime::resolve`] it.
+//! - **Card payments** (ADR-0035): a sale or a card refund is an effect too;
+//!   [`Runtime::next_card_request`] hands it to the shell's connector, and
+//!   [`Runtime::card_outcome`] records what the terminal answered. A request started before is
+//!   only ever asked about, never sent again.
 //! - **A team member signs in** from the profile's team, and every event records them; until one
 //!   does, intents are refused.
 //! - It reads the time only from its [`Clock`](keel_types::Clock) and draws randomness only from
@@ -23,6 +27,7 @@
 //! Like `keel-store`, which it holds, this crate isn't built for `wasm32`.
 
 mod availability;
+mod card;
 mod drawer;
 mod error;
 mod kitchen;
@@ -39,6 +44,8 @@ mod views;
 
 #[cfg(test)]
 mod availability_tests;
+#[cfg(test)]
+mod card_tests;
 #[cfg(test)]
 mod check_tests;
 #[cfg(test)]
@@ -59,14 +66,18 @@ mod staff_tests;
 mod tests;
 
 pub use availability::{ItemRef, SoldOut, Until};
+pub use card::{
+    CardAsk, CardOutcome, CardPaymentView, CardRefundView, CardRequest, CardState, CardTip,
+    FIRST_ASK, LONGEST_ASK, REFUND as CARD_REFUND, SALE as CARD_SALE, TipOffer, TipOffers,
+};
 pub use error::RuntimeError;
 pub use kitchen::{
     ALERT_WINDOW, Aging, FALLBACK_WAIT, KitchenAlert, KitchenScreen, ScreenItem, ScreenTicket,
     StationTimes, how_many,
 };
 pub use print::{DRAWER, Job, JobKind, JobState, JobView, KITCHEN, PrintJob, RECEIPT, Resolution};
-pub use report::{DayReport, ReportKind, TenderLine};
-pub use returns::{Refunded, RefundedLine, Returnable, ReturnableLine};
+pub use report::{DayReport, ReportKind, TenderLine, TipLine};
+pub use returns::{RefundTo, RefundableCard, Refunded, RefundedLine, Returnable, ReturnableLine};
 pub use runtime::{CASH_OFFERS, Identity, MOST_CHECKS, Runtime};
 pub use staff::{APPROVAL_LIFE, FIRST_LOCK, LONGEST_LOCK, PIN_TRIES, QUIET};
 pub use sync::{ISLAND_AFTER, SyncStatus};

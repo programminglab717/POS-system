@@ -318,6 +318,7 @@ impl Working {
                 }
                 let cash = CashTendered { tendered: *amount, rounding: None };
                 let capture = PaymentCaptured {
+                    card: None,
                     amount: *amount,
                     tip: None,
                     reference: None,
@@ -439,7 +440,13 @@ fn outcome(payment: &Payment, step: &Step) -> PaymentCommand {
                 let paid = tip.map_or(amount, |tip| amount.checked_add(tip).unwrap());
                 CashTendered { tendered: paid, rounding: None }
             });
-            PaymentCommand::Capture(PaymentCaptured { amount, tip, reference: None, cash })
+            PaymentCommand::Capture(PaymentCaptured {
+                card: None,
+                amount,
+                tip,
+                reference: None,
+                cash,
+            })
         }
         _ if step.amount.is_multiple_of(2) => PaymentCommand::Fail(ended),
         _ => PaymentCommand::Void(ended),
@@ -641,7 +648,8 @@ fn foreign() -> Payment {
         PaymentInitiated { order: id(0xF), check, tender: Tender::Cash, amount: dollars(1000) };
     payment.apply(&meta_at(9, 1, 1, location()), &PaymentEvent::Initiated(initiated));
     let cash = Some(CashTendered { tendered: dollars(1000), rounding: None });
-    let captured = PaymentCaptured { amount: dollars(1000), tip: None, reference: None, cash };
+    let captured =
+        PaymentCaptured { card: None, amount: dollars(1000), tip: None, reference: None, cash };
     payment.apply(&meta_at(9, 2, 2, location()), &PaymentEvent::Captured(captured));
     payment
 }

@@ -374,6 +374,21 @@ text_type!(
     |text| (1..=100).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_graphic())
 );
 
+text_type!(
+    /// The last four digits of a card's number, which a receipt may show: four ASCII digits.
+    /// Keel never holds more of a card's number (ADR-0035).
+    LastFour,
+    "last four",
+    |text| text.len() == 4 && text.bytes().all(|byte| byte.is_ascii_digit())
+);
+
+text_type!(
+    /// An issuer's authorization code for a card payment: 1 to 12 ASCII letters and digits.
+    AuthCode,
+    "authorization code",
+    |text| (1..=12).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_alphanumeric())
+);
+
 /// Text of 1 to `max` characters with no control characters, except line feeds where allowed.
 /// Control characters could drive printers and displays, so they are never stored.
 fn is_text(text: &str, max: usize, line_feeds: bool) -> bool {

@@ -3,9 +3,10 @@
 SHA-256 and length, and its catalog's and pricing rules' versions, which keel-domain's known
 answers pin.
 
-- The demo café's (`profile::demo`), in New York: in format 3, with roles and its members' PINs
-  (ADR-0029), hashed with `argon2-cffi`, the Argon2 reference implementation's bindings, and its
-  kitchen and its items' and modifiers' allergens (ADR-0034).
+- The demo café's (`profile::demo`), in New York: in format 4, with roles and its members' PINs
+  (ADR-0029), hashed with `argon2-cffi`, the Argon2 reference implementation's bindings; its
+  kitchen and its items' and modifiers' allergens (ADR-0034); and its tipping, and a manager who
+  may resolve a card payment by hand (ADR-0035).
 - A bakery's in Toronto (`golden_bakery` in `src/profile/tests.rs`), which writes every optional
   field the demo leaves out: cash rounding, a tax by dining, a group's minimum and free
   applications together, every prefix, and modifiers chosen under a modifier in a group that
@@ -116,8 +117,8 @@ DEMO_ALLERGENS = {
 
 # The actions of ADR-0029, by code: order.void, line.remove, discount.apply, price.override,
 # refund.issue, drawer.no_sale, drawer.variance, drawer.paid_out, receipt.reprint,
-# item.availability.
-ACTIONS = range(10)
+# item.availability; and ADR-0035's payment.resolve.
+ACTIONS = range(11)
 
 
 def demo():
@@ -218,7 +219,9 @@ def demo():
         2: [route(0x701, [0x301, 0x302, 0x303]), route(0x702, [0x304, 0x305])],
         4: [300, 600],
     }
-    profile[1] = 3
+    # Tipping (ADR-0035): 10%, 15% and 20%, in basis points, asked for on the register's screen.
+    profile[14] = {1: [1000, 1500, 2000], 2: 0}
+    profile[1] = 4
     return profile, catalog, rules
 
 

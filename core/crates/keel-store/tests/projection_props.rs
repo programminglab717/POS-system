@@ -223,6 +223,7 @@ fn draft(spec: &Spec, day: u8) -> EventDraft {
                     reference: None,
                 }),
                 PaymentSpec::Captured { tip } => PaymentEvent::Captured(PaymentCaptured {
+                    card: None,
                     amount: usd(300),
                     tip: tip.then(|| usd(50)),
                     reference: None,
@@ -380,6 +381,14 @@ fn expected_payment(events: &[SignedEvent], id: Id<Payment>) -> Option<PaymentSu
         business_date: payment.info().and_then(|info| business_date_of(&events, info.initiated_by)),
         captured: captured.map(|captured| captured.amount),
         tip: captured.and_then(|captured| captured.tip),
+        // Whoever initiated it, if a member did.
+        member: payment.info().and_then(|info| {
+            let started = events.iter().find(|event| event.body().event_id == info.initiated_by)?;
+            match started.body().actor {
+                keel_events::envelope::Actor::TeamMember(member) => Some(member),
+                _ => None,
+            }
+        }),
         conflicts: u64::try_from(payment.conflicts().len()).unwrap(),
         unreadable: u64::try_from(payment.skipped().len()).unwrap(),
         events: u64::try_from(events.len()).unwrap(),

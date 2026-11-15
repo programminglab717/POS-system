@@ -80,6 +80,33 @@ pub enum RuntimeError {
         "the order wasn't paid in cash alone, as far as this register knows: a card's is refunded to the card, which isn't built yet"
     )]
     CardRefund,
+    /// A tip the location doesn't take: it takes none, or asks for it elsewhere (ADR-0035).
+    #[error("the location doesn't take that tip")]
+    NoTips,
+    /// A tip of nothing, in another currency, or more than what it tips on.
+    #[error("the tip isn't one the register takes")]
+    TipTooLarge,
+    /// No card request with that key is with the shell.
+    #[error("no card request with that key is waiting for an outcome")]
+    UnknownCardRequest,
+    /// An outcome that can't be: an approval of nothing, or in another currency.
+    #[error("the terminal's answer can't be recorded as it is")]
+    BadOutcome,
+    /// Not an unresolved card payment this register took.
+    #[error("not a card payment this register is waiting on")]
+    NotCardPayment,
+    /// The payment's request is with the terminal: its answer comes first.
+    #[error("the terminal has the payment: wait for its answer")]
+    CardBusy,
+    /// More than is left to refund in cash, or to the card (ADR-0035).
+    #[error("only {left} is left to refund that way")]
+    RefundTooLarge {
+        /// What is left.
+        left: Money,
+    },
+    /// Not a card refund this register owes, whose latest attempt failed.
+    #[error("not a card refund to try again")]
+    NotCardRefund,
     /// The catalog has no such item, variant or modifier (ADR-0033).
     #[error("the catalog has no item {0}")]
     UnknownItem(String),

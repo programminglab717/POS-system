@@ -318,11 +318,16 @@ fn entry(entries: &mut [(Value, Value)], key: u64) -> &mut Value {
 #[test]
 fn encodings_other_than_the_profiles_own_are_refused() {
     assert_eq!(
-        decode_changed(|e| *entry(e, 1) = Value::Unsigned(4)).map(|_| ()),
-        Err(ProfileError::Format(4))
+        decode_changed(|e| *entry(e, 1) = Value::Unsigned(5)).map(|_| ()),
+        Err(ProfileError::Format(5))
     );
     assert_eq!(
-        decode_changed(|e| e.push((Value::Unsigned(14), Value::Null))).map(|_| ()),
+        decode_changed(|e| e.push((Value::Unsigned(15), Value::Null))).map(|_| ()),
+        Err(ProfileError::Payload(PayloadError::UnknownField("15".to_owned())))
+    );
+    // Format 3 has no tipping: its key is unknown to it (ADR-0035).
+    assert_eq!(
+        decode_changed(|e| *entry(e, 1) = Value::Unsigned(3)).map(|_| ()),
         Err(ProfileError::Payload(PayloadError::UnknownField("14".to_owned())))
     );
     // Format 1 has no roles: their key is unknown to it. Format 2 has them, and no kitchen.
@@ -391,15 +396,17 @@ fn hex(bytes: &[u8]) -> String {
 /// independently of this codec, and its PINs' hashes with `argon2-cffi`, the reference
 /// implementation's bindings. In format 2 since ADR-0029: its catalog's and rules' versions are
 /// as they were in format 1. In format 3 since ADR-0034, with a kitchen and allergens: its
-/// rules' version is as it was, and its catalog's moved with the allergens.
+/// rules' version is as it was, and its catalog's moved with the allergens. In format 4 since
+/// ADR-0035, with tipping and `payment.resolve`: its catalog's and rules' versions are as they
+/// were.
 #[test]
 fn the_demo_is_pinned_byte_for_byte() {
     let profile = demo().unwrap();
     let bytes = profile.encode();
-    assert_eq!(bytes.len(), 2894);
+    assert_eq!(bytes.len(), 2912);
     assert_eq!(
         hex(&sha256(&bytes)),
-        "c009fa218fe937c0af3a65a20f5b426f8072d7d0f9c9d4c2f0a333a7eb1891ba"
+        "083190f1088f646746cfa71e0ba900bb03df739618640504a7e947015ef8a2c9"
     );
     assert_eq!(
         hex(profile.catalog_version().as_bytes()),
@@ -848,6 +855,7 @@ fn golden_bakery() -> Profile {
         ],
         roles: Vec::new(),
         kitchen: None,
+        tipping: None,
     })
     .unwrap()
 }
@@ -902,15 +910,26 @@ fn the_bakerys_tarts_ring_with_toppings_under_toppings() {
     assert_eq!(rung.item.tax_category, id(0x14));
 }
 
-/// The demo without its kitchen and allergens: as it was before format 3.
+/// The demo without its kitchen and allergens, and without what came with card payments: as it
+/// was before format 3.
 fn demo_before_the_kitchen() -> ProfileData {
-    let mut data = demo().unwrap().data().clone();
+    let mut data = demo_before_payments();
     data.kitchen = None;
     for item in &mut data.catalog.items {
         item.allergens.clear();
     }
     for modifier in data.catalog.groups.iter_mut().flat_map(|group| group.modifiers.iter_mut()) {
         modifier.allergens.clear();
+    }
+    data
+}
+
+/// The demo without tipping, and without `payment.resolve`: as it was before format 4.
+fn demo_before_payments() -> ProfileData {
+    let mut data = demo().unwrap().data().clone();
+    data.tipping = None;
+    for role in &mut data.roles {
+        role.permissions.retain(|permission| !permission.action.since_payments());
     }
     data
 }
@@ -939,7 +958,7 @@ fn format_3_is_written_for_a_kitchen_or_allergens_alone() {
     );
     assert_eq!(
         reformat(before.clone(), 3),
-        Err(ProfileError::Invalid("a format-3 profile with no kitchen and no allergens"))
+        Err(ProfileError::Invalid("a profile not in the earliest format that holds it"))
     );
     // Allergens alone make it format 3; written as format 2, it is refused.
     let mut allergens = before.clone();
@@ -950,7 +969,7 @@ fn format_3_is_written_for_a_kitchen_or_allergens_alone() {
     );
     assert_eq!(
         reformat(allergens, 2),
-        Err(ProfileError::Invalid("allergens in a profile before format 3"))
+        Err(ProfileError::Invalid("a profile not in the earliest format that holds it"))
     );
     // A kitchen alone, with no roles: format 3, its roles' key absent.
     let mut kitchen = before;
@@ -1120,4 +1139,77 @@ fn a_kitchen_that_breaks_a_rule_is_refused() {
     host(&"a".repeat(253))(kitchen);
     let profile = Profile::new(data).unwrap();
     assert_eq!(Profile::decode(&profile.encode()).unwrap().data(), profile.data());
+}
+
+/// Format 4 is written only for a profile with tipping, or a role that may resolve a payment by
+/// hand, and either alone makes it so; written in an earlier format, it is refused, so a kernel
+/// before format 4 refuses it whole rather than misreading its roles (ADR-0035).
+#[test]
+fn format_4_is_written_for_tipping_or_resolving_alone() {
+    let format = |data: &ProfileData| {
+        Profile::new(data.clone()).unwrap().encode().get(1..3).map(<[u8]>::to_vec)
+    };
+    let before = demo_before_payments();
+    assert_eq!(format(&before), Some(vec![0x01, 0x03]), "the kitchen's format, as before");
+    let mut tipping = before.clone();
+    tipping.tipping = demo().unwrap().data().tipping.clone();
+    assert_eq!(format(&tipping), Some(vec![0x01, 0x04]));
+    let mut resolving = before.clone();
+    resolving.roles[0].permissions.push(crate::staff::Permission {
+        action: crate::staff::Action::PaymentResolve,
+        most_amount: None,
+        most_percent: None,
+    });
+    assert_eq!(format(&resolving), Some(vec![0x01, 0x04]));
+    for data in [tipping, resolving] {
+        let bytes = Profile::new(data).unwrap().encode();
+        assert!(Profile::decode(&bytes).is_ok());
+        let mut value = cbor::decode(&bytes).unwrap();
+        let Value::Map(map) = &mut value else { panic!("a profile is a map") };
+        let mut entries = map.clone().into_entries();
+        entries.iter_mut().find(|(k, _)| *k == Value::Unsigned(1)).unwrap().1 = Value::Unsigned(3);
+        // Tipping's key is unknown to format 3; a role that may resolve, out of its format.
+        assert!(
+            Profile::decode(&Value::Map(Map::from_entries(entries).unwrap()).encode()).is_err()
+        );
+    }
+    // Without either, format 4 is refused: each profile has one encoding.
+    let bytes = Profile::new(before).unwrap().encode();
+    let mut value = cbor::decode(&bytes).unwrap();
+    let Value::Map(map) = &mut value else { panic!("a profile is a map") };
+    let mut entries = map.clone().into_entries();
+    entries.iter_mut().find(|(k, _)| *k == Value::Unsigned(1)).unwrap().1 = Value::Unsigned(4);
+    assert_eq!(
+        Profile::decode(&Value::Map(Map::from_entries(entries).unwrap()).encode()).map(|_| ()),
+        Err(ProfileError::Invalid("a profile not in the earliest format that holds it"))
+    );
+}
+
+/// Tipping offers one to four presets, strictly ascending, none above 100% (ADR-0035).
+#[test]
+fn tipping_keeps_its_rules() {
+    let with = |presets: &[u16]| {
+        let mut data = demo().unwrap().data().clone();
+        data.tipping = Some(Tipping {
+            presets: presets.iter().map(|p| core::num::NonZeroU16::new(*p).unwrap()).collect(),
+            prompt: TipPrompt::Terminal,
+        });
+        Profile::new(data).map(|_| ())
+    };
+    assert_eq!(with(&[1]), Ok(()));
+    assert_eq!(with(&[1, 2, 3, 10_000]), Ok(()));
+    assert_eq!(with(&[]), Err(ProfileError::Invalid("tipping with no presets, or too many")));
+    assert_eq!(
+        with(&[1, 2, 3, 4, 5]),
+        Err(ProfileError::Invalid("tipping with no presets, or too many"))
+    );
+    assert_eq!(
+        with(&[1500, 1500]),
+        Err(ProfileError::Invalid("tip presets out of order, or repeated"))
+    );
+    assert_eq!(
+        with(&[2000, 1500]),
+        Err(ProfileError::Invalid("tip presets out of order, or repeated"))
+    );
+    assert_eq!(with(&[10_001]), Err(ProfileError::Invalid("a tip preset above 100%")));
 }

@@ -1363,14 +1363,14 @@ BUGS = [
     (
         "cash captured without the cash",
         "src/payment/commands.rs",
-        "                if cash != captured.cash.is_some() || cash && captured.reference.is_some() {",
-        "                if cash && captured.reference.is_some() {",
+        "                if cash != captured.cash.is_some()\n",
+        "                if false\n",
     ),
     (
         "cash captured with a processor reference",
         "src/payment/commands.rs",
-        "                if cash != captured.cash.is_some() || cash && captured.reference.is_some() {",
-        "                if cash != captured.cash.is_some() {",
+        "                    || cash && (captured.reference.is_some() || captured.card.is_some())",
+        "                    || cash && captured.card.is_some()",
     ),
     (
         "cash ended with a processor reference",
@@ -2817,8 +2817,8 @@ BUGS = [
     (
         "profile: a profile without roles is written as format 2",
         "src/profile/mod.rs",
-        "        } else if data.roles.is_empty() {\n            FORMAT\n        } else {",
-        "        } else if data.roles.is_empty() {\n            FORMAT_ROLES\n        } else {",
+        "    } else if data.roles.is_empty() {\n        FORMAT\n    } else {",
+        "    } else if data.roles.is_empty() {\n        FORMAT_ROLES\n    } else {",
     ),
     (
         "profile: a member without a PIN signs in with any",
@@ -3237,8 +3237,8 @@ BUGS = [
     (
         "refund: a second completion applies",
         "src/refund/state.rs",
-        "        if self.completed.is_some() {",
-        "        if false {",
+        "        if self.completed.is_some() {\n            return self.conflict(meta, ConflictKind::DuplicateCompletion);",
+        "        if false {\n            return self.conflict(meta, ConflictKind::DuplicateCompletion);",
     ),
     (
         "refund: a command completes for more than was started",
@@ -3249,8 +3249,8 @@ BUGS = [
     (
         "refund: another device completes it",
         "src/refund/commands.rs",
-        "                if info.device != device {",
-        "                if false {",
+        "        if info.device != device {",
+        "        if false {",
     ),
     (
         "refund: a rounding of zero decodes",
@@ -3407,20 +3407,20 @@ BUGS = [
     (
         "profile: allergens alone don't make format 3",
         "src/profile/mod.rs",
-        "    data.kitchen.is_some() || has_allergens(&data.catalog)\n",
-        "    data.kitchen.is_some()\n",
+        "    } else if data.kitchen.is_some() || has_allergens(&data.catalog) {",
+        "    } else if data.kitchen.is_some() {",
     ),
     (
         "profile: allergens are read before format 3",
         "src/profile/mod.rs",
-        "        if format != FORMAT_KITCHEN && has_allergens(&data.catalog) {",
-        "        if format != FORMAT_KITCHEN && has_allergens(&data.catalog) && format == FORMAT_KITCHEN {",
+        "        if format != format_of(&data) {",
+        "        if format != format_of(&data) && format >= FORMAT_KITCHEN {",
     ),
     (
         "profile: format 3 with nothing that needs it is read",
         "src/profile/mod.rs",
-        "        if format == FORMAT_KITCHEN && !needs {",
-        "        if format == FORMAT_KITCHEN && !needs && format != FORMAT_KITCHEN {",
+        "        if format != format_of(&data) {",
+        "        if format < format_of(&data) {",
     ),
     (
         "profile: format 3's roles written empty are read",
@@ -3499,5 +3499,126 @@ BUGS = [
         "src/kitchen/events.rs",
         "            if item.quantity.micros() <= 0 {",
         "            if item.quantity.micros() < 0 {",
+    ),
+    # Card payments (ADR-0035).
+    (
+        "payment: a card capture is written as version 1",
+        "src/payment/events.rs",
+        "            PaymentEvent::Captured(captured) if captured.card.is_none() => CAPTURED_V1,",
+        "            PaymentEvent::Captured(_) => CAPTURED_V1,",
+    ),
+    (
+        "payment: a version 2 capture decodes without its card",
+        "src/payment/events.rs",
+        "    let card = if with_card { Some(fields.required(6, \"card\")?) } else { None };",
+        "    let card = if with_card { fields.optional(6, \"card\")? } else { None };",
+    ),
+    (
+        "payment: a cash capture's payload holds a card",
+        "src/payment/events.rs",
+        "        if self.card.is_some() {\n            return Err(PayloadError::Invalid(\"card\"));\n        }",
+        "",
+    ),
+    (
+        "payment: a cash capture records a card",
+        "src/payment/commands.rs",
+        "                    || cash && (captured.reference.is_some() || captured.card.is_some())",
+        "                    || cash && captured.reference.is_some()",
+    ),
+    (
+        "payment: a card's last four take five digits",
+        "src/codec.rs",
+        "    |text| text.len() == 4 && text.bytes().all(|byte| byte.is_ascii_digit())",
+        "    |text| (4..=5).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_digit())",
+    ),
+    (
+        "payment: an authorization code takes punctuation",
+        "src/codec.rs",
+        "    |text| (1..=12).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_alphanumeric())",
+        "    |text| (1..=12).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_graphic())",
+    ),
+    (
+        "refund: a card refund is written as version 1",
+        "src/refund/events.rs",
+        "            RefundEvent::Initiated(initiated) if initiated.payment.is_none() => INITIATED_V1,",
+        "            RefundEvent::Initiated(_) => INITIATED_V1,",
+    ),
+    (
+        "refund: a cash refund names a payment",
+        "src/refund/events.rs",
+        "                if initiated.payment.is_some() && initiated.tender != Tender::Card =>",
+        "                if initiated.payment.is_some() && initiated.tender == Tender::Card && initiated.tender != Tender::Card =>",
+    ),
+    (
+        "refund: a card refund starts with no payment",
+        "src/refund/commands.rs",
+        "                if (initiated.tender == Tender::Card) != initiated.payment.is_some() {",
+        "                if initiated.tender != Tender::Card && initiated.payment.is_some() {",
+    ),
+    (
+        "refund: a cash refund fails",
+        "src/refund/commands.rs",
+        "                if info.tender != Tender::Card {\n                    return Err(RefundError::WrongTender);\n                }",
+        "",
+    ),
+    (
+        "refund: a failure after the completion applies",
+        "src/refund/state.rs",
+        "            RefundEvent::Failed(_) if self.completed.is_some() => {",
+        "            RefundEvent::Failed(_) if self.completed.is_some() && self.failures > u32::MAX - 1 => {",
+    ),
+    (
+        "refund: a failure isn't counted",
+        "src/refund/state.rs",
+        "                self.failures = self.failures.saturating_add(1);",
+        "",
+    ),
+    (
+        "refund: a completed refund shows its last failure",
+        "src/refund/state.rs",
+        "        if self.completed.is_some() { None } else { self.failed.as_ref() }",
+        "        self.failed.as_ref()",
+    ),
+    (
+        "approval: version 1 approves payment.resolve",
+        "src/staff.rs",
+        "        if action.since_payments() != later {",
+        "        if !action.since_payments() && later {",
+    ),
+    (
+        "approval: payment.resolve is approved as version 1",
+        "src/staff.rs",
+        "            ApprovalEvent::Granted(granted) if granted.action.since_payments() => GRANTED_V2,",
+        "            ApprovalEvent::Granted(granted) if granted.action.since_payments() && granted.amount.is_some() => GRANTED_V2,",
+    ),
+    (
+        "profile: a role that may resolve is written as format 3",
+        "src/profile/mod.rs",
+        "    if data.tipping.is_some() || resolves {",
+        "    if data.tipping.is_some() {",
+    ),
+    (
+        "profile: tipping takes five presets",
+        "src/profile/tipping.rs",
+        "    if tipping.presets.is_empty() || tipping.presets.len() > MAX_PRESETS {",
+        "    if tipping.presets.is_empty() || tipping.presets.len() > MAX_PRESETS + 1 {",
+    ),
+    (
+        "profile: tip presets repeat",
+        "src/profile/tipping.rs",
+        "    if tipping.presets.windows(2).any(|pair| pair.first() >= pair.get(1)) {",
+        "    if tipping.presets.windows(2).any(|pair| pair.first() > pair.get(1)) {",
+    ),
+    (
+        "profile: a tip preset above 100%",
+        "src/profile/tipping.rs",
+        "    if tipping.presets.iter().any(|preset| preset.get() > MAX_PRESET) {",
+        "    if tipping.presets.iter().any(|preset| preset.get() > MAX_PRESET + 1) {",
+    ),
+    (
+        "profile: format 3 reads tipping",
+        "src/profile/mod.rs",
+        "        let tipping: Option<Tipping> = if format == FORMAT_PAYMENTS {",
+        "        let tipping: Option<Tipping> = if format >= FORMAT_KITCHEN {",
     ),
 ]

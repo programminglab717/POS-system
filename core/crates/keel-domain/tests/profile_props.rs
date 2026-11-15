@@ -25,7 +25,7 @@ use keel_domain::order::{ChosenModifier, Mode, Placement, Prefix};
 use keel_domain::profile::{
     Aging, Allergen, BusinessDay, Catalog, CatalogGroup, CatalogItem, CatalogModifier,
     CatalogVariant, Choice, Kitchen, Member, Menu, Page, Printer, Profile, ProfileData, RingError,
-    Route, Routed, Station, demo,
+    Route, Routed, Station, TipPrompt, Tipping, demo,
 };
 use keel_domain::refs::{
     Item, Modifier, ModifierGroup, Station as StationRef, TaxCategory, Variant,
@@ -520,7 +520,11 @@ fn any_profile() -> impl Strategy<Value = ProfileData> {
         (any_name(), any::<Index>(), any::<[u8; 16]>(), any::<[u8; 32]>()),
         1..=4,
     );
-    let extras = (prop::option::of(any::<u64>()), prop::option::of(any_kitchen_picks()));
+    let extras = (
+        prop::option::of(any::<u64>()),
+        prop::option::of(any_kitchen_picks()),
+        prop::option::of(any_tipping()),
+    );
     (place, any_rules(), any_shape(), pages, team, any_roles(), extras).prop_map(
         |(
             (location, title, address, currency, zone, hour, minute, cash_rounding),
@@ -529,7 +533,7 @@ fn any_profile() -> impl Strategy<Value = ProfileData> {
             pages,
             team,
             roles,
-            (allergens, kitchen),
+            (allergens, kitchen, tipping),
         )| {
             let mut catalog = catalog(&shape, currency);
             if let Some(seed) = allergens {
@@ -576,9 +580,23 @@ fn any_profile() -> impl Strategy<Value = ProfileData> {
                     .collect(),
                 roles,
                 kitchen,
+                tipping,
             }
         },
     )
+}
+
+/// Tipping (ADR-0035): one to four presets, ascending, from 1 basis point to 100%, asked for on
+/// the screen or the terminal.
+fn any_tipping() -> impl Strategy<Value = Tipping> {
+    (
+        prop::collection::btree_set(prop_oneof![Just(1_u16), Just(10_000), 1_u16..=10_000], 1..=4),
+        prop::sample::select(TipPrompt::ALL.to_vec()),
+    )
+        .prop_map(|(presets, prompt)| Tipping {
+            presets: presets.into_iter().map(|preset| NonZeroU16::new(preset).unwrap()).collect(),
+            prompt,
+        })
 }
 
 /// Allergens for some of `catalog`'s items and modifiers, drawn from `seed`: none, one or a few.

@@ -47,8 +47,7 @@ What is built shapes it:
 
    | Outcome | Fields |
    |---|---|
-   | approved | the amount approved, the tip in it (optional), a reference (optional), the card (optional) |
-   | partially approved | the amount approved, a reference (optional), the card (optional) |
+   | approved | the amount charged or refunded, a tip included; less than asked for a partial approval; a reference (optional), the card (optional) |
    | declined | a reason code, a note (optional), a reference (optional) |
    | not found | to a status query: the terminal never took the request |
    | unknown | when to ask again (optional) |
@@ -63,11 +62,12 @@ What is built shapes it:
    of it, and enqueues the sale, in one write. The runtime hands sales to the shell one at a
    time; a sale's start commits before the terminal is asked. Its outcome is recorded in one
    write:
-   - **approved**: captured, for the amount less the tip, with the tip, the reference and the
-     card; once the check's payments cover it, it closes, its receipt prints, and what of it is
-     pending fires to the kitchen, as a cash payment does;
-   - **partially approved**: captured for what was approved, which pays the check first and the
-     tip after; the rest stays due, for any tender (I-07);
+   - **approved**: captured, with the reference and the card: what was approved pays the check
+     first, up to what the sale asked, and the rest is the tip, wherever it was chosen; once the
+     check's payments cover it, it closes, its receipt prints, and what of it is pending fires
+     to the kitchen, as a cash payment does;
+   - **approved in part**, for less than the sale asked: so captured, the tip dropped, and the
+     rest stays due, for any tender (I-07);
    - **declined**: failed, for its reason; the check can be paid again;
    - **unknown**: nothing is recorded; the payment stays unresolved, so the check takes no other
      payment, and the sale becomes a status query, asked after the outcome's wait, or 5 s,
@@ -84,6 +84,9 @@ What is built shapes it:
    from the terminal's own record: charged, it is captured for what was asked, with no
    reference and no card, and marked resolved by hand; not charged, it fails as `not_charged`.
    Its effect is done either way, so nothing asks about it again.
+   A role that permits it needs profile format 4 (decision 5), and its approval is
+   `approval.granted` version 2, with version 1's keys: version 1 never decoded the action, and
+   still doesn't. An approval of an earlier action is written as version 1, as before.
 
 4. **The card on the payment**: `payment.captured` version 2 adds key 6, the card: `{1 brand, 2
    last four, 3 entry: 0 tap, 1 chip, 2 swipe, 3 keyed, 4 authorization code (optional)}`. The
@@ -165,7 +168,7 @@ What is built shapes it:
 - A terminal that never answers leaves its check blocked until a manager resolves it by hand.
 - A card's sale and refund are effects on the device that took it: another register can't ask
   about them.
-- Three new schema versions, a new schema and a profile format, which every replica's kernel
+- Four new schema versions, a new schema and a profile format, which every replica's kernel
   must know before any device writes them.
 - Counter service only: a tip on the slip, after the card, waits for v1.
 

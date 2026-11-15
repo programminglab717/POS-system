@@ -1291,6 +1291,7 @@ impl Working {
             payment.apply(&meta, &started);
             let cash = CashTendered { tendered: balance.due, rounding: None };
             let capture = PaymentCaptured {
+                card: None,
                 amount: balance.due,
                 tip: None,
                 reference: None,

@@ -465,6 +465,7 @@ fn checkout(
                 };
                 let Some(info) = payment.info() else { return Ok((r#move, Made::Nothing)) };
                 let captured = PaymentCaptured {
+                    card: None,
                     amount: info.amount,
                     tip: None,
                     reference: None,
