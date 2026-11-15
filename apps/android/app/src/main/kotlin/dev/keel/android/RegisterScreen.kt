@@ -34,6 +34,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -47,6 +48,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material3.ButtonDefaults
 import dev.keel.register.Approval
+import dev.keel.register.CardPayment
+import dev.keel.register.CardSheet
+import dev.keel.register.CardState
+import dev.keel.register.CardTip
+import dev.keel.register.SimulatedAnswer
+import dev.keel.register.SimulatedTerminal
+import dev.keel.register.declineWords
 import dev.keel.register.TicketLine
 import dev.keel.register.VOID_REASONS
 import dev.keel.register.MarkSheet
@@ -104,6 +112,7 @@ fun RegisterScreen(model: RegisterModel) {
         state.voiding?.let { VoidDialog(it, model) }
         state.mark?.let { MarkDialog(it, state.error, model) }
         state.tender?.let { TenderDialog(it, model) }
+        state.card?.let { CardDialog(it, model) }
         state.discount?.let { DiscountDialog(it, state.error, model) }
         state.price?.let { PriceDialog(it, state.error, model) }
         state.cash?.let { CashDialog(it, state.error, model) }
@@ -190,6 +199,18 @@ private fun Register(state: RegisterState, model: RegisterModel) {
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
+            }
+            // Card refunds whose latest attempt failed: still owed, tried again on a manager's word (ADR-0035).
+            for (owed in state.owedRefunds) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
+                    Text(
+                        "A card refund of ${owed.amount.text} failed: ${declineWords(owed.failure ?: "declined")}",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { model.retryRefund(owed) }, modifier = Modifier.testTag("refund:retry:${owed.refund}")) { Text("Try again") }
+                }
             }
             // Tickets no screen showed in time, which every device tells its staff (ADR-0034).
             for (alert in state.alerts) {
@@ -326,6 +347,11 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                         TextButton(onClick = { model.openTender(check) }, modifier = Modifier.testTag("pay:check:${check.number}")) {
                             Text("Pay ${check.cashDue}")
                         }
+                        if (model.terminal != null) {
+                            TextButton(onClick = { model.openCard(check) }, modifier = Modifier.testTag("card:check:${check.number}")) {
+                                Text("Card")
+                            }
+                        }
                     }
                 }
             }
@@ -337,11 +363,20 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                 }
             }
             if (ticket.checks.isEmpty()) {
-                Button(
-                    onClick = { model.openTender() },
-                    enabled = ticket.lines.isNotEmpty(),
-                    modifier = Modifier.fillMaxWidth().testTag("pay"),
-                ) { Text("Cash ${ticket.cashDue}") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { model.openTender() },
+                        enabled = ticket.lines.isNotEmpty(),
+                        modifier = Modifier.weight(1f).testTag("pay"),
+                    ) { Text("Cash ${ticket.cashDue}") }
+                    if (model.terminal != null) {
+                        Button(
+                            onClick = { model.openCard() },
+                            enabled = ticket.lines.isNotEmpty(),
+                            modifier = Modifier.weight(1f).testTag("card"),
+                        ) { Text("Card") }
+                    }
+                }
             }
             // A paid check holds the split, and the whole order's discounts: neither is offered once
             // one is. Found in review.
@@ -915,6 +950,124 @@ private fun TenderDialog(tender: Tender, model: RegisterModel) {
     )
 }
 
+/**
+ * Paying by card (ADR-0035): the tips first, where the register asks for them, "No tip" and
+ * "Custom" as prominent as each preset, shown as a percentage and an amount (H-10); then the
+ * payment as the terminal answers it. A simulated terminal shows the customer's choices.
+ */
+@Composable
+private fun CardDialog(sheet: CardSheet, model: RegisterModel) {
+    val payment = sheet.payment
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text((sheet.check?.let { "Check ${it.number}, card" } ?: "Card")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                when {
+                    sheet.asksTip && sheet.custom -> CustomTip(sheet, model)
+                    sheet.asksTip -> {
+                        Text("Add a tip?", style = MaterialTheme.typography.titleMedium)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { model.chooseTip(CardTip.None) }, enabled = !sheet.working, modifier = Modifier.testTag("tip:none")) {
+                                Text("No tip")
+                            }
+                            for (offer in sheet.offers.presets) {
+                                OutlinedButton(
+                                    onClick = { model.chooseTip(CardTip.Amount(offer.amount.minor)) },
+                                    enabled = !sheet.working,
+                                    modifier = Modifier.testTag("tip:${offer.percent}"),
+                                ) { Text("${percentWords(offer.percent)} · ${offer.amount.text}") }
+                            }
+                            OutlinedButton(onClick = model::customTip, enabled = !sheet.working, modifier = Modifier.testTag("tip:custom")) {
+                                Text("Custom")
+                            }
+                        }
+                        Text("Tips are on ${sheet.offers.base.text}, before tax.", style = MaterialTheme.typography.labelMedium)
+                    }
+                    payment == null -> Text("Starting the payment…")
+                    else -> CardPaymentState(payment, model)
+                }
+            }
+        },
+        confirmButton = {
+            when (payment?.state) {
+                CardState.Waiting -> TextButton(onClick = model::cancelCard, modifier = Modifier.testTag("card:cancel")) { Text("Cancel the card") }
+                is CardState.Declined -> Button(onClick = model::cardAgain, modifier = Modifier.testTag("card:again")) { Text("Try a card again") }
+                is CardState.Approved -> Button(onClick = model::cardAgain, modifier = Modifier.testTag("card:again")) { Text("Another card for the rest") }
+                else -> {}
+            }
+        },
+        dismissButton = {
+            // A payment waiting for the terminal, or checked, stays with it: the sheet closes, and
+            // the check takes no other payment until it is answered.
+            TextButton(onClick = model::closeCard, modifier = Modifier.testTag("card:close")) { Text("Close") }
+        },
+    )
+}
+
+@Composable
+private fun CustomTip(sheet: CardSheet, model: RegisterModel) {
+    Text(sheet.typed?.text ?: "Type the tip", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.testTag("tip:typed"))
+    for (row in listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9))) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (digit in row) Key(digit.toString(), "tip:digit:$digit") { model.typeTipDigit(digit) }
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Key("⌫", "tip:erase") { model.eraseTipDigit() }
+        Key("0", "tip:digit:0") { model.typeTipDigit(0) }
+        val typed = sheet.typed
+        Button(onClick = { typed?.let { model.chooseTip(CardTip.Amount(it.minor)) } }, enabled = typed != null && !sheet.working, modifier = Modifier.testTag("tip:add")) {
+            Text("Add ${typed?.text.orEmpty()}")
+        }
+    }
+}
+
+@Composable
+private fun CardPaymentState(payment: CardPayment, model: RegisterModel) {
+    when (val state = payment.state) {
+        CardState.Waiting -> {
+            Text("Present the card on the terminal: ${payment.amount.text}", modifier = Modifier.testTag("card:waiting"))
+            // The simulated terminal stands in for the customer until a processor is chosen.
+            val simulated = model.terminal as? SimulatedTerminal
+            if (simulated != null) {
+                val asked by simulated.waitingFor.collectAsState()
+                if (asked != null) {
+                    Text("Simulated terminal", style = MaterialTheme.typography.labelLarge)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for ((answer, words) in listOf(
+                            SimulatedAnswer.APPROVE to "Approve",
+                            SimulatedAnswer.APPROVE_PART to "Approve half",
+                            SimulatedAnswer.DECLINE to "Decline",
+                            SimulatedAnswer.NO_ANSWER to "No answer",
+                        )) {
+                            OutlinedButton(onClick = { simulated.answer(answer) }, modifier = Modifier.testTag("terminal:${answer.name}")) { Text(words) }
+                        }
+                    }
+                }
+            }
+        }
+        CardState.Checking -> {
+            Text("Checking with the terminal: it didn't say whether the card was charged.", modifier = Modifier.testTag("card:checking"))
+            Text("If the terminal can't be reached, a manager says from its own record:", style = MaterialTheme.typography.labelMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { model.settleCard(charged = true) }, modifier = Modifier.testTag("card:charged")) { Text("It was charged") }
+                OutlinedButton(onClick = { model.settleCard(charged = false) }, modifier = Modifier.testTag("card:not-charged")) { Text("It wasn't") }
+            }
+        }
+        CardState.Elsewhere -> Text("Another register's terminal has this payment.")
+        is CardState.Approved -> {
+            val tip = state.tip?.let { " with a ${it.text} tip" }.orEmpty()
+            val card = payment.card?.let { " on $it" }.orEmpty()
+            Text("Approved: ${state.applied.text}$tip$card", modifier = Modifier.testTag("card:approved"))
+            if (state.applied.minor < payment.amount.minor) {
+                Text("Approved in part: the rest is still due, by card or in cash.", color = MaterialTheme.colorScheme.error)
+            }
+        }
+        is CardState.Declined -> Text("Declined: ${declineWords(state.reason)}", color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("card:declined"))
+    }
+}
+
 @Composable
 private fun Key(label: String, tag: String, onClick: () -> Unit) {
     OutlinedButton(onClick = onClick, modifier = Modifier.width(72.dp).testTag(tag)) { Text(label) }
@@ -988,10 +1141,14 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
             Text("Return", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             TextButton(onClick = model::closeReturn, modifier = Modifier.testTag("back")) { Text("Back") }
         }
-        if (!sheet.returnable.cashOnly) {
-            Text("A card paid this order: it is refunded to the card, which the register can't do yet.")
+        val toCard = sheet.returnable.cards.firstOrNull { it.payment == sheet.toCard }
+        val refundable = sheet.returnable.cashOnly || toCard != null
+        if (toCard != null) {
+            Text("A card paid this order: it is refunded to ${toCard.card ?: "the card"}, up to ${toCard.left.text}.")
+        } else if (!refundable) {
+            Text("A card settled by hand paid this order: it can't be refunded to the card.")
         }
-        val picking = sheet.returnable.cashOnly && !sheet.refunding
+        val picking = refundable && !sheet.refunding
         for (line in sheet.returnable.lines) ReturnRow(line, sheet.picks[line.line], line.line in sheet.picks, picking, model)
         Text("Refunded so far: ${sheet.returnable.refunded}", style = MaterialTheme.typography.bodySmall)
         Text("Why", style = MaterialTheme.typography.titleSmall)
@@ -1007,14 +1164,19 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
         }
         Button(
             onClick = model::confirmReturn,
-            enabled = sheet.picks.isNotEmpty() && sheet.reason != null && sheet.returnable.cashOnly && !sheet.refunding,
+            enabled = sheet.picks.isNotEmpty() && sheet.reason != null && refundable && !sheet.refunding,
             modifier = Modifier.fillMaxWidth().testTag("return:refund"),
-        ) { Text("Refund in cash") }
+        ) { Text(if (toCard != null) "Refund to the card" else "Refund in cash") }
         state.refund?.let { refund ->
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             for ((what, amount) in refund.lines) ReportRow(what, amount)
             ReportRow("Refunded", refund.amount, Modifier.testTag("return:amount"))
-            Text("Hand back ${refund.handed}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("return:handed"))
+            val card = refund.card
+            if (card != null) {
+                Text("Sent to $card: the terminal refunds it", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("return:card"))
+            } else {
+                Text("Hand back ${refund.handed}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("return:handed"))
+            }
         }
     }
 }

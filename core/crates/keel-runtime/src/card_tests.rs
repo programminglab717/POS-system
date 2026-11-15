@@ -394,3 +394,146 @@ fn a_card_paid_order_is_refunded_to_the_card_and_a_failed_refund_tried_again() {
     );
     assert_eq!(report.card_refunds_owed, 0);
 }
+
+/// What the card approved goes to the kitchen in the same write, as cash does (ADR-0034): before
+/// the terminal answers, nothing is sent.
+#[test]
+fn an_approved_card_sale_sends_its_lines_to_the_kitchen() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    let order = an_espresso(&mut runtime);
+    runtime.pay_card(order, CardTip::None, true).unwrap();
+    assert!(!runtime.ticket(order).unwrap().lines[0].sent, "nothing is sent while it waits");
+    let request = runtime.next_card_request().unwrap().unwrap();
+    runtime.card_outcome(&request.key, approved(354)).unwrap();
+    assert!(runtime.ticket(order).unwrap().lines[0].sent);
+}
+
+/// An order paid part by card and part in cash: each tender is refunded no more than it took,
+/// and a refund to the card hands back no cash (ADR-0035).
+#[test]
+fn a_return_goes_back_to_each_tender_no_more_than_it_took() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    runtime.open_drawer(usd(10_000)).unwrap();
+    // Two espressos: $6.50 and $0.58 of tax, $7.08; $4.00 by card, the rest in cash.
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(order, id(0x401), &[], NonZeroU32::new(2).unwrap()).unwrap();
+    let check = order.cast();
+    runtime.pay_check_card(order, check, Some(usd(400)), CardTip::None, true).unwrap();
+    let request = runtime.next_card_request().unwrap().unwrap();
+    runtime.card_outcome(&request.key, approved(400)).unwrap();
+    runtime.pay_cash(order, usd(500)).unwrap();
+    let payment = runtime.card_payments(order).unwrap()[0].payment;
+    let line = runtime.ticket(order).unwrap().lines[0].line;
+    let reason = Reason { code: ReasonCode::new("damaged").unwrap(), note: None };
+    let one = Quantity::from_whole(1, Unit::Each).unwrap();
+    let first = runtime
+        .return_lines_to(order, &[(line, one)], reason.clone(), RefundTo::Card(payment))
+        .unwrap();
+    assert_eq!(
+        (first.amount.money, first.handed.money),
+        (usd(354), usd(0)),
+        "no cash for a card refund"
+    );
+    // $0.46 is left of the card: the other espresso doesn't fit.
+    assert!(matches!(
+        runtime.return_lines_to(order, &[(line, one)], reason.clone(), RefundTo::Card(payment)),
+        Err(RuntimeError::RefundTooLarge { left }) if left == usd(46)
+    ));
+    // Nor in cash: the order took $3.08 in cash.
+    assert!(matches!(
+        runtime.return_lines_to(order, &[(line, one)], reason, RefundTo::Cash),
+        Err(RuntimeError::RefundTooLarge { left }) if left == usd(308)
+    ));
+}
+
+/// A member's tips are added up: two tipped payments, one line (ADR-0035).
+#[test]
+fn a_members_tips_are_added_up() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    for tip in [33, 49] {
+        let order = an_espresso(&mut runtime);
+        runtime.pay_card(order, CardTip::Amount(usd(tip)), true).unwrap();
+        let request = runtime.next_card_request().unwrap().unwrap();
+        runtime.card_outcome(&request.key, approved(354 + tip)).unwrap();
+    }
+    let report = runtime.day_report(runtime.today().unwrap(), ReportKind::X).unwrap();
+    assert_eq!(report.tips.len(), 1);
+    assert_eq!((report.tips[0].payments, report.tips[0].amount.money), (2, usd(82)));
+}
+
+/// An answer that can't be recorded, or a shell that stops answering, holds up nothing: the
+/// request is asked about later, never sent again. Found in review.
+#[test]
+fn an_answer_that_cant_be_recorded_is_asked_about_later() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    let order = an_espresso(&mut runtime);
+    runtime.pay_card(order, CardTip::None, true).unwrap();
+    let request = runtime.next_card_request().unwrap().unwrap();
+    assert!(matches!(
+        runtime.card_outcome(&request.key, approved(0)),
+        Err(RuntimeError::BadOutcome)
+    ));
+    assert_eq!(runtime.next_card_request().unwrap(), None, "asked about after a wait");
+    runtime.clock().advance(Duration::from_secs(5)).unwrap();
+    let asked = runtime.next_card_request().unwrap().unwrap();
+    assert!(asked.status);
+    // The shell gives it back unanswered: asked about again, later.
+    runtime.release_card_request().unwrap();
+    runtime.clock().advance(Duration::from_secs(5)).unwrap();
+    let again = runtime.next_card_request().unwrap().unwrap();
+    assert!(again.status);
+    runtime.card_outcome(&again.key, approved(354)).unwrap();
+    assert_eq!(runtime.ticket(order).unwrap().state, crate::TicketState::Closed);
+}
+
+/// A card settled by hand has no reference: its order isn't refunded at the register, neither to
+/// the card nor in cash. Found in review: it passed for cash, and a return refunded nothing.
+#[test]
+fn an_order_a_card_settled_by_hand_paid_isnt_refunded_at_the_register() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    let order = an_espresso(&mut runtime);
+    runtime.pay_card(order, CardTip::None, true).unwrap();
+    let payment = the_payment(&runtime, order);
+    let request = runtime.next_card_request().unwrap().unwrap();
+    runtime.card_outcome(&request.key, CardOutcome::Unknown { retry_after: None }).unwrap();
+    runtime.settle_card(payment, true).unwrap();
+    let returnable = runtime.returnable(order).unwrap();
+    assert!(!returnable.cash_only);
+    assert!(returnable.cards.is_empty());
+    assert_eq!(returnable.cash_left, None);
+    let line = runtime.ticket(order).unwrap().lines[0].line;
+    let reason = Reason { code: ReasonCode::new("damaged").unwrap(), note: None };
+    let one = Quantity::from_whole(1, Unit::Each).unwrap();
+    assert!(matches!(
+        runtime.return_lines(order, &[(line, one)], reason),
+        Err(RuntimeError::CardRefund)
+    ));
+}
+
+/// A card refund the terminal approves for less than asked completes for what moved, and the
+/// day's report counts the rest as owed (ADR-0035).
+#[test]
+fn a_card_refund_approved_short_leaves_the_rest_owed_in_the_report() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    let order = an_espresso(&mut runtime);
+    runtime.pay_card(order, CardTip::None, true).unwrap();
+    let request = runtime.next_card_request().unwrap().unwrap();
+    runtime.card_outcome(&request.key, approved(354)).unwrap();
+    let payment = the_payment(&runtime, order);
+    let line = runtime.ticket(order).unwrap().lines[0].line;
+    let reason = Reason { code: ReasonCode::new("damaged").unwrap(), note: None };
+    let one = Quantity::from_whole(1, Unit::Each).unwrap();
+    runtime.return_lines_to(order, &[(line, one)], reason, RefundTo::Card(payment)).unwrap();
+    let report = runtime.day_report(runtime.today().unwrap(), ReportKind::X).unwrap();
+    assert_eq!((report.card_refunds_owed, report.card_refunds_owed_amount.money), (1, usd(354)));
+    let request = runtime.next_card_request().unwrap().unwrap();
+    runtime.card_outcome(&request.key, approved(300)).unwrap();
+    let report = runtime.day_report(runtime.today().unwrap(), ReportKind::X).unwrap();
+    assert_eq!((report.card_refunds_owed, report.card_refunds_owed_amount.money), (1, usd(54)));
+}

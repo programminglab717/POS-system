@@ -156,7 +156,11 @@ impl From<RuntimeError> for KeelError {
         match error {
             RuntimeError::NotSignedIn => KeelError::NotSignedIn,
             RuntimeError::NotSettled => KeelError::NotSettled,
-            RuntimeError::RosterMismatch | RuntimeError::NotSyncing => {
+            // A connector's answer for no request, or one that can't be (ADR-0035).
+            RuntimeError::RosterMismatch
+            | RuntimeError::NotSyncing
+            | RuntimeError::UnknownCardRequest
+            | RuntimeError::BadOutcome => {
                 KeelError::InvalidArgument { reason }
             }
             RuntimeError::UnknownMember(member) => {
@@ -191,7 +195,14 @@ impl From<RuntimeError> for KeelError {
             | RuntimeError::Refund(_)
             | RuntimeError::SoldOut(_)
             | RuntimeError::Availability(_)
-            | RuntimeError::Kitchen(_) => KeelError::Refused { reason },
+            | RuntimeError::Kitchen(_)
+            // What card payments' rules refuse (ADR-0035).
+            | RuntimeError::NoTips
+            | RuntimeError::TipTooLarge
+            | RuntimeError::NotCardPayment
+            | RuntimeError::CardBusy
+            | RuntimeError::NotCardRefund
+            | RuntimeError::RefundTooLarge { .. } => KeelError::Refused { reason },
             RuntimeError::TenderShort { due } => KeelError::TenderShort {
                 due: Amount {
                     minor: due.minor(),

@@ -1284,3 +1284,72 @@ fn a_kitchen_job_names_its_printer() {
     assert_eq!(job.kind, JobKind::Kitchen);
     assert_eq!((job.host.as_deref(), job.port), (Some("10.0.0.22"), Some(9100)));
 }
+
+/// What a terminal says that a payment can't hold is dropped, never the answer: an approval with a
+/// card's details that aren't valid is recorded without them, and a reason that isn't a code is
+/// declined all the same, the reason kept as the note (ADR-0035). Found in review.
+#[test]
+fn a_terminals_answer_is_kept_whatever_it_says_of_the_card() {
+    use crate::card::{CardEntry, CardOutcome, CardRead};
+    let usd = keel_types::Currency::USD;
+    let card = |auth: &str, last: &str| CardRead {
+        brand: "Visa".to_owned(),
+        last_four: last.to_owned(),
+        entry: CardEntry::Tap,
+        auth_code: Some(auth.to_owned()),
+    };
+    let approved = |card| CardOutcome::Approved {
+        approved: 354,
+        reference: Some("pi 1".to_owned()),
+        card: Some(card),
+    };
+    let keel_runtime::CardOutcome::Approved { approved: amount, reference, card: kept } =
+        approved(card("A1-B2", "4242")).of(usd)
+    else {
+        panic!("approved")
+    };
+    assert_eq!(amount.minor(), 354);
+    assert_eq!(reference, None, "a reference with a space isn't one");
+    let kept = kept.unwrap();
+    assert_eq!((kept.last_four.as_str(), kept.auth_code), ("4242", None));
+    let keel_runtime::CardOutcome::Approved { card: kept, .. } =
+        approved(card("A1B2", "42")).of(usd)
+    else {
+        panic!("approved")
+    };
+    assert_eq!(kept, None, "a card with no last four isn't kept, the approval is");
+    let declined = CardOutcome::Declined {
+        reason: "Insufficient Funds".to_owned(),
+        note: None,
+        reference: None,
+    };
+    let keel_runtime::CardOutcome::Declined { reason, note, .. } = declined.of(usd) else {
+        panic!("declined")
+    };
+    assert_eq!(
+        (reason.as_str(), note.map(|note| note.to_string())),
+        ("declined", Some("Insufficient Funds".to_owned()))
+    );
+}
+
+/// A request that asks about one started before says so across the boundary: a connector must
+/// never perform it (ADR-0035).
+#[test]
+fn a_status_query_crosses_as_one() {
+    let payment: Id<keel_domain::payment::Payment> =
+        Id::parse("0192f0c1-0000-7000-8000-0000000000b1").unwrap();
+    let request = keel_runtime::CardRequest {
+        key: payment.to_string(),
+        ask: keel_runtime::CardAsk::Sale {
+            payment,
+            amount: keel_types::Money::from_minor(354, keel_types::Currency::USD),
+            tip: None,
+            presets: vec![],
+            partial: true,
+        },
+        status: true,
+    };
+    let crossed = CardRequest::from(&request);
+    assert!(crossed.status);
+    assert_eq!(crossed.key, "0192f0c1-0000-7000-8000-0000000000b1");
+}

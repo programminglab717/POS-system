@@ -72,6 +72,8 @@ data class KdsState(
  */
 data class ReturnSheet(
     val returnable: Returnable,
+    /** The card payment the refund goes back to; null for cash (ADR-0035). An order a card paid goes back to its card. */
+    val toCard: String? = if (returnable.cashOnly) null else returnable.cards.firstOrNull()?.payment,
     val picks: Map<String, Long?> = emptyMap(),
     /** Why: none until the cashier says. Found in review: every return was "damaged". */
     val reason: String? = null,
@@ -120,6 +122,27 @@ data class Tender(
     /** The check paid, for a split order; null for the whole order. */
     val check: TicketCheck? = null,
 )
+
+/**
+ * Paying [order] by card, or one [check] of it (ADR-0035): the tips offered, a tip typed, and the
+ * payment once started, as the terminal answers it.
+ */
+data class CardSheet(
+    val order: String,
+    val check: TicketCheck? = null,
+    val offers: TipOffers,
+    /** A custom tip being typed, as a cash keypad types it. */
+    val typed: Amount? = null,
+    /** Whether the custom tip's keypad is open. */
+    val custom: Boolean = false,
+    /** The payment started, once it is: null while the tip is chosen. */
+    val payment: CardPayment? = null,
+    /** Whether a payment is being started or settled: nothing more is taken until it is. */
+    val working: Boolean = false,
+) {
+    /** Whether the register asks for the tip, on its screen. */
+    val asksTip: Boolean get() = payment == null && offers.prompt != null
+}
 
 /**
  * The discount sheet: a discount for [line], or for the whole order when it is null, for [reason],
@@ -180,6 +203,10 @@ data class RegisterState(
     val sheet: ModifierSheet? = null,
     /** The cash tender open for the order, if any. */
     val tender: Tender? = null,
+    /** The card payment open for the order, if any (ADR-0035). */
+    val card: CardSheet? = null,
+    /** The card refunds this register owes, whose latest attempt failed, as last read. */
+    val owedRefunds: List<OwedRefund> = emptyList(),
     /** The discount sheet open for the order or one of its lines, if any. */
     val discount: DiscountSheet? = null,
     /** The price sheet open for a line, if any. */
@@ -251,6 +278,8 @@ class RegisterModel(
     private val worker: CoroutineDispatcher,
     private val settings: PrinterSettings? = null,
     private val kitchenSettings: KitchenSettings? = null,
+    /** The register's card terminal, if it has one: without, it takes no cards (ADR-0035). */
+    val terminal: CardTerminal? = null,
 ) {
     private val mutable = MutableStateFlow(RegisterState())
 
@@ -932,6 +961,140 @@ class RegisterModel(
         mutable.update { it.copy(tender = tender) }
     }
 
+    /**
+     * Opens a card payment for the order being rung, or for its [check] (ADR-0035). Where the
+     * register asks for the tip, or the terminal can't, the tips are offered first; otherwise the
+     * sale goes to the terminal at once, asking it for the tip where the location says.
+     */
+    fun openCard(check: TicketCheck? = null) = perform {
+        val ticket = current.ticket ?: return@perform
+        val terminal = terminal ?: throw TillException("This register has no card terminal.")
+        val now = check?.let { drawn -> ticket.checks.firstOrNull { it.check == drawn.check } }
+        if (check != null && (now == null || !now.open)) return@perform
+        val offers = till.tipOffers(ticket.order, now?.check, null)
+        // A terminal that can't ask leaves the tip to the register's screen.
+        val onScreen = offers.prompt == TipPrompt.SCREEN || (offers.prompt == TipPrompt.TERMINAL && !terminal.asksTip)
+        val sheet = CardSheet(ticket.order, now, offers.copy(prompt = if (onScreen) TipPrompt.SCREEN else null))
+        mutable.update { it.copy(card = sheet, tender = null) }
+        if (!onScreen) startCard(if (offers.prompt == TipPrompt.TERMINAL) CardTip.Terminal else CardTip.None)
+    }
+
+    /** The tip chosen on the screen: no tip, a preset, or the custom amount typed. Starts the sale. */
+    fun chooseTip(tip: CardTip) = perform {
+        if (current.card?.payment != null) return@perform
+        startCard(tip)
+    }
+
+    /** Opens the keypad for a custom tip. */
+    fun customTip() = mutable.update { state -> state.copy(card = state.card?.copy(custom = true, typed = null)) }
+
+    /** Types [digit] into the custom tip, in minor units. */
+    fun typeTipDigit(digit: Int) = perform {
+        val sheet = current.card ?: return@perform
+        val typed = (sheet.typed?.minor ?: 0) * 10 + digit.coerceIn(0, 9)
+        if (typed > MAX_TYPED) return@perform
+        val amount = till.amount(typed)
+        mutable.update { state -> state.copy(card = state.card?.copy(typed = amount)) }
+    }
+
+    /** Takes the last digit typed off the custom tip. */
+    fun eraseTipDigit() = perform {
+        val sheet = current.card ?: return@perform
+        val typed = (sheet.typed?.minor ?: 0) / 10
+        val amount = if (typed == 0L) null else till.amount(typed)
+        mutable.update { state -> state.copy(card = state.card?.copy(typed = amount)) }
+    }
+
+    private fun startCard(tip: CardTip) {
+        val sheet = current.card ?: return
+        if (sheet.working) return
+        mutable.update { state -> state.copy(card = state.card?.copy(working = true)) }
+        try {
+            val partial = terminal?.approvesPart == true
+            val ticket = till.payCard(sheet.order, sheet.check?.check, null, tip, partial)
+            val payment = till.cardPayments(sheet.order).lastOrNull()
+            mutable.update { state ->
+                state.copy(ticket = ticket, card = state.card?.copy(payment = payment, working = false, custom = false))
+            }
+        } catch (failed: Exception) {
+            mutable.update { state -> state.copy(card = state.card?.copy(working = false)) }
+            throw failed
+        }
+    }
+
+    /**
+     * Reads where the card payment open stands, as the terminal answers it: once approved for
+     * all its check owes, the order or the check is paid, and the sheet closes; approved in part,
+     * the rest is due, for any tender; declined, it can be tried again.
+     */
+    fun refreshCard() = perform {
+        val sheet = current.card ?: return@perform
+        val started = sheet.payment ?: return@perform
+        val payment = till.cardPayments(sheet.order).firstOrNull { it.payment == started.payment } ?: return@perform
+        if (payment == started) return@perform
+        val ticket = till.ticket(sheet.order)
+        val paid = payment.state is CardState.Approved && ticket.state != OrderState.OPEN
+        mutable.update { state ->
+            when {
+                state.card?.payment?.payment != payment.payment -> state
+                paid -> state.copy(ticket = null, card = null, change = null)
+                else -> state.copy(ticket = ticket, card = state.card.copy(payment = payment))
+            }
+        }
+    }
+
+    /** Asks the terminal to stop waiting for the card: it answers declined, unless the card was read. */
+    fun cancelCard() {
+        terminal?.cancel()
+    }
+
+    /** Another card, after a decline or for what a partial approval left: the tips are offered afresh. */
+    fun cardAgain() {
+        val sheet = current.card ?: return
+        val check = sheet.check
+        mutable.update { it.copy(card = null) }
+        openCard(check)
+    }
+
+    /**
+     * Settles by hand the card payment no terminal answers for, on a manager's word: [charged] or
+     * not (ADR-0035). Tried again as it was once a manager approves.
+     */
+    fun settleCard(charged: Boolean) {
+        val payment = current.card?.payment ?: return
+        val retry: () -> Unit = {
+            val ticket = till.settleCard(payment.payment, charged)
+            val now = till.cardPayments(ticket.order).firstOrNull { it.payment == payment.payment }
+            mutable.update { state ->
+                if (ticket.state != OrderState.OPEN) {
+                    state.copy(ticket = null, card = null)
+                } else {
+                    state.copy(ticket = ticket, card = state.card?.copy(payment = now))
+                }
+            }
+        }
+        perform(retryAs = retry) { retry() }
+    }
+
+    /** Closes the card sheet: a payment still waiting goes on at the terminal, and blocks its check. */
+    fun closeCard() = mutable.update { it.copy(card = null) }
+
+    /** Reads the card refunds this register owes whose latest attempt failed. */
+    fun refreshOwedRefunds() = perform {
+        val owed = till.owedCardRefunds().filter { it.failures > 0 && !it.pending }
+        if (owed != current.owedRefunds) mutable.update { it.copy(owedRefunds = owed) }
+    }
+
+    /** Tries again a card refund whose latest attempt failed: `refund.issue`, approved if need be. */
+    fun retryRefund(refund: OwedRefund) {
+        val retry = {
+            till.retryRefund(refund.refund)
+            val owed = till.owedCardRefunds().filter { it.failures > 0 && !it.pending }
+            mutable.update { it.copy(owedRefunds = owed) }
+        }
+        perform(retryAs = retry) { retry() }
+    }
+
     /** What is due, then the next whole 5, 10 and 20 above it, as a cash drawer takes them. */
     private fun roundUp(due: Long): List<Long> =
         (listOf(due) + listOf(500L, 1_000L, 2_000L).map { (due / it + 1) * it }).distinct()
@@ -1092,7 +1255,9 @@ class RegisterModel(
     /** Picks one more of [line] to return, up to what is left; a line sold by measure, whole. */
     fun pickMore(line: ReturnableLine) = mutable.update { state ->
         val sheet = state.returning ?: return@update state
-        if (!line.anyLeft || sheet.refunding || !sheet.returnable.cashOnly) return@update state
+        // Cash for an order cash paid alone; a card's for one a card paid (ADR-0035).
+        val refundable = sheet.returnable.cashOnly || sheet.returnable.cards.isNotEmpty()
+        if (!line.anyLeft || sheet.refunding || !refundable) return@update state
         val left = line.leftCount
         val picks = if (left == null) {
             sheet.picks + (line.line to null)
@@ -1137,10 +1302,11 @@ class RegisterModel(
         }
         val picks = sheet.picks.map { (line, count) -> ReturnPick(line, count) }
         val order = sheet.returnable.order
+        val toCard = sheet.toCard
         mutable.update { it.copy(returning = sheet.copy(refunding = true), error = null) }
         perform {
             val refund = try {
-                till.returnLines(order, picks, reason)
+                if (toCard == null) till.returnLines(order, picks, reason) else till.returnLinesToCard(order, picks, reason, toCard)
             } catch (refused: TillException) {
                 // What is left may have changed, as another register returned some of it: read it
                 // again, and keep only what can still be picked. Found in review.

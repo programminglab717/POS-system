@@ -208,21 +208,24 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         Ok(lines)
     }
 
-    /// The card refunds started on business day `date` and not yet paid back: how many, and
-    /// what they owe (ADR-0035).
+    /// The card refunds started on business day `date` and not paid back in full: how many, and
+    /// what they still owe (ADR-0035).
     fn card_refunds_owed(&self, date: BusinessDate) -> Result<(u64, Money), RuntimeError> {
         let currency = self.profile.data().currency;
         let (mut count, mut owed) = (0_u64, Money::zero(currency));
         for refund in self.store.refunds_on(date)? {
             let Some(info) = refund.info else { continue };
-            if info.tender != Tender::Card
-                || refund.completed.is_some()
-                || info.amount.currency() != currency
-            {
+            if info.tender != Tender::Card || info.amount.currency() != currency {
+                continue;
+            }
+            // Paid back in part, as by a terminal approving less than asked: the rest is owed.
+            let paid = refund.completed.map_or(Money::zero(currency), |completed| completed.amount);
+            let short = info.amount.checked_sub(paid)?;
+            if !short.is_positive() {
                 continue;
             }
             count = count.saturating_add(1);
-            owed = owed.checked_add(info.amount)?;
+            owed = owed.checked_add(short)?;
         }
         Ok((count, owed))
     }

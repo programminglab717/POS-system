@@ -25,6 +25,17 @@ import dev.keel.kernel.JobKind as KernelJobKind
 import dev.keel.kernel.JobState as KernelJobState
 import dev.keel.kernel.TicketState
 import dev.keel.register.Amount
+import dev.keel.register.CardPayment
+import dev.keel.register.CardState
+import dev.keel.register.CardTip
+import dev.keel.register.OwedRefund
+import dev.keel.register.RefundableCard
+import dev.keel.register.TipOffer
+import dev.keel.register.TipOffers
+import dev.keel.register.TipPrompt
+import dev.keel.kernel.CardState as KernelCardState
+import dev.keel.kernel.CardTip as KernelCardTip
+import dev.keel.kernel.TipPrompt as KernelTipPrompt
 import dev.keel.register.Chosen
 import dev.keel.register.Group
 import dev.keel.register.Item
@@ -314,8 +325,67 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
             },
             refunded = returnable.refunded.text,
             cashOnly = returnable.cashOnly,
+            cards = returnable.cards.map { RefundableCard(it.payment, it.card, it.left.toAmount()) },
         )
     }
+
+    override fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String): Refund = call {
+        val picked = lines.map { KernelReturnLine(it.line, it.count?.toUInt()) }
+        val refunded = register.returnLinesToCard(order, picked, reason, null, payment)
+        Refund(
+            amount = refunded.amount.text,
+            handed = refunded.handed.text,
+            lines = refunded.lines.map { "${it.quantityText} ${it.name}" to it.amount.text },
+            card = refunded.card,
+        )
+    }
+
+    override fun tipOffers(order: String, check: String?, partMinor: Long?): TipOffers = call {
+        val offers = register.tipOffers(order, check, partMinor)
+        TipOffers(
+            prompt = when (offers.prompt) {
+                KernelTipPrompt.SCREEN -> TipPrompt.SCREEN
+                KernelTipPrompt.TERMINAL -> TipPrompt.TERMINAL
+                null -> null
+            },
+            base = offers.base.toAmount(),
+            presets = offers.presets.map { TipOffer(it.percent.toInt(), it.amount.toAmount()) },
+        )
+    }
+
+    override fun payCard(order: String, check: String?, partMinor: Long?, tip: CardTip, partial: Boolean): Ticket = call {
+        val kernelTip = when (tip) {
+            CardTip.None -> KernelCardTip.None
+            is CardTip.Amount -> KernelCardTip.Amount(tip.minor)
+            CardTip.Terminal -> KernelCardTip.Terminal
+        }
+        register.payCard(order, check, partMinor, kernelTip, partial).toTicket()
+    }
+
+    override fun cardPayments(order: String): List<CardPayment> = call {
+        register.cardPayments(order).map { payment ->
+            val state = when (val now = payment.state) {
+                KernelCardState.Waiting -> CardState.Waiting
+                KernelCardState.Checking -> CardState.Checking
+                KernelCardState.Elsewhere -> CardState.Elsewhere
+                is KernelCardState.Approved -> CardState.Approved(now.applied.toAmount(), now.tip?.toAmount(), now.byHand)
+                is KernelCardState.Declined -> CardState.Declined(now.reason)
+            }
+            CardPayment(payment.payment, payment.check, payment.amount.toAmount(), state, payment.card)
+        }
+    }
+
+    override fun settleCard(payment: String, charged: Boolean): Ticket = call {
+        register.settleCard(payment, charged).toTicket()
+    }
+
+    override fun owedCardRefunds(): List<OwedRefund> = call {
+        register.owedCardRefunds().map {
+            OwedRefund(it.refund, it.order, it.amount.toAmount(), it.pending, it.failures.toInt(), it.failure)
+        }
+    }
+
+    override fun retryRefund(refund: String) = call { register.retryRefund(refund) }
 
     override fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund = call {
         val picked = lines.map { KernelReturnLine(it.line, it.count?.toUInt()) }
@@ -408,6 +478,10 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
     fun printLoop(kernel: CoroutineDispatcher, address: () -> PrinterAddress?): PrintLoop =
         PrintLoop(register, kernel, address)
 
+    /** The card terminal's loop, over [terminal], its calls to the kernel on [kernel] (ADR-0035). */
+    fun paymentLoop(kernel: CoroutineDispatcher, terminal: dev.keel.register.CardTerminal): PaymentLoop =
+        PaymentLoop(register, kernel, terminal)
+
     override fun close() = register.close()
 }
 
@@ -431,6 +505,7 @@ internal fun action(action: String): String = when (action) {
     "drawer.paid_out" -> "Paying out"
     "receipt.reprint" -> "Printing a receipt again"
     "item.availability" -> "Marking an item out"
+    "payment.resolve" -> "Settling a card payment by hand"
     else -> "That"
 }
 

@@ -338,7 +338,20 @@ BUGS = [
     (
         "ffi: a kitchen refusal is a device error",
         "src/error.rs",
-        "            | RuntimeError::Kitchen(_) => KeelError::Refused { reason },",
-        "            => KeelError::Refused { reason },",
+        "            | RuntimeError::Kitchen(_)\n",
+        "\n",
+    ),
+    # Card payments (ADR-0035).
+    (
+        "ffi: an approval with a card it can't hold is refused",
+        "src/card.rs",
+        "                        auth_code: card.auth_code.and_then(|code| AuthCode::new(&code).ok()),",
+        "                        auth_code: Some(AuthCode::new(&card.auth_code?).ok()?),",
+    ),
+    (
+        "ffi: a card request is asked about as a sale",
+        "src/card.rs",
+        "        CardRequest { key: request.key.clone(), ask, status: request.status }",
+        "        CardRequest { key: request.key.clone(), ask, status: false }",
     ),
 ]

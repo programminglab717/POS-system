@@ -542,8 +542,16 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 continue;
             }
             let key = queued.effect.key.clone();
+            // A payload this kernel can't read is no request: it is left for a manager to settle,
+            // never failed, so its payment can still be settled. Found in review.
+            if read(&queued).is_none() {
+                continue;
+            }
             match queued.state {
-                EffectState::Pending if queued.due <= now || queued.due > latest => {
+                // A first attempt goes at once, whatever a clock set back says: a customer waits.
+                EffectState::Pending
+                    if queued.due <= now || queued.due > latest || queued.attempts == 0 =>
+                {
                     if queued.due > now {
                         self.store.write(|w| w.reschedule(&key, now))?;
                     }
@@ -553,11 +561,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 _ => continue,
             }
             let started = self.store.write(|w| w.start(&key, now))?;
-            let Some(read) = read(&started) else {
-                // A payload this kernel can't read is no request: it is set aside, for a person.
-                self.store.write(|w| w.fail(&key))?;
-                continue;
-            };
+            let Some(read) = read(&started) else { continue };
             let request =
                 CardRequest { key: key_of(&read.ask), ask: read.ask, status: started.attempts > 1 };
             self.charging = Some(key);
@@ -587,26 +591,50 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let asked = match &read.ask {
             CardAsk::Sale { amount, .. } | CardAsk::Refund { amount, .. } => *amount,
         };
-        if let CardOutcome::Approved { approved, .. } = &outcome
-            && (!approved.is_positive() || approved.currency() != asked.currency())
-        {
-            return Err(RuntimeError::BadOutcome);
-        }
         // Whatever happens next, the request is no longer with the shell: if it isn't recorded,
-        // it is in doubt, and asked about.
+        // it is in doubt, and asked about later. Found in review: an answer refused left it with
+        // the shell, and every card request after it waited for good.
         self.charging = None;
-        if let CardOutcome::Unknown { retry_after } = outcome {
-            let wait = retry_after.unwrap_or_else(|| ask_after(queued.attempts)).min(LONGEST_ASK);
+        let bad = matches!(&outcome, CardOutcome::Approved { approved, .. }
+            if !approved.is_positive() || approved.currency() != asked.currency());
+        let wait = match &outcome {
+            CardOutcome::Unknown { retry_after } => {
+                Some(retry_after.unwrap_or_else(|| ask_after(queued.attempts)).min(LONGEST_ASK))
+            }
+            _ if bad => Some(ask_after(queued.attempts)),
+            _ => None,
+        };
+        if let Some(wait) = wait {
             let due = print::after(self.clock.now(), wait)?;
             self.store.write(|w| w.retry(&bytes, due))?;
-            return Ok(());
+            return if bad { Err(RuntimeError::BadOutcome) } else { Ok(()) };
         }
-        match read.ask {
+        let recorded = match read.ask {
             CardAsk::Sale { payment, .. } => self.sale_outcome(&bytes, payment, outcome),
             CardAsk::Refund { refund, .. } => {
                 self.refund_outcome(&bytes, refund, outcome, read.receipt.as_ref())
             }
+        };
+        // Not recorded, it is asked about after a wait, not at once. Found in review.
+        if recorded.is_err()
+            && let Ok(due) = print::after(self.clock.now(), ask_after(queued.attempts))
+        {
+            let _retried = self.store.write(|w| w.retry(&bytes, due));
         }
+        recorded
+    }
+
+    /// Takes back the card request the shell holds, as when its terminal stopped answering: the
+    /// request is in doubt, asked about next, never sent again (ADR-0035). Found in review: a
+    /// shell that never reported an outcome held every card request after it.
+    ///
+    /// # Errors
+    /// [`RuntimeError::Store`] if the store can't be written.
+    pub fn release_card_request(&mut self) -> Result<(), RuntimeError> {
+        let Some(key) = self.charging.take() else { return Ok(()) };
+        let due = print::after(self.clock.now(), FIRST_ASK)?;
+        self.store.write(|w| w.retry(&key, due))?;
+        Ok(())
     }
 
     fn sale_outcome(
@@ -783,11 +811,19 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let loaded = self.store.load(Payment::new(payment))?;
         let info = loaded.info().cloned().ok_or(RuntimeError::NotCardPayment)?;
         let queued = self.store.effect(&key)?.ok_or(RuntimeError::NotCardPayment)?;
-        let read = read(&queued).ok_or(RuntimeError::NotCardPayment)?;
-        if info.tender != Tender::Card || !loaded.is_unresolved() || !is_card(&queued) {
+        let unfinished = matches!(queued.state, EffectState::Pending | EffectState::Running);
+        if info.tender != Tender::Card
+            || !loaded.is_unresolved()
+            || !is_card(&queued)
+            || !unfinished
+        {
             return Err(RuntimeError::NotCardPayment);
         }
-        let CardAsk::Sale { tip, .. } = read.ask else { return Err(RuntimeError::NotCardPayment) };
+        // The tip chosen on the register, if its request can be read: settled without, otherwise.
+        let tip = match read(&queued).map(|read| read.ask) {
+            Some(CardAsk::Sale { tip, .. }) => tip,
+            _ => None,
+        };
         let granted = self.gate(Request::of(Action::PaymentResolve), Some(payment.cast()))?;
         let command = if charged {
             PaymentCommand::Capture(PaymentCaptured {

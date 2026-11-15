@@ -2,7 +2,14 @@
 // on the demo café's profile rings an order with modifiers, refuses what it should as
 // exceptions, takes cash, and sends the drawer kick and the receipt to a fake printer.
 
+import dev.keel.kernel.CardAsk
+import dev.keel.kernel.CardEntry
+import dev.keel.kernel.CardOutcome
+import dev.keel.kernel.CardRead
+import dev.keel.kernel.CardState
+import dev.keel.kernel.CardTip
 import dev.keel.kernel.Choice
+import dev.keel.kernel.TipPrompt
 import dev.keel.kernel.Confirm
 import dev.keel.kernel.JobKind
 import dev.keel.kernel.JobState
@@ -174,5 +181,44 @@ class RegisterTest {
         assertFailsWith<KeelException.InvalidArgument> {
             Register.open(RegisterConfig("x", ByteArray(31), id(1), ByteArray(32), demoProfile(), "en-US"))
         }
+    }
+
+    /**
+     * A card sale through the bindings (ADR-0035): the tips offered on the pre-tax subtotal, the
+     * sale handed to the connector, a lost answer asked about and never sent again, and the
+     * approval recorded with its card and tip.
+     */
+    @Test
+    fun aCardSaleIsAskedAboutAfterALostAnswer() = withRegister { register ->
+        register.signIn(id(0x501), "1234")
+        val order = register.startOrder(Mode.TAKEOUT).order
+        register.addItem(order, id(0x401), emptyList(), 1u)
+        val offers = register.tipOffers(order, null, null)
+        assertEquals(TipPrompt.SCREEN, offers.prompt)
+        assertEquals(listOf(33L, 49L, 65L), offers.presets.map { it.amount.minor })
+        register.payCard(order, null, null, CardTip.Amount(49), true)
+        val request = register.nextCardRequest()!!
+        assertEquals(false, request.status)
+        val sale = request.ask as CardAsk.Sale
+        assertEquals(354L to 49L, sale.amount to sale.tip)
+        assertNull(register.nextCardRequest(), "one request at a time")
+        register.cardOutcome(request.key, CardOutcome.Unknown(0uL))
+        assertEquals(CardState.Checking, register.cardPayments(order).single().state)
+        val asked = register.nextCardRequest()!!
+        assertEquals(true, asked.status, "asked about, never sent again")
+        assertEquals(request.key, asked.key)
+        val card = CardRead("Visa", "4242", CardEntry.CHIP, "A1B2C3")
+        register.cardOutcome(asked.key, CardOutcome.Approved(403, "pi_1", card))
+        val approved = register.cardPayments(order).single()
+        assertEquals("Visa •••• 4242", approved.card)
+        val state = approved.state as CardState.Approved
+        assertEquals(354L to 49L, state.applied.minor to state.tip?.minor)
+        assertEquals(TicketState.CLOSED, register.ticket(order).state)
+        // An outcome that can't be is refused, as is one for no request.
+        assertFailsWith<KeelException.InvalidArgument> {
+            register.cardOutcome(asked.key, CardOutcome.Approved(1, null, null))
+        }
+        val report = register.dayReport(dev.keel.kernel.ReportKind.X, null)
+        assertEquals(listOf(49L), report.tips.map { it.amount.minor })
     }
 }

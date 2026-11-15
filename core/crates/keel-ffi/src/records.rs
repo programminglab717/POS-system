@@ -403,6 +403,12 @@ pub struct DayReport {
     pub cash_refunded_without_drawer: Amount,
     /// How many cash refunds were handed back with no drawer open.
     pub refunds_without_drawer: u64,
+    /// The day's tips, by the member who took them, the most first (ADR-0035).
+    pub tips: Vec<crate::card::TipLine>,
+    /// The card refunds started on the day and not yet paid back.
+    pub card_refunds_owed: u64,
+    /// What they owe.
+    pub card_refunds_owed_amount: Amount,
 }
 
 /// What one tender captured on a day.
@@ -462,6 +468,9 @@ impl From<&runtime::DayReport> for DayReport {
             refunds: report.refunds.iter().map(TenderLine::from).collect(),
             cash_refunded_without_drawer: (&report.cash_refunded_without_drawer).into(),
             refunds_without_drawer: report.refunds_without_drawer,
+            tips: report.tips.iter().map(crate::card::TipLine::from).collect(),
+            card_refunds_owed: report.card_refunds_owed,
+            card_refunds_owed_amount: (&report.card_refunds_owed_amount).into(),
         }
     }
 }
@@ -1087,8 +1096,12 @@ pub struct Returnable {
     pub lines: Vec<ReturnableLine>,
     /// What its returns refunded so far.
     pub refunded: Amount,
-    /// Whether it was paid in cash alone, as a refund in cash needs.
+    /// Whether it was paid in cash alone.
     pub cash_only: bool,
+    /// What is left to refund in cash; absent if a payment of it isn't known here (ADR-0035).
+    pub cash_left: Option<Amount>,
+    /// Its card payments a return can be refunded to, by reference.
+    pub cards: Vec<crate::card::RefundableCard>,
 }
 
 /// How much of a line to return: `count` of one sold by the each, or, with `count` absent, all
@@ -1123,6 +1136,8 @@ pub struct Refunded {
     pub amount: Amount,
     /// What was handed back in cash, rounded as the location rounds cash.
     pub handed: Amount,
+    /// The card a card refund goes back to, as a receipt shows it (ADR-0035).
+    pub card: Option<String>,
 }
 
 impl From<&runtime::Returnable> for Returnable {
@@ -1143,6 +1158,8 @@ impl From<&runtime::Returnable> for Returnable {
                 .collect(),
             refunded: (&returnable.refunded).into(),
             cash_only: returnable.cash_only,
+            cash_left: returnable.cash_left.as_ref().map(Amount::from),
+            cards: returnable.cards.iter().map(crate::card::RefundableCard::from).collect(),
         }
     }
 }
@@ -1162,6 +1179,7 @@ impl From<&runtime::Refunded> for Refunded {
                 .collect(),
             amount: (&refunded.amount).into(),
             handed: (&refunded.handed).into(),
+            card: refunded.card.clone(),
         }
     }
 }

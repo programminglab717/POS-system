@@ -118,10 +118,18 @@ and refunds projections at version 2. Verified: every kernel test, the ignored s
 both clippy runs; the docs; 41 new planted bugs in the domain and the store, all caught once three
 misses each got a test (the card's last four, its authorization code, the approval's version).
 
-Slice 2 under way: the runtime's sale and refund effects, outcomes, status queries, settling by
-hand, tips on the pre-tax subtotal, card receipts, tips by member in the day's report, and a
-property test against a model terminal that loses requests and answers across restarts, all
-built and passing; 19 planted bugs in its card code. Next: the bindings.
+Slice 2 built 2026-11-15: the runtime's sale and refund effects, outcomes, status queries,
+settling by hand, tips on the pre-tax subtotal, card receipts, tips by member and card refunds
+owed in the day's report, card refunds by reference through returns; the bindings' card records
+and calls; a property test against a model terminal that loses requests and answers across
+restarts. Slice 3 built 2026-11-15: the Android register's card tender, tip prompt, waiting,
+partial, declined and checking states, settling by hand, card refunds on the return screen, a
+banner for failed card refunds, the payment loop beside the print loop, and a simulated terminal
+whose answers the screen gives for the customer. Verified: every kernel test, the ignored sweeps
+included; both clippy runs; the docs; the wasm build; the Kotlin bindings' tests; the register's
+63 model tests and the Android build, its instrumented test assembled (not run: no emulator).
+The kernel review's findings are fixed (below, in the ADR's As built, once the Android review is
+in). Next: the Android review, then acceptance.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 6's among them, and the
 three of step 2 the scrolling ticket pane should mend.

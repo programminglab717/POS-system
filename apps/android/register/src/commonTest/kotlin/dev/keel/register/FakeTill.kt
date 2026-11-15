@@ -660,7 +660,12 @@ class FakeTill : Till {
             val count = left.takeIf { line.variant !in measured }
             ReturnableLine(line.id, line.variant, left.toString(), count, left > 0, money(unitPrice(line) * line.count))
         }
-        return Returnable(order, lines, money(refundedOf[order] ?: 0), cashOnly = order !in cardPaid)
+        val cards = if (order in cardPaid) {
+            listOf(RefundableCard("card:$order", "Visa •••• 4242", amount((cardApplied[order] ?: 0) - (refundedOf[order] ?: 0))))
+        } else {
+            emptyList()
+        }
+        return Returnable(order, lines, money(refundedOf[order] ?: 0), cashOnly = order !in cardPaid, cards = cards)
     }
 
     override fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund {
@@ -690,6 +695,98 @@ class FakeTill : Till {
         return Refund(money(total), money(total), each.map { (line, count, amount) -> "$count ${line.variant}" to money(amount) })
     }
 
+    // Card payments (ADR-0035), as the kernel's: a payment waits for the terminal, which a test
+    // answers with [answerCard]; meanwhile its order takes no other payment.
+
+    /** Where the register asks for a tip, or null for none. */
+    var tipping: TipPrompt? = TipPrompt.SCREEN
+    val cardPays = mutableListOf<Pair<String, CardPayment>>()
+    private val cardApplied = mutableMapOf<String, Long>()
+    private val cardTip = mutableMapOf<String, Long?>()
+    val cardTips = mutableListOf<CardTip>()
+    val cardRefunds = mutableListOf<OwedRefund>()
+
+    override fun tipOffers(order: String, check: String?, partMinor: Long?): TipOffers {
+        val base = partMinor ?: due(order)
+        val prompt = tipping ?: return TipOffers(null, amount(base), emptyList())
+        return TipOffers(prompt, amount(base), listOf(1_500, 2_000).map { TipOffer(it, amount((base * it + 5_000) / 10_000)) })
+    }
+
+    override fun payCard(order: String, check: String?, partMinor: Long?, tip: CardTip, partial: Boolean): Ticket {
+        open(order)
+        if (cardPayments(order).any { it.state == CardState.Waiting || it.state == CardState.Checking }) {
+            throw TillException("a payment on the check is unresolved")
+        }
+        if (tip !is CardTip.None && tipping == null) throw TillException("the location doesn't take that tip")
+        if (tip is CardTip.Terminal && tipping != TipPrompt.TERMINAL) throw TillException("the location doesn't take that tip")
+        val asked = partMinor ?: due(order)
+        val payment = "card${cardPays.size + 1}"
+        cardTips += tip
+        cardTip[payment] = (tip as? CardTip.Amount)?.minor
+        cardPays += order to CardPayment(payment, check ?: order, amount(asked), CardState.Waiting, null)
+        return ticket(order)
+    }
+
+    override fun cardPayments(order: String): List<CardPayment> = cardPays.filter { it.first == order }.map { it.second }
+
+    /** The terminal's answer to [payment]: approved for [approvedMinor], a tip included; otherwise [state]. */
+    fun answerCard(payment: String, approvedMinor: Long? = null, state: CardState? = null) {
+        val index = cardPays.indexOfFirst { it.second.payment == payment }
+        val (order, now) = cardPays[index]
+        val next = if (approvedMinor != null) {
+            val applied = minOf(approvedMinor, now.amount.minor)
+            val tip = (approvedMinor - applied).takeIf { it > 0 }
+            cardApplied[order] = (cardApplied[order] ?: 0) + applied
+            cardPaid += order
+            if (due(order) <= 0) {
+                fire(order)
+                states[order] = OrderState.CLOSED
+                jobs += PrintJob("receipt:$order", JobKind.RECEIPT, JobState.QUEUED, 0)
+            }
+            now.copy(state = CardState.Approved(amount(applied), tip?.let(::amount), byHand = false), card = "Visa •••• 4242")
+        } else {
+            now.copy(state = state ?: CardState.Declined("declined"))
+        }
+        cardPays[index] = order to next
+    }
+
+    override fun settleCard(payment: String, charged: Boolean): Ticket {
+        val (order, now) = cardPays.first { it.second.payment == payment }
+        if (now.state != CardState.Checking) throw TillException("not a card payment this register is waiting on")
+        if (approvedBy == null) throw TillException("Settling a card payment needs a manager's approval.", approval = "payment.resolve")
+        approvedBy = null
+        if (charged) {
+            answerCard(payment, now.amount.minor + (cardTip[payment] ?: 0))
+            val index = cardPays.indexOfFirst { it.second.payment == payment }
+            val settled = cardPays[index].second
+            val approved = settled.state as CardState.Approved
+            cardPays[index] = order to settled.copy(state = approved.copy(byHand = true), card = null)
+        } else {
+            answerCard(payment, state = CardState.Declined("not_charged"))
+        }
+        return ticket(order)
+    }
+
+    override fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String): Refund {
+        if (order !in cardPaid) throw TillException("not a card payment of the order")
+        cardPaid -= order
+        try {
+            val refund = returnLines(order, lines, reason)
+            cardRefunds += OwedRefund("refund:$order", order, amount(0), pending = true, failures = 0, failure = null)
+            return refund.copy(handed = money(0), card = "Visa •••• 4242")
+        } finally {
+            cardPaid += order
+        }
+    }
+
+    override fun owedCardRefunds(): List<OwedRefund> = cardRefunds.toList()
+
+    override fun retryRefund(refund: String) {
+        val index = cardRefunds.indexOfFirst { it.refund == refund }
+        if (index < 0) throw TillException("not a card refund to try again")
+        cardRefunds[index] = cardRefunds[index].copy(pending = true)
+    }
+
     override fun resolve(job: String, printed: Boolean) {
         val index = jobs.indexOfFirst { it.job == job && it.state == JobState.UNCONFIRMED }
         if (index < 0) throw TillException("That job isn't waiting for a decision.")
@@ -708,7 +805,7 @@ class FakeTill : Till {
     }
 
     private fun due(order: String) = if (states[order] == OrderState.OPEN) {
-        priced(order).second.first - checks[order].orEmpty().sumOf { checkPaid[it] ?: 0L }
+        priced(order).second.first - checks[order].orEmpty().sumOf { checkPaid[it] ?: 0L } - (cardApplied[order] ?: 0L)
     } else {
         0L
     }

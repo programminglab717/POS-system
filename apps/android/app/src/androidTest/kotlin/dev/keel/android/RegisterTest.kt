@@ -303,6 +303,31 @@ class RegisterTest {
     }
 
     /**
+     * An espresso paid by card with a 15% tip chosen on the screen, through the simulated
+     * terminal, which approves it for the customer; the payment shows approved, and the order
+     * is paid (ADR-0035).
+     */
+    @Test
+    fun an_espresso_is_paid_by_card_with_a_tip_chosen_on_the_screen() {
+        compose.tap("member:Alex", wait = 20_000)
+        compose.enterPin("1234")
+        compose.tap("button:${demoId(0x401)}")
+        compose.tap("sheet:add")
+        compose.tap("card")
+        // 15% of the pre-tax $3.25, half up.
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("$0.49", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        compose.tap("tip:1500")
+        compose.waitFor("card:waiting")
+        compose.tap("terminal:APPROVE", wait = 20_000)
+        // Once the terminal answers for all of it, the order is paid and the sheet closes.
+        compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("card:waiting")).fetchSemanticsNodes().isEmpty() }
+        compose.tap("orders")
+        compose.waitUntil(10_000) { compose.onAllNodes(tagStarting("return:0")).fetchSemanticsNodes().isNotEmpty() }
+        compose.tap("back")
+        compose.tap("sign-out")
+    }
+
+    /**
      * A printer in the test's process that takes [jobs] connections, one after the other, each
      * answered as a ready Epson that printed what it was sent; and what each brought, waited for.
      */

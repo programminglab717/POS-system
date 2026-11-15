@@ -24,6 +24,7 @@ use keel_store::StoreKey;
 use keel_types::{Clock, Entropy, Id, IdGenerator, Locale, Money, OsEntropy, SystemClock};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
+use crate::card::{CardOutcome, CardPayment, CardRefund, CardRequest, CardTip, TipOffers};
 use crate::error::KeelError;
 use crate::records::{
     Amount, CashMovement, CashPaid, Choice, DayReport, DrawerView, Item, ItemKind, Job,
@@ -587,36 +588,173 @@ impl Register {
     ) -> Result<Refunded, KeelError> {
         let order = id(&order)?;
         let reason = self::reason(&reason, note)?;
-        let asked: Vec<(Id<keel_domain::order::Line>, Option<u32>)> = lines
-            .iter()
-            .map(|line| Ok((id(&line.line)?, line.count)))
-            .collect::<Result<_, KeelError>>()?;
+        let asked = asked_lines(&lines)?;
         self.with(|runtime| {
-            let returnable = runtime.returnable(order)?;
-            let mut quantities = Vec::with_capacity(asked.len());
-            for (line, count) in &asked {
-                let known = returnable.lines.iter().find(|known| known.line == *line);
-                // A count is of a line sold by the each; all that is left, of one with something
-                // left. Found in review: a count of a line sold by measure returned that many
-                // kilograms, and one with nothing left was called a quantity of nothing.
-                let quantity = match (known, count) {
-                    (Some(known), None) if known.left.is_positive() => known.left,
-                    (Some(_), None) => {
-                        return Err(keel_domain::order::CommandError::ReturnBeyond(*line).into());
-                    }
-                    (Some(known), Some(_)) if known.left_count.is_none() => {
-                        return Err(keel_domain::order::CommandError::WrongUnit(*line).into());
-                    }
-                    (Some(known), Some(count)) => {
-                        keel_types::Quantity::from_whole(i64::from(*count), known.quantity.unit())?
-                    }
-                    (None, _) => keel_types::Quantity::zero(keel_types::Unit::Each),
-                };
-                quantities.push((*line, quantity));
-            }
+            let quantities = quantities(runtime, order, &asked)?;
             runtime.return_lines(order, &quantities, reason)
         })
         .map(|refunded| (&refunded).into())
+    }
+
+    /// Returns `lines` of closed order `order`, for `reason`, with an optional `note`, refunded
+    /// to its card payment `payment`, by reference, through the terminal (ADR-0035): the refund
+    /// is started, and its request waits for the connector. A line given no count returns all
+    /// that is left of it.
+    ///
+    /// # Errors
+    /// [`KeelError::ApprovalRequired`] if the member's role doesn't permit the refund;
+    /// [`KeelError::Refused`] for more than is left to refund to the card, a payment that isn't
+    /// one of the order's card payments, an order that isn't closed, or more of a line than is
+    /// left; [`KeelError::InvalidArgument`] for an identifier, a line or a reason that isn't one.
+    pub fn return_lines_to_card(
+        &self,
+        order: String,
+        lines: Vec<ReturnLine>,
+        reason: String,
+        note: Option<String>,
+        payment: String,
+    ) -> Result<Refunded, KeelError> {
+        let (order, payment) = (id(&order)?, id(&payment)?);
+        let reason = self::reason(&reason, note)?;
+        let asked = asked_lines(&lines)?;
+        self.with(|runtime| {
+            let quantities = quantities(runtime, order, &asked)?;
+            runtime.return_lines_to(
+                order,
+                &quantities,
+                reason,
+                keel_runtime::RefundTo::Card(payment),
+            )
+        })
+        .map(|refunded| (&refunded).into())
+    }
+
+    /// The tips offered for paying `part` of `check` of `order` by card, or all it owes, on the
+    /// pre-tax subtotal (ADR-0035); `check` absent for the one check that holds something.
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] for an identifier that isn't one; [`KeelError::Refused`] if
+    /// the order is split and no check is given.
+    pub fn tip_offers(
+        &self,
+        order: String,
+        check: Option<String>,
+        part: Option<i64>,
+    ) -> Result<TipOffers, KeelError> {
+        let order = id(&order)?;
+        let check = check.map(|check| id(&check)).transpose()?;
+        self.with(|runtime| {
+            let currency = runtime.profile().data().currency;
+            let check = match check {
+                Some(check) => check,
+                None => runtime.holding_check(order)?,
+            };
+            runtime.tip_offers(order, check, part.map(|part| Money::from_minor(part, currency)))
+        })
+        .map(|offers| (&offers).into())
+    }
+
+    /// Starts paying `part` of `check` of `order` by card, or all it owes, with `tip`, approved in
+    /// part if `partial` and the terminal can (ADR-0035); `check` absent for the one check that
+    /// holds something. The connector takes the sale with `next_card_request`. Answers with the
+    /// order's ticket: nothing is paid until the terminal answers.
+    ///
+    /// # Errors
+    /// [`KeelError::Refused`] for a tip the location doesn't take or one beyond what it tips on,
+    /// or a check that can't take the payment; [`KeelError::InvalidArgument`] for an identifier
+    /// that isn't one.
+    pub fn pay_card(
+        &self,
+        order: String,
+        check: Option<String>,
+        part: Option<i64>,
+        tip: CardTip,
+        partial: bool,
+    ) -> Result<Ticket, KeelError> {
+        let order = id(&order)?;
+        let check = check.map(|check| id(&check)).transpose()?;
+        self.with(|runtime| {
+            let currency = runtime.profile().data().currency;
+            let part = part.map(|part| Money::from_minor(part, currency));
+            match check {
+                Some(check) => {
+                    runtime.pay_check_card(order, check, part, tip.of(currency), partial)
+                }
+                None if part.is_none() => runtime.pay_card(order, tip.of(currency), partial),
+                None => {
+                    let check = runtime.holding_check(order)?;
+                    runtime.pay_check_card(order, check, part, tip.of(currency), partial)
+                }
+            }
+        })
+        .map(|ticket| (&ticket).into())
+    }
+
+    /// The next card request for the connector to take to the terminal, if one is due: a sale or
+    /// a refund to perform, or, with `status`, one to ask about, which must never be performed
+    /// (ADR-0035). One at a time: none until the one taken has its outcome.
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read or written.
+    pub fn next_card_request(&self) -> Result<Option<CardRequest>, KeelError> {
+        self.with(DeviceRuntime::next_card_request)
+            .map(|request| request.as_ref().map(CardRequest::from))
+    }
+
+    /// Records what the terminal answered to the request with `key`.
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] unless the request with `key` is the connector's;
+    /// [`KeelError::Device`] if it can't be recorded, which leaves the request to be asked about.
+    /// What a payment can't hold of the answer, such as a card's details that aren't valid, is
+    /// dropped; an answer that can't be at all, as an approval of nothing, is asked about again.
+    pub fn card_outcome(&self, key: String, outcome: CardOutcome) -> Result<(), KeelError> {
+        self.with(|runtime| {
+            let currency = runtime.profile().data().currency;
+            runtime.card_outcome(&key, outcome.of(currency))
+        })
+    }
+
+    /// Settles by hand the card payment `payment`, which no terminal can answer for, on a
+    /// manager's word (`payment.resolve`): `charged` or not.
+    ///
+    /// # Errors
+    /// [`KeelError::ApprovalRequired`] if the member's role doesn't permit it;
+    /// [`KeelError::Refused`] unless it is an unresolved card payment this register took, and
+    /// while the terminal has it.
+    pub fn settle_card(&self, payment: String, charged: bool) -> Result<Ticket, KeelError> {
+        let payment = id(&payment)?;
+        self.with(|runtime| runtime.settle_card(payment, charged)).map(|ticket| (&ticket).into())
+    }
+
+    /// The card payments of `order`, each with where it is, oldest first.
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] for an identifier that isn't one.
+    pub fn card_payments(&self, order: String) -> Result<Vec<CardPayment>, KeelError> {
+        let order = id(&order)?;
+        self.with(|runtime| runtime.card_payments(order))
+            .map(|views| views.iter().map(CardPayment::from).collect())
+    }
+
+    /// The card refunds this register owes.
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read.
+    pub fn owed_card_refunds(&self) -> Result<Vec<CardRefund>, KeelError> {
+        self.with(|runtime| runtime.owed_card_refunds())
+            .map(|views| views.iter().map(CardRefund::from).collect())
+    }
+
+    /// Tries again the card refund `refund`, whose latest attempt failed: `refund.issue`.
+    ///
+    /// # Errors
+    /// [`KeelError::ApprovalRequired`] if the member's role doesn't permit it;
+    /// [`KeelError::Refused`] unless it is a card refund this register owes, whose latest attempt
+    /// failed.
+    pub fn retry_refund(&self, refund: String) -> Result<(), KeelError> {
+        let refund = id(&refund)?;
+        self.with(|runtime| runtime.retry_refund(refund))
     }
 
     /// The report of today's business day, or of `date` (`YYYY-MM-DD`) when given (ADR-0031).
@@ -1189,4 +1327,43 @@ pub fn print_tcp(
         }
     }
     Ok(outcome.into())
+}
+
+/// A line asked for a return, with its count, if given.
+type Asked = (Id<keel_domain::order::Line>, Option<u32>);
+
+/// The lines asked for a return, each with its count, if given.
+fn asked_lines(lines: &[ReturnLine]) -> Result<Vec<Asked>, KeelError> {
+    lines.iter().map(|line| Ok((id(&line.line)?, line.count))).collect()
+}
+
+/// How much of each line `asked` returns of closed order `order`: a count is of a line sold by
+/// the each; all that is left, of one with something left. Found in review: a count of a line
+/// sold by measure returned that many kilograms, and one with nothing left was called a quantity
+/// of nothing.
+fn quantities(
+    runtime: &DeviceRuntime,
+    order: Id<keel_domain::order::Order>,
+    asked: &[Asked],
+) -> Result<Vec<(Id<keel_domain::order::Line>, keel_types::Quantity)>, RuntimeError> {
+    let returnable = runtime.returnable(order)?;
+    let mut quantities = Vec::with_capacity(asked.len());
+    for (line, count) in asked {
+        let known = returnable.lines.iter().find(|known| known.line == *line);
+        let quantity = match (known, count) {
+            (Some(known), None) if known.left.is_positive() => known.left,
+            (Some(_), None) => {
+                return Err(keel_domain::order::CommandError::ReturnBeyond(*line).into());
+            }
+            (Some(known), Some(_)) if known.left_count.is_none() => {
+                return Err(keel_domain::order::CommandError::WrongUnit(*line).into());
+            }
+            (Some(known), Some(count)) => {
+                keel_types::Quantity::from_whole(i64::from(*count), known.quantity.unit())?
+            }
+            (None, _) => keel_types::Quantity::zero(keel_types::Unit::Each),
+        };
+        quantities.push((*line, quantity));
+    }
+    Ok(quantities)
 }

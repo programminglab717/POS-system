@@ -131,6 +131,39 @@ interface Till {
      */
     fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund
 
+    /**
+     * Returns [lines] of paid order [order], for [reason], refunded to its card payment
+     * [payment], by reference, through the terminal (ADR-0035).
+     */
+    fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String): Refund =
+        throw TillException("Refunds to a card aren't available")
+
+    /**
+     * The tips offered for paying [order] by card, or [partMinor] of its [check] (ADR-0035): each
+     * preset on the pre-tax subtotal; none when the location takes no tips.
+     */
+    fun tipOffers(order: String, check: String?, partMinor: Long?): TipOffers = TipOffers(null, Amount(0, ""), emptyList())
+
+    /**
+     * Starts paying [order] by card, or [partMinor] of its [check], with [tip], approved in part
+     * if [partial]: nothing is paid until the terminal answers, and the check takes no other
+     * payment meanwhile.
+     */
+    fun payCard(order: String, check: String?, partMinor: Long?, tip: CardTip, partial: Boolean): Ticket =
+        throw TillException("Card payments aren't available")
+
+    /** The card payments of [order], each with where it is, oldest first. */
+    fun cardPayments(order: String): List<CardPayment> = emptyList()
+
+    /** Settles by hand a card payment no terminal answers for, on a manager's word: [charged] or not. */
+    fun settleCard(payment: String, charged: Boolean): Ticket = throw TillException("Card payments aren't available")
+
+    /** The card refunds this register owes. */
+    fun owedCardRefunds(): List<OwedRefund> = emptyList()
+
+    /** Tries again a card refund whose latest attempt failed. */
+    fun retryRefund(refund: String): Unit = throw TillException("Card refunds aren't available")
+
     /** This register's device: the owner a ticket names when this register owns it. */
     fun deviceId(): String = ""
 
@@ -490,9 +523,14 @@ data class Returnable(
     val lines: List<ReturnableLine>,
     /** What its returns refunded so far. */
     val refunded: String,
-    /** Whether it was paid in cash alone, as a refund in cash needs. */
+    /** Whether it was paid in cash alone. */
     val cashOnly: Boolean,
+    /** Its card payments a return can go back to, by reference (ADR-0035). */
+    val cards: List<RefundableCard> = emptyList(),
 )
+
+/** A card payment a return can be refunded to, and what is left to refund to it. */
+data class RefundableCard(val payment: String, val card: String?, val left: Amount)
 
 /** A line of a paid order, and what is left of it to return. */
 data class ReturnableLine(
@@ -515,7 +553,69 @@ data class Refund(
     val handed: String,
     /** Each line returned: what and how much, and what it refunded. */
     val lines: List<Pair<String, String>>,
+    /** The card a card refund goes back to, as a receipt shows it; null for cash (ADR-0035). */
+    val card: String? = null,
 )
+
+/** Where a customer is asked for a tip (ADR-0035). */
+enum class TipPrompt { SCREEN, TERMINAL }
+
+/** A tip preset: its percentage, in basis points, and what it comes to. */
+data class TipOffer(val percent: Int, val amount: Amount)
+
+/** The tips offered for a card payment, on the pre-tax subtotal; no [prompt] when none are taken (H-10). */
+data class TipOffers(val prompt: TipPrompt?, val base: Amount, val presets: List<TipOffer>)
+
+/** The tip a card payment carries. */
+sealed interface CardTip {
+    /** None. */
+    data object None : CardTip
+
+    /** An amount chosen on the register's screen. */
+    data class Amount(val minor: Long) : CardTip
+
+    /** Whatever the customer chooses on the terminal. */
+    data object Terminal : CardTip
+}
+
+/** Where a card payment is. */
+sealed interface CardState {
+    /** Waiting for the terminal. */
+    data object Waiting : CardState
+
+    /** No one knows its outcome: the terminal is being asked. */
+    data object Checking : CardState
+
+    /** Waiting for another register's terminal. */
+    data object Elsewhere : CardState
+
+    /** Approved, for what it applied, with the tip on top. */
+    data class Approved(val applied: Amount, val tip: Amount?, val byHand: Boolean) : CardState
+
+    /** Declined, for [reason], a reason code. */
+    data class Declined(val reason: String) : CardState
+}
+
+/** A card payment of an order. */
+data class CardPayment(val payment: String, val check: String, val amount: Amount, val state: CardState, val card: String?)
+
+/** A card refund this register owes: [pending] while the terminal has it or is asked about it. */
+data class OwedRefund(
+    val refund: String,
+    val order: String,
+    val amount: Amount,
+    val pending: Boolean,
+    val failures: Int,
+    val failure: String?,
+)
+
+/** How a decline's reason code reads. */
+fun declineWords(code: String): String = when (code) {
+    "cancelled" -> "Cancelled"
+    "not_received" -> "The terminal didn't get it"
+    "not_charged" -> "Not charged"
+    else -> reasonWords(code)
+}
 
 /** How many characters a receipt's code has: the last six of its order's identifier (ADR-0032). */
 const val RECEIPT_CODE = 6

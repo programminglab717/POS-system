@@ -314,7 +314,10 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                         left: Amount::new(left, self.locale),
                     });
                 }
-                Tender::Card => {}
+                // One with no reference, as one settled by hand, can't go back to its card; nor is
+                // its order paid in cash: it isn't refunded at the register. Found in review: it
+                // passed for cash, and a return refunded nothing.
+                Tender::Card => return Ok(None),
             }
         }
         Ok(Some(taken))

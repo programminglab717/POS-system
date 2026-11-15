@@ -1398,4 +1398,29 @@ BUGS = [
         "            match tips.iter_mut().find(|(member, _, _)| *member == payment.member) {",
         "            match tips.iter_mut().find(|(member, _, _)| *member == payment.member.filter(|_| false)) {",
     ),
+    # Review fixes (ADR-0035).
+    (
+        "card: an answer that can't be recorded keeps the request with the shell",
+        "src/card.rs",
+        "        self.charging = None;\n        let bad = ",
+        "        let bad = ",
+    ),
+    (
+        "card: a released request stays with the shell",
+        "src/card.rs",
+        "        let Some(key) = self.charging.take() else { return Ok(()) };",
+        "        let Some(key) = self.charging.clone() else { return Ok(()) };",
+    ),
+    (
+        "refund: a card with no reference passes for cash",
+        "src/returns.rs",
+        "                Tender::Card => return Ok(None),",
+        "                Tender::Card => {}",
+    ),
+    (
+        "report: a card refund paid back in part owes nothing",
+        "src/report.rs",
+        "            let short = info.amount.checked_sub(paid)?;",
+        "            let short = if refund.completed.is_some() { Money::zero(currency) } else { info.amount.checked_sub(paid)? };",
+    ),
 ]

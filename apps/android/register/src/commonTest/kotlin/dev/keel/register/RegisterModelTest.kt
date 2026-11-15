@@ -977,15 +977,20 @@ class RegisterModelTest {
         assertEquals(false, model.state.value.returning?.returnable?.lines?.single()?.anyLeft)
     }
 
-    /** An order a card paid isn't refunded in cash: nothing is picked. */
+    /** An order a card paid is refunded to its card, by reference, not in cash (ADR-0035). */
     @Test
-    fun an_order_a_card_paid_isnt_refunded_in_cash() = runTest {
+    fun an_order_a_card_paid_is_refunded_to_its_card() = runTest {
         val till = FakeTill().apply { cardPaid += "order1" }
         val model = returning(till)
         val sheet = model.state.value.returning!!
         assertEquals(false, sheet.returnable.cashOnly)
+        assertEquals("card:order1", sheet.toCard)
         model.pickMore(sheet.returnable.lines.single())
-        assertEquals(emptyMap(), model.state.value.returning?.picks)
+        model.returnReason("damaged")
+        model.confirmReturn()
+        testScheduler.advanceUntilIdle()
+        assertEquals("Visa •••• 4242", model.state.value.refund?.card)
+        assertEquals("$0.00", model.state.value.refund?.handed)
     }
 
     /**

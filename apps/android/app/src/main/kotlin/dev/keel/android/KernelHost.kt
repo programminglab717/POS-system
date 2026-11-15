@@ -39,6 +39,12 @@ class KernelHost(private val application: Application) {
     /** Where the printer listens. */
     val printer = StoredPrinter(application)
 
+    /**
+     * The register's card terminal: simulated until gate G2 chooses the first processor, whose
+     * connector takes its place (ADR-0035). The screen answers for the customer.
+     */
+    val terminal = dev.keel.register.SimulatedTerminal()
+
     private val dir = File(application.noBackupFilesDir, "keel")
     private val kit = application.getExternalFilesDir(null)?.resolve("kit")
 
@@ -83,6 +89,7 @@ class KernelHost(private val application: Application) {
                     }
                 }
                 launch { opened.printLoop(kernel) { printer.load() }.run() }
+                launch { opened.paymentLoop(kernel, terminal).run() }
             }
         }
     }

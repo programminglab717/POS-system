@@ -617,7 +617,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     ///
     /// # Errors
     /// [`RuntimeError::Split`] if more than one open check holds something.
-    pub(crate) fn holding_check(&self, order: Id<Order>) -> Result<Id<Check>, RuntimeError> {
+    pub fn holding_check(&self, order: Id<Order>) -> Result<Id<Check>, RuntimeError> {
         let loaded = self.store.load(Order::new(order))?;
         known(&loaded)?;
         let holding: Vec<Id<Check>> = loaded

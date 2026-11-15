@@ -852,7 +852,7 @@ impl Kind {
     /// The keys a map of this kind may leave out.
     fn optional(self) -> &'static [u64] {
         match self {
-            Kind::Profile => &[7, 12, 13],
+            Kind::Profile => &[7, 12, 13, 14],
             Kind::Item | Kind::Modifier => &[6],
             Kind::Station | Kind::Tax => &[5],
             Kind::Route => &[2, 3, 4],
