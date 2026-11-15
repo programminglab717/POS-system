@@ -91,6 +91,30 @@ single most important rule for never double-charging.
 | `debit_routing` | US Common Debit AID and routing preferences |
 | `ebt`, `fsa_iias` | Benefit and healthcare tenders |
 
+### 3.1 As built: the connector contract (ADR-0035)
+
+The first build keeps I/O out of the kernel, as printing does: the kernel decides what to ask a
+terminal and records what it answered; the shell's connector does the asking. A card sale and a
+card refund are effects in the store's outbox, keyed by the payment's identifier (the refund's
+and its attempt's for a refund), which is also the idempotency key the terminal sees.
+
+- **Requests**: a *sale* (amount, a tip chosen on the register or the presets for the terminal
+  to offer, whether a partial approval is allowed), a *refund* by the original payment's
+  reference, and a *status* query about either. The first start of a request performs it; every
+  later start, after an unknown outcome or one found started when the register opens, only asks
+  about it, so nothing is ever sent twice.
+- **Outcomes**: *approved* (the amount, a tip included; less than asked is a partial approval,
+  which pays the check first and leaves the rest due), *declined*, *not found* (to a status
+  query), and *unknown*, which blocks the check and is asked about after 5 s, doubling to 60 s.
+  `Pending` and `StoredOffline` wait for asynchronous rails and offline payments.
+- **By hand**: a payment no terminal can answer for is settled on a manager's word,
+  `payment.resolve`, as charged or not.
+- **The card on a payment** is `payment.captured` version 2's brand, last four, entry and
+  authorization code: never more.
+- A simulated terminal stands in for a real one until gate G2 chooses the first processor; a
+  model terminal in the runtime's property tests loses requests and answers across restarts, and
+  checks that no key is charged twice.
+
 ## 4. Integration patterns
 
 | Pattern | Use | PCI effect for merchant and Keel |
