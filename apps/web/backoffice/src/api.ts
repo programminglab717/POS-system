@@ -248,6 +248,18 @@ export class Api {
     return json as T;
   }
 
+  /** The location's export (ADR-0037, decision 3): everything its devices wrote, as JSON Lines. */
+  async export(location: string): Promise<Blob> {
+    const response = await fetch(`/api/locations/${location}/export`, {
+      headers: { Authorization: `Bearer ${this.token}` },
+    });
+    if (!response.ok) {
+      const reason = (await response.json().catch(() => null)) as { error?: string } | null;
+      throw new ApiError(response.status, reason?.error ?? response.statusText);
+    }
+    return response.blob();
+  }
+
   locations() {
     return this.call<LocationInfo[]>("GET", "/api/locations");
   }

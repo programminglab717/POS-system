@@ -126,6 +126,28 @@ export function App() {
             </button>
           ))}
         </nav>
+        {current && (
+          <button
+            className="quiet"
+            title="Everything the location's devices wrote, in an open format"
+            onClick={() => {
+              setError(null);
+              api
+                .export(current.id)
+                .then((blob) => {
+                  const link = document.createElement("a");
+                  link.href = URL.createObjectURL(blob);
+                  link.download = `keel-${current.name.replace(/[^A-Za-z0-9]+/g, "-")}-${new Date().toISOString().slice(0, 10)}.jsonl`;
+                  link.click();
+                  // Let go of it once the browser has started saving it.
+                  setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+                })
+                .catch((failed: unknown) => setError(failed instanceof Error ? failed.message : String(failed)));
+            }}
+          >
+            Export
+          </button>
+        )}
         <button
           className="quiet"
           onClick={() => {
