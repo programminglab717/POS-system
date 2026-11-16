@@ -22,6 +22,7 @@
 //! - [`drawer`]: a drawer session's cash, from its float to its blind close (ADR-0031);
 //! - [`refund`]: money paid back for lines returned (ADR-0032);
 //! - [`availability`]: whether an item is on sale, or 86'd (ADR-0033).
+//! - [`stock`]: an item's inventory, as the sum of its movements, and its levels (ADR-0036).
 //! - [`kitchen`]: tickets for the kitchen's stations, and what each station did with them
 //!   (ADR-0034).
 //!
@@ -54,3 +55,4 @@ pub mod roster;
 pub mod schema;
 pub mod sequence;
 pub mod staff;
+pub mod stock;

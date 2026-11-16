@@ -33,7 +33,8 @@ use proptest::prelude::*;
 use support::{
     any_availability_event, any_captured, any_check_closed, any_drawer_event, any_event,
     any_kitchen_event, any_kitchen_items, any_line_added, any_line_changed, any_lines_allocated,
-    any_lines_returned, any_ownership_event, any_payment_event, any_refund_event, modifiers,
+    any_lines_returned, any_ownership_event, any_payment_event, any_refund_event, any_stock_event,
+    modifiers,
 };
 
 /// An event of any aggregate.
@@ -45,6 +46,7 @@ enum Event {
     Refund(keel_domain::refund::RefundEvent),
     Availability(keel_domain::availability::AvailabilityEvent),
     Kitchen(keel_domain::kitchen::KitchenEvent),
+    Stock(keel_domain::stock::StockEvent),
     Sequence(SequenceEvent),
     Hub(HubEvent),
 }
@@ -58,6 +60,7 @@ impl Event {
             Event::Refund(event) => event.schema(),
             Event::Availability(event) => event.schema(),
             Event::Kitchen(event) => event.schema(),
+            Event::Stock(event) => event.schema(),
             Event::Sequence(event) => event.schema(),
             Event::Hub(event) => event.schema(),
         }
@@ -71,6 +74,7 @@ impl Event {
             Event::Refund(event) => event.to_value(),
             Event::Availability(event) => event.to_value(),
             Event::Kitchen(event) => event.to_value(),
+            Event::Stock(event) => event.to_value(),
             Event::Sequence(event) => event.to_value(),
             Event::Hub(event) => event.to_value(),
         }
@@ -87,6 +91,8 @@ fn decode(schema: &SchemaRef, payload: &Value) -> Result<Value, DecodeError> {
     } else if name.starts_with("availability.") {
         keel_domain::availability::AvailabilityEvent::from_value(schema, payload)
             .map(|event| event.to_value())
+    } else if name.starts_with("stock.") {
+        keel_domain::stock::StockEvent::from_value(schema, payload).map(|event| event.to_value())
     } else if name.starts_with("kitchen.") {
         keel_domain::kitchen::KitchenEvent::from_value(schema, payload)
             .map(|event| event.to_value())
@@ -110,6 +116,7 @@ fn any_any_event() -> impl Strategy<Value = Event> {
         1 => any_refund_event().prop_map(Event::Refund).boxed(),
         1 => any_availability_event().prop_map(Event::Availability).boxed(),
         1 => any_kitchen_event().prop_map(Event::Kitchen).boxed(),
+        1 => any_stock_event().prop_map(Event::Stock).boxed(),
         1 => any_assigned().prop_map(|record| Event::Sequence(SequenceEvent::Assigned(record))),
         1 => any_claimed().prop_map(|claimed| Event::Hub(HubEvent::Claimed(claimed))),
     ]
@@ -242,6 +249,14 @@ fn drawer_rules(schema: &str) -> Option<Vec<(u64, Kind, Presence)>> {
         ],
         "kitchen.ticket_shown" | "kitchen.ticket_bumped" | "kitchen.ticket_recalled" => vec![],
         "kitchen.ticket_rerouted" => vec![(1, Code(2), Required)],
+        // Stock (ADR-0036).
+        "stock.moved" => vec![
+            (1, Code(4), Required),
+            (2, Quantity, Required),
+            (3, Reason, Optional),
+            (4, Note, Optional),
+        ],
+        "stock.counted" => vec![(1, Quantity, Required), (2, Time, Required), (3, Note, Optional)],
         "order.lines_returned" => vec![
             (1, Id, Required),
             (2, LinesReturned, Required),
@@ -879,6 +894,15 @@ fn valid_payload(schema: &str, payload: &Value) -> bool {
             (get(2).unwrap().as_bool() == Some(false) || get(3).is_none())
                 && (get(5).is_none() || get(4).is_some())
         }
+        // An adjustment is anything but zero; another movement more than zero; a count zero or
+        // more; a note comes with a reason.
+        "stock.moved" => {
+            let micros = as_i64(&get(2).unwrap().as_array().unwrap()[0]).unwrap();
+            let adjusted = get(1).unwrap().as_u64() == Some(1);
+            (if adjusted { micros != 0 } else { micros > 0 })
+                && (get(4).is_none() || get(3).is_some())
+        }
+        "stock.counted" => as_i64(&get(1).unwrap().as_array().unwrap()[0]).unwrap() >= 0,
         "refund.initiated" => money(get(3).unwrap()).unwrap().0 > 0,
         // Only a card refund names a payment.
         "refund.initiated/2" => {
@@ -2025,6 +2049,15 @@ proptest! {
         accepted_exactly_when_valid(&event, &change)?;
     }
 
+    /// The same for stock (ADR-0036), on its own, so that its quantities' signs, and a note
+    /// without a reason, are tried often.
+    #[test]
+    fn changed_stock_payloads_are_accepted_exactly_when_valid(
+        (event, change) in any_case(any_stock_event().prop_map(Event::Stock)),
+    ) {
+        accepted_exactly_when_valid(&event, &change)?;
+    }
+
     /// The same for kitchen tickets (ADR-0034), on their own, so that each of their fields, and
     /// a ticket's items' rules, are tried often.
     #[test]
@@ -2480,7 +2513,7 @@ proptest! {
             version: (schema.version.get() + version).try_into().unwrap(),
         };
         prop_assert_eq!(decode(&newer, &event.to_value()), Err(DecodeError::UnknownSchema));
-        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown", "drawer.unknown", "refund.unknown", "availability.unknown", "kitchen.unknown"] {
+        for name in ["order.unknown", "payment.unknown", "sequence.unknown", "hub.unknown", "drawer.unknown", "refund.unknown", "availability.unknown", "kitchen.unknown", "stock.unknown"] {
             let renamed = SchemaRef { name: SchemaName::new(name).unwrap(), version: schema.version };
             prop_assert_eq!(decode(&renamed, &event.to_value()), Err(DecodeError::UnknownSchema));
         }
@@ -2495,15 +2528,17 @@ proptest! {
         let as_availability =
             keel_domain::availability::AvailabilityEvent::from_value(&schema, &payload).map(|_| ());
         let as_kitchen = keel_domain::kitchen::KitchenEvent::from_value(&schema, &payload).map(|_| ());
+        let as_stock = keel_domain::stock::StockEvent::from_value(&schema, &payload).map(|_| ());
         let crossed = match &event {
-            Event::Order(_) => [as_payment, as_sequence, as_hub, as_drawer, as_refund, as_availability, as_kitchen],
-            Event::Payment(_) => [as_order, as_sequence, as_hub, as_drawer, as_refund, as_availability, as_kitchen],
-            Event::Sequence(_) => [as_order, as_payment, as_hub, as_drawer, as_refund, as_availability, as_kitchen],
-            Event::Hub(_) => [as_order, as_payment, as_sequence, as_drawer, as_refund, as_availability, as_kitchen],
-            Event::Drawer(_) => [as_order, as_payment, as_sequence, as_hub, as_refund, as_availability, as_kitchen],
-            Event::Refund(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_availability, as_kitchen],
-            Event::Availability(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_refund, as_kitchen],
-            Event::Kitchen(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_refund, as_availability],
+            Event::Order(_) => [as_payment, as_sequence, as_hub, as_drawer, as_refund, as_availability, as_kitchen, as_stock],
+            Event::Payment(_) => [as_order, as_sequence, as_hub, as_drawer, as_refund, as_availability, as_kitchen, as_stock],
+            Event::Sequence(_) => [as_order, as_payment, as_hub, as_drawer, as_refund, as_availability, as_kitchen, as_stock],
+            Event::Hub(_) => [as_order, as_payment, as_sequence, as_drawer, as_refund, as_availability, as_kitchen, as_stock],
+            Event::Drawer(_) => [as_order, as_payment, as_sequence, as_hub, as_refund, as_availability, as_kitchen, as_stock],
+            Event::Refund(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_availability, as_kitchen, as_stock],
+            Event::Availability(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_refund, as_kitchen, as_stock],
+            Event::Kitchen(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_refund, as_availability, as_stock],
+            Event::Stock(_) => [as_order, as_payment, as_sequence, as_hub, as_drawer, as_refund, as_availability, as_kitchen],
         };
         for decoded in crossed {
             prop_assert_eq!(decoded, Err(DecodeError::UnknownSchema));

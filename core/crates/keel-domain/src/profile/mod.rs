@@ -39,7 +39,8 @@
 //!
 //! Format 3 adds key 13, the kitchen, and allergens in the catalog (ADR-0034); its roles are
 //! optional. Format 4 adds key 14, tipping ([`Tipping`]), and the `payment.resolve` action in a
-//! role's permissions (ADR-0035); its roles and kitchen are optional, as in format 3. Each
+//! role's permissions (ADR-0035); its roles and kitchen are optional, as in format 3. Format 5
+//! adds `stock.adjust` (ADR-0036), and nothing else: its tipping is optional, as in format 4. Each
 //! profile is written in the earliest format that holds it, so it has one encoding.
 //!
 //! The pricing rules: `{1: extension rounding, 2: discount rounding, 3: taxes, 4: [tax rounding
@@ -108,6 +109,10 @@ pub const FORMAT_KITCHEN: u64 = 3;
 /// The profile format of a profile with tipping, or a role that may resolve a payment by hand,
 /// and a kitchen, allergens and roles or none (ADR-0035).
 pub const FORMAT_PAYMENTS: u64 = 4;
+
+/// The profile format of a profile with a role that may adjust stock, and everything format 4
+/// holds or none (ADR-0036).
+pub const FORMAT_STOCK: u64 = 5;
 
 /// The most roles a profile has.
 pub const MAX_ROLES: usize = 100;
@@ -305,7 +310,8 @@ impl Profile {
         let value = cbor::decode(bytes)?;
         let mut fields = Fields::read(&value)?;
         let format: u64 = fields.required(key::FORMAT, "profile format")?;
-        if ![FORMAT, FORMAT_ROLES, FORMAT_KITCHEN, FORMAT_PAYMENTS].contains(&format) {
+        if ![FORMAT, FORMAT_ROLES, FORMAT_KITCHEN, FORMAT_PAYMENTS, FORMAT_STOCK].contains(&format)
+        {
             return Err(ProfileError::Format(format));
         }
         // Format 2 has roles, and format 1 none: its key 12 is unknown. Formats 3 and 4 have them
@@ -319,7 +325,7 @@ impl Profile {
                 }
                 roles
             }
-            FORMAT_KITCHEN | FORMAT_PAYMENTS => {
+            FORMAT_KITCHEN | FORMAT_PAYMENTS | FORMAT_STOCK => {
                 let roles: Option<Vec<Role>> = fields.optional(key::ROLES, "roles")?;
                 if roles.as_ref().is_some_and(Vec::is_empty) {
                     return Err(ProfileError::Invalid("a profile's roles, written and empty"));
@@ -330,7 +336,7 @@ impl Profile {
         };
         let kitchen: Option<Kitchen> =
             if format >= FORMAT_KITCHEN { fields.optional(key::KITCHEN, "kitchen")? } else { None };
-        let tipping: Option<Tipping> = if format == FORMAT_PAYMENTS {
+        let tipping: Option<Tipping> = if format >= FORMAT_PAYMENTS {
             fields.optional(key::TIPPING, "tipping")?
         } else {
             None
@@ -741,15 +747,18 @@ mod key {
     pub(super) const TIPPING: u64 = 14;
 }
 
-/// The earliest format that holds `data`: 4 with tipping, or a role that may resolve a payment
-/// by hand (ADR-0035); 3 with a kitchen or allergens (ADR-0034); 2 with roles; 1 otherwise.
+/// The earliest format that holds `data`: 5 with a role that may adjust stock (ADR-0036); 4 with
+/// tipping, or a role that may resolve a payment by hand (ADR-0035); 3 with a kitchen or allergens (ADR-0034); 2 with roles; 1 otherwise.
 fn format_of(data: &ProfileData) -> u64 {
-    let resolves = data
-        .roles
-        .iter()
-        .flat_map(|role| &role.permissions)
-        .any(|permission| permission.action.since_payments());
-    if data.tipping.is_some() || resolves {
+    let since = |version: u32| {
+        data.roles
+            .iter()
+            .flat_map(|role| &role.permissions)
+            .any(|permission| permission.action.approval_version() >= version)
+    };
+    if since(3) {
+        FORMAT_STOCK
+    } else if data.tipping.is_some() || since(2) {
         FORMAT_PAYMENTS
     } else if data.kitchen.is_some() || has_allergens(&data.catalog) {
         FORMAT_KITCHEN

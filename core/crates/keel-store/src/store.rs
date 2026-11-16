@@ -12,12 +12,14 @@ use keel_domain::drawer::Drawer;
 use keel_domain::hub::Term;
 use keel_domain::order::Order;
 use keel_domain::payment::Payment;
+use keel_domain::refs::Variant;
 use keel_domain::refund::Refund;
+use keel_domain::stock::{Entry, EntryKind, Flow, Levels};
 use keel_events::envelope::{Device, Event, Location, StreamRef};
 use keel_events::event::SignedEvent;
 use keel_events::keys::Signer;
 use keel_events::log::{LogConfig, LogHead, LogWriter};
-use keel_types::{BusinessDate, Entropy, Hlc, Id, Timestamp};
+use keel_types::{BusinessDate, Entropy, Hlc, Id, Timestamp, Unit};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::availability::{self, AVAILABILITY_COLUMNS, AvailabilitySummary};
@@ -35,6 +37,7 @@ use crate::refunds::{self, REFUND_COLUMNS, RefundSummary};
 use crate::rows;
 use crate::schema;
 use crate::sequencing::{self, Sequenced, StoreSeq};
+use crate::stock;
 use crate::terms;
 use crate::write::{Quarantined, Reason, Writing};
 
@@ -895,6 +898,68 @@ impl<S: Signer, E: Entropy> Store<S, E> {
             .optional()?
             .transpose()
         })
+    }
+
+    /// The items whose stock is tracked: those with a movement or a count (ADR-0036), in the
+    /// ascending order of their identifiers.
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn tracked_stock(&self) -> Result<Vec<Id<Variant>>, StoreError> {
+        self.read(|db| {
+            let mut statement =
+                db.prepare("SELECT DISTINCT variant FROM stock_entries ORDER BY variant")?;
+            let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+            rows.map(|row| schema::id(&row?)).collect()
+        })
+    }
+
+    /// The movements and counts that applied to `variant`'s stock, in the order they were
+    /// recorded (ADR-0036).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn stock_entries(&self, variant: Id<Variant>) -> Result<Vec<Entry>, StoreError> {
+        self.read(|db| {
+            let mut statement = db.prepare(
+                "SELECT event_id, at, hlc, movement, micros, unit, as_of FROM stock_entries \
+                 WHERE variant = ?1 ORDER BY hlc, event_id",
+            )?;
+            let rows = statement.query_map([&variant.to_bytes()[..]], stock::entry)?;
+            rows.map(|row| row?).collect()
+        })
+    }
+
+    /// What orders sold and returned of `variant`, the earliest first (ADR-0036).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn stock_flows(&self, variant: Id<Variant>) -> Result<Vec<Flow>, StoreError> {
+        self.read(|db| {
+            let mut statement = db.prepare(
+                "SELECT at, micros, unit FROM stock_flows WHERE variant = ?1 ORDER BY at, order_id, seq",
+            )?;
+            let rows = statement.query_map([&variant.to_bytes()[..]], stock::flow)?;
+            rows.map(|row| row?).collect()
+        })
+    }
+
+    /// `variant`'s stock levels, and the unit they are in: its first entry's; `None` for an item
+    /// whose stock isn't tracked (ADR-0036).
+    ///
+    /// # Errors
+    /// As [`Store::head`]; [`StoreError::OutOfRange`] if a level overflows.
+    pub fn stock_levels(&self, variant: Id<Variant>) -> Result<Option<(Unit, Levels)>, StoreError> {
+        let entries = self.stock_entries(variant)?;
+        let Some(unit) = entries.first().map(|entry| match entry.kind {
+            EntryKind::Moved(_, quantity) | EntryKind::Counted { quantity, .. } => quantity.unit(),
+        }) else {
+            return Ok(None);
+        };
+        let flows = self.stock_flows(variant)?;
+        let levels = keel_domain::stock::levels(unit, &entries, &flows)
+            .map_err(|_| StoreError::OutOfRange("a stock level"))?;
+        Ok(Some((unit, levels)))
     }
 
     /// The refunds of order `order`, the earliest first (ADR-0032).

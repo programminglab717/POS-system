@@ -318,8 +318,8 @@ fn entry(entries: &mut [(Value, Value)], key: u64) -> &mut Value {
 #[test]
 fn encodings_other_than_the_profiles_own_are_refused() {
     assert_eq!(
-        decode_changed(|e| *entry(e, 1) = Value::Unsigned(5)).map(|_| ()),
-        Err(ProfileError::Format(5))
+        decode_changed(|e| *entry(e, 1) = Value::Unsigned(6)).map(|_| ()),
+        Err(ProfileError::Format(6))
     );
     assert_eq!(
         decode_changed(|e| e.push((Value::Unsigned(15), Value::Null))).map(|_| ()),
@@ -397,16 +397,16 @@ fn hex(bytes: &[u8]) -> String {
 /// implementation's bindings. In format 2 since ADR-0029: its catalog's and rules' versions are
 /// as they were in format 1. In format 3 since ADR-0034, with a kitchen and allergens: its
 /// rules' version is as it was, and its catalog's moved with the allergens. In format 4 since
-/// ADR-0035, with tipping and `payment.resolve`: its catalog's and rules' versions are as they
-/// were.
+/// ADR-0035, with tipping and `payment.resolve`, and in format 5 since ADR-0036, with
+/// `stock.adjust`: its catalog's and rules' versions are as they were.
 #[test]
 fn the_demo_is_pinned_byte_for_byte() {
     let profile = demo().unwrap();
     let bytes = profile.encode();
-    assert_eq!(bytes.len(), 2912);
+    assert_eq!(bytes.len(), 2915);
     assert_eq!(
         hex(&sha256(&bytes)),
-        "083190f1088f646746cfa71e0ba900bb03df739618640504a7e947015ef8a2c9"
+        "63fbb7fc4ead39a4111de24bfd0eaca3a7dd12561fb61189b5f31ca82906eb65"
     );
     assert_eq!(
         hex(profile.catalog_version().as_bytes()),

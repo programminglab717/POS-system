@@ -511,6 +511,7 @@ internal fun action(action: String): String = when (action) {
     "receipt.reprint" -> "Printing a receipt again"
     "item.availability" -> "Marking an item out"
     "payment.resolve" -> "Settling a card payment by hand"
+    "stock.adjust" -> "Adjusting stock"
     else -> "That"
 }
 

@@ -65,6 +65,7 @@ mod refunds;
 mod rows;
 mod schema;
 mod sequencing;
+mod stock;
 mod store;
 mod terms;
 mod write;

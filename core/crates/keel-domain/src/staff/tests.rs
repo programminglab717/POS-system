@@ -146,6 +146,7 @@ fn actions_keep_their_codes_and_names() {
         (Action::ReceiptReprint, 8, "receipt.reprint"),
         (Action::ItemAvailability, 9, "item.availability"),
         (Action::PaymentResolve, 10, "payment.resolve"),
+        (Action::StockAdjust, 11, "stock.adjust"),
     ];
     assert_eq!(pinned.len(), Action::ALL.len());
     for (action, code, name) in pinned {
@@ -154,7 +155,7 @@ fn actions_keep_their_codes_and_names() {
         assert_eq!(Action::from_code(code), Some(action));
     }
     assert_eq!(Action::named("order.refund"), None);
-    assert_eq!(Action::from_code(11), None);
+    assert_eq!(Action::from_code(12), None);
 }
 
 #[test]
@@ -286,12 +287,17 @@ fn the_approval_payload_is_pinned() {
             Granted::new(id(0x501), Request::of(Action::PaymentResolve), None).unwrap(),
             "a201500192f0c1000070008000000000000501020a",
         ),
+        (
+            // Version 3: stock.adjust (ADR-0036).
+            Granted::new(id(0x501), Request::of(Action::StockAdjust), None).unwrap(),
+            "a201500192f0c1000070008000000000000501020b",
+        ),
     ];
     for (granted, hex) in pinned {
         let event = ApprovalEvent::Granted(granted);
         let (schema, payload) = event.encode().unwrap();
         assert_eq!(schema.name.as_str(), "approval.granted");
-        let version = if granted.request().action.since_payments() { 2 } else { 1 };
+        let version = granted.request().action.approval_version();
         assert_eq!(schema.version.get(), version);
         assert_eq!(payload.as_bytes(), bytes(hex).as_slice());
         assert_eq!(ApprovalEvent::decode(&schema, &payload), Ok(event));
@@ -300,7 +306,7 @@ fn the_approval_payload_is_pinned() {
 
 #[test]
 fn the_registry_lists_the_schema_once_and_refuses_what_breaks_a_rule() {
-    assert_eq!(ApprovalEvent::SCHEMAS, &[GRANTED, GRANTED_V2]);
+    assert_eq!(ApprovalEvent::SCHEMAS, &[GRANTED, GRANTED_V2, GRANTED_V3]);
     assert_eq!(ApprovalEvent::STREAM, "approval");
     let schema = |name: &str, version: u32| SchemaRef {
         name: SchemaName::new(name).unwrap(),
@@ -321,7 +327,12 @@ fn the_registry_lists_the_schema_once_and_refuses_what_breaks_a_rule() {
         ApprovalEvent::from_value(&schema("approval.granted", 2), &ok),
         Err(DecodeError::Malformed(_))
     ));
-    for (name, version) in [("approval.granted", 3), ("approval.denied", 1)] {
+    // Version 3 approves stock.adjust alone, code 11; version 2 refuses it.
+    let adjust = map(vec![(1, approver.clone()), (2, Value::Unsigned(11))]);
+    assert!(ApprovalEvent::from_value(&schema("approval.granted", 3), &adjust).is_ok());
+    assert!(ApprovalEvent::from_value(&schema("approval.granted", 2), &adjust).is_err());
+    assert!(ApprovalEvent::from_value(&schema("approval.granted", 3), &resolve).is_err());
+    for (name, version) in [("approval.granted", 4), ("approval.denied", 1)] {
         assert_eq!(
             ApprovalEvent::from_value(&schema(name, version), &ok),
             Err(DecodeError::UnknownSchema),
@@ -337,7 +348,7 @@ fn the_registry_lists_the_schema_once_and_refuses_what_breaks_a_rule() {
         map(vec![(1, approver.clone()), (2, Value::Unsigned(2)), (4, Value::Unsigned(10_001))]),
         // An action version 1 doesn't know, one this kernel doesn't, and an unknown key.
         map(vec![(1, approver.clone()), (2, Value::Unsigned(10))]),
-        map(vec![(1, approver.clone()), (2, Value::Unsigned(11))]),
+        map(vec![(1, approver.clone()), (2, Value::Unsigned(12))]),
         map(vec![(1, approver.clone()), (2, Value::Unsigned(0)), (6, Value::Unsigned(0))]),
         // No approver.
         map(vec![(2, Value::Unsigned(0))]),

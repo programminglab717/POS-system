@@ -759,3 +759,92 @@ fn kitchen_tickets_are_projected_and_found() {
     assert_eq!(store.kitchen_ticket(bar).unwrap(), before);
     assert_eq!(store.kitchen_version().unwrap(), 6);
 }
+
+/// An item's stock levels are its movements and counts, and what orders sold and returned of it
+/// (ADR-0036): a closed order takes its live lines, a return puts back, an abandoned order takes
+/// nothing, and a count as of a time keeps what sold after it.
+#[test]
+fn stock_levels_read_movements_counts_and_orders() {
+    use keel_domain::order::{LineReturned, LinesReturned};
+    use keel_domain::refs::Variant;
+    use keel_domain::stock::{Movement, StockCounted, StockEvent, StockMoved};
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let flat_white: Id<Variant> = id(0x400);
+    let each = |n: i64| Quantity::from_micros(n * 1_000_000, Unit::Each);
+    let stock = |event: &StockEvent| domain_draft(flat_white.cast(), event);
+    assert_eq!(store.stock_levels(flat_white).unwrap(), None, "not tracked yet");
+    // A sale before its stock is first received doesn't count.
+    let early: Id<Order> = id(0x7100);
+    append(
+        &mut store,
+        vec![
+            order_draft(early, &created()),
+            order_draft(early, &line_added(0x30, 450)),
+            order_draft(early, &OrderEvent::Closed),
+        ],
+        at(0),
+    );
+    let received = StockEvent::Moved(StockMoved {
+        movement: Movement::Received,
+        quantity: each(10),
+        reason: None,
+    });
+    append(&mut store, vec![stock(&received)], at(1_000));
+    let order = order_id();
+    append(
+        &mut store,
+        vec![
+            order_draft(order, &created()),
+            order_draft(order, &line_added(0x10, 450)),
+            order_draft(order, &line_added(0x11, 450)),
+            order_draft(order, &OrderEvent::Closed),
+        ],
+        at(2_000),
+    );
+    let level = |store: &TestStore| store.stock_levels(flat_white).unwrap().unwrap().1;
+    assert_eq!(level(&store).on_hand, each(8));
+    // An order abandoned sells nothing.
+    let dropped: Id<Order> = id(0x7200);
+    append(
+        &mut store,
+        vec![
+            order_draft(dropped, &created()),
+            order_draft(dropped, &line_added(0x20, 450)),
+            order_draft(dropped, &OrderEvent::Abandoned),
+        ],
+        at(3_000),
+    );
+    assert_eq!(level(&store).on_hand, each(8));
+    let returned = OrderEvent::LinesReturned(LinesReturned {
+        refund: id(0x8100),
+        lines: vec![LineReturned { line: id(0x10), quantity: each(1), net: usd(0), tax: usd(0) }],
+        reason: reason("damaged"),
+    });
+    append(&mut store, vec![order_draft(order, &returned)], at(4_000));
+    assert_eq!(level(&store).on_hand, each(9));
+    // Counted at 6 s as of 5 s: 4 there then; a sale at 5.5 s still comes off.
+    let later: Id<Order> = id(0x7300);
+    append(
+        &mut store,
+        vec![
+            order_draft(later, &created()),
+            order_draft(later, &line_added(0x40, 450)),
+            order_draft(later, &OrderEvent::Closed),
+        ],
+        at(5_500),
+    );
+    let counted =
+        StockEvent::Counted(StockCounted { quantity: each(4), as_of: at(5_000), note: None });
+    append(&mut store, vec![stock(&counted)], at(6_000));
+    let (unit, levels) = store.stock_levels(flat_white).unwrap().unwrap();
+    assert_eq!((unit, levels.on_hand, levels.available), (Unit::Each, each(3), each(3)));
+    assert_eq!(store.tracked_stock().unwrap(), [flat_white]);
+    assert_eq!(
+        store.stock_flows(flat_white).unwrap().len(),
+        5,
+        "three sales, one return, one early"
+    );
+    store.rebuild_projections().unwrap();
+    assert_eq!(store.stock_levels(flat_white).unwrap().unwrap().1, levels);
+}

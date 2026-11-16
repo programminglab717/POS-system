@@ -55,6 +55,7 @@ const LANES: u32 = 1;
 
 const GRANTED: SchemaId = SchemaId { name: "approval.granted", version: 1 };
 const GRANTED_V2: SchemaId = SchemaId { name: "approval.granted", version: 2 };
+const GRANTED_V3: SchemaId = SchemaId { name: "approval.granted", version: 3 };
 
 code_enum! {
     /// What a member may do, or be approved to do (ADR-0029, decision 3).
@@ -82,6 +83,8 @@ code_enum! {
         /// Say by hand whether a card payment no terminal can answer for was charged
         /// (ADR-0035). Only in a format-4 profile.
         PaymentResolve = 10,
+        /// Adjust, waste or count stock (ADR-0036). Only in a format-5 profile.
+        StockAdjust = 11,
     }
 }
 
@@ -100,13 +103,25 @@ impl Action {
             Action::ReceiptReprint => "receipt.reprint",
             Action::ItemAvailability => "item.availability",
             Action::PaymentResolve => "payment.resolve",
+            Action::StockAdjust => "stock.adjust",
         }
     }
 
-    /// Whether the action came with card payments (ADR-0035), so a role that permits it needs
-    /// a format-4 profile, which older kernels refuse whole rather than misread.
+    /// Whether the action came after ADR-0029's, so a role that permits it needs a later profile
+    /// format, which older kernels refuse whole rather than misread.
     pub const fn since_payments(self) -> bool {
-        matches!(self, Action::PaymentResolve)
+        self.approval_version() > 1
+    }
+
+    /// The version of `approval.granted` that approves the action: 1 for ADR-0029's, 2 for
+    /// `payment.resolve` (ADR-0035), 3 for `stock.adjust` (ADR-0036). Each version decodes its
+    /// own actions alone, so no version ever decodes more than it did.
+    pub const fn approval_version(self) -> u32 {
+        match self {
+            Action::PaymentResolve => 2,
+            Action::StockAdjust => 3,
+            _ => 1,
+        }
     }
 
     /// The action named `name`.
@@ -460,12 +475,15 @@ pub enum ApprovalEvent {
 impl DomainEvent for ApprovalEvent {
     const STREAM: &'static str = STREAM;
 
-    const SCHEMAS: &'static [SchemaId] = &[GRANTED, GRANTED_V2];
+    const SCHEMAS: &'static [SchemaId] = &[GRANTED, GRANTED_V2, GRANTED_V3];
 
     fn schema(&self) -> SchemaId {
         match self {
-            ApprovalEvent::Granted(granted) if granted.action.since_payments() => GRANTED_V2,
-            ApprovalEvent::Granted(_) => GRANTED,
+            ApprovalEvent::Granted(granted) => match granted.action.approval_version() {
+                3 => GRANTED_V3,
+                2 => GRANTED_V2,
+                _ => GRANTED,
+            },
         }
     }
 
@@ -482,16 +500,17 @@ impl DomainEvent for ApprovalEvent {
     }
 
     fn from_value(schema: &SchemaRef, payload: &Value) -> Result<ApprovalEvent, DecodeError> {
-        let later = GRANTED_V2.matches(schema);
-        if !GRANTED.matches(schema) && !later {
-            return Err(DecodeError::UnknownSchema);
-        }
+        let version = [GRANTED, GRANTED_V2, GRANTED_V3]
+            .iter()
+            .find(|known| known.matches(schema))
+            .map(|known| known.version)
+            .ok_or(DecodeError::UnknownSchema)?;
         let mut fields = Fields::read(payload)?;
         let approver = fields.required(1, "approver")?;
         let action: Action = fields.required(2, "action")?;
         // Each version approves its own actions: version 1 those of ADR-0029, as it always
         // has, and version 2 those that came later, so each approval has one encoding.
-        if action.since_payments() != later {
+        if action.approval_version() != version {
             return Err(PayloadError::Invalid("action").into());
         }
         let amount = fields.optional(3, "amount")?;

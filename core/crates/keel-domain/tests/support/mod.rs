@@ -569,6 +569,39 @@ pub(crate) fn any_availability_event() -> BoxedStrategy<keel_domain::availabilit
     changed.prop_map(AvailabilityEvent::Changed).boxed()
 }
 
+/// Any stock event (ADR-0036): a movement of more than nothing, or an adjustment either way, with
+/// or without a reason; or a count of zero or more, as of any time, with or without a note.
+pub(crate) fn any_stock_event() -> BoxedStrategy<keel_domain::stock::StockEvent> {
+    use keel_domain::stock::{Movement, StockCounted, StockEvent, StockMoved};
+    use keel_types::Timestamp;
+    let time = prop_oneof![
+        Just(Timestamp::MIN.as_micros()),
+        Just(Timestamp::MAX.as_micros()),
+        1_700_000_000_000_000_i64..1_900_000_000_000_000,
+    ]
+    .prop_map(|micros| Timestamp::from_micros(micros).unwrap());
+    let movement = any_code(Movement::ALL);
+    prop_oneof![
+        (movement, any_quantity(), any::<bool>(), prop::option::of(any_reason())).prop_map(
+            |(movement, quantity, down, reason)| {
+                let quantity = if movement == Movement::Adjusted && down {
+                    quantity.checked_neg().unwrap()
+                } else {
+                    quantity
+                };
+                StockEvent::Moved(StockMoved { movement, quantity, reason })
+            }
+        ),
+        (any_quantity(), any::<bool>(), time, prop::option::of(any_note())).prop_map(
+            |(quantity, none, as_of, note)| {
+                let quantity = if none { Quantity::zero(quantity.unit()) } else { quantity };
+                StockEvent::Counted(StockCounted { quantity, as_of, note })
+            }
+        ),
+    ]
+    .boxed()
+}
+
 /// A kitchen ticket's items (ADR-0034): a few, each a quantity of more than nothing in any
 /// unit, modifiers nested well, each before those under it, with or without notes, allergens
 /// and a line it is a component of.

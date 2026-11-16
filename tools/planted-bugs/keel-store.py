@@ -506,9 +506,10 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
     (
         "projections fold each device's events together",
         "src/projection.rs",
-        "            let events = rows::stream_events(db, projection.kind, stream.id)?;",
-        """            let mut events = rows::stream_events(db, projection.kind, stream.id)?;
-            events.sort_by_key(|event| (event.body().origin_device, event.body().origin_seq));""",
+        "                events = Some(rows::stream_events(db, projection.kind, stream.id)?);",
+        """                let mut sorted = rows::stream_events(db, projection.kind, stream.id)?;
+                sorted.sort_by_key(|event| (event.body().origin_device, event.body().origin_seq));
+                events = Some(sorted);""",
     ),
     (
         "a rebuild folds a stream backwards",
@@ -1684,4 +1685,42 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         "    let stored = events.iter().find(|stored| stored.body().event_id == event)?;",
         "    let stored = events.iter().rev().find(|stored| stored.body().event_id != event || true)?;",
     ),
+    # Stock (ADR-0036).
+    (
+        "stock: an open order sells",
+        "src/stock.rs",
+        "    if *order.status() != OrderStatus::Closed {\n        return Ok(());\n    }",
+        "",
+    ),
+    (
+        "stock: a voided line sells",
+        "src/stock.rs",
+        "    for line in order.live_lines() {",
+        "    for line in order.lines() {",
+    ),
+    (
+        "stock: a return isn't put back",
+        "src/stock.rs",
+        "                flows.push((found.item().variant, at, quantity));",
+        "                let _ = (found, at, quantity);",
+    ),
+    (
+        "stock: a sale is as of the order's first close",
+        "src/stock.rs",
+        "            OrderEvent::Closed => closed_at = Some(at),",
+        "            OrderEvent::Closed => closed_at = closed_at.or(Some(at)),",
+    ),
+    (
+        "stock: a write updates one projection of an order",
+        "src/projection.rs",
+        "        for projection in ALL.iter().filter(|projection| projection.kind == stream.kind.as_str()) {",
+        "        for projection in ALL.iter().filter(|projection| projection.kind == stream.kind.as_str()).take(1) {",
+    ),
+    (
+        "stock: a count's as-of time is read as its recording",
+        "src/stock.rs",
+        "            (None, Some(as_of)) => EntryKind::Counted { quantity, as_of: time(as_of)? },",
+        "            (None, Some(_)) => EntryKind::Counted { quantity, as_of: time(at)? },",
+    ),
+
 ]

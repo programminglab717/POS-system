@@ -427,7 +427,7 @@ async fn staff_are_read_with_no_pin_and_published_with_new_ones() {
     let (status, read) = get(&app, &base).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(read["roles"].as_array().unwrap().len(), 2);
-    assert_eq!(read["actions"].as_array().unwrap().len(), 11);
+    assert_eq!(read["actions"].as_array().unwrap().len(), 12);
     assert_eq!(read["team"][1]["name"], json!("Sam"));
     assert_eq!(read["team"][1]["hasPin"], json!(true));
     // Nothing of a PIN: not its hash, nor its salt.

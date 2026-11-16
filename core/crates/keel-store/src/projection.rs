@@ -60,7 +60,7 @@ pub(crate) struct Projection {
 }
 
 /// Every projection.
-pub(crate) const ALL: [Projection; 8] = [
+pub(crate) const ALL: [Projection; 10] = [
     ORDERS,
     PAYMENTS,
     SEQUENCE,
@@ -69,6 +69,8 @@ pub(crate) const ALL: [Projection; 8] = [
     crate::refunds::REFUNDS,
     crate::availability::AVAILABILITY,
     crate::kitchen::KITCHEN_TICKETS,
+    crate::stock::STOCK_ENTRIES,
+    crate::stock::STOCK_FLOWS,
 ];
 
 impl Projection {
@@ -83,14 +85,18 @@ impl Projection {
     }
 }
 
-/// Recomputes the rows of `streams`: those a write touched.
+/// Recomputes the rows of `streams`: those a write touched, in every projection that follows
+/// each stream's kind: an order's, in the orders and in what it sold (ADR-0036).
 pub(crate) fn update(db: &Connection, streams: &[StreamRef]) -> Result<(), StoreError> {
     for stream in streams {
-        if let Some(projection) =
-            ALL.iter().find(|projection| projection.kind == stream.kind.as_str())
-        {
-            let events = rows::stream_events(db, projection.kind, stream.id)?;
-            projection.project(db, stream.id, &events)?;
+        let mut events = None;
+        for projection in ALL.iter().filter(|projection| projection.kind == stream.kind.as_str()) {
+            if events.is_none() {
+                events = Some(rows::stream_events(db, projection.kind, stream.id)?);
+            }
+            if let Some(events) = &events {
+                projection.project(db, stream.id, events)?;
+            }
         }
     }
     Ok(())
