@@ -1423,4 +1423,71 @@ BUGS = [
         "            let short = info.amount.checked_sub(paid)?;",
         "            let short = if refund.completed.is_some() { Money::zero(currency) } else { info.amount.checked_sub(paid)? };",
     ),
+    # Stock (ADR-0036).
+    (
+        "stock: wasting isn't gated",
+        "src/stock.rs",
+        "        let gated = matches!(movement, Movement::Adjusted | Movement::Wasted);",
+        "        let gated = matches!(movement, Movement::Adjusted);",
+    ),
+    (
+        "stock: a count isn't gated",
+        "src/stock.rs",
+        "        self.record_stock(variant, command, true)",
+        "        self.record_stock(variant, command, false)",
+    ),
+    (
+        "stock: an item the catalog doesn't have is stocked",
+        "src/stock.rs",
+        "        if self.profile.variant(variant).is_none() {",
+        "        if self.profile.variant(variant).is_none() && false {",
+    ),
+    (
+        "stock: below zero isn't listed first",
+        "src/stock.rs",
+        "            b.on_hand.is_negative().cmp(&a.on_hand.is_negative()).then_with(|| a.name.cmp(&b.name))",
+        "            a.name.cmp(&b.name)",
+    ),
+    (
+        "stock: the history keeps what moved before the count",
+        "src/stock.rs",
+        "            (Some(count), _) => at > count.as_of,",
+        "            (Some(_), _) => true,",
+    ),
+    (
+        "stock: the history is oldest first",
+        "src/stock.rs",
+        "        lines.sort_by(|a, b| b.at.cmp(&a.at));",
+        "        lines.sort_by(|a, b| a.at.cmp(&b.at));",
+    ),
+    (
+        "stock: a count is expected against what sold after it",
+        "src/stock.rs",
+        "    let flows: Vec<Flow> = flows.iter().filter(|flow| flow.at <= as_of).copied().collect();",
+        "    let flows: Vec<Flow> = flows.to_vec();",
+    ),
+    (
+        "stock: a count is expected against what was recorded after its time",
+        "src/stock.rs",
+        "            EntryKind::Moved(..) => entry.at <= as_of,",
+        "            EntryKind::Moved(..) => true,",
+    ),
+    (
+        "stock: the day's waste is every day's",
+        "src/stock.rs",
+        "                if day.business_date_of(entry.at)? != date {\n                    continue;\n                }",
+        "                let _ = day.business_date_of(entry.at)?;",
+    ),
+    (
+        "stock: a return not put back is put back",
+        "src/returns.rs",
+        "        let unstocked = if restock { Vec::new() } else { self.unstocked(&loaded, returned)? };",
+        "        let unstocked: Vec<(Id<keel_domain::refs::Variant>, Quantity)> = Vec::new();",
+    ),
+    (
+        "stock: a return not put back wastes an untracked item",
+        "src/returns.rs",
+        "            if tracked.is_some_and(|(unit, _)| unit == each.quantity.unit()) {",
+        "            if tracked.is_none_or(|(unit, _)| unit == each.quantity.unit()) {",
+    ),
 ]
