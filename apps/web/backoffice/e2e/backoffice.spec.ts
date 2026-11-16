@@ -226,3 +226,19 @@ test("settings are checked by the kernel and refused in its words", async ({ pag
   await page.getByRole("button", { name: "Discard" }).click();
   await expect(name).not.toHaveValue("Corner Café");
 });
+
+test("the export downloads everything the location wrote, as JSON Lines", async ({ page }) => {
+  await signIn(page);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export" }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toMatch(/^keel-.*\.jsonl$/);
+  const text = readFileSync(await file.path(), "utf8");
+  const lines = text.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+  expect(lines[0]).toMatchObject({ type: "manifest", format: "keel.export", version: 1 });
+  expect(lines[1]).toMatchObject({ type: "profile" });
+  expect(lines.length - 2).toBe(lines[0]?.["events"]);
+  // The register's sales are in it, their payments named.
+  const captured = lines.find((line) => (line["schema"] as { name?: string } | undefined)?.name === "payment.captured");
+  expect((captured?.["payload"] as Record<string, unknown> | undefined)?.["amount"]).toBeTruthy();
+});

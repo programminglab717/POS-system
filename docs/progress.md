@@ -106,7 +106,15 @@ with escrow, designed in [ADR-0037](./adr/0037-the-back-office.md) (proposed). S
 and 2, the dashboard, built 2026-11-16: the settings' JSON, API and checks, and a settings page;
 the dashboard's query of a day against the same weekday a week before, and its page, asked again
 every 10 s. Verified by the cell's unit and API tests, both clippy runs, the docs and the back
-office's browser tests against the demo (9). Next: slice 3, the export and escrow.
+office's browser tests against the demo (9). Slice 3, the export and escrow, built 2026-11-16:
+the kernel's decoders name every payload's fields as they decode it, and a test checks every key
+of every schema is named and the reference in `docs/architecture/export.md` is current; the
+export, a JSON Lines file of the manifest, the profile and every event, served by the cell
+and written by it to an escrow directory once a day, the latest seven kept; an import into a
+fresh store; and a reader in Python that needs nothing of Keel's. Verified by the workspace's
+tests with the exhaustive sweeps (the round trip giving the same events, report and stock, and
+the reader agreeing with the kernel's report), both clippy runs, the docs, the wasm build and the
+back office's browser tests (10). Next: the planted bugs, then the review.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
 three of step 2 the scrolling ticket pane should mend.

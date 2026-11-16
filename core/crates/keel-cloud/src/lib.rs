@@ -34,6 +34,7 @@ use keel_types::{Id, Locale, OsEntropy, SystemClock};
 pub mod api;
 pub mod catalog;
 pub mod dashboard;
+pub mod export;
 pub mod reports;
 pub mod settings;
 pub mod staff;

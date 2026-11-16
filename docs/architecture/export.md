@@ -79,3 +79,60 @@ events, projections and reports.
 
 The reference below is generated from the kernel's field registry, and a test checks it is
 current.
+
+| Schema | Version | Fields: key and name |
+|---|---|---|
+| `approval.granted` | 1 | 1 `approver`, 2 `action`, 3 `amount`, 4 `percent`, 5 `subject` |
+| `approval.granted` | 2 | 1 `approver`, 2 `action`, 3 `amount`, 4 `percent`, 5 `subject` |
+| `approval.granted` | 3 | 1 `approver`, 2 `action`, 3 `amount`, 4 `percent`, 5 `subject` |
+| `availability.changed` | 1 | 1 `kind`, 2 `available`, 3 `until`, 4 `reason`, 5 `note` |
+| `drawer.cash_moved` | 1 | 1 `kind`, 2 `amount`, 3 `reason`, 4 `note` |
+| `drawer.cash_refunded` | 1 | 1 `refund`, 2 `amount` |
+| `drawer.cash_taken` | 1 | 1 `payment`, 2 `amount` |
+| `drawer.closed` | 1 | 1 `counted`, 2 `expected` |
+| `drawer.no_sale` | 1 | 1 `reason`, 2 `note` |
+| `drawer.opened` | 1 | 1 `float` |
+| `hub.claimed` | 1 | 1 `epoch`, 2 `priority`, 3 `previous`, 4 `cuts` |
+| `kitchen.ticket_bumped` | 1 | none |
+| `kitchen.ticket_recalled` | 1 | none |
+| `kitchen.ticket_rerouted` | 1 | 1 `to` |
+| `kitchen.ticket_sent` | 1 | 1 `order`, 2 `station`, 3 `orderMode`, 4 `items` |
+| `kitchen.ticket_shown` | 1 | none |
+| `order.abandoned` | 1 | none |
+| `order.attributes_changed` | 1 | 1 `mode`, 2 `revenueCenter`, 3 `table`, 4 `guestCount`, 5 `customer`, 6 `owner` |
+| `order.check_closed` | 1 | 1 `check`, 2 `rulesVersion`, 3 `lines`, 4 `taxes`, 5 `total`, 6 `payments` |
+| `order.check_opened` | 1 | 1 `check` |
+| `order.closed` | 1 | none |
+| `order.created` | 1 | 1 `channel`, 2 `mode`, 3 `currency`, 4 `revenueCenter`, 5 `table`, 6 `guestCount`, 7 `customer`, 8 `owner` |
+| `order.discount_applied` | 1 | 1 `discount`, 2 `line`, 3 `percent`, 4 `amount`, 5 `reason`, 6 `note` |
+| `order.discount_removed` | 1 | 1 `discount` |
+| `order.line_added` | 1 | 1 `line`, 2 `variant`, 3 `catalogVersion`, 4 `name`, 5 `taxCategory`, 6 `unitPrice`, 7 `quantity`, 8 `modifiers`, 9 `seat`, 10 `course`, 11 `notes` |
+| `order.line_changed` | 1 | 1 `line`, 2 `quantity`, 3 `modifiers`, 4 `seat`, 5 `course`, 6 `notes` |
+| `order.line_comped` | 1 | 1 `line`, 2 `reason`, 3 `note` |
+| `order.line_removed` | 1 | 1 `line` |
+| `order.line_repriced` | 1 | 1 `line`, 2 `unitPrice`, 3 `reason`, 4 `note` |
+| `order.line_voided` | 1 | 1 `line`, 2 `reason`, 3 `note` |
+| `order.lines_allocated` | 1 | 1 `allocations` |
+| `order.lines_fired` | 1 | 1 `lines` |
+| `order.lines_returned` | 1 | 1 `refund`, 2 `lines`, 3 `reason`, 4 `note` |
+| `order.ownership_granted` | 1 | 1 `request`, 2 `device`, 3 `lease`, 4 `epoch` |
+| `order.ownership_overridden` | 1 | 1 `lease`, 2 `reason`, 3 `note` |
+| `order.ownership_refused` | 1 | 1 `request`, 2 `refusal` |
+| `order.ownership_requested` | 1 | 1 `lease` |
+| `order.reopened` | 1 | 1 `reason`, 2 `note` |
+| `order.voided` | 1 | 1 `reason`, 2 `note` |
+| `payment.authorized` | 1 | 1 `amount`, 2 `reference` |
+| `payment.captured` | 1 | 1 `amount`, 2 `tip`, 3 `reference`, 4 `tendered`, 5 `rounding` |
+| `payment.captured` | 2 | 1 `amount`, 2 `tip`, 3 `reference`, 4 `tendered`, 5 `rounding`, 6 `card` |
+| `payment.failed` | 1 | 1 `reason`, 2 `note`, 3 `reference` |
+| `payment.initiated` | 1 | 1 `order`, 2 `check`, 3 `tender`, 4 `amount` |
+| `payment.voided` | 1 | 1 `reason`, 2 `note`, 3 `reference` |
+| `profile.chunk` | 1 | 1 `version`, 2 `index`, 3 `bytes` |
+| `profile.published` | 1 | 1 `version`, 2 `size`, 3 `chunks` |
+| `refund.completed` | 1 | 1 `amount`, 2 `rounding` |
+| `refund.failed` | 1 | 1 `reason`, 2 `note`, 3 `reference` |
+| `refund.initiated` | 1 | 1 `order`, 2 `tender`, 3 `amount` |
+| `refund.initiated` | 2 | 1 `order`, 2 `tender`, 3 `amount`, 4 `payment` |
+| `sequence.assigned` | 1 | 1 `epoch`, 2 `first`, 3 `runs` |
+| `stock.counted` | 1 | 1 `quantity`, 2 `asOf`, 3 `note` |
+| `stock.moved` | 1 | 1 `movement`, 2 `quantity`, 3 `reason`, 4 `note` |

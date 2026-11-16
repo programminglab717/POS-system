@@ -3743,4 +3743,29 @@ BUGS = [
         "        (Some(first), Some(second)) => count_order(&first, a.hlc, &second, b.hlc) == Ordering::Less,",
         "        (Some(first), Some(second)) => first.as_of < second.as_of,",
     ),
+    # Field names (ADR-0037).
+    (
+        "fields: a nested record's names are the top level's",
+        "src/codec.rs",
+        "        if DEPTH.with(core::cell::Cell::get) != 1 {",
+        "        if DEPTH.with(core::cell::Cell::get) == 0 {",
+    ),
+    (
+        "fields: an optional field absent from the payload isn't named",
+        "src/codec.rs",
+        "    ) -> Result<Option<T>, PayloadError> {\n        Self::note(key, name);",
+        "    ) -> Result<Option<T>, PayloadError> {",
+    ),
+    (
+        "fields: a name of several words keeps its spaces",
+        "src/fields.rs",
+        "            text.extend(first.to_uppercase());",
+        "            text.push(' ');\n            text.push(first);",
+    ),
+    (
+        "fields: a kind of event isn't named",
+        "src/fields.rs",
+        "    (knows::<StockEvent>, decoded::<StockEvent>),",
+        "    (knows::<StockEvent>, decoded::<DrawerEvent>),",
+    ),
 ]

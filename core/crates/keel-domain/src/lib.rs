@@ -43,6 +43,7 @@ pub mod availability;
 pub mod checkout;
 pub mod codec;
 pub mod drawer;
+pub mod fields;
 pub mod hub;
 pub mod kitchen;
 pub mod order;

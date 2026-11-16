@@ -1,8 +1,11 @@
-//! `keel-cell --api <address> --token-file <file> [--web <dir>] <cloud kit>...`: the cloud cell
+//! `keel-cell --api <address> --token-file <file> [--web <dir>] [--escrow <dir>] <cloud kit>...`:
+//! the cloud cell
 //! (ADR-0028), serving each location whose cloud's kit `keel-provision` wrote into a directory
 //! named here, each one's store in its kit's directory, listening for each on every address at
 //! the port its roster names the cloud's; and the back office's API on `<address>`, for the
-//! operator whose bearer token `<file>` holds, with the back office's built files from `<dir>`.
+//! operator whose bearer token `<file>` holds, with the back office's built files from `<dir>`;
+//! and, with `--escrow`, each location's export written there once a day, the latest seven kept
+//! (ADR-0037, decision 5).
 
 #![allow(
     clippy::print_stdout,
@@ -19,18 +22,21 @@ use keel_cloud::Location;
 use keel_cloud::api::{Cell, router};
 
 fn usage() -> ExitCode {
-    eprintln!("usage: keel-cell --api <address> --token-file <file> [--web <dir>] <cloud kit>...");
+    eprintln!(
+        "usage: keel-cell --api <address> --token-file <file> [--web <dir>] [--escrow <dir>] <cloud kit>..."
+    );
     ExitCode::FAILURE
 }
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
-    let (mut api, mut token, mut web, mut kits) = (None, None, None, Vec::new());
+    let (mut api, mut token, mut web, mut escrow, mut kits) = (None, None, None, None, Vec::new());
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--api" => api = args.next(),
             "--token-file" => token = args.next().map(PathBuf::from),
             "--web" => web = args.next().map(PathBuf::from),
+            "--escrow" => escrow = args.next().map(PathBuf::from),
             _ if arg.starts_with("--") => return usage(),
             _ => kits.push(PathBuf::from(arg)),
         }
@@ -39,7 +45,7 @@ fn main() -> ExitCode {
     if kits.is_empty() {
         return usage();
     }
-    match run(&api, &token, web, &kits) {
+    match run(&api, &token, web, escrow, &kits) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("keel-cell: {error}");
@@ -54,7 +60,16 @@ fn listen(port: u16) -> std::io::Result<TcpListener> {
     TcpListener::bind(("::", port)).or_else(|_| TcpListener::bind(("0.0.0.0", port)))
 }
 
-fn run(api: &str, token: &PathBuf, web: Option<PathBuf>, kits: &[PathBuf]) -> Result<(), String> {
+/// How often the cell looks for a location whose day ended with no escrow export.
+const ESCROW_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+fn run(
+    api: &str,
+    token: &PathBuf,
+    web: Option<PathBuf>,
+    escrow: Option<PathBuf>,
+    kits: &[PathBuf],
+) -> Result<(), String> {
     let token = std::fs::read_to_string(token).map_err(|error| format!("the token: {error}"))?;
     let token = token.trim();
     // A token too short to guess is no token.
@@ -84,6 +99,27 @@ fn run(api: &str, token: &PathBuf, web: Option<PathBuf>, kits: &[PathBuf]) -> Re
         let listener =
             tokio::net::TcpListener::bind(api).await.map_err(|error| format!("{api}: {error}"))?;
         println!("keel-cell: the back office's API on {api}");
-        axum::serve(listener, router(cell)).await.map_err(|error| error.to_string())
+        if let Some(dir) = escrow {
+            let cell = Arc::clone(&cell);
+            tokio::spawn(async move {
+                loop {
+                    let (cell, dir) = (Arc::clone(&cell), dir.clone());
+                    let _ = tokio::task::spawn_blocking(move || {
+                        for location in cell.locations() {
+                            match keel_cloud::export::escrow(location, &dir) {
+                                Ok(Some(path)) => println!("keel-cell: escrow {}", path.display()),
+                                Ok(None) => {}
+                                Err(error) => {
+                                    eprintln!("keel-cell: escrow of {}: {error}", location.name());
+                                }
+                            }
+                        }
+                    })
+                    .await;
+                    tokio::time::sleep(ESCROW_EVERY).await;
+                }
+            });
+        }
+        axum::serve(listener, router(Arc::clone(&cell))).await.map_err(|error| error.to_string())
     })
 }

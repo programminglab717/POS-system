@@ -3,7 +3,7 @@
 Its tests run a location with its cloud end to end over real TLS: known answers.
 """
 
-KNOWN_ANSWERS = ["api", "ingest", "publishing"]
+KNOWN_ANSWERS = ["api", "export", "ingest", "publishing"]
 
 BUGS = [
     (
@@ -149,6 +149,85 @@ BUGS = [
         "catalog: a route naming nothing stays",
         "src/catalog.rs",
         "        kitchen.routes.retain(|route| !route.items.is_empty() || !route.modifiers.is_empty());",
+        "",
+    ),
+    # The back office (ADR-0037).
+    (
+        "settings: a cutoff past 23 reads as a time zone",
+        "src/settings.rs",
+        "        BusinessDateError::InvalidCutoff { .. } => bad(),",
+        "        BusinessDateError::InvalidCutoff { .. } => SettingsError::Field(\"a time zone\".to_owned()),",
+    ),
+    (
+        "settings: a tip prompt is always the screen",
+        "src/settings.rs",
+        "                    \"terminal\" => TipPrompt::Terminal,",
+        "                    \"terminal\" => TipPrompt::Screen,",
+    ),
+    (
+        "dashboard: the week before is the day itself",
+        "src/dashboard.rs",
+        "    for _ in 0..7 {",
+        "    for _ in 0..0 {",
+    ),
+    (
+        "dashboard: open orders aren't counted",
+        "src/dashboard.rs",
+        "        open_orders: u64::try_from(open.len()).unwrap_or(u64::MAX),",
+        "        open_orders: 0,",
+    ),
+    (
+        "dashboard: refunds aren't summed",
+        "src/dashboard.rs",
+        "        refunded: sum(&mut report.refunds.iter().map(|line| line.amount.money))?,",
+        "        refunded: 0,",
+    ),
+    (
+        "export: an identifier is written as hex",
+        "src/export.rs",
+        "            Some(id) => json!(id.to_string()),",
+        "            Some(_) => json!(hex(bytes)),",
+    ),
+    (
+        "export: base64 drops a chunk's last symbol",
+        "src/export.rs",
+        "            if at <= chunk.len() {",
+        "            if at < chunk.len() {",
+    ),
+    (
+        "export: the manifest counts no events",
+        "src/export.rs",
+        "        events = events.saturating_add(1);",
+        "        events = events.saturating_add(0);",
+    ),
+    (
+        "export: a payload's fields are numbered, not named",
+        "src/export.rs",
+        "                        .map_or_else(|| json_of(key).to_string(), |(_, name)| json_name(name));",
+        "                        .map_or_else(|| json_of(key).to_string(), |_| json_of(key).to_string());",
+    ),
+    (
+        "import: any manifest is taken",
+        "src/export.rs",
+        "                if format != Some(FORMAT) || version != Some(u64::from(VERSION)) {",
+        "                if format.is_none() && version.is_none() {",
+    ),
+    (
+        "escrow: every export is kept",
+        "src/export.rs",
+        "    let surplus = kept.len().saturating_sub(ESCROW_KEPT);",
+        "    let surplus = 0_usize;",
+    ),
+    (
+        "escrow: the day is written again each time",
+        "src/export.rs",
+        "            if target.exists() {",
+        "            if target.exists() && false {",
+    ),
+    (
+        "export: the file served is left behind",
+        "src/api.rs",
+        "    // Open in the response, or not: the file itself goes either way.\n    let _ = std::fs::remove_file(&path);",
         "",
     ),
 ]

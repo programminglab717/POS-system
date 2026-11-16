@@ -556,3 +556,44 @@ async fn the_dashboard_of_a_quiet_day_is_zero_and_a_bad_date_is_refused() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(call(&app, Method::GET, &base, None, None).await.0, StatusCode::UNAUTHORIZED);
 }
+
+/// The export, downloaded (ADR-0037, decision 3): JSON Lines, a manifest and the profile first,
+/// with no PIN, as an attachment; and only for the operator.
+#[tokio::test(flavor = "current_thread")]
+async fn the_export_is_downloaded_as_json_lines() {
+    let (listener, port) = bound();
+    let provisioned = location(7446, port);
+    let dir = dir("export");
+    let app = cell(&provisioned, listener, &dir);
+    let path = format!("/api/locations/{}/export", provisioned.roster.data().location);
+    let request = Request::builder()
+        .uri(&path)
+        .header("Authorization", format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "application/x-ndjson");
+    assert!(response.headers()["content-disposition"].to_str().unwrap().starts_with("attachment"));
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    let lines: Vec<Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(
+        (&lines[0]["type"], &lines[0]["format"]),
+        (&json!("manifest"), &json!("keel.export"))
+    );
+    assert_eq!(lines[0]["location"], json!(provisioned.roster.data().location.to_string()));
+    assert_eq!(lines[1]["type"], json!("profile"));
+    assert!(!text.contains("salt"), "no PIN, nor anything of one");
+    assert_eq!(lines.len() - 2, usize::try_from(lines[0]["events"].as_u64().unwrap()).unwrap());
+    // The file it was written to is gone.
+    let left =
+        std::fs::read_dir(std::env::temp_dir()).unwrap().filter_map(Result::ok).any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!("keel-export-{}", provisioned.roster.data().location))
+        });
+    assert!(!left, "the export's file is removed once served");
+    assert_eq!(call(&app, Method::GET, &path, None, None).await.0, StatusCode::UNAUTHORIZED);
+}

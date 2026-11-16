@@ -91,11 +91,39 @@ pub(crate) struct Fields<'a> {
     entries: Vec<(u64, &'a Value, bool)>,
 }
 
+std::thread_local! {
+    /// The names a decoding asks for of its payload's top-level keys, while [`named`] records
+    /// them (ADR-0037, decision 3): a payload's names are its decoder's, so there is no table to
+    /// fall out of step with it. Each thread records its own.
+    static NAMES: core::cell::RefCell<Option<Vec<(u64, &'static str)>>> =
+        const { core::cell::RefCell::new(None) };
+    /// How many payload maps are being read: the top level is the first.
+    static DEPTH: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// Runs `decode`, and returns what it returned with the names it asked for of its payload's
+/// top-level keys, each once, in the order asked: those of keys absent too, for an optional
+/// field. A decoding within it, of a nested record, names nothing.
+pub(crate) fn named<T>(decode: impl FnOnce() -> T) -> (T, Vec<(u64, &'static str)>) {
+    let outer = NAMES.with(|names| names.replace(Some(Vec::new())));
+    let depth = DEPTH.with(|depth| depth.replace(0));
+    let decoded = decode();
+    let asked = NAMES.with(|names| names.replace(outer)).unwrap_or_default();
+    DEPTH.with(|current| current.set(depth));
+    (decoded, asked)
+}
+
+impl Drop for Fields<'_> {
+    fn drop(&mut self) {
+        DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 impl<'a> Fields<'a> {
     /// The fields of `value`, which must be a map with unsigned integer keys.
     pub(crate) fn read(value: &'a Value) -> Result<Fields<'a>, PayloadError> {
         let map = value.as_map().ok_or(PayloadError::NotAMap)?;
-        let entries = map
+        let entries: Vec<(u64, &'a Value, bool)> = map
             .iter()
             .map(|(key, value)| {
                 key.as_u64()
@@ -103,7 +131,23 @@ impl<'a> Fields<'a> {
                     .ok_or_else(|| PayloadError::UnknownField(key.to_string()))
             })
             .collect::<Result<_, _>>()?;
+        // Counted once it can be dropped, which uncounts it.
+        DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
         Ok(Fields { entries })
+    }
+
+    /// Notes that `key` is `name`, while [`named`] records a top-level map's names.
+    fn note(key: u64, name: &'static str) {
+        if DEPTH.with(core::cell::Cell::get) != 1 {
+            return;
+        }
+        NAMES.with(|names| {
+            if let Some(names) = names.borrow_mut().as_mut()
+                && !names.iter().any(|(known, _)| *known == key)
+            {
+                names.push((key, name));
+            }
+        });
     }
 
     fn take(&mut self, key: u64) -> Option<&'a Value> {
@@ -119,6 +163,7 @@ impl<'a> Fields<'a> {
         key: u64,
         name: &'static str,
     ) -> Result<T, PayloadError> {
+        Self::note(key, name);
         let value = self.take(key).ok_or(PayloadError::Missing(name))?;
         T::from_value(value).ok_or(PayloadError::Invalid(name))
     }
@@ -129,6 +174,7 @@ impl<'a> Fields<'a> {
         key: u64,
         name: &'static str,
     ) -> Result<Option<T>, PayloadError> {
+        Self::note(key, name);
         self.take(key)
             .map(|value| T::from_value(value).ok_or(PayloadError::Invalid(name)))
             .transpose()
@@ -140,6 +186,7 @@ impl<'a> Fields<'a> {
         key: u64,
         name: &'static str,
     ) -> Result<Option<Change<T>>, PayloadError> {
+        Self::note(key, name);
         self.take(key)
             .map(|value| match value {
                 Value::Null => Ok(Change::Clear),

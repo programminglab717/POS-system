@@ -1502,4 +1502,11 @@ BUGS = [
         "            EntryKind::Counted { .. } => count_precedes(entry, count),",
         "            EntryKind::Counted { as_of: other, .. } => other < as_of,",
     ),
+    # Import (ADR-0037).
+    (
+        "import: a duplicate counts as stored",
+        "src/import.rs",
+        "                Received::Duplicate => &mut imported.duplicates,",
+        "                Received::Duplicate => &mut imported.stored,",
+    ),
 ]

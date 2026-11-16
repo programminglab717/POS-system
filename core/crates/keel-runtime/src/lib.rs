@@ -30,6 +30,7 @@ mod availability;
 mod card;
 mod drawer;
 mod error;
+mod import;
 mod kitchen;
 mod print;
 mod publication;
@@ -74,6 +75,7 @@ pub use card::{
     FIRST_ASK, LONGEST_ASK, REFUND as CARD_REFUND, SALE as CARD_SALE, TipOffer, TipOffers,
 };
 pub use error::RuntimeError;
+pub use import::Imported;
 pub use kitchen::{
     ALERT_WINDOW, Aging, FALLBACK_WAIT, KitchenAlert, KitchenScreen, ScreenItem, ScreenTicket,
     StationTimes, how_many,

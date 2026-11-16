@@ -39,7 +39,7 @@ use crate::settings::{self, SettingsEdit, SettingsView};
 use crate::staff::{self, StaffEdit, StaffView};
 use keel_runtime::RuntimeError;
 
-use crate::{CellError, CloudRuntime, Location, dashboard, reports};
+use crate::{CellError, CloudRuntime, Location, dashboard, export, reports};
 
 /// The most a request's body may be: a catalog of the largest profile that may be published.
 const MAX_BODY: usize = 64 * 1024 * 1024;
@@ -455,6 +455,47 @@ async fn read_dashboard(
     Ok(Json(found))
 }
 
+/// The location's export (ADR-0037, decision 3): written to a file only the cell can read, on
+/// the location's thread, then streamed from it, so it never sits whole in memory; the file is
+/// gone once the response has it open.
+async fn read_export(
+    State(cell): State<Arc<Cell>>,
+    Path(id): Path<String>,
+    request: Request,
+) -> Result<Response, ApiError> {
+    let index = cell.location(&id)?;
+    let location = cell.locations.get(index).ok_or(ApiError::NotFound)?;
+    let devices: Vec<Id<keel_events::envelope::Device>> =
+        location.roster().data().devices.iter().map(|device| device.id).collect();
+    let dir = std::env::temp_dir();
+    let nonce = keel_types::Entropy::next_u64(&mut OsEntropy)
+        .map_err(|error| ApiError::Failed(error.to_string()))?;
+    let path = dir.join(format!("keel-export-{id}-{nonce:016x}.jsonl"));
+    let written = path.clone();
+    let made = on(&cell, index, move |runtime| {
+        let file = export::create_private(&written)?;
+        let mut out = std::io::BufWriter::new(file);
+        export::export(runtime, &devices, runtime.clock().now(), &mut out).map(|_| ())
+    })
+    .await?;
+    if let Err(error) = made {
+        let _ = std::fs::remove_file(&path);
+        return Err(ApiError::Failed(error.to_string()));
+    }
+    let served = ServeFile::new(&path).try_call(request).await;
+    // Open in the response, or not: the file itself goes either way.
+    let _ = std::fs::remove_file(&path);
+    let mut response =
+        served.map_err(|error| ApiError::Failed(error.to_string()))?.map(axum::body::Body::new);
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/x-ndjson"));
+    let disposition = format!("attachment; filename=\"keel-{id}.jsonl\"");
+    if let Ok(value) = header::HeaderValue::from_str(&disposition) {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    Ok(response)
+}
+
 /// The API's routes, and the back office's files.
 pub fn router(cell: Arc<Cell>) -> Router {
     let api = Router::new()
@@ -468,6 +509,7 @@ pub fn router(cell: Arc<Cell>) -> Router {
         .route("/api/locations/{id}/settings/check", post(check_settings))
         .route("/api/locations/{id}/reports/sales", get(sales))
         .route("/api/locations/{id}/dashboard", get(read_dashboard))
+        .route("/api/locations/{id}/export", get(read_export))
         // Anything else under /api is no route, not the single-page app.
         .route("/api", any(no_route))
         .route("/api/{*rest}", any(no_route))
