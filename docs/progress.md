@@ -6,7 +6,7 @@
 
 ## Where we are
 
-**The MVP, steps 1 to 7 of 10, are done.** Step 1, staff, roles and approvals
+**The MVP, steps 1 to 8 of 10, are done.** Step 1, staff, roles and approvals
 ([ADR-0029](./adr/0029-staff-roles-and-approvals.md)); step 2, selling at the register
 ([ADR-0030](./adr/0030-selling-at-the-register.md)): discounts with reasons and limits, prices
 set by hand, line notes, split checks and partial cash payments, and orders parked on one
@@ -24,7 +24,9 @@ the location's profile, shown on a kitchen screen that bumps and recalls them, a
 no screen showed them; step 7, card payments ([ADR-0035](./adr/0035-card-payments.md), accepted
 after its review): a processor-agnostic connector to a semi-integrated terminal, tips, and card
 refunds, against a simulated terminal until gate G2. Each in the kernel, the bindings and the
-Android register. Step 8, inventory, is being built.
+Android register; step 8, inventory ([ADR-0036](./adr/0036-inventory.md), accepted after its
+review): a movement ledger per item, sales read from orders, counts as of a time, and returns
+kept out of stock. Step 9, the back office, is being built.
 
 **CI is out of minutes for the month**: the work since is verified here as CI would verify it,
 but for the app's instrumented tests, which need an emulator. Step 3 changed them, and fixed
@@ -99,8 +101,22 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
+The MVP's step 9, the back office: a location's settings, a dashboard and a full export
+with escrow, designed in [ADR-0037](./adr/0037-the-back-office.md) (proposed). Slices 1, settings,
+and 2, the dashboard, built 2026-11-16: the settings' JSON, API and checks, and a settings page;
+the dashboard's query of a day against the same weekday a week before, and its page, asked again
+every 10 s. Verified by the cell's unit and API tests, both clippy runs, the docs and the back
+office's browser tests against the demo (9). Next: slice 3, the export and escrow.
+
+Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
+three of step 2 the scrolling ticket pane should mend.
+
+## Completed
+
+### Inventory: MVP step 8 (2026-11-16)
+
 The MVP's step 8, inventory: the movement ledger (K-01), and putting returned stock back, designed
-in [ADR-0036](./adr/0036-inventory.md) (proposed). Its slices:
+in [ADR-0036](./adr/0036-inventory.md), accepted after its review. Its slices:
 
 1. **The domain and the store**: the stock aggregate (`stock.moved`, `stock.counted`), the
    `stock.adjust` action with profile format 5 and `approval.granted` v3, the projections of
@@ -119,19 +135,8 @@ defaults for: step 7's card payments among them, which on a device fell to the d
 weren't there. It now passes on every call, and `OpeningTillTest` calls each and checks it
 arrives. Reviewed 2026-11-16, kernel and Android, and the findings fixed (ADR-0036's As built
 lists them); verified again as above, the stock property tests at 20,000 cases against an exact
-oracle. Next: the planted bugs for the fixes, then accepting ADR-0036.
-
-Then the MVP's step 9, the back office: a location's settings, a dashboard and a full export
-with escrow, designed in [ADR-0037](./adr/0037-the-back-office.md) (proposed). Slices 1, settings,
-and 2, the dashboard, built 2026-11-16: the settings' JSON, API and checks, and a settings page;
-the dashboard's query of a day against the same weekday a week before, and its page, asked again
-every 10 s. Verified by the cell's unit and API tests, both clippy runs, the docs and the back
-office's browser tests against the demo (9). Next: slice 3, the export and escrow.
-
-Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
-three of step 2 the scrolling ticket pane should mend.
-
-## Completed
+oracle. The planted bugs: 42 for stock, each caught, five by tests
+written when they weren't.
 
 ### Card payments: MVP step 7 (2026-11-15)
 

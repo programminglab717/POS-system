@@ -265,3 +265,24 @@ fn a_note_comes_with_a_reason() {
         Err(DecodeError::Malformed(PayloadError::Invalid("note")))
     );
 }
+
+/// Counts are ordered as the levels take them: by as-of time, then HLC, then event, so two with
+/// one time and one HLC are still ordered. Found by a planted bug.
+#[test]
+fn counts_are_ordered_by_time_then_hlc_then_event() {
+    let entry = |event: u64, wall: u64, as_of: i64| Entry {
+        event: id(event),
+        at: at(as_of),
+        hlc: Hlc::new(wall, 0).unwrap(),
+        kind: EntryKind::Counted { quantity: each(1), as_of: at(as_of) },
+    };
+    let (early, late) = (entry(0xE1, 1_000, 1), entry(0xE2, 1_000, 2));
+    assert!(count_precedes(&early, &late) && !count_precedes(&late, &early));
+    let (first, second) = (entry(0xE1, 1_000, 1), entry(0xE2, 2_000, 1));
+    assert!(count_precedes(&first, &second) && !count_precedes(&second, &first));
+    let (lower, higher) = (entry(0xE1, 1_000, 1), entry(0xE2, 1_000, 1));
+    assert!(count_precedes(&lower, &higher) && !count_precedes(&higher, &lower));
+    let moved =
+        Entry { kind: EntryKind::Moved(Movement::Received, each(1)), ..entry(0xE3, 1_000, 1) };
+    assert!(!count_precedes(&moved, &higher) && !count_precedes(&higher, &moved));
+}

@@ -1,6 +1,6 @@
 # ADR-0036: Inventory: a movement ledger per item, sales read from orders, counts as of a time
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-16
 
 ## Context
@@ -114,6 +114,9 @@ What the review found, and what was done:
   reason is refused.
 - **Tests the review asked for**: the stock projections' rows are pinned; the bindings take
   waste, adjustments down and a return kept out of stock, and the day's report shows them.
+- **Planted bugs**: 42 for stock across the domain, store, runtime and bindings, each caught by
+  a test; five that weren't at first (the list's order, the history's start, a count's expected
+  level, the day's waste, and the shared order of counts) each have one now.
 
 Gaps that remain:
 

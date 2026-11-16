@@ -232,3 +232,72 @@ fn of_two_counts_as_of_one_time_the_later_is_against_the_earlier() {
         report.counts.iter().map(|count| (count.counted, count.expected, count.variance)).collect();
     assert_eq!(found, [(each(5), each(10), each(-5)), (each(7), each(5), each(2))]);
 }
+
+/// The list puts what is below zero first, whatever its name: found by a planted bug, the test
+/// above had it first by its name too.
+#[test]
+fn an_item_below_zero_comes_before_one_earlier_by_name() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    runtime.move_stock(espresso(), Movement::Received, each(3), None).unwrap();
+    runtime.move_stock(id(0x402), Movement::Received, each(1), None).unwrap();
+    runtime.clock().advance(Duration::from_secs(1)).unwrap();
+    let order = runtime.start_order(Mode::Takeout).unwrap().order;
+    runtime.add_item(order, id(0x402), &[], NonZeroU32::new(2).unwrap()).unwrap();
+    let due = runtime.ticket(order).unwrap().cash_due.money;
+    runtime.pay_cash(order, due).unwrap();
+    let stock = runtime.stock().unwrap();
+    assert_eq!(stock[0].variant, id(0x402), "the latte, below zero, before the espresso");
+    assert_eq!((stock[0].on_hand, stock[1].on_hand), (each(-1), each(3)));
+}
+
+/// The history starts at the latest count: what moved before it isn't listed. Found by a planted
+/// bug.
+#[test]
+fn the_history_starts_at_the_latest_count() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    runtime.move_stock(espresso(), Movement::Received, each(10), None).unwrap();
+    runtime.clock().advance(Duration::from_secs(60)).unwrap();
+    runtime.count_stock(espresso(), each(9), None, None).unwrap();
+    runtime.clock().advance(Duration::from_secs(60)).unwrap();
+    sell(&mut runtime, 1);
+    let history: Vec<StockChange> =
+        runtime.stock_history(espresso()).unwrap().iter().map(|line| line.change).collect();
+    assert_eq!(history, [StockChange::Sold, StockChange::Counted]);
+}
+
+/// A count's expected level is what was recorded by its as-of time: a delivery recorded after
+/// it, before the count was, isn't expected. Found by a planted bug.
+#[test]
+fn a_count_isnt_expected_to_have_what_was_recorded_after_its_time() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    runtime.move_stock(espresso(), Movement::Received, each(10), None).unwrap();
+    runtime.clock().advance(Duration::from_secs(60)).unwrap();
+    let as_of = runtime.clock().now();
+    runtime.clock().advance(Duration::from_secs(60)).unwrap();
+    runtime.move_stock(espresso(), Movement::Received, each(5), None).unwrap();
+    runtime.clock().advance(Duration::from_secs(60)).unwrap();
+    runtime.count_stock(espresso(), each(10), Some(as_of), None).unwrap();
+    let report = runtime.day_report(runtime.today().unwrap(), ReportKind::X).unwrap();
+    let count = &report.counts[0];
+    assert_eq!((count.expected, count.variance), (each(10), each(0)));
+    assert_eq!(runtime.stock_view(espresso()).unwrap().unwrap().on_hand, each(15));
+}
+
+/// The day's report has the day's waste, not another day's. Found by a planted bug.
+#[test]
+fn the_days_waste_is_its_own() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    runtime.move_stock(espresso(), Movement::Received, each(10), None).unwrap();
+    runtime.move_stock(espresso(), Movement::Wasted, each(2), Some(reason("spoiled"))).unwrap();
+    let yesterday = runtime.today().unwrap();
+    runtime.clock().advance(Duration::from_secs(24 * 60 * 60)).unwrap();
+    runtime.move_stock(espresso(), Movement::Wasted, each(1), Some(reason("spoiled"))).unwrap();
+    let today = runtime.today().unwrap();
+    assert_ne!(today, yesterday);
+    let wasted = |date| runtime.day_report(date, ReportKind::X).unwrap().wasted[0].quantity;
+    assert_eq!((wasted(yesterday), wasted(today)), (each(2), each(1)));
+}
