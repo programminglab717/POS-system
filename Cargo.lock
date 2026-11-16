@@ -1054,6 +1054,7 @@ dependencies = [
  "keel-events",
  "keel-hub",
  "keel-net",
+ "keel-pricing",
  "keel-provision",
  "keel-runtime",
  "keel-store",

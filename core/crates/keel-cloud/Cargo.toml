@@ -11,6 +11,7 @@ repository.workspace = true
 keel-types = { workspace = true, features = ["os"] }
 keel-events.workspace = true
 keel-domain.workspace = true
+keel-pricing.workspace = true
 keel-store.workspace = true
 keel-runtime.workspace = true
 keel-net.workspace = true

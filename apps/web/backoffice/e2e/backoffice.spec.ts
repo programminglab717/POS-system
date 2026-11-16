@@ -10,6 +10,9 @@ async function signIn(page: Page) {
   await page.getByLabel("Operator token").fill(token());
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByRole("tab", { name: "Catalog" })).toBeVisible();
+  // The dashboard opens first; most tests are of the catalog.
+  await expect(page.getByLabel("The day's figures")).toBeVisible();
+  await page.getByRole("tab", { name: "Catalog" }).click();
 }
 
 /** What the register rings from now, as the demo writes it. */
@@ -194,4 +197,32 @@ test("a cashier's role and PIN are changed, published, and taken by the register
   await page.getByRole("button", { name: "Add member" }).click();
   await page.getByRole("button", { name: "Check" }).click();
   await expect(page.getByRole("status")).toContainText("a team member with no PIN");
+});
+
+test("the dashboard shows the day the register rang, by hour and by item", async ({ page }) => {
+  await signIn(page);
+  await page.getByRole("tab", { name: "Dashboard" }).click();
+  const figures = page.getByLabel("The day's figures");
+  await expect(figures.getByText("Sales, with tax")).toBeVisible();
+  await expect(figures.locator(".stat").filter({ hasText: "Orders" }).locator("strong")).not.toHaveText("0");
+  await expect(page.getByLabel("Sales by hour").locator(".hour")).not.toHaveCount(0);
+  await expect(page.getByLabel("Top items").getByRole("row")).not.toHaveCount(0);
+  await expect(page.getByLabel("Look at").getByText("Front counter")).toBeVisible();
+});
+
+test("settings are checked by the kernel and refused in its words", async ({ page }) => {
+  await signIn(page);
+  await page.getByRole("tab", { name: "Settings" }).click();
+  const name = page.getByLabel("Name", { exact: true });
+  await expect(name).not.toHaveValue("");
+  await name.fill("Corner Café");
+  await expect(page.getByText("Unpublished changes")).toBeVisible();
+  await page.getByRole("button", { name: "Check" }).click();
+  await expect(page.getByRole("status")).toHaveText("The settings pass every check.");
+  await page.getByLabel("Time zone").fill("Mars/Olympus");
+  await page.getByRole("button", { name: "Check" }).click();
+  await expect(page.getByRole("status")).toHaveClass(/error/);
+  await expect(page.getByRole("status")).toContainText("time zone");
+  await page.getByRole("button", { name: "Discard" }).click();
+  await expect(name).not.toHaveValue("Corner Café");
 });

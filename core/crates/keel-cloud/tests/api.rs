@@ -480,3 +480,79 @@ async fn staff_are_read_with_no_pin_and_published_with_new_ones() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(call(&app, Method::GET, &base, None, None).await.0, StatusCode::UNAUTHORIZED);
 }
+
+/// A location's settings, read and published (ADR-0037, decision 1): the location and its
+/// currency read, never written; what the kernel refuses, refused with its words.
+#[tokio::test(flavor = "current_thread")]
+async fn settings_are_read_and_published_and_checked_by_the_kernel() {
+    let (listener, port) = bound();
+    let provisioned = location(7444, port);
+    let dir = dir("settings");
+    let app = cell(&provisioned, listener, &dir);
+    let base = format!("/api/locations/{}/settings", provisioned.roster.data().location);
+    let (status, read) = get(&app, &base).await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["currency"], json!("USD"));
+    assert_eq!(read["location"], json!(provisioned.roster.data().location.to_string()));
+    let mut edit = read.clone();
+    let object = edit.as_object_mut().unwrap();
+    object.remove("location");
+    object.remove("currency");
+    let version = object.remove("version").unwrap();
+    object.insert("base".into(), version);
+    edit["name"] = json!("Corner Café");
+    edit["cutoff"] = json!("05:00");
+    let (status, checked) =
+        call(&app, Method::POST, &format!("{base}/check"), Some(TOKEN), Some(edit.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{checked}");
+    tokio::time::sleep(keel_runtime::ISLAND_AFTER).await;
+    let (status, published) = call(&app, Method::PUT, &base, Some(TOKEN), Some(edit.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{published}");
+    assert_eq!(
+        published["version"], checked["version"],
+        "nothing drawn: the check is the publication"
+    );
+    let (_, again) = get(&app, &base).await;
+    assert_eq!((&again["name"], &again["cutoff"]), (&json!("Corner Café"), &json!("05:00")));
+    // Read before: refused. The currency isn't a setting.
+    let (status, _) = call(&app, Method::PUT, &base, Some(TOKEN), Some(edit.clone())).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let mut currency = edit.clone();
+    currency["base"] = again["version"].clone();
+    currency["currency"] = json!("EUR");
+    let (status, _) =
+        call(&app, Method::POST, &format!("{base}/check"), Some(TOKEN), Some(currency)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let mut bad = edit;
+    bad["base"] = again["version"].clone();
+    bad["timeZone"] = json!("Mars/Olympus");
+    let (status, refused) =
+        call(&app, Method::POST, &format!("{base}/check"), Some(TOKEN), Some(bad)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(refused["error"].as_str().unwrap().contains("time zone"), "{refused}");
+    assert_eq!(call(&app, Method::GET, &base, None, None).await.0, StatusCode::UNAUTHORIZED);
+}
+
+/// The dashboard of a day with nothing sold, and of a day asked for (ADR-0037, decision 2): every
+/// figure zero, nothing open, and a date that isn't one refused.
+#[tokio::test(flavor = "current_thread")]
+async fn the_dashboard_of_a_quiet_day_is_zero_and_a_bad_date_is_refused() {
+    let (listener, port) = bound();
+    let provisioned = location(7445, port);
+    let dir = dir("dashboard");
+    let app = cell(&provisioned, listener, &dir);
+    let base = format!("/api/locations/{}/dashboard", provisioned.roster.data().location);
+    let (status, today) = get(&app, &base).await;
+    assert_eq!(status, StatusCode::OK, "{today}");
+    assert_eq!(today["currency"], json!("USD"));
+    assert_eq!((&today["day"]["orders"], &today["day"]["total"]), (&json!(0), &json!(0)));
+    assert_eq!(today["weekBefore"]["orders"], json!(0));
+    assert_eq!((&today["openOrders"], &today["oldestOpenSeconds"]), (&json!(0), &Value::Null));
+    assert_eq!(today["kitchen"]["waiting"], json!(0));
+    assert!(today["hours"].as_array().unwrap().is_empty());
+    let (status, day) = get(&app, &format!("{base}?date=2026-11-01")).await;
+    assert_eq!((status, &day["date"]), (StatusCode::OK, &json!("2026-11-01")));
+    let (status, _) = get(&app, &format!("{base}?date=yesterday")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(call(&app, Method::GET, &base, None, None).await.0, StatusCode::UNAUTHORIZED);
+}

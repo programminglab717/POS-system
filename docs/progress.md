@@ -121,6 +121,13 @@ arrives. Reviewed 2026-11-16, kernel and Android, and the findings fixed (ADR-00
 lists them); verified again as above, the stock property tests at 20,000 cases against an exact
 oracle. Next: the planted bugs for the fixes, then accepting ADR-0036.
 
+Then the MVP's step 9, the back office: a location's settings, a dashboard and a full export
+with escrow, designed in [ADR-0037](./adr/0037-the-back-office.md) (proposed). Slices 1, settings,
+and 2, the dashboard, built 2026-11-16: the settings' JSON, API and checks, and a settings page;
+the dashboard's query of a day against the same weekday a week before, and its page, asked again
+every 10 s. Verified by the cell's unit and API tests, both clippy runs, the docs and the back
+office's browser tests against the demo (9). Next: slice 3, the export and escrow.
+
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
 three of step 2 the scrolling ticket pane should mend.
 

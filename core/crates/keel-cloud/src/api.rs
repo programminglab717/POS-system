@@ -35,10 +35,11 @@ use serde_json::json;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::catalog::{self, CatalogEdit, CatalogView};
+use crate::settings::{self, SettingsEdit, SettingsView};
 use crate::staff::{self, StaffEdit, StaffView};
 use keel_runtime::RuntimeError;
 
-use crate::{CellError, CloudRuntime, Location, reports};
+use crate::{CellError, CloudRuntime, Location, dashboard, reports};
 
 /// The most a request's body may be: a catalog of the largest profile that may be published.
 const MAX_BODY: usize = 64 * 1024 * 1024;
@@ -346,6 +347,46 @@ async fn publish_staff(
     .await
 }
 
+async fn read_settings(
+    State(cell): State<Arc<Cell>>,
+    Path(id): Path<String>,
+) -> Result<Json<SettingsView>, ApiError> {
+    let index = cell.location(&id)?;
+    let view =
+        on(&cell, index, |runtime| settings::view(runtime.profile(), runtime.profile_version()))
+            .await?;
+    Ok(Json(view))
+}
+
+async fn check_settings(
+    State(cell): State<Arc<Cell>>,
+    Path(id): Path<String>,
+    edit: Result<Json<SettingsEdit>, JsonRejection>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let index = cell.location(&id)?;
+    let Json(edit) = edit.map_err(|rejection| rejected(&rejection))?;
+    let checked = on(&cell, index, move |runtime| {
+        settings::apply(runtime.profile(), &edit).map(|profile| publication::version(&profile))
+    })
+    .await?;
+    let version = checked.map_err(|error| ApiError::Invalid(error.to_string()))?;
+    Ok(Json(json!({ "version": catalog::hex(version) })))
+}
+
+async fn publish_settings(
+    State(cell): State<Arc<Cell>>,
+    Path(id): Path<String>,
+    edit: Result<Json<SettingsEdit>, JsonRejection>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let index = cell.location(&id)?;
+    let Json(edit) = edit.map_err(|rejection| rejected(&rejection))?;
+    let base = edit.base.clone();
+    publish(&cell, index, base, move |profile| {
+        settings::apply(profile, &edit).map_err(|error| ApiError::Invalid(error.to_string()))
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 struct Range {
     from: Option<String>,
@@ -382,6 +423,38 @@ async fn sales(
     Ok(Json(report))
 }
 
+#[derive(Deserialize)]
+struct Day {
+    date: Option<String>,
+}
+
+async fn read_dashboard(
+    State(cell): State<Arc<Cell>>,
+    Path(id): Path<String>,
+    Query(day): Query<Day>,
+) -> Result<Json<dashboard::Dashboard>, ApiError> {
+    let index = cell.location(&id)?;
+    let date = day
+        .date
+        .map(|text| {
+            text.parse::<BusinessDate>()
+                .map_err(|_| ApiError::Invalid(format!("{text:?} isn't a date, YYYY-MM-DD")))
+        })
+        .transpose()?;
+    let found = on(&cell, index, move |runtime| {
+        let now = runtime.clock().now();
+        let today = runtime
+            .profile()
+            .business_day()
+            .business_date_of(now)
+            .map_err(|error| ApiError::Failed(error.to_string()))?;
+        dashboard::dashboard(runtime, date.unwrap_or(today), now)
+            .map_err(|error| ApiError::Failed(error.to_string()))
+    })
+    .await??;
+    Ok(Json(found))
+}
+
 /// The API's routes, and the back office's files.
 pub fn router(cell: Arc<Cell>) -> Router {
     let api = Router::new()
@@ -391,7 +464,10 @@ pub fn router(cell: Arc<Cell>) -> Router {
         .route("/api/locations/{id}/catalog/check", post(check_catalog))
         .route("/api/locations/{id}/staff", get(read_staff).put(publish_staff))
         .route("/api/locations/{id}/staff/check", post(check_staff))
+        .route("/api/locations/{id}/settings", get(read_settings).put(publish_settings))
+        .route("/api/locations/{id}/settings/check", post(check_settings))
         .route("/api/locations/{id}/reports/sales", get(sales))
+        .route("/api/locations/{id}/dashboard", get(read_dashboard))
         // Anything else under /api is no route, not the single-page app.
         .route("/api", any(no_route))
         .route("/api/{*rest}", any(no_route))

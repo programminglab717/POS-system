@@ -400,3 +400,35 @@ th {
     min-width: 8em;
   }
 }
+
+/* The dashboard's hours: a bar each, its length the hour's share of the busiest. */
+.hours {
+  display: grid;
+  gap: 4px;
+}
+
+.hours .hour {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr 6rem;
+  align-items: center;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hours .bar-fill {
+  height: 12px;
+  border-radius: 3px;
+  background: var(--accent, #2f6fde);
+  min-width: 2px;
+}
+
+.compare {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}

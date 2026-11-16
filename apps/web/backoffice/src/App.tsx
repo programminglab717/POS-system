@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { Api, ApiError, type LocationInfo } from "./api";
 import { CatalogEditor } from "./CatalogEditor";
+import { Dashboard } from "./Dashboard";
 import { Devices } from "./Devices";
 import { Reports } from "./Reports";
+import { SettingsEditor } from "./Settings";
 import { StaffEditor } from "./Staff";
 
-type Tab = "catalog" | "staff" | "reports" | "devices";
+type Tab = "dashboard" | "catalog" | "staff" | "settings" | "reports" | "devices";
 
 const TOKEN = "keel.token";
 
@@ -62,7 +64,7 @@ export function App() {
   const [refused, setRefused] = useState(false);
   const [locations, setLocations] = useState<LocationInfo[] | null>(null);
   const [location, setLocation] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("catalog");
+  const [tab, setTab] = useState<Tab>("dashboard");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -112,7 +114,7 @@ export function App() {
           </label>
         )}
         <nav className="tabs" role="tablist">
-          {(["catalog", "staff", "reports", "devices"] as const).map((name) => (
+          {(["dashboard", "catalog", "staff", "settings", "reports", "devices"] as const).map((name) => (
             <button
               key={name}
               role="tab"
@@ -139,8 +141,10 @@ export function App() {
       {locations && locations.length === 0 && <p className="empty">The cell serves no location.</p>}
       {current && (
         <main key={current.id}>
+          {tab === "dashboard" && <Dashboard api={api} location={current.id} />}
           {tab === "catalog" && <CatalogEditor api={api} location={current.id} />}
           {tab === "staff" && <StaffEditor api={api} location={current.id} />}
+          {tab === "settings" && <SettingsEditor api={api} location={current.id} />}
           {tab === "reports" && <Reports api={api} location={current.id} />}
           {tab === "devices" && <Devices api={api} location={current.id} />}
         </main>

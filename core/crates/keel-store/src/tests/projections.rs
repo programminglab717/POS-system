@@ -1057,3 +1057,33 @@ fn what_is_left_out_of_the_levels_is_reported() {
     store.rebuild_projections().unwrap();
     assert_eq!(store.stock_levels(flat_white).unwrap().unwrap().conflicts, 1);
 }
+
+/// A sale in another unit than its item's stock takes nothing, and is reported: an item kept by
+/// the kilogram, sold by the each. Found by a planted bug.
+#[test]
+fn a_sale_in_another_unit_is_reported() {
+    use keel_domain::refs::Variant;
+    use keel_domain::stock::{Movement, StockEvent, StockMoved};
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let flat_white: Id<Variant> = id(0x400);
+    let kilos = Quantity::from_micros(2_000_000, Unit::Kilogram);
+    let received = StockEvent::Moved(StockMoved {
+        movement: Movement::Received,
+        quantity: kilos,
+        reason: None,
+    });
+    append(&mut store, vec![domain_draft(flat_white.cast(), &received)], at(0));
+    let order = order_id();
+    append(
+        &mut store,
+        vec![
+            order_draft(order, &created()),
+            order_draft(order, &line_added(0x10, 450)),
+            order_draft(order, &OrderEvent::Closed),
+        ],
+        at(1_000),
+    );
+    let levels = store.stock_levels(flat_white).unwrap().unwrap();
+    assert_eq!((levels.levels.on_hand, levels.conflicts), (kilos, 1));
+}

@@ -106,6 +106,68 @@ export interface StaffEdit {
   team: { id: string; name: string; role?: string; pin?: string }[];
 }
 
+export interface PrinterSetting {
+  host: string;
+  port: number;
+}
+
+export interface TaxSetting {
+  id: string;
+  name: string;
+  /** A percentage: "8.875". */
+  rate: string;
+  categories: string[];
+  dining?: "on_premises" | "to_go";
+}
+
+export interface StationSetting {
+  id: string;
+  name: string;
+  expo: boolean;
+  screen: boolean;
+  printer?: PrinterSetting;
+}
+
+export interface RouteSetting {
+  station: string;
+  items: string[];
+  modifiers: string[];
+  modes: string[];
+}
+
+export interface KitchenSetting {
+  stations: StationSetting[];
+  routes: RouteSetting[];
+  defaultStation?: string;
+  lateIshSeconds: number;
+  lateSeconds: number;
+  fallbackPrinter?: PrinterSetting;
+}
+
+/** What a location's settings are (ADR-0037, decision 1). */
+export interface SettingsBody {
+  name: string;
+  address: string[];
+  timeZone: string;
+  /** Local time business days begin, HH:MM. */
+  cutoff: string;
+  cashRounding?: { mode: string; increment: number };
+  rounding: { extension: string; discounts: string; taxScope: "line" | "document"; tax: string };
+  taxes: TaxSetting[];
+  tipping?: { presets: number[]; prompt: "screen" | "terminal" };
+  kitchen?: KitchenSetting;
+}
+
+export interface Settings extends SettingsBody {
+  version: string;
+  location: string;
+  currency: string;
+}
+
+export interface SettingsEdit extends SettingsBody {
+  base?: string;
+}
+
 export interface Device {
   id: string;
   name: string;
@@ -126,6 +188,33 @@ export interface SalesReport {
   items: { name: string; quantity: string; unit: string; amount: number }[];
   tenders: { tender: string; payments: number; amount: number }[];
   otherCurrency: number;
+}
+
+export interface DayFigures {
+  orders: number;
+  net: number;
+  total: number;
+  discounts: number;
+  voided: number;
+  refunded: number;
+  tips: number;
+}
+
+/** A business day's dashboard (ADR-0037, decision 2). */
+export interface DashboardData {
+  date: string;
+  currency: string;
+  minorUnits: number;
+  day: DayFigures;
+  weekBefore: DayFigures;
+  hours: { hour: number; orders: number; total: number }[];
+  topItems: { name: string; quantity: string; unit: string; amount: number }[];
+  tenders: { tender: string; payments: number; amount: number }[];
+  openOrders: number;
+  oldestOpenSeconds: number | null;
+  kitchen: { waiting: number; bumped: number; medianSeconds: number | null; longestSeconds: number | null };
+  soldOut: string[];
+  belowZero: { name: string; onHand: string }[];
 }
 
 /** An answer the API refused, with its reason. */
@@ -189,6 +278,23 @@ export class Api {
 
   publishStaff(location: string, edit: StaffEdit) {
     return this.call<{ version: string }>("PUT", `/api/locations/${location}/staff`, edit);
+  }
+
+  settings(location: string) {
+    return this.call<Settings>("GET", `/api/locations/${location}/settings`);
+  }
+
+  checkSettings(location: string, edit: SettingsEdit) {
+    return this.call<{ version: string }>("POST", `/api/locations/${location}/settings/check`, edit);
+  }
+
+  publishSettings(location: string, edit: SettingsEdit) {
+    return this.call<{ version: string }>("PUT", `/api/locations/${location}/settings`, edit);
+  }
+
+  dashboard(location: string, date?: string) {
+    const suffix = date ? `?date=${encodeURIComponent(date)}` : "";
+    return this.call<DashboardData>("GET", `/api/locations/${location}/dashboard${suffix}`);
   }
 
   sales(location: string, from?: string, to?: string) {
