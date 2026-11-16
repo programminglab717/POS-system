@@ -193,6 +193,7 @@ impl From<RuntimeError> for KeelError {
             | RuntimeError::CardRefund
             | RuntimeError::OrderChanged
             | RuntimeError::Refund(_)
+            | RuntimeError::Stock(_)
             | RuntimeError::SoldOut(_)
             | RuntimeError::Availability(_)
             | RuntimeError::Kitchen(_)

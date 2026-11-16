@@ -9,6 +9,8 @@ import dev.keel.kernel.CardRead
 import dev.keel.kernel.CardState
 import dev.keel.kernel.CardTip
 import dev.keel.kernel.Choice
+import dev.keel.kernel.StockChange
+import dev.keel.kernel.StockMovement
 import dev.keel.kernel.TipPrompt
 import dev.keel.kernel.Confirm
 import dev.keel.kernel.JobKind
@@ -220,5 +222,32 @@ class RegisterTest {
         }
         val report = register.dayReport(dev.keel.kernel.ReportKind.X, null)
         assertEquals(listOf(49L), report.tips.map { it.amount.minor })
+    }
+
+    /**
+     * Stock through the bindings (ADR-0036): received, sold, and counted on a manager's word;
+     * a cashier's count needs an approval.
+     */
+    @Test
+    fun stockComesOffAsItSellsAndACountSetsIt() = withRegister { register ->
+        register.signIn(id(0x501), "1234")
+        assertEquals(emptyList(), register.stock())
+        val received = register.moveStock(id(0x401), StockMovement.RECEIVED, 12_000_000, "each", "delivery", null)
+        assertEquals(12_000_000L, received.onHand.micros)
+        Thread.sleep(2)
+        val order = register.startOrder(Mode.TAKEOUT).order
+        register.addItem(order, id(0x401), emptyList(), 2u)
+        register.payCash(order, register.ticket(order).cashDue.minor)
+        assertEquals("10", register.stock().single().onHand.text)
+        Thread.sleep(2)
+        val counted = register.countStock(id(0x401), 9_000_000, "each", "end of day")
+        assertEquals(9_000_000L, counted.onHand.micros)
+        assertTrue(register.stockHistory(id(0x401)).first().change is StockChange.Counted)
+        register.signOut()
+        register.signIn(id(0x502), "2468")
+        val refused = assertFailsWith<KeelException.ApprovalRequired> {
+            register.countStock(id(0x401), 1_000_000, "each", null)
+        }
+        assertEquals("stock.adjust", refused.action)
     }
 }

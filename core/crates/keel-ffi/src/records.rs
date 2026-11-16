@@ -409,6 +409,10 @@ pub struct DayReport {
     pub card_refunds_owed: u64,
     /// What they owe.
     pub card_refunds_owed_amount: Amount,
+    /// What was wasted on the day, by item (ADR-0036).
+    pub wasted: Vec<crate::stock::WastedLine>,
+    /// What each count of the day found against what was expected at its time.
+    pub counts: Vec<crate::stock::CountLine>,
 }
 
 /// What one tender captured on a day.
@@ -471,6 +475,24 @@ impl From<&runtime::DayReport> for DayReport {
             tips: report.tips.iter().map(crate::card::TipLine::from).collect(),
             card_refunds_owed: report.card_refunds_owed,
             card_refunds_owed_amount: (&report.card_refunds_owed_amount).into(),
+            wasted: report
+                .wasted
+                .iter()
+                .map(|wasted| crate::stock::WastedLine {
+                    name: wasted.name.clone(),
+                    quantity: wasted.quantity_text.clone(),
+                })
+                .collect(),
+            counts: report
+                .counts
+                .iter()
+                .map(|count| crate::stock::CountLine {
+                    name: count.name.clone(),
+                    counted: count.texts[0].clone(),
+                    expected: count.texts[1].clone(),
+                    variance: count.texts[2].clone(),
+                })
+                .collect(),
         }
     }
 }

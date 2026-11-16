@@ -848,3 +848,52 @@ fn stock_levels_read_movements_counts_and_orders() {
     store.rebuild_projections().unwrap();
     assert_eq!(store.stock_levels(flat_white).unwrap().unwrap().1, levels);
 }
+
+/// What an order sells is its live lines when it closes, at its last close (ADR-0036): an open
+/// order sells nothing yet, a voided line nothing, and an order reopened and closed again sells
+/// as of its last close, so a count between its two closes doesn't see it.
+#[test]
+fn an_order_sells_its_live_lines_at_its_last_close() {
+    use keel_domain::refs::Variant;
+    use keel_domain::stock::{Movement, StockCounted, StockEvent, StockMoved};
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let flat_white: Id<Variant> = id(0x400);
+    let each = |n: i64| Quantity::from_micros(n * 1_000_000, Unit::Each);
+    let stock = |event: &StockEvent| domain_draft(flat_white.cast(), event);
+    let received = StockEvent::Moved(StockMoved {
+        movement: Movement::Received,
+        quantity: each(10),
+        reason: None,
+    });
+    append(&mut store, vec![stock(&received)], at(0));
+    let level = |store: &TestStore| store.stock_levels(flat_white).unwrap().unwrap().1.on_hand;
+    let order = order_id();
+    append(
+        &mut store,
+        vec![
+            order_draft(order, &created()),
+            order_draft(order, &line_added(0x10, 450)),
+            order_draft(order, &line_added(0x11, 450)),
+            order_draft(order, &OrderEvent::LinesFired { lines: IdSet::new([id(0x11)]).unwrap() }),
+        ],
+        at(1_000),
+    );
+    assert_eq!(level(&store), each(10), "an open order sells nothing yet");
+    let voided = OrderEvent::LineVoided { line: id(0x11), reason: reason("customer") };
+    append(
+        &mut store,
+        vec![order_draft(order, &voided), order_draft(order, &OrderEvent::Closed)],
+        at(2_000),
+    );
+    assert_eq!(level(&store), each(9), "the voided line sells nothing");
+    let reopened = OrderEvent::Reopened { reason: reason("mistake") };
+    append(&mut store, vec![order_draft(order, &reopened)], at(3_000));
+    assert_eq!(level(&store), each(10), "reopened, it sells nothing until it closes again");
+    // Counted at 4 s as 10; the order closes again at 5 s: it sells after the count.
+    let counted =
+        StockEvent::Counted(StockCounted { quantity: each(10), as_of: at(4_000), note: None });
+    append(&mut store, vec![stock(&counted)], at(4_000));
+    append(&mut store, vec![order_draft(order, &OrderEvent::Closed)], at(5_000));
+    assert_eq!(level(&store), each(9));
+}

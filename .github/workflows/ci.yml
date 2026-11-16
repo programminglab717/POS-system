@@ -202,7 +202,7 @@ jobs:
 
       - name: Run the register's JVM tests, and build the app and its instrumented tests
         working-directory: apps/android
-        run: ./gradlew --no-daemon :register:jvmTest :kernel:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
+        run: ./gradlew --no-daemon :register:jvmTest :kernel:testDebugUnitTest :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
 
       # Every native library, stored 16 KB-aligned in the APK, its segments aligned to 16 KB pages.
       # Found in review: without pipefail, zipalign's failure was grep's success.

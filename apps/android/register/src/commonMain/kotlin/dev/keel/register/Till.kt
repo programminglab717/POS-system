@@ -129,13 +129,13 @@ interface Till {
      * Returns [lines] of paid order [order], for [reason]: each refunded what was paid for it, in
      * cash out of the drawer. A line given no count returns all that is left of it.
      */
-    fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund
+    fun returnLines(order: String, lines: List<ReturnPick>, reason: String, restock: Boolean = true): Refund
 
     /**
      * Returns [lines] of paid order [order], for [reason], refunded to its card payment
      * [payment], by reference, through the terminal (ADR-0035).
      */
-    fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String): Refund =
+    fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String, restock: Boolean = true): Refund =
         throw TillException("Refunds to a card aren't available")
 
     /**
@@ -163,6 +163,22 @@ interface Till {
 
     /** Tries again a card refund whose latest attempt failed. */
     fun retryRefund(refund: String): Unit = throw TillException("Card refunds aren't available")
+
+    /** The items whose stock is tracked, with their levels, those below zero first (ADR-0036). */
+    fun stock(): List<StockItem> = emptyList()
+
+    /** What moved [variant]'s stock since its latest count, the latest first. */
+    fun stockHistory(variant: String): List<StockLine> = emptyList()
+
+    /**
+     * Moves [variant]'s stock by [micros] millionths of [unit]: signed for an adjustment, more than
+     * zero otherwise, for [reason]. Adjusting and wasting need `stock.adjust`.
+     */
+    fun moveStock(variant: String, movement: StockMovement, micros: Long, unit: String, reason: String?): StockItem =
+        throw TillException("Stock isn't available")
+
+    /** Counts [variant]'s stock: [micros] millionths of [unit] on hand now. Needs `stock.adjust`. */
+    fun countStock(variant: String, micros: Long, unit: String): StockItem = throw TillException("Stock isn't available")
 
     /** This register's device: the owner a ticket names when this register owns it. */
     fun deviceId(): String = ""
@@ -519,6 +535,10 @@ data class DayReport(
     val tips: List<Pair<String, String>> = emptyList(),
     /** Card refunds still owed, if any: "Card refunds owed (1)" and how much. */
     val cardRefundsOwed: Pair<String, String>? = null,
+    /** What was wasted, by item (ADR-0036): its name and how much. */
+    val wasted: List<Pair<String, String>> = emptyList(),
+    /** Each count: "Croissant (7 of 8)" and the variance. */
+    val counts: List<Pair<String, String>> = emptyList(),
 )
 
 /** A paid order's lines, and what is left of each to return (ADR-0032). */
@@ -615,6 +635,38 @@ data class OwedRefund(
     val pending: Boolean,
     val failures: Int,
     val failure: String?,
+)
+
+/** How a movement moves an item's stock (ADR-0036). */
+enum class StockMovement { RECEIVED, ADJUSTED, WASTED, RESERVED, RELEASED }
+
+/** A quantity: millionths of its unit, the unit's code, and its text. */
+data class StockAmount(val micros: Long, val unit: String, val text: String) {
+    val negative: Boolean get() = micros < 0
+}
+
+/** An item whose stock is tracked, and its levels. */
+data class StockItem(
+    val variant: String,
+    val name: String,
+    val onHand: StockAmount,
+    val reserved: StockAmount,
+    val available: StockAmount,
+    /** When it was last counted, microseconds since the epoch, if it was. */
+    val countedAt: Long? = null,
+)
+
+/** One thing that moved an item's stock: when, what in words, and how much. */
+data class StockLine(val at: Long, val what: String, val quantity: String)
+
+/** The reasons the register offers for moving stock. */
+val STOCK_REASONS = listOf(
+    DiscountReason("delivery", "Delivery"),
+    DiscountReason("correction", "Correction"),
+    DiscountReason("spoiled", "Spoiled"),
+    DiscountReason("broken", "Broken"),
+    DiscountReason("customer_hold", "Held for a customer"),
+    DiscountReason("other", "Other"),
 )
 
 /** How a decline's reason code reads. */

@@ -25,6 +25,14 @@ import dev.keel.kernel.JobKind as KernelJobKind
 import dev.keel.kernel.JobState as KernelJobState
 import dev.keel.kernel.TicketState
 import dev.keel.register.Amount
+import dev.keel.register.StockAmount
+import dev.keel.register.StockItem
+import dev.keel.register.StockLine
+import dev.keel.register.StockMovement
+import dev.keel.kernel.StockChange as KernelStockChange
+import dev.keel.kernel.StockItem as KernelStockItem
+import dev.keel.kernel.StockMovement as KernelStockMovement
+import dev.keel.kernel.StockQuantity as KernelStockQuantity
 import dev.keel.register.CardPayment
 import dev.keel.register.CardState
 import dev.keel.register.CardTip
@@ -308,6 +316,8 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
             tips = report.tips.map { "${it.name ?: "No one"} (${it.payments})" to it.amount.text },
             cardRefundsOwed = report.cardRefundsOwedAmount.takeIf { report.cardRefundsOwed > 0uL }
                 ?.let { "Card refunds owed (${report.cardRefundsOwed})" to it.text },
+            wasted = report.wasted.map { it.name to it.quantity },
+            counts = report.counts.map { "${it.name} (${it.counted} of ${it.expected})" to it.variance },
         )
     }
 
@@ -333,9 +343,9 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
         )
     }
 
-    override fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String): Refund = call {
+    override fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String, restock: Boolean): Refund = call {
         val picked = lines.map { KernelReturnLine(it.line, it.count?.toUInt()) }
-        val refunded = register.returnLinesToCard(order, picked, reason, null, payment)
+        val refunded = register.returnLinesToCard(order, picked, reason, null, payment, restock)
         Refund(
             amount = refunded.amount.text,
             handed = refunded.handed.text,
@@ -392,9 +402,44 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
 
     override fun retryRefund(refund: String) = call { register.retryRefund(refund) }
 
-    override fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund = call {
+    override fun stock(): List<StockItem> = call { register.stock().map { it.toStockItem() } }
+
+    override fun stockHistory(variant: String): List<StockLine> = call {
+        register.stockHistory(variant).map { line ->
+            val what = when (val change = line.change) {
+                is KernelStockChange.Moved -> when (change.movement) {
+                    KernelStockMovement.RECEIVED -> "Received"
+                    KernelStockMovement.ADJUSTED -> "Adjusted"
+                    KernelStockMovement.WASTED -> "Wasted"
+                    KernelStockMovement.RESERVED -> "Set aside"
+                    KernelStockMovement.RELEASED -> "No longer set aside"
+                }
+                KernelStockChange.Counted -> "Counted"
+                KernelStockChange.Sold -> "Sold"
+                KernelStockChange.Returned -> "Returned"
+            }
+            StockLine(line.at, what, line.quantity.text)
+        }
+    }
+
+    override fun moveStock(variant: String, movement: StockMovement, micros: Long, unit: String, reason: String?): StockItem = call {
+        val kernel = when (movement) {
+            StockMovement.RECEIVED -> KernelStockMovement.RECEIVED
+            StockMovement.ADJUSTED -> KernelStockMovement.ADJUSTED
+            StockMovement.WASTED -> KernelStockMovement.WASTED
+            StockMovement.RESERVED -> KernelStockMovement.RESERVED
+            StockMovement.RELEASED -> KernelStockMovement.RELEASED
+        }
+        register.moveStock(variant, kernel, micros, unit, reason, null).toStockItem()
+    }
+
+    override fun countStock(variant: String, micros: Long, unit: String): StockItem = call {
+        register.countStock(variant, micros, unit, null).toStockItem()
+    }
+
+    override fun returnLines(order: String, lines: List<ReturnPick>, reason: String, restock: Boolean): Refund = call {
         val picked = lines.map { KernelReturnLine(it.line, it.count?.toUInt()) }
-        val refunded = register.returnLines(order, picked, reason, null)
+        val refunded = register.returnLines(order, picked, reason, null, restock)
         Refund(
             amount = refunded.amount.text,
             handed = refunded.handed.text,
@@ -544,6 +589,11 @@ internal fun words(refused: KeelException): String = when (refused) {
 }
 
 private fun KernelAmount.toAmount() = Amount(minor, text)
+
+private fun KernelStockQuantity.toAmount() = StockAmount(micros, unit, text)
+
+private fun KernelStockItem.toStockItem() =
+    StockItem(variant, name, onHand.toAmount(), reserved.toAmount(), available.toAmount(), countedAt)
 
 private fun KernelDrawer.toDrawer() = Drawer(
     open = open,

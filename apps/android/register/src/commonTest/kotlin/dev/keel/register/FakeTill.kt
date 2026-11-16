@@ -668,7 +668,8 @@ class FakeTill : Till {
         return Returnable(order, lines, money(refundedOf[order] ?: 0), cashOnly = order !in cardPaid, cards = cards, cashLeft = if (order in cardPaid) null else amount(0))
     }
 
-    override fun returnLines(order: String, lines: List<ReturnPick>, reason: String): Refund {
+    override fun returnLines(order: String, lines: List<ReturnPick>, reason: String, restock: Boolean): Refund {
+        lastRestock = restock
         // As the kernel's order: only a closed one, each line once, no more than is left.
         if (states[order] != OrderState.CLOSED) throw TillException("the order isn't closed")
         if (order in cardPaid) throw TillException("a card paid the order: it is refunded to the card, which isn't built yet")
@@ -772,7 +773,7 @@ class FakeTill : Till {
         return ticket(order)
     }
 
-    override fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String): Refund {
+    override fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String, restock: Boolean): Refund {
         if (order !in cardPaid || payment != "card:$order") throw TillException("not a card payment of the order")
         val left = (cardApplied[order] ?: 0) - (refundedOf[order] ?: 0)
         val asked = lines.sumOf { pick ->
@@ -782,7 +783,7 @@ class FakeTill : Till {
         if (asked > left) throw TillException("only ${money(left)} is left to refund that way")
         cardPaid -= order
         try {
-            val refund = returnLines(order, lines, reason)
+            val refund = returnLines(order, lines, reason, restock)
             cardRefunds += OwedRefund("refund:$order", order, amount(0), pending = true, failures = 0, failure = null)
             return refund.copy(handed = money(0), card = "Visa •••• 4242", toCard = true)
         } finally {
@@ -796,6 +797,61 @@ class FakeTill : Till {
         val index = cardRefunds.indexOfFirst { it.refund == refund }
         if (index < 0) throw TillException("not a card refund to try again")
         cardRefunds[index] = cardRefunds[index].copy(pending = true)
+    }
+
+    // Stock (ADR-0036): levels kept as numbers, as the kernel's sums would be; adjusting,
+    // wasting and counting need a manager's approval when [stockNeedsApproval].
+
+    var lastRestock: Boolean? = null
+    var stockNeedsApproval = false
+    private val stockOnHand = linkedMapOf<String, Long>()
+    private val stockReserved = mutableMapOf<String, Long>()
+    private val stockNames = mutableMapOf<String, String>()
+    val stockMoves = mutableListOf<Pair<StockMovement?, Long>>()
+
+    private fun stockItem(variant: String): StockItem {
+        val amount = { micros: Long -> StockAmount(micros, "each", (micros / 1_000_000).toString()) }
+        val onHand = stockOnHand.getValue(variant)
+        val reserved = stockReserved[variant] ?: 0
+        return StockItem(variant, stockNames[variant] ?: variant, amount(onHand), amount(reserved), amount(onHand - reserved))
+    }
+
+    override fun stock(): List<StockItem> =
+        stockOnHand.keys.map(::stockItem).sortedWith(compareBy({ !it.onHand.negative }, { it.name }))
+
+    override fun stockHistory(variant: String): List<StockLine> =
+        stockMoves.reversed().map { (movement, micros) -> StockLine(0, movement?.name ?: "COUNTED", (micros / 1_000_000).toString()) }
+
+    private fun gateStock() {
+        if (stockNeedsApproval && approvedBy == null) throw TillException("Adjusting stock needs a manager's approval.", approval = "stock.adjust")
+        approvedBy = null
+    }
+
+    override fun moveStock(variant: String, movement: StockMovement, micros: Long, unit: String, reason: String?): StockItem {
+        if (movement == StockMovement.ADJUSTED || movement == StockMovement.WASTED) gateStock()
+        if (movement != StockMovement.ADJUSTED && micros <= 0) throw TillException("invalid event: quantity")
+        val onHand = stockOnHand[variant] ?: 0
+        val reserved = stockReserved[variant] ?: 0
+        when (movement) {
+            StockMovement.RECEIVED, StockMovement.ADJUSTED -> stockOnHand[variant] = onHand + micros
+            StockMovement.WASTED -> stockOnHand[variant] = onHand - micros
+            StockMovement.RESERVED -> { stockOnHand[variant] = onHand; stockReserved[variant] = reserved + micros }
+            StockMovement.RELEASED -> {
+                if (micros > reserved) throw TillException("more than is set aside")
+                stockOnHand[variant] = onHand
+                stockReserved[variant] = reserved - micros
+            }
+        }
+        stockNames.getOrPut(variant) { variant }
+        stockMoves += movement to micros
+        return stockItem(variant)
+    }
+
+    override fun countStock(variant: String, micros: Long, unit: String): StockItem {
+        gateStock()
+        stockOnHand[variant] = micros
+        stockMoves += null to micros
+        return stockItem(variant)
     }
 
     override fun resolve(job: String, printed: Boolean) {

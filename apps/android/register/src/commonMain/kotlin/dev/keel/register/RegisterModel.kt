@@ -32,6 +32,9 @@ enum class Screen {
 
     /** The kitchen screen: a station's tickets, to bump (ADR-0034). No one signs in. */
     KITCHEN,
+
+    /** Stock: the items tracked, their levels, and what moves them (ADR-0036). */
+    STOCK,
 }
 
 /** Where a kitchen screen's stations are kept, on the device: which it shows is its own setting. */
@@ -79,6 +82,32 @@ data class ReturnSheet(
     val reason: String? = null,
     /** Whether the refund is being made: nothing more is picked or refunded until it is done. */
     val refunding: Boolean = false,
+    /** Whether what is returned goes back to stock: if not, it is wasted (ADR-0036). */
+    val restock: Boolean = true,
+)
+
+/**
+ * The stock screen (ADR-0036): the items tracked, the one chosen and what moved it, and a
+ * movement or a count being typed for it, as a whole number of its unit, or of thousandths of it
+ * for an item kept by measure.
+ */
+data class StockSheet(
+    val items: List<StockItem> = emptyList(),
+    val selected: StockItem? = null,
+    /** A variant chosen from the menu, not yet tracked: its first movement or count starts it. */
+    val choosing: Boolean = false,
+    val history: List<StockLine> = emptyList(),
+    val entry: StockEntry? = null,
+    val working: Boolean = false,
+)
+
+/** A movement, or a count when [movement] is null, being typed. */
+data class StockEntry(
+    val movement: StockMovement?,
+    val typed: Long = 0,
+    /** For an adjustment: taken off, not added. */
+    val down: Boolean = false,
+    val reason: String? = null,
 )
 
 /**
@@ -265,6 +294,8 @@ data class RegisterState(
     val alerts: List<KitchenAlert> = emptyList(),
     /** The kitchen screen, while the device shows it. */
     val kds: KdsState? = null,
+    /** The stock screen, while it is open. */
+    val stock: StockSheet? = null,
     /** The last refusal or failure, until the next intent. */
     val error: String? = null,
     /** This register's device, once the till has said, to tell its orders from other registers'. */
@@ -1359,6 +1390,13 @@ class RegisterModel(
         state.copy(returning = sheet.copy(toCard = payment), error = null)
     }
 
+    /** Whether what is returned goes back to stock (ADR-0036). */
+    fun returnToStock(restock: Boolean) = mutable.update { state ->
+        val sheet = state.returning ?: return@update state
+        if (sheet.refunding) return@update state
+        state.copy(returning = sheet.copy(restock = restock))
+    }
+
     /** Why the lines are returned. */
     fun returnReason(code: String) = mutable.update { state ->
         state.copy(returning = state.returning?.copy(reason = code), error = null)
@@ -1385,10 +1423,15 @@ class RegisterModel(
         val picks = sheet.picks.map { (line, count) -> ReturnPick(line, count) }
         val order = sheet.returnable.order
         val toCard = sheet.toCard
+        val restock = sheet.restock
         mutable.update { it.copy(returning = sheet.copy(refunding = true), error = null) }
         perform {
             val refund = try {
-                if (toCard == null) till.returnLines(order, picks, reason) else till.returnLinesToCard(order, picks, reason, toCard)
+                if (toCard == null) {
+                    till.returnLines(order, picks, reason, restock)
+                } else {
+                    till.returnLinesToCard(order, picks, reason, toCard, restock)
+                }
             } catch (refused: TillException) {
                 // What is left may have changed, as another register returned some of it: read it
                 // again, and keep only what can still be picked. Found in review.
@@ -1549,7 +1592,122 @@ class RegisterModel(
     }
 
     /** Back to the register from today's orders or the printer. */
-    fun showRegister() = mutable.update { it.copy(screen = Screen.REGISTER, error = null, matches = null) }
+    fun showRegister() = mutable.update { it.copy(screen = Screen.REGISTER, error = null, matches = null, stock = null) }
+
+    // Stock (ADR-0036).
+
+    /** Opens the stock screen: the items tracked, and their levels. */
+    fun openStock() = perform {
+        val items = till.stock()
+        mutable.update { it.copy(screen = Screen.STOCK, stock = StockSheet(items)) }
+    }
+
+    /** Chooses [item], to see what moved it and move or count it. */
+    fun selectStock(item: StockItem) = perform {
+        val history = till.stockHistory(item.variant)
+        mutable.update { state ->
+            state.copy(stock = state.stock?.copy(selected = item, history = history, entry = null, choosing = false))
+        }
+    }
+
+    /** Lists the menu, to start tracking an item not yet tracked. */
+    fun chooseStockItem() = mutable.update { state -> state.copy(stock = state.stock?.copy(choosing = true)) }
+
+    /** Starts tracking [button]'s item: chosen, with nothing on hand until it is received or counted. */
+    fun trackStock(button: MenuButton) = mutable.update { state ->
+        val sheet = state.stock ?: return@update state
+        val tracked = sheet.items.firstOrNull { it.variant == button.variant }
+        val zero = StockAmount(0, "each", "0")
+        val item = tracked ?: StockItem(button.variant, button.name, zero, zero, zero)
+        state.copy(stock = sheet.copy(selected = item, history = emptyList(), choosing = false, entry = null))
+    }
+
+    /** Begins typing a movement of the chosen item, or a count when [movement] is null. */
+    fun startStockEntry(movement: StockMovement?) = mutable.update { state ->
+        val sheet = state.stock ?: return@update state
+        if (sheet.selected == null || sheet.working) return@update state
+        val reason = when (movement) {
+            StockMovement.RECEIVED -> "delivery"
+            StockMovement.ADJUSTED -> "correction"
+            StockMovement.WASTED -> "spoiled"
+            StockMovement.RESERVED, StockMovement.RELEASED -> "customer_hold"
+            null -> null
+        }
+        state.copy(stock = sheet.copy(entry = StockEntry(movement, reason = reason)), error = null)
+    }
+
+    /** Types [digit] into the quantity. */
+    fun typeStockDigit(digit: Int) = mutable.update { state ->
+        val sheet = state.stock ?: return@update state
+        val entry = sheet.entry ?: return@update state
+        val typed = entry.typed * 10 + digit.coerceIn(0, 9)
+        if (typed > MAX_STOCK) return@update state
+        state.copy(stock = sheet.copy(entry = entry.copy(typed = typed)))
+    }
+
+    /** Takes the last digit off the quantity. */
+    fun eraseStockDigit() = mutable.update { state ->
+        val sheet = state.stock ?: return@update state
+        val entry = sheet.entry ?: return@update state
+        state.copy(stock = sheet.copy(entry = entry.copy(typed = entry.typed / 10)))
+    }
+
+    /** An adjustment adds, or takes off. */
+    fun stockDown(down: Boolean) = mutable.update { state ->
+        val sheet = state.stock ?: return@update state
+        state.copy(stock = sheet.copy(entry = sheet.entry?.copy(down = down)))
+    }
+
+    /** Why the stock moves. */
+    fun stockReason(code: String) = mutable.update { state ->
+        val sheet = state.stock ?: return@update state
+        state.copy(stock = sheet.copy(entry = sheet.entry?.copy(reason = code)))
+    }
+
+    /** Drops the movement being typed. */
+    fun cancelStockEntry() = mutable.update { state -> state.copy(stock = state.stock?.copy(entry = null)) }
+
+    /**
+     * Records the movement or count typed; tried again as it was once a manager approves.
+     * Nothing more is recorded until it is done.
+     */
+    fun confirmStockEntry() {
+        val sheet = current.stock ?: return
+        val item = sheet.selected ?: return
+        val entry = sheet.entry ?: return
+        if (sheet.working) return
+        // A count may be of nothing; a movement, never.
+        if (entry.movement != null && entry.typed == 0L) {
+            mutable.update { it.copy(error = "Type how many.") }
+            return
+        }
+        val unit = item.onHand.unit
+        // Kept by measure, typed in thousandths of its unit: grams of a kilogram.
+        val scale = if (unit == "each") 1_000_000L else 1_000L
+        val micros = entry.typed * scale * (if (entry.down) -1 else 1)
+        mutable.update { it.copy(stock = it.stock?.copy(working = true), error = null) }
+        val retry: () -> Unit = {
+            try {
+                val now = if (entry.movement == null) {
+                    till.countStock(item.variant, micros, unit)
+                } else {
+                    till.moveStock(item.variant, entry.movement, micros, unit, entry.reason)
+                }
+                val items = till.stock()
+                val history = till.stockHistory(item.variant)
+                mutable.update { state ->
+                    state.copy(stock = state.stock?.copy(items = items, selected = now, history = history, entry = null, working = false))
+                }
+            } catch (failed: Exception) {
+                mutable.update { state -> state.copy(stock = state.stock?.copy(working = false)) }
+                throw failed
+            }
+        }
+        perform(retryAs = retry) { retry() }
+    }
+
+    /** Back to the register from the stock screen. */
+    fun closeStock() = showRegister()
 
     /** Rings [variant], on a new order if none is open. */
     private fun ring(variant: String, choices: List<Chosen>, quantity: Int) {
@@ -1598,6 +1756,9 @@ class RegisterModel(
     private companion object {
         /** The most a cashier may type, in minor units: ten digits. */
         const val MAX_TYPED = 9_999_999_999L
+
+        /** The most a stock quantity typed may be: a million of its unit, or of thousandths. */
+        const val MAX_STOCK = 999_999_999L
 
         /** The most of an item the sheet rings at once. */
         const val MAX_QUANTITY = 999

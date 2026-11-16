@@ -323,6 +323,25 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         Ok(Some(taken))
     }
 
+    /// What of `returned` doesn't go back to stock: each line of an item whose stock is tracked,
+    /// in its stock's unit (ADR-0036).
+    fn unstocked(
+        &self,
+        loaded: &Order,
+        returned: &keel_domain::order::LinesReturned,
+    ) -> Result<Vec<(Id<keel_domain::refs::Variant>, Quantity)>, RuntimeError> {
+        let mut unstocked = Vec::new();
+        for each in &returned.lines {
+            let Some(line) = loaded.line(each.line) else { continue };
+            let variant = line.item().variant;
+            let tracked = self.store.stock_levels(variant)?;
+            if tracked.is_some_and(|(unit, _)| unit == each.quantity.unit()) {
+                unstocked.push((variant, each.quantity));
+            }
+        }
+        Ok(unstocked)
+    }
+
     /// Where a refund of `total` goes `to`, out of what the order `taken` took, its refunds
     /// having come to `sums`: the card payment and its reference, for a card refund. To a card,
     /// no more than is left of it; in cash, for an order a card paid too, no more than the cash
@@ -430,6 +449,24 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         reason: Reason,
         to: RefundTo,
     ) -> Result<Refunded, RuntimeError> {
+        self.return_lines_with(order, lines, reason, to, true)
+    }
+
+    /// Returns `lines` as [`Runtime::return_lines_to`] does, putting them back in stock if
+    /// `restock`; if not, the lines of items whose stock is tracked are recorded wasted, for the
+    /// return's reason, in its write (ADR-0036, decision 4). An item not tracked has no stock to
+    /// put back, or not.
+    ///
+    /// # Errors
+    /// As [`Runtime::return_lines_to`].
+    pub fn return_lines_with(
+        &mut self,
+        order: Id<Order>,
+        lines: &[(Id<Line>, Quantity)],
+        reason: Reason,
+        to: RefundTo,
+        restock: bool,
+    ) -> Result<Refunded, RuntimeError> {
         let meta = self.meta()?;
         let loaded = self.store.load(Order::new(order))?;
         known(&loaded)?;
@@ -469,6 +506,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         };
         let at = self.profile.business_day().local_time(meta.now)?;
         let receipt = crate::receipt::refund(&view, order, at, &self.profile, locale)?;
+        let unstocked = if restock { Vec::new() } else { self.unstocked(&loaded, returned)? };
         let (location, device) = (self.location(), self.device);
         let drawer_session = self.open_drawer_id()?;
         let kick: Id<Job> = self.ids.generate(meta.now)?;
@@ -483,6 +521,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 return Err(RuntimeError::OrderChanged);
             }
             let cause = append(w, order.cast(), &event, &meta)?;
+            waste(w, &unstocked, &returned.reason, location, &meta)?;
             if let Some((card, reference)) = card.as_ref().filter(|_| total.is_positive()) {
                 let initiated = RefundInitiated {
                     order,
@@ -526,4 +565,27 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         self.spend(granted.as_ref());
         Ok(view)
     }
+}
+
+/// Records `unstocked` wasted, for `reason`, in the write `w` (ADR-0036).
+fn waste<S: Signer, E: Entropy>(
+    w: &mut keel_store::Writing<'_, S, E>,
+    unstocked: &[(Id<keel_domain::refs::Variant>, Quantity)],
+    reason: &Reason,
+    location: Id<keel_events::envelope::Location>,
+    meta: &crate::runtime::Meta,
+) -> Result<(), RuntimeError> {
+    use keel_domain::stock::{Movement, Stock, StockCommand, StockMoved};
+    for (variant, quantity) in unstocked {
+        let stock: Id<Stock> = variant.cast();
+        let moved = StockMoved {
+            movement: Movement::Wasted,
+            quantity: *quantity,
+            reason: Some(reason.clone()),
+        };
+        let wasted =
+            w.load(Stock::new(stock))?.decide(location, meta.now, StockCommand::Move(moved))?;
+        append(w, stock.cast(), &wasted, meta)?;
+    }
+    Ok(())
 }

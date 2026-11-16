@@ -125,6 +125,9 @@ pub enum RuntimeError {
     /// The refund refused the change.
     #[error(transparent)]
     Refund(#[from] keel_domain::refund::RefundError),
+    /// A stock command was refused (ADR-0036).
+    #[error(transparent)]
+    Stock(#[from] keel_domain::stock::StockError),
     /// A discount takes more than is left of its line: it would take more as the line grew. Found
     /// in review (ADR-0030).
     #[error("only {left} is left to take off")]

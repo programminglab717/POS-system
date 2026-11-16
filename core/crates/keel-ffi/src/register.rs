@@ -32,6 +32,7 @@ use crate::records::{
     Printer, Refunded, RegisterConfig, ReportKind, Resolution, ReturnLine, Returnable, SoldOut,
     SyncKit, SyncState, Ticket, Until, Waits,
 };
+use crate::stock::{StockItem, StockLine, StockMovement};
 
 /// The runtime as a device runs it: the system's clock and the operating system's randomness,
 /// the one place in the kernel that reads them.
@@ -586,6 +587,7 @@ impl Register {
         lines: Vec<ReturnLine>,
         reason: String,
         note: Option<String>,
+        restock: bool,
     ) -> Result<Refunded, KeelError> {
         let order = id(&order)?;
         let reason = self::reason(&reason, note)?;
@@ -594,7 +596,9 @@ impl Register {
             let quantities = quantities(runtime, order, &asked)?;
             // In cash, up to what the order took less its cash refunds, whatever else paid it
             // (ADR-0035). Found in review: an order a card paid too couldn't be refunded in cash.
-            runtime.return_lines_to(order, &quantities, reason, keel_runtime::RefundTo::Cash)
+            // Back in stock if `restock`; if not, wasted (ADR-0036).
+            let to = keel_runtime::RefundTo::Cash;
+            runtime.return_lines_with(order, &quantities, reason, to, restock)
         })
         .map(|refunded| (&refunded).into())
     }
@@ -616,17 +620,19 @@ impl Register {
         reason: String,
         note: Option<String>,
         payment: String,
+        restock: bool,
     ) -> Result<Refunded, KeelError> {
         let (order, payment) = (id(&order)?, id(&payment)?);
         let reason = self::reason(&reason, note)?;
         let asked = asked_lines(&lines)?;
         self.with(|runtime| {
             let quantities = quantities(runtime, order, &asked)?;
-            runtime.return_lines_to(
+            runtime.return_lines_with(
                 order,
                 &quantities,
                 reason,
                 keel_runtime::RefundTo::Card(payment),
+                restock,
             )
         })
         .map(|refunded| (&refunded).into())
@@ -767,6 +773,69 @@ impl Register {
     pub fn retry_refund(&self, refund: String) -> Result<(), KeelError> {
         let refund = id(&refund)?;
         self.with(|runtime| runtime.retry_refund(refund))
+    }
+
+    /// The items whose stock is tracked, with their levels, those below zero first (ADR-0036).
+    ///
+    /// # Errors
+    /// [`KeelError::Device`] if the store can't be read.
+    pub fn stock(&self) -> Result<Vec<StockItem>, KeelError> {
+        self.with(|runtime| runtime.stock())
+            .map(|views| views.iter().map(StockItem::from).collect())
+    }
+
+    /// What moved `variant`'s stock since its latest count, the latest first.
+    ///
+    /// # Errors
+    /// [`KeelError::InvalidArgument`] for an identifier that isn't one.
+    pub fn stock_history(&self, variant: String) -> Result<Vec<StockLine>, KeelError> {
+        let variant = id(&variant)?;
+        self.with(|runtime| runtime.stock_history(variant))
+            .map(|lines| lines.iter().map(StockLine::from).collect())
+    }
+
+    /// Moves `variant`'s stock by `micros` millionths of `unit` (`each`, `kg`, ...): signed for an
+    /// adjustment, more than zero otherwise; for `reason`, a reason code, with an optional `note`.
+    /// Adjusting and wasting are `stock.adjust` (ADR-0036). Answers with its levels.
+    ///
+    /// # Errors
+    /// [`KeelError::ApprovalRequired`] if the member's role doesn't permit it;
+    /// [`KeelError::Refused`] for a quantity of nothing, in another unit than its stock, or a
+    /// release beyond what is set aside; [`KeelError::Catalog`] for an item the catalog doesn't
+    /// have; [`KeelError::InvalidArgument`] for an identifier, a unit or a reason that isn't one.
+    pub fn move_stock(
+        &self,
+        variant: String,
+        movement: StockMovement,
+        micros: i64,
+        unit: String,
+        reason: Option<String>,
+        note: Option<String>,
+    ) -> Result<StockItem, KeelError> {
+        let variant = id(&variant)?;
+        let quantity = stock_quantity(micros, &unit)?;
+        let reason = reason.map(|reason| self::reason(&reason, note)).transpose()?;
+        self.with(|runtime| runtime.move_stock(variant, movement.into(), quantity, reason))
+            .map(|view| (&view).into())
+    }
+
+    /// Counts `variant`'s stock: `micros` millionths of `unit` on hand now, with an optional
+    /// `note` (ADR-0036): `stock.adjust`. What sells while it is recorded still comes off.
+    ///
+    /// # Errors
+    /// As [`Register::move_stock`].
+    pub fn count_stock(
+        &self,
+        variant: String,
+        micros: i64,
+        unit: String,
+        note: Option<String>,
+    ) -> Result<StockItem, KeelError> {
+        let variant = id(&variant)?;
+        let quantity = stock_quantity(micros, &unit)?;
+        let note = note.map(|note| Note::new(&note)).transpose().map_err(KeelError::invalid)?;
+        self.with(|runtime| runtime.count_stock(variant, quantity, None, note))
+            .map(|view| (&view).into())
     }
 
     /// The report of today's business day, or of `date` (`YYYY-MM-DD`) when given (ADR-0031).
@@ -1378,4 +1447,10 @@ fn quantities(
         quantities.push((*line, quantity));
     }
     Ok(quantities)
+}
+
+/// `micros` millionths of the unit with code `unit`.
+fn stock_quantity(micros: i64, unit: &str) -> Result<keel_types::Quantity, KeelError> {
+    let unit = keel_types::Unit::from_code(unit).map_err(KeelError::invalid)?;
+    Ok(keel_types::Quantity::from_micros(micros, unit))
 }

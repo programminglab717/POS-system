@@ -70,6 +70,10 @@ pub struct DayReport {
     pub card_refunds_owed: u64,
     /// What those card refunds owe.
     pub card_refunds_owed_amount: Amount,
+    /// What was wasted on the day, by item (ADR-0036).
+    pub wasted: Vec<crate::stock::Wasted>,
+    /// What each count made on the day found against what was expected at its time.
+    pub counts: Vec<crate::stock::CountVariance>,
 }
 
 /// The tips one member took on a day (ADR-0035).
@@ -140,6 +144,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             views.extend(DrawerView::of(&session, self.locale));
         }
         let tips = self.tips(date)?;
+        let (wasted, counts) = self.stock_report(date)?;
         let (owed, owed_amount) = self.card_refunds_owed(date)?;
         let comps = gross.checked_sub(discounts)?.checked_sub(net)?;
         let amount = |money: Money| Amount::new(money, self.locale);
@@ -170,6 +175,8 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             tips,
             card_refunds_owed: owed,
             card_refunds_owed_amount: amount(owed_amount),
+            wasted,
+            counts,
         })
     }
 
@@ -378,6 +385,33 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     }
 }
 
+/// The day's waste, and each count's variance from what was expected (ADR-0036), when there
+/// are any.
+fn stock_rows(blocks: &mut Vec<Block>, report: &DayReport) {
+    if !report.wasted.is_empty() {
+        blocks.push(Block::text("Wasted", Align::Left, Style::default()));
+        for wasted in &report.wasted {
+            blocks.push(Block::Row {
+                left: wasted.name.clone(),
+                right: wasted.quantity_text.clone(),
+                indent: 1,
+                style: Style::default(),
+            });
+        }
+    }
+    if !report.counts.is_empty() {
+        blocks.push(Block::text("Counts", Align::Left, Style::default()));
+        for count in &report.counts {
+            blocks.push(Block::Row {
+                left: format!("{} ({} of {})", count.name, count.texts[0], count.texts[1]),
+                right: count.texts[2].clone(),
+                indent: 1,
+                style: Style::default(),
+            });
+        }
+    }
+}
+
 /// The day's tips, by the member who took them (ADR-0035), when there are any.
 fn tip_rows(blocks: &mut Vec<Block>, tips: &[TipLine]) {
     if tips.is_empty() {
@@ -433,6 +467,7 @@ fn report_doc(report: &DayReport, location: &str) -> Result<Doc, RuntimeError> {
             .push(Block::row(format!("{name} ({})", tender.payments), tender.amount.text.clone()));
     }
     tip_rows(&mut blocks, &report.tips);
+    stock_rows(&mut blocks, report);
     blocks.push(Block::row("Voided orders", report.voided.to_string()));
     for (n, drawer) in (1_u32..).zip(&report.drawers) {
         blocks.push(Block::Rule);

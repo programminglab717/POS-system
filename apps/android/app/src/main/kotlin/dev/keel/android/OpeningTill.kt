@@ -1,11 +1,18 @@
 package dev.keel.android
 
-import dev.keel.register.Chosen
+import dev.keel.register.CardTip
 import dev.keel.register.CashMovement
+import dev.keel.register.Chosen
 import dev.keel.register.DiscountAsked
+import dev.keel.register.ReturnPick
+import dev.keel.register.StockMovement
 import dev.keel.register.Till
 
-/** A [Till] opened by [open] at its first call, on whichever thread makes it: the kernel's. */
+/**
+ * A [Till] opened by [open] at its first call, on whichever thread makes it: the kernel's. It
+ * passes every call on, those [Till] has defaults for included: `OpeningTillTest` checks it
+ * overrides them all.
+ */
 class OpeningTill(open: () -> Till) : Till {
     private val opened = lazy(open)
     private val till get() = opened.value
@@ -48,8 +55,22 @@ class OpeningTill(open: () -> Till) : Till {
     override fun printReport(z: Boolean) = till.printReport(z)
     override fun findOrders(code: String) = till.findOrders(code)
     override fun returnable(order: String) = till.returnable(order)
-    override fun returnLines(order: String, lines: List<dev.keel.register.ReturnPick>, reason: String) =
-        till.returnLines(order, lines, reason)
+    override fun returnLines(order: String, lines: List<ReturnPick>, reason: String, restock: Boolean) =
+        till.returnLines(order, lines, reason, restock)
+    override fun returnLinesToCard(order: String, lines: List<ReturnPick>, reason: String, payment: String, restock: Boolean) =
+        till.returnLinesToCard(order, lines, reason, payment, restock)
+    override fun tipOffers(order: String, check: String?, partMinor: Long?) = till.tipOffers(order, check, partMinor)
+    override fun payCard(order: String, check: String?, partMinor: Long?, tip: CardTip, partial: Boolean) =
+        till.payCard(order, check, partMinor, tip, partial)
+    override fun cardPayments(order: String) = till.cardPayments(order)
+    override fun settleCard(payment: String, charged: Boolean) = till.settleCard(payment, charged)
+    override fun owedCardRefunds() = till.owedCardRefunds()
+    override fun retryRefund(refund: String) = till.retryRefund(refund)
+    override fun stock() = till.stock()
+    override fun stockHistory(variant: String) = till.stockHistory(variant)
+    override fun moveStock(variant: String, movement: StockMovement, micros: Long, unit: String, reason: String?) =
+        till.moveStock(variant, movement, micros, unit, reason)
+    override fun countStock(variant: String, micros: Long, unit: String) = till.countStock(variant, micros, unit)
     override fun takeOver(order: String) = till.takeOver(order)
     override fun deviceId() = till.deviceId()
     override fun abandon(order: String) = till.abandon(order)

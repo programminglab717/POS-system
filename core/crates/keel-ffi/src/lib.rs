@@ -14,6 +14,7 @@ mod card;
 mod error;
 mod records;
 mod register;
+mod stock;
 
 #[cfg(test)]
 mod tests;
@@ -22,3 +23,4 @@ pub use card::*;
 pub use error::KeelError;
 pub use records::*;
 pub use register::{MAX_SYNC_WAIT, Register, demo_profile, new_device, print_tcp};
+pub use stock::*;

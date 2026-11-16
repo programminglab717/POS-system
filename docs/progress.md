@@ -2,11 +2,11 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-11-12.
+> Last updated: 2026-11-16.
 
 ## Where we are
 
-**The MVP, steps 1 to 6 of 10, are done.** Step 1, staff, roles and approvals
+**The MVP, steps 1 to 7 of 10, are done.** Step 1, staff, roles and approvals
 ([ADR-0029](./adr/0029-staff-roles-and-approvals.md)); step 2, selling at the register
 ([ADR-0030](./adr/0030-selling-at-the-register.md)): discounts with reasons and limits, prices
 set by hand, line notes, split checks and partial cash payments, and orders parked on one
@@ -21,8 +21,10 @@ for the day or until put back on any register, sold out on every register of the
 second through the hub, and refused when rung; step 6, the kitchen
 ([ADR-0034](./adr/0034-the-kitchen.md), accepted after its review): tickets per station, routed by
 the location's profile, shown on a kitchen screen that bumps and recalls them, and printed where
-no screen showed them. Each in the kernel, the bindings and the Android register. Step 7, card
-payments, is next.
+no screen showed them; step 7, card payments ([ADR-0035](./adr/0035-card-payments.md), accepted
+after its review): a processor-agnostic connector to a semi-integrated terminal, tips, and card
+refunds, against a simulated terminal until gate G2. Each in the kernel, the bindings and the
+Android register. Step 8, inventory, is being built.
 
 **CI is out of minutes for the month**: the work since is verified here as CI would verify it,
 but for the app's instrumented tests, which need an emulator. Step 3 changed them, and fixed
@@ -108,7 +110,14 @@ in [ADR-0036](./adr/0036-inventory.md) (proposed). Its slices:
    the bindings.
 3. **The shell**: the Android register's stock screen, and the return's choice.
 
-Next: slice 1.
+Built: slice 1 (2026-11-15, verified by the workspace's tests, the stock property tests against a
+replay model, the pinned payloads and the planted bugs); slices 2 and 3 (2026-11-16, verified by
+the workspace's tests with the exhaustive sweeps, both clippy runs, the docs, the Kotlin
+bindings' tests, `:register:jvmTest`, `:kernel:testDebugUnitTest`, `:app:testDebugUnitTest` and
+the app's builds). Slice 3 found the app's `OpeningTill` passed on none of the calls `Till` has
+defaults for: step 7's card payments among them, which on a device fell to the defaults and so
+weren't there. It now passes on every call, and `OpeningTillTest` calls each and checks it
+arrives. Next: the planted bugs for slices 2 and 3, then the review.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
 three of step 2 the scrolling ticket pane should mend.

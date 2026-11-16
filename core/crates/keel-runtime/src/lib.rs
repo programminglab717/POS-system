@@ -38,6 +38,7 @@ mod report;
 mod returns;
 mod runtime;
 mod staff;
+mod stock;
 mod sync;
 mod ticket;
 mod views;
@@ -63,6 +64,8 @@ mod returns_tests;
 #[cfg(test)]
 mod staff_tests;
 #[cfg(test)]
+mod stock_tests;
+#[cfg(test)]
 mod tests;
 
 pub use availability::{ItemRef, SoldOut, Until};
@@ -80,6 +83,7 @@ pub use report::{DayReport, ReportKind, TenderLine, TipLine};
 pub use returns::{RefundTo, RefundableCard, Refunded, RefundedLine, Returnable, ReturnableLine};
 pub use runtime::{CASH_OFFERS, Identity, MOST_CHECKS, Runtime};
 pub use staff::{APPROVAL_LIFE, FIRST_LOCK, LONGEST_LOCK, PIN_TRIES, QUIET};
+pub use stock::{CountVariance, StockChange, StockLine, StockView, Wasted};
 pub use sync::{ISLAND_AFTER, SyncStatus};
 pub use views::{
     Amount, CashPaid, DrawerView, GroupView, ItemView, MenuButton, MenuPage, MenuView,

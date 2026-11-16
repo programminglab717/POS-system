@@ -1088,39 +1088,40 @@ fn espressos_are_returned_through_the_register() {
     assert_eq!((returnable.lines[0].left_count, returnable.cash_only), (Some(3), true));
     let one = vec![ReturnLine { line: line.clone(), count: Some(1) }];
     assert_eq!(
-        register.return_lines(order.clone(), one.clone(), "damaged".into(), None),
+        register.return_lines(order.clone(), one.clone(), "damaged".into(), None, true),
         Err(KeelError::ApprovalRequired { action: "refund.issue".into() })
     );
     register.approve(demo_id(0x501), "1234".into()).unwrap();
-    let refunded = register.return_lines(order.clone(), one, "damaged".into(), None).unwrap();
+    let refunded = register.return_lines(order.clone(), one, "damaged".into(), None, true).unwrap();
     assert_eq!((refunded.amount.minor, refunded.handed.minor), (354, 354));
     assert_eq!(refunded.lines[0].name, "Espresso");
     // The rest: what is left, with no count.
     let rest = vec![ReturnLine { line: line.clone(), count: None }];
     assert!(matches!(
-        register.return_lines(order.clone(), rest.clone(), "damaged".into(), None),
+        register.return_lines(order.clone(), rest.clone(), "damaged".into(), None, true),
         Err(KeelError::ApprovalRequired { .. })
     ));
     register.approve(demo_id(0x501), "1234".into()).unwrap();
-    let refunded = register.return_lines(order.clone(), rest, "damaged".into(), None).unwrap();
+    let refunded =
+        register.return_lines(order.clone(), rest, "damaged".into(), None, true).unwrap();
     assert_eq!(refunded.amount.minor, 708);
     let returnable = register.returnable(order.clone()).unwrap();
     assert_eq!((returnable.lines[0].any_left, returnable.refunded.minor), (false, 1_062));
     // Nothing more, and a line the order doesn't have.
     let again = vec![ReturnLine { line, count: Some(1) }];
     assert!(matches!(
-        register.return_lines(order.clone(), again, "damaged".into(), None),
+        register.return_lines(order.clone(), again, "damaged".into(), None, true),
         Err(KeelError::Refused { .. })
     ));
     // All that is left, of a line with nothing left: nothing more to return.
     let rest = vec![ReturnLine { line: returnable.lines[0].line.clone(), count: None }];
     assert!(matches!(
-        register.return_lines(order.clone(), rest, "damaged".into(), None),
+        register.return_lines(order.clone(), rest, "damaged".into(), None, true),
         Err(KeelError::Refused { reason }) if reason.contains("left to return")
     ));
     let unknown = vec![ReturnLine { line: demo_id(0x999), count: Some(1) }];
     assert!(matches!(
-        register.return_lines(order.clone(), unknown, "damaged".into(), None),
+        register.return_lines(order.clone(), unknown, "damaged".into(), None, true),
         Err(KeelError::Refused { .. })
     ));
     let report = register.day_report(ReportKind::X, None).unwrap();

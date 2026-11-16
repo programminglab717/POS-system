@@ -105,6 +105,7 @@ fun RegisterScreen(model: RegisterModel) {
                 state.screen == Screen.DRAWER -> DrawerPage(state, model)
                 state.screen == Screen.RETURN -> ReturnPage(state, model)
                 state.screen == Screen.KITCHEN -> KitchenPage(state, model)
+                state.screen == Screen.STOCK -> StockPage(state, model)
                 else -> Register(state, model)
             }
         }
@@ -178,6 +179,7 @@ private fun Register(state: RegisterState, model: RegisterModel) {
                 }
                 TextButton(onClick = model::showOrders, modifier = Modifier.testTag("orders")) { Text("Today's orders") }
                 TextButton(onClick = model::showDrawer, modifier = Modifier.testTag("drawer")) { Text("Drawer") }
+                TextButton(onClick = model::openStock, modifier = Modifier.testTag("stock")) { Text("Stock") }
                 TextButton(onClick = model::showPrinter, modifier = Modifier.testTag("printer")) { Text("Printer") }
                 TextButton(onClick = model::signOut, modifier = Modifier.testTag("sign-out")) { Text("Sign out") }
             }
@@ -532,6 +534,14 @@ private fun DrawerPage(state: RegisterState, model: RegisterModel) {
             for ((words, amount) in report.refunds) ReportRow(words, amount)
             report.refundedWithoutDrawer?.let { (words, amount) -> ReportRow(words, amount) }
             report.cardRefundsOwed?.let { (words, amount) -> ReportRow(words, amount) }
+            if (report.wasted.isNotEmpty()) {
+                Text("Wasted", style = MaterialTheme.typography.titleSmall)
+                for ((what, quantity) in report.wasted) ReportRow(what, quantity)
+            }
+            if (report.counts.isNotEmpty()) {
+                Text("Counts", style = MaterialTheme.typography.titleSmall)
+                for ((what, variance) in report.counts) ReportRow(what, variance)
+            }
             if (report.tips.isNotEmpty()) {
                 Text("Tips", style = MaterialTheme.typography.titleSmall)
                 for ((who, amount) in report.tips) ReportRow(who, amount)
@@ -1184,6 +1194,15 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
                     modifier = Modifier.testTag("return-reason:${reason.code}"),
                 )
             }
+        }
+        // Back to stock, unless it can't be sold again: then it is wasted (ADR-0036).
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(
+                selected = sheet.restock,
+                onClick = { model.returnToStock(!sheet.restock) },
+                label = { Text(if (sheet.restock) "Goes back to stock" else "Doesn't go back to stock") },
+                modifier = Modifier.testTag("return:restock"),
+            )
         }
         Button(
             onClick = model::confirmReturn,

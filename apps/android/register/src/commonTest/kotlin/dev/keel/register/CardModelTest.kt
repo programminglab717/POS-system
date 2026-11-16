@@ -312,3 +312,82 @@ class SimulatedTerminalTest {
         assertIs<TerminalOutcome.Declined>(terminal.take(sale.copy(key = "p2", partial = false)))
     }
 }
+
+/** The stock screen (ADR-0036): items tracked from the menu, received, adjusted on a manager's word, counted. */
+class StockModelTest {
+    private fun TestScope.signedIn(till: FakeTill): RegisterModel {
+        val model = RegisterModel(till, this, StandardTestDispatcher(testScheduler))
+        model.start()
+        testScheduler.advanceUntilIdle()
+        model.signIn(model.state.value.team.first())
+        testScheduler.advanceUntilIdle()
+        return model
+    }
+
+    @Test
+    fun an_item_chosen_from_the_menu_is_received_adjusted_and_counted() = runTest {
+        val till = FakeTill().apply { stockNeedsApproval = true }
+        val model = signedIn(till)
+        model.openStock()
+        testScheduler.advanceUntilIdle()
+        assertEquals(Screen.STOCK, model.state.value.screen)
+        assertEquals(emptyList(), model.state.value.stock?.items)
+        model.chooseStockItem()
+        val tea = model.state.value.pages.flatMap { it.buttons }.single { it.name == "Tea" }
+        model.trackStock(tea)
+        assertEquals(tea.variant, model.state.value.stock?.selected?.variant)
+        // Received: 12.
+        model.startStockEntry(StockMovement.RECEIVED)
+        model.typeStockDigit(1)
+        model.typeStockDigit(2)
+        model.confirmStockEntry()
+        testScheduler.advanceUntilIdle()
+        assertEquals("12", model.state.value.stock?.selected?.onHand?.text)
+        assertNull(model.state.value.stock?.entry)
+        // Taken off by 2, which needs a manager.
+        model.startStockEntry(StockMovement.ADJUSTED)
+        model.stockDown(true)
+        model.typeStockDigit(2)
+        model.confirmStockEntry()
+        testScheduler.advanceUntilIdle()
+        assertEquals("stock.adjust", model.state.value.approval?.action)
+        model.chooseApprover(Member("sam", "Sam"))
+        till.approvedBy = "sam"
+        model.approve("")
+        testScheduler.advanceUntilIdle()
+        assertEquals("10", model.state.value.stock?.selected?.onHand?.text)
+        // A movement of nothing is refused at once; a count of nothing is a count.
+        model.startStockEntry(StockMovement.RECEIVED)
+        model.confirmStockEntry()
+        assertEquals("Type how many.", model.state.value.error)
+        model.cancelStockEntry()
+        till.stockNeedsApproval = false
+        model.startStockEntry(null)
+        model.confirmStockEntry()
+        testScheduler.advanceUntilIdle()
+        assertEquals("0", model.state.value.stock?.selected?.onHand?.text)
+        assertEquals(listOf<StockMovement?>(StockMovement.RECEIVED, StockMovement.ADJUSTED, null), till.stockMoves.map { it.first })
+    }
+
+    @Test
+    fun a_return_can_be_kept_out_of_stock() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.state.value.pages.flatMap { it.buttons }.single { it.name == "Tea" })
+        testScheduler.advanceUntilIdle()
+        model.openTender()
+        testScheduler.advanceUntilIdle()
+        model.pay(model.state.value.tender!!.offers[0])
+        testScheduler.advanceUntilIdle()
+        model.beginReturn(till.ticket("order1"))
+        testScheduler.advanceUntilIdle()
+        val sheet = model.state.value.returning!!
+        assertTrue(sheet.restock, "back to stock unless the cashier says")
+        model.returnToStock(false)
+        model.pickMore(sheet.returnable.lines.single())
+        model.returnReason("damaged")
+        model.confirmReturn()
+        testScheduler.advanceUntilIdle()
+        assertEquals(false, till.lastRestock)
+    }
+}
