@@ -886,6 +886,18 @@ goods and for regulated purchase limits.
 devices so offline terminals can't oversell by more than a configured tolerance. See consistency
 class C in the sync doc.
 
+- **As built: the movement ledger v0** ([ADR-0036](../adr/0036-inventory.md)). Stock is an
+  aggregate per variant, at one location, in one unit, its first event's; its events are
+  `stock.moved` (received, adjusted, wasted, reserved, released) and `stock.counted` (a quantity
+  as of a time). Sales and returns aren't stock events: they are read from orders, each close
+  taking what its live lines came to beyond what earlier closes took, a void giving it back, and
+  each return putting back what it returned. On hand is the latest count, by its as-of time, plus
+  everything after it; with no count, everything since the item's first stock event. Negative
+  stock is allowed and listed first. Adjusting, wasting and counting are `stock.adjust`. An
+  event that doesn't apply, as one in another unit, and a sale in another unit are counted as the
+  item's conflicts and shown. Not yet: locations within a store, ingredients and recipes,
+  purchase orders, transfers, costs, count sessions, escrow.
+
 ---
 
 ## 11. Customers, stored value, loyalty, memberships, bookings
@@ -1015,7 +1027,8 @@ One state machine covers goods that are **in someone else's custody**:
   `discount.apply`, `price.override`, `refund.issue`, `drawer.no_sale`, `drawer.variance`,
   `drawer.paid_out`, `receipt.reprint`, `item.availability`), or since card payments an
   eleventh, `payment.resolve` (ADR-0035), which needs profile format 4 and whose approval is
-  `approval.granted` version 2, with a most amount and, for discounts, a most percentage. Beyond a role, another member whose role permits it approves:
+  `approval.granted` version 2, or since inventory a twelfth, `stock.adjust` (ADR-0036), which
+  needs profile format 5 and whose approval is version 3, with a most amount and, for discounts, a most percentage. Beyond a role, another member whose role permits it approves:
   never the one who asked. An approval is an `approval.granted` event, written with what it
   approves. A PIN is 4 to 8 digits, kept as its Argon2id hash. A profile without roles, format 1,
   lets every member do everything with no PIN. On a device, five wrong PINs lock PIN entry for

@@ -17,8 +17,9 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-pub use commands::{StockCommand, StockError};
+pub use commands::{MAX_QUANTITY, StockCommand, StockError};
 pub use events::{Movement, StockCounted, StockEvent, StockMoved};
 pub use state::{
-    Conflict, ConflictKind, Count, Entry, EntryKind, Flow, Levels, Stock, levels, time_of,
+    Conflict, ConflictKind, Count, Entry, EntryKind, Flow, Levels, Stock, count_precedes, levels,
+    time_of,
 };

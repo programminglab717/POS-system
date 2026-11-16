@@ -14,7 +14,7 @@ use keel_domain::order::Order;
 use keel_domain::payment::Payment;
 use keel_domain::refs::Variant;
 use keel_domain::refund::Refund;
-use keel_domain::stock::{Entry, EntryKind, Flow, Levels};
+use keel_domain::stock::{Entry, EntryKind, Flow};
 use keel_events::envelope::{Device, Event, Location, StreamRef};
 use keel_events::event::SignedEvent;
 use keel_events::keys::Signer;
@@ -37,7 +37,7 @@ use crate::refunds::{self, REFUND_COLUMNS, RefundSummary};
 use crate::rows;
 use crate::schema;
 use crate::sequencing::{self, Sequenced, StoreSeq};
-use crate::stock;
+use crate::stock::{self, StockLevels};
 use crate::terms;
 use crate::write::{Quarantined, Reason, Writing};
 
@@ -944,22 +944,43 @@ impl<S: Signer, E: Entropy> Store<S, E> {
         })
     }
 
-    /// `variant`'s stock levels, and the unit they are in: its first entry's; `None` for an item
-    /// whose stock isn't tracked (ADR-0036).
+    /// The unit `variant`'s stock is kept in: its first entry's; `None` for an item whose stock
+    /// isn't tracked (ADR-0036).
+    ///
+    /// # Errors
+    /// As [`Store::head`].
+    pub fn stock_unit(&self, variant: Id<Variant>) -> Result<Option<Unit>, StoreError> {
+        Ok(self.stock_entries(variant)?.first().map(|entry| match entry.kind {
+            EntryKind::Moved(_, quantity) | EntryKind::Counted { quantity, .. } => quantity.unit(),
+        }))
+    }
+
+    /// `variant`'s stock levels, the unit they are in, and what was left out of them; `None`
+    /// for an item whose stock isn't tracked (ADR-0036).
     ///
     /// # Errors
     /// As [`Store::head`]; [`StoreError::OutOfRange`] if a level overflows.
-    pub fn stock_levels(&self, variant: Id<Variant>) -> Result<Option<(Unit, Levels)>, StoreError> {
+    pub fn stock_levels(&self, variant: Id<Variant>) -> Result<Option<StockLevels>, StoreError> {
+        let Some(unit) = self.stock_unit(variant)? else { return Ok(None) };
         let entries = self.stock_entries(variant)?;
-        let Some(unit) = entries.first().map(|entry| match entry.kind {
-            EntryKind::Moved(_, quantity) | EntryKind::Counted { quantity, .. } => quantity.unit(),
-        }) else {
-            return Ok(None);
-        };
         let flows = self.stock_flows(variant)?;
         let levels = keel_domain::stock::levels(unit, &entries, &flows)
             .map_err(|_| StoreError::OutOfRange("a stock level"))?;
-        Ok(Some((unit, levels)))
+        let conflicts: i64 = self.read(|db| {
+            db.query_row(
+                "SELECT COALESCE(SUM(conflicts), 0) FROM stock_conflicts WHERE variant = ?1",
+                [&variant.to_bytes()[..]],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
+        })?;
+        let other_unit = flows.iter().filter(|flow| flow.delta.unit() != unit).count();
+        let conflicts = u64::try_from(conflicts)
+            .ok()
+            .zip(u64::try_from(other_unit).ok())
+            .and_then(|(stream, flows)| stream.checked_add(flows))
+            .ok_or(StoreError::Corrupt("stock conflicts"))?;
+        Ok(Some(StockLevels { unit, levels, conflicts }))
     }
 
     /// The refunds of order `order`, the earliest first (ADR-0032).

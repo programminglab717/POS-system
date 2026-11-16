@@ -316,7 +316,7 @@ class SimulatedTerminalTest {
 /** The stock screen (ADR-0036): items tracked from the menu, received, adjusted on a manager's word, counted. */
 class StockModelTest {
     private fun TestScope.signedIn(till: FakeTill): RegisterModel {
-        val model = RegisterModel(till, this, StandardTestDispatcher(testScheduler))
+        val model = RegisterModel(till, this, StandardTestDispatcher(testScheduler), terminal = SimulatedTerminal())
         model.start()
         testScheduler.advanceUntilIdle()
         model.signIn(model.state.value.team.first())
@@ -389,5 +389,130 @@ class StockModelTest {
         model.confirmReturn()
         testScheduler.advanceUntilIdle()
         assertEquals(false, till.lastRestock)
+        // The next return goes back to stock unless the cashier says again: found in review.
+        assertEquals(true, model.state.value.returning?.restock)
+    }
+
+    @Test
+    fun a_card_return_can_be_kept_out_of_stock() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.tap(model.state.value.pages.flatMap { it.buttons }.single { it.name == "Tea" })
+        testScheduler.advanceUntilIdle()
+        model.openCard()
+        testScheduler.advanceUntilIdle()
+        model.chooseTip(CardTip.None)
+        testScheduler.advanceUntilIdle()
+        val payment = assertNotNull(model.state.value.card?.payment).payment
+        till.answerCard(payment, approvedMinor = 300)
+        model.refreshCard()
+        testScheduler.advanceUntilIdle()
+        model.beginReturn(till.ticket("order1"))
+        testScheduler.advanceUntilIdle()
+        val sheet = model.state.value.returning!!
+        model.refundTo(sheet.returnable.cards.single().payment)
+        model.returnToStock(false)
+        model.pickMore(sheet.returnable.lines.single())
+        model.returnReason("damaged")
+        model.confirmReturn()
+        testScheduler.advanceUntilIdle()
+        assertEquals(false, till.lastRestock)
+    }
+
+    /** Opens the stock screen and receives [n] of Tea, chosen from the menu. */
+    private fun TestScope.receiveTea(model: RegisterModel, n: Int) {
+        model.openStock()
+        testScheduler.advanceUntilIdle()
+        model.chooseStockItem()
+        model.trackStock(model.state.value.pages.flatMap { it.buttons }.single { it.name == "Tea" })
+        testScheduler.advanceUntilIdle()
+        model.startStockEntry(StockMovement.RECEIVED)
+        model.typeStockDigit(n)
+        model.confirmStockEntry()
+        testScheduler.advanceUntilIdle()
+    }
+
+    @Test
+    fun a_movement_recorded_is_never_recorded_again_when_the_refresh_fails() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        model.openStock()
+        testScheduler.advanceUntilIdle()
+        model.chooseStockItem()
+        model.trackStock(model.state.value.pages.flatMap { it.buttons }.single { it.name == "Tea" })
+        model.startStockEntry(StockMovement.RECEIVED)
+        model.typeStockDigit(5)
+        till.stockReadsFailing = 1
+        model.confirmStockEntry()
+        testScheduler.advanceUntilIdle()
+        assertTrue(model.state.value.error.orEmpty().startsWith("Something went wrong"))
+        assertNull(model.state.value.stock?.entry, "recorded, so nothing is left to record again")
+        assertEquals("5", model.state.value.stock?.selected?.onHand?.text)
+        model.confirmStockEntry()
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, till.stockMoves.size)
+    }
+
+    @Test
+    fun nothing_more_is_recorded_while_an_approval_is_asked_or_its_retry_runs() = runTest {
+        val till = FakeTill().apply { stockNeedsApproval = true }
+        val model = signedIn(till)
+        receiveTea(model, 5)
+        model.startStockEntry(StockMovement.WASTED)
+        model.typeStockDigit(1)
+        model.confirmStockEntry()
+        testScheduler.advanceUntilIdle()
+        assertEquals("stock.adjust", model.state.value.approval?.action)
+        assertEquals(true, model.state.value.stock?.working)
+        model.chooseApprover(Member("sam", "Sam"))
+        till.approvedBy = "sam"
+        model.approve("")
+        // Tapped again before the approved retry has run: nothing more.
+        model.confirmStockEntry()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf<StockMovement?>(StockMovement.RECEIVED, StockMovement.WASTED), till.stockMoves.map { it.first })
+        assertEquals("4", model.state.value.stock?.selected?.onHand?.text)
+        assertNull(model.state.value.approval)
+        // An approval not given lets the entry go back to being typed.
+        till.approvedBy = null
+        model.startStockEntry(StockMovement.WASTED)
+        model.typeStockDigit(1)
+        model.confirmStockEntry()
+        testScheduler.advanceUntilIdle()
+        model.cancelApproval()
+        assertEquals(false, model.state.value.stock?.working)
+        assertNotNull(model.state.value.stock?.entry)
+    }
+
+    @Test
+    fun tracking_an_item_already_tracked_shows_its_history() = runTest {
+        val till = FakeTill()
+        val model = signedIn(till)
+        receiveTea(model, 3)
+        // Something else tracked too: its moves aren't Tea's.
+        till.moveStock("coffee", StockMovement.RECEIVED, 7_000_000, "each", null)
+        model.chooseStockItem()
+        model.trackStock(model.state.value.pages.flatMap { it.buttons }.single { it.name == "Tea" })
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("RECEIVED" to "3"), model.state.value.stock?.history?.map { it.what to it.quantity })
+        assertEquals(false, model.state.value.stock?.choosing)
+    }
+
+    @Test
+    fun an_item_kept_by_measure_is_typed_in_thousandths_of_its_unit() = runTest {
+        val till = FakeTill()
+        till.trackByMeasure("cheese", "Cheese", "kg")
+        val model = signedIn(till)
+        model.openStock()
+        testScheduler.advanceUntilIdle()
+        model.selectStock(model.state.value.stock!!.items.single())
+        testScheduler.advanceUntilIdle()
+        model.startStockEntry(StockMovement.RECEIVED)
+        for (digit in listOf(1, 5, 0, 0)) model.typeStockDigit(digit)
+        model.confirmStockEntry()
+        testScheduler.advanceUntilIdle()
+        // 1500 typed: 1.5 kg.
+        assertEquals(listOf<Pair<StockMovement?, Long>>(StockMovement.RECEIVED to 1_500_000), till.stockMoves)
+        assertNull(model.state.value.error)
     }
 }

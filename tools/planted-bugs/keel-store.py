@@ -1689,8 +1689,8 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
     (
         "stock: an open order sells",
         "src/stock.rs",
-        "    if *order.status() != OrderStatus::Closed {\n        return Ok(());\n    }",
-        "",
+        "        if !was_closed && *order.status() == OrderStatus::Closed {",
+        "        if !was_closed {",
     ),
     (
         "stock: a voided line sells",
@@ -1701,14 +1701,26 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
     (
         "stock: a return isn't put back",
         "src/stock.rs",
-        "                flows.push((found.item().variant, at, quantity));",
-        "                let _ = (found, at, quantity);",
+        "                    flows.push((found.item().variant, at, more));",
+        "                    let _ = (found, at, more);",
     ),
     (
-        "stock: a sale is as of the order's first close",
+        "stock: a return the fold didn't apply puts stock back",
         "src/stock.rs",
-        "            OrderEvent::Closed => closed_at = Some(at),",
-        "            OrderEvent::Closed => closed_at = closed_at.or(Some(at)),",
+        "                    Some(before) => after.checked_sub(before),",
+        "                    Some(_) => Ok(after),",
+    ),
+    (
+        "stock: a close takes again what an earlier close took",
+        "src/stock.rs",
+        "            taken = live;",
+        "            taken = Vec::new();",
+    ),
+    (
+        "stock: a void after a close gives nothing back",
+        "src/stock.rs",
+        "            flows.extend(taken.drain(..).map(|(variant, quantity)| (variant, at, quantity)));",
+        "            taken.clear();",
     ),
     (
         "stock: a write updates one projection of an order",
@@ -1721,6 +1733,18 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         "src/stock.rs",
         "            (None, Some(as_of)) => EntryKind::Counted { quantity, as_of: time(as_of)? },",
         "            (None, Some(_)) => EntryKind::Counted { quantity, as_of: time(at)? },",
+    ),
+    (
+        "stock: a stream's conflicts aren't kept",
+        "src/stock.rs",
+        "    if conflicts > 0 {",
+        "    if conflicts > i64::MAX - 1 {",
+    ),
+    (
+        "stock: a sale in another unit isn't reported",
+        "src/store.rs",
+        "        let other_unit = flows.iter().filter(|flow| flow.delta.unit() != unit).count();",
+        "        let other_unit = flows.iter().filter(|flow| flow.delta.unit() != unit && false).count();",
     ),
 
 ]

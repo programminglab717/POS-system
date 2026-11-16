@@ -593,7 +593,7 @@ private fun KernelAmount.toAmount() = Amount(minor, text)
 private fun KernelStockQuantity.toAmount() = StockAmount(micros, unit, text)
 
 private fun KernelStockItem.toStockItem() =
-    StockItem(variant, name, onHand.toAmount(), reserved.toAmount(), available.toAmount(), countedAt)
+    StockItem(variant, name, onHand.toAmount(), reserved.toAmount(), available.toAmount(), countedAt, conflicts.toLong())
 
 private fun KernelDrawer.toDrawer() = Drawer(
     open = open,

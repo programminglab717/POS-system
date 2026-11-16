@@ -87,5 +87,6 @@ pub use projection::{OrderState, OrderSummary, PaymentState, PaymentSummary};
 pub use refunds::{RefundState, RefundSummary};
 pub use schema::init_sqlite;
 pub use sequencing::{Sequenced, StoreSeq};
+pub use stock::StockLevels;
 pub use store::{Store, StoreConfig};
 pub use write::{Quarantined, Reason, Received, Writing};

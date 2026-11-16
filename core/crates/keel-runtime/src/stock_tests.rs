@@ -169,3 +169,66 @@ fn below_zero_is_allowed_and_listed_first() {
     assert_eq!(stock[1].on_hand, each(3));
     let _ = usd(0);
 }
+
+/// A count's default time is its event's, by the clock sales are timed by: found in review, a
+/// device's clock behind the log's, as after hearing from a fast one, took a sale twice.
+#[test]
+fn a_count_is_as_of_the_logs_clock_when_the_devices_is_behind() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    runtime.move_stock(espresso(), Movement::Received, each(10), None).unwrap();
+    let start = runtime.clock().now();
+    runtime.clock().advance(Duration::from_secs(60)).unwrap();
+    sell(&mut runtime, 1);
+    // The device's clock goes back half a minute: the log's is still at the sale.
+    runtime.clock().set(start.checked_add(Duration::from_secs(30)).unwrap());
+    let view = runtime.count_stock(espresso(), each(9), None, None).unwrap();
+    assert_eq!(view.on_hand, each(9), "the sale was before the count, by the log's clock");
+    assert_eq!(view.conflicts, 0);
+}
+
+/// A return kept out of stock wastes only an item whose stock is tracked; and a quantity past a
+/// billion is refused, as a barcode scanned into it would be. Found in review.
+#[test]
+fn a_return_of_an_untracked_item_wastes_nothing_and_too_much_is_refused() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    let order = sell(&mut runtime, 2);
+    let line = runtime.ticket(order).unwrap().lines[0].line;
+    runtime.clock().advance(Duration::from_secs(1)).unwrap();
+    runtime
+        .return_lines_with(order, &[(line, each(1))], reason("damaged"), RefundTo::Cash, false)
+        .unwrap();
+    assert!(runtime.stock().unwrap().is_empty(), "not tracked, so not wasted either");
+    let too_much = Quantity::from_micros(
+        i64::try_from(keel_domain::stock::MAX_QUANTITY).unwrap() + 1,
+        Unit::Each,
+    );
+    assert!(matches!(
+        runtime.move_stock(espresso(), Movement::Received, too_much, None),
+        Err(RuntimeError::Stock(keel_domain::stock::StockError::TooMuch))
+    ));
+    let most =
+        Quantity::from_micros(i64::try_from(keel_domain::stock::MAX_QUANTITY).unwrap(), Unit::Each);
+    runtime.move_stock(espresso(), Movement::Received, most, None).unwrap();
+}
+
+/// Two counts as of one time: the later recorded is the one that stands, and its variance is
+/// against the earlier, as the levels take them. Found in review: each left the other out.
+#[test]
+fn of_two_counts_as_of_one_time_the_later_is_against_the_earlier() {
+    let scratch = Scratch::new();
+    let mut runtime = manager(&scratch);
+    runtime.move_stock(espresso(), Movement::Received, each(10), None).unwrap();
+    runtime.clock().advance(Duration::from_secs(60)).unwrap();
+    let as_of = runtime.clock().now();
+    runtime.clock().advance(Duration::from_secs(60)).unwrap();
+    runtime.count_stock(espresso(), each(5), Some(as_of), None).unwrap();
+    runtime.clock().advance(Duration::from_secs(1)).unwrap();
+    let view = runtime.count_stock(espresso(), each(7), Some(as_of), None).unwrap();
+    assert_eq!(view.on_hand, each(7));
+    let report = runtime.day_report(runtime.today().unwrap(), ReportKind::X).unwrap();
+    let found: Vec<_> =
+        report.counts.iter().map(|count| (count.counted, count.expected, count.variance)).collect();
+    assert_eq!(found, [(each(5), each(10), each(-5)), (each(7), each(5), each(2))]);
+}

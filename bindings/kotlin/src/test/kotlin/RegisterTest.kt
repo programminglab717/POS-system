@@ -22,6 +22,7 @@ import dev.keel.kernel.Prefix
 import dev.keel.kernel.Printer
 import dev.keel.kernel.Register
 import dev.keel.kernel.RegisterConfig
+import dev.keel.kernel.ReturnLine
 import dev.keel.kernel.TicketState
 import dev.keel.kernel.Waits
 import dev.keel.kernel.demoProfile
@@ -249,5 +250,34 @@ class RegisterTest {
             register.countStock(id(0x401), 1_000_000, "each", null)
         }
         assertEquals("stock.adjust", refused.action)
+    }
+
+    /**
+     * Adjusted down and wasted, and a return kept out of stock: recorded wasted, in the day's
+     * report. Found in review: the bindings never took these.
+     */
+    @Test
+    fun wasteAndReturnsKeptOutOfStockShowInTheReport() = withRegister { register ->
+        register.signIn(id(0x501), "1234")
+        register.moveStock(id(0x401), StockMovement.RECEIVED, 10_000_000, "each", null, null)
+        val adjusted = register.moveStock(id(0x401), StockMovement.ADJUSTED, -1_000_000, "each", "correction", null)
+        assertEquals(9_000_000L, adjusted.onHand.micros)
+        val wasted = register.moveStock(id(0x401), StockMovement.WASTED, 1_000_000, "each", "spoiled", "dropped")
+        assertEquals(8_000_000L, wasted.onHand.micros)
+        assertFailsWith<KeelException.InvalidArgument> {
+            register.moveStock(id(0x401), StockMovement.WASTED, 1_000_000, "each", null, "a note alone")
+        }
+        Thread.sleep(2)
+        val order = register.startOrder(Mode.TAKEOUT).order
+        register.addItem(order, id(0x401), emptyList(), 2u)
+        register.payCash(order, register.ticket(order).cashDue.minor)
+        Thread.sleep(2)
+        val line = register.ticket(order).lines[0].line
+        register.returnLines(order, listOf(ReturnLine(line, 1u)), "damaged", null, false)
+        val item = register.stock().single()
+        assertEquals(6_000_000L, item.onHand.micros, "sold two, and the one returned is wasted")
+        assertEquals(0uL, item.conflicts)
+        val report = register.dayReport(dev.keel.kernel.ReportKind.X, null)
+        assertEquals("2", report.wasted.single().quantity, "one spoiled, one returned damaged")
     }
 }

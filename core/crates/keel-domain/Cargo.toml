@@ -20,6 +20,7 @@ thiserror.workspace = true
 argon2.workspace = true
 
 [dev-dependencies]
+num-bigint.workspace = true
 proptest.workspace = true
 
 [lints]

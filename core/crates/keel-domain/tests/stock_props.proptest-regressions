@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc efe0f06b030563e7daf25fe88bb8eabba9afff9ee9b2e95cfbc706919def1d10 # shrinks to recorded = [Recorded { minute: 0, event: Moved(StockMoved { movement: Received, quantity: Quantity(1 each), reason: None }) }, Recorded { minute: 0, event: Moved(StockMoved { movement: Received, quantity: Quantity(1 kg), reason: None }) }, Recorded { minute: 0, event: Moved(StockMoved { movement: Received, quantity: Quantity(1 each), reason: None }) }, Recorded { minute: 0, event: Moved(StockMoved { movement: Received, quantity: Quantity(1 each), reason: None }) }], flows = [], shuffle = Index(9223372036854775808)
+cc 316e891da74869c7f39847e976dc8e56f164321f13a2685a27b7878670e3c8fd # shrinks to recorded = [Recorded { minute: 24, event: Moved(StockMoved { movement: Received, quantity: Quantity(2305843009213.693951 each), reason: None }) }, Recorded { minute: 0, event: Counted(StockCounted { quantity: Quantity(3384852817899.127882 each), as_of: Timestamp(2026-11-13T09:00:00.000000Z), note: None }) }], flows = [Flow { at: Timestamp(2026-11-13T09:01:00.000000Z), delta: Quantity(3532676209741.953975 each) }], shuffle = Index(0)

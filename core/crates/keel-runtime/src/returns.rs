@@ -334,8 +334,9 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         for each in &returned.lines {
             let Some(line) = loaded.line(each.line) else { continue };
             let variant = line.item().variant;
-            let tracked = self.store.stock_levels(variant)?;
-            if tracked.is_some_and(|(unit, _)| unit == each.quantity.unit()) {
+            // Its unit, not its levels: found in review, an item whose levels overflowed
+            // refused every return of it.
+            if self.store.stock_unit(variant)? == Some(each.quantity.unit()) {
                 unstocked.push((variant, each.quantity));
             }
         }

@@ -354,4 +354,10 @@ BUGS = [
         "        CardRequest { key: request.key.clone(), ask, status: request.status }",
         "        CardRequest { key: request.key.clone(), ask, status: false }",
     ),
+    (
+        "stock: a note alone is dropped",
+        "src/register.rs",
+        "            (None, Some(_)) => return Err(KeelError::invalid(\"a note needs a reason code\")),",
+        "            (None, Some(_)) => None,",
+    ),
 ]

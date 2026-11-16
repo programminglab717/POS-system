@@ -202,6 +202,21 @@ fn count_order(a: &Count, a_hlc: Hlc, b: &Count, b_hlc: Hlc) -> Ordering {
         .then_with(|| a.event.to_bytes().cmp(&b.event.to_bytes()))
 }
 
+/// Whether count `a` comes before count `b` in the order [`levels`] takes counts in: by as-of
+/// time, then HLC, then event; `false` if either isn't a count.
+pub fn count_precedes(a: &Entry, b: &Entry) -> bool {
+    let count = |entry: &Entry| match entry.kind {
+        EntryKind::Counted { quantity, as_of } => {
+            Some(Count { event: entry.event, quantity, as_of })
+        }
+        EntryKind::Moved(..) => None,
+    };
+    match (count(a), count(b)) {
+        (Some(first), Some(second)) => count_order(&first, a.hlc, &second, b.hlc) == Ordering::Less,
+        _ => false,
+    }
+}
+
 /// The levels of an item kept in `unit`, from its stock's `entries` and the `flows` its orders
 /// made (ADR-0036, decision 3). On hand starts from the latest count, by as-of time, and adds
 /// what moved, sold and was returned after it; with no count, from the first entry, whose time

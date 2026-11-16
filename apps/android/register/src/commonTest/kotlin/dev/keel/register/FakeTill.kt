@@ -808,19 +808,44 @@ class FakeTill : Till {
     private val stockReserved = mutableMapOf<String, Long>()
     private val stockNames = mutableMapOf<String, String>()
     val stockMoves = mutableListOf<Pair<StockMovement?, Long>>()
+    /** Each move's variant, beside [stockMoves]. */
+    private val stockMoved = mutableListOf<String>()
+    /** Each tracked item's unit: `each` unless a test tracks it by a measure first. */
+    val stockUnits = mutableMapOf<String, String>()
+    /** How many reads of the levels fail before they succeed, as an unreadable store would. */
+    var stockReadsFailing = 0
+
+    /** Tracks [variant] by [unit], as another device would have, with nothing on hand. */
+    fun trackByMeasure(variant: String, name: String, unit: String) {
+        stockOnHand[variant] = 0
+        stockNames[variant] = name
+        stockUnits[variant] = unit
+    }
 
     private fun stockItem(variant: String): StockItem {
-        val amount = { micros: Long -> StockAmount(micros, "each", (micros / 1_000_000).toString()) }
+        val unit = stockUnits[variant] ?: "each"
+        val amount = { micros: Long -> StockAmount(micros, unit, (micros / 1_000_000).toString()) }
         val onHand = stockOnHand.getValue(variant)
         val reserved = stockReserved[variant] ?: 0
         return StockItem(variant, stockNames[variant] ?: variant, amount(onHand), amount(reserved), amount(onHand - reserved))
     }
 
-    override fun stock(): List<StockItem> =
-        stockOnHand.keys.map(::stockItem).sortedWith(compareBy({ !it.onHand.negative }, { it.name }))
+    override fun stock(): List<StockItem> {
+        if (stockReadsFailing > 0) {
+            stockReadsFailing -= 1
+            throw IllegalStateException("store unreadable")
+        }
+        return stockOnHand.keys.map(::stockItem).sortedWith(compareBy({ !it.onHand.negative }, { it.name }))
+    }
 
     override fun stockHistory(variant: String): List<StockLine> =
-        stockMoves.reversed().map { (movement, micros) -> StockLine(0, movement?.name ?: "COUNTED", (micros / 1_000_000).toString()) }
+        stockMoves.zip(stockMoved).filter { it.second == variant }.map { it.first }.reversed()
+            .map { (movement, micros) -> StockLine(0, movement?.name ?: "COUNTED", (micros / 1_000_000).toString()) }
+
+    private fun checkUnit(variant: String, unit: String) {
+        val known = stockUnits.getOrPut(variant) { unit }
+        if (known != unit) throw TillException("invalid event: unit")
+    }
 
     private fun gateStock() {
         if (stockNeedsApproval && approvedBy == null) throw TillException("Adjusting stock needs a manager's approval.", approval = "stock.adjust")
@@ -830,6 +855,7 @@ class FakeTill : Till {
     override fun moveStock(variant: String, movement: StockMovement, micros: Long, unit: String, reason: String?): StockItem {
         if (movement == StockMovement.ADJUSTED || movement == StockMovement.WASTED) gateStock()
         if (movement != StockMovement.ADJUSTED && micros <= 0) throw TillException("invalid event: quantity")
+        checkUnit(variant, unit)
         val onHand = stockOnHand[variant] ?: 0
         val reserved = stockReserved[variant] ?: 0
         when (movement) {
@@ -844,13 +870,17 @@ class FakeTill : Till {
         }
         stockNames.getOrPut(variant) { variant }
         stockMoves += movement to micros
+        stockMoved += variant
         return stockItem(variant)
     }
 
     override fun countStock(variant: String, micros: Long, unit: String): StockItem {
         gateStock()
+        checkUnit(variant, unit)
         stockOnHand[variant] = micros
+        stockNames.getOrPut(variant) { variant }
         stockMoves += null to micros
+        stockMoved += variant
         return stockItem(variant)
     }
 

@@ -186,6 +186,16 @@ fn commands_refuse_what_the_fold_would_report() {
     assert!(decide(&script, count(each(0), now)).is_ok());
     script.apply(1, &decide(&script, move_of(Movement::Reserved, each(2))).unwrap());
     assert!(decide(&script, move_of(Movement::Released, each(2))).is_ok());
+    // A billion is the most at once, either way: found in review.
+    let most = i64::try_from(super::MAX_QUANTITY).unwrap();
+    let past = Quantity::from_micros(most + 1, Unit::Each);
+    assert_eq!(decide(&script, move_of(Movement::Received, past)), Err(StockError::TooMuch));
+    let down = Quantity::from_micros(-most - 1, Unit::Each);
+    assert_eq!(decide(&script, move_of(Movement::Adjusted, down)), Err(StockError::TooMuch));
+    assert!(
+        decide(&script, move_of(Movement::Received, Quantity::from_micros(most, Unit::Each)))
+            .is_ok()
+    );
 }
 
 fn bytes(hex: &str) -> Vec<u8> {

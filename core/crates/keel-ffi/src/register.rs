@@ -814,7 +814,12 @@ impl Register {
     ) -> Result<StockItem, KeelError> {
         let variant = id(&variant)?;
         let quantity = stock_quantity(micros, &unit)?;
-        let reason = reason.map(|reason| self::reason(&reason, note)).transpose()?;
+        // A note is a reason's: found in review, one given alone was dropped.
+        let reason = match (reason, note) {
+            (Some(reason), note) => Some(self::reason(&reason, note)?),
+            (None, Some(_)) => return Err(KeelError::invalid("a note needs a reason code")),
+            (None, None) => None,
+        };
         self.with(|runtime| runtime.move_stock(variant, movement.into(), quantity, reason))
             .map(|view| (&view).into())
     }

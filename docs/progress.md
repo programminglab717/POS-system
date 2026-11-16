@@ -117,7 +117,9 @@ bindings' tests, `:register:jvmTest`, `:kernel:testDebugUnitTest`, `:app:testDeb
 the app's builds). Slice 3 found the app's `OpeningTill` passed on none of the calls `Till` has
 defaults for: step 7's card payments among them, which on a device fell to the defaults and so
 weren't there. It now passes on every call, and `OpeningTillTest` calls each and checks it
-arrives. Next: the planted bugs for slices 2 and 3, then the review.
+arrives. Reviewed 2026-11-16, kernel and Android, and the findings fixed (ADR-0036's As built
+lists them); verified again as above, the stock property tests at 20,000 cases against an exact
+oracle. Next: the planted bugs for the fixes, then accepting ADR-0036.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
 three of step 2 the scrolling ticket pane should mend.

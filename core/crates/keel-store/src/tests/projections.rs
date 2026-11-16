@@ -404,6 +404,71 @@ fn projection_rows_are_pinned() {
     assert_eq!(payments, GOLDEN_PAYMENTS, "{payments}");
 }
 
+/// The stock projections' rows, pinned as the orders' and payments' are: `stock_flows` follows
+/// the order fold, so a change to that fold that changes them is seen. Found in review.
+#[test]
+fn stock_rows_are_pinned() {
+    use keel_domain::refs::Variant;
+    use keel_domain::stock::{Movement, StockCounted, StockEvent, StockMoved};
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let flat_white: Id<Variant> = id(0x400);
+    let order = order_id();
+    let each = |n: i64| Quantity::from_micros(n * 1_000_000, Unit::Each);
+    append(
+        &mut store,
+        vec![
+            domain_draft(
+                flat_white.cast(),
+                &StockEvent::Moved(StockMoved {
+                    movement: Movement::Received,
+                    quantity: each(10),
+                    reason: None,
+                }),
+            ),
+            domain_draft(
+                flat_white.cast(),
+                &StockEvent::Moved(StockMoved {
+                    movement: Movement::Received,
+                    quantity: Quantity::from_micros(1_000_000, Unit::Kilogram),
+                    reason: None,
+                }),
+            ),
+            domain_draft(
+                flat_white.cast(),
+                &StockEvent::Counted(StockCounted { quantity: each(9), as_of: at(0), note: None }),
+            ),
+            order_draft(order, &created()),
+            order_draft(order, &line_added(0x10, 450)),
+            order_draft(order, &OrderEvent::Closed),
+        ],
+        at(0),
+    );
+    let dump = |table: &str| -> String {
+        let mut statement = store.db().prepare(&format!("SELECT * FROM {table}")).unwrap();
+        let columns = statement.column_count();
+        let rows = statement
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|column| {
+                        row.get::<_, rusqlite::types::Value>(column).map(|v| format!("{v:?}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap();
+        rows.map(|row| row.unwrap().join(" | ")).collect::<Vec<_>>().join("\n")
+    };
+    let rows = ["stock_entries", "stock_conflicts", "stock_flows"].map(dump).join("\n--\n");
+    assert_eq!(rows, GOLDEN_STOCK, "{rows}");
+}
+
+const GOLDEN_STOCK: &str = concat!(
+    "Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 4, 0]) | Blob([1, 160, 229, 79, 176, 0, 117, 215, 132, 76, 60, 215, 244, 60, 102, 28]) | Integer(1790553600000000) | Blob([1, 160, 229, 79, 176, 0, 0, 0]) | Integer(0) | Integer(10000000) | Text(\"each\") | Null\n",
+    "Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 4, 0]) | Blob([1, 160, 229, 79, 176, 0, 117, 217, 149, 58, 235, 112, 103, 62, 41, 203]) | Integer(1790553600000000) | Blob([1, 160, 229, 79, 176, 0, 0, 2]) | Null | Integer(9000000) | Text(\"each\") | Integer(1790553600000000)\n--\n",
+    "Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 4, 0]) | Integer(1)\n--\n",
+    "Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 112, 0]) | Integer(0) | Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 4, 0]) | Integer(1790553600000000) | Integer(-1000000) | Text(\"each\")",
+);
+
 const GOLDEN_ORDERS: &str = "Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 112, 0]) | \
     Text(\"abandoned\") | Text(\"submitted\") | \
     Blob([1, 146, 240, 193, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 1, 0]) | Integer(0) | Integer(0) | \
@@ -802,7 +867,7 @@ fn stock_levels_read_movements_counts_and_orders() {
         ],
         at(2_000),
     );
-    let level = |store: &TestStore| store.stock_levels(flat_white).unwrap().unwrap().1;
+    let level = |store: &TestStore| store.stock_levels(flat_white).unwrap().unwrap().levels;
     assert_eq!(level(&store).on_hand, each(8));
     // An order abandoned sells nothing.
     let dropped: Id<Order> = id(0x7200);
@@ -837,23 +902,24 @@ fn stock_levels_read_movements_counts_and_orders() {
     let counted =
         StockEvent::Counted(StockCounted { quantity: each(4), as_of: at(5_000), note: None });
     append(&mut store, vec![stock(&counted)], at(6_000));
-    let (unit, levels) = store.stock_levels(flat_white).unwrap().unwrap();
+    let StockLevels { unit, levels, .. } = store.stock_levels(flat_white).unwrap().unwrap();
     assert_eq!((unit, levels.on_hand, levels.available), (Unit::Each, each(3), each(3)));
     assert_eq!(store.tracked_stock().unwrap(), [flat_white]);
     assert_eq!(
         store.stock_flows(flat_white).unwrap().len(),
-        5,
-        "three sales, one return, one early"
+        4,
+        "three closes, the two cups of one together; one return"
     );
     store.rebuild_projections().unwrap();
-    assert_eq!(store.stock_levels(flat_white).unwrap().unwrap().1, levels);
+    assert_eq!(store.stock_levels(flat_white).unwrap().unwrap().levels, levels);
 }
 
-/// What an order sells is its live lines when it closes, at its last close (ADR-0036): an open
-/// order sells nothing yet, a voided line nothing, and an order reopened and closed again sells
-/// as of its last close, so a count between its two closes doesn't see it.
+/// What an order sells is what its fold applied (ADR-0036): an open order sells nothing yet, a
+/// voided line nothing; an order reopened keeps what it took, and closed again takes only what it
+/// added, as of that close, so a count between its closes sees what was on the shelf. Found in
+/// review: closed again, it took everything a second time after the count.
 #[test]
-fn an_order_sells_its_live_lines_at_its_last_close() {
+fn an_order_takes_at_each_close_what_it_added() {
     use keel_domain::refs::Variant;
     use keel_domain::stock::{Movement, StockCounted, StockEvent, StockMoved};
     let dir = TempDir::new();
@@ -867,7 +933,7 @@ fn an_order_sells_its_live_lines_at_its_last_close() {
         reason: None,
     });
     append(&mut store, vec![stock(&received)], at(0));
-    let level = |store: &TestStore| store.stock_levels(flat_white).unwrap().unwrap().1.on_hand;
+    let level = |store: &TestStore| store.stock_levels(flat_white).unwrap().unwrap().levels.on_hand;
     let order = order_id();
     append(
         &mut store,
@@ -889,11 +955,105 @@ fn an_order_sells_its_live_lines_at_its_last_close() {
     assert_eq!(level(&store), each(9), "the voided line sells nothing");
     let reopened = OrderEvent::Reopened { reason: reason("mistake") };
     append(&mut store, vec![order_draft(order, &reopened)], at(3_000));
-    assert_eq!(level(&store), each(10), "reopened, it sells nothing until it closes again");
-    // Counted at 4 s as 10; the order closes again at 5 s: it sells after the count.
+    assert_eq!(level(&store), each(9), "reopened, the cup it sold is still gone");
+    // Counted as of 4 s: the 9 on the shelf. A second cup is added, and it closes at 5 s.
     let counted =
-        StockEvent::Counted(StockCounted { quantity: each(10), as_of: at(4_000), note: None });
+        StockEvent::Counted(StockCounted { quantity: each(9), as_of: at(4_000), note: None });
     append(&mut store, vec![stock(&counted)], at(4_000));
-    append(&mut store, vec![order_draft(order, &OrderEvent::Closed)], at(5_000));
-    assert_eq!(level(&store), each(9));
+    append(
+        &mut store,
+        vec![order_draft(order, &line_added(0x12, 450)), order_draft(order, &OrderEvent::Closed)],
+        at(5_000),
+    );
+    assert_eq!(level(&store), each(8), "only the cup added comes off after the count");
+    // A second close the fold doesn't apply moves nothing.
+    append(&mut store, vec![order_draft(order, &OrderEvent::Closed)], at(6_000));
+    assert_eq!(level(&store), each(8));
+    store.rebuild_projections().unwrap();
+    assert_eq!(level(&store), each(8));
+}
+
+/// A return the fold doesn't apply, as a second with the same refund, puts nothing back; and an
+/// order voided after it was reopened gives back what its close took. Found in review.
+#[test]
+fn only_what_the_order_applied_moves_stock() {
+    use keel_domain::order::{LineReturned, LinesReturned};
+    use keel_domain::refs::Variant;
+    use keel_domain::stock::{Movement, StockEvent, StockMoved};
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let flat_white: Id<Variant> = id(0x400);
+    let each = |n: i64| Quantity::from_micros(n * 1_000_000, Unit::Each);
+    let received = StockEvent::Moved(StockMoved {
+        movement: Movement::Received,
+        quantity: each(10),
+        reason: None,
+    });
+    append(&mut store, vec![domain_draft(flat_white.cast(), &received)], at(0));
+    let level = |store: &TestStore| store.stock_levels(flat_white).unwrap().unwrap().levels.on_hand;
+    let order = order_id();
+    append(
+        &mut store,
+        vec![
+            order_draft(order, &created()),
+            order_draft(order, &line_added(0x10, 450)),
+            order_draft(order, &line_added(0x11, 450)),
+            order_draft(order, &OrderEvent::Closed),
+        ],
+        at(1_000),
+    );
+    assert_eq!(level(&store), each(8));
+    let returned = OrderEvent::LinesReturned(LinesReturned {
+        refund: id(0x8100),
+        lines: vec![LineReturned { line: id(0x10), quantity: each(1), net: usd(0), tax: usd(0) }],
+        reason: reason("damaged"),
+    });
+    append(&mut store, vec![order_draft(order, &returned)], at(2_000));
+    append(&mut store, vec![order_draft(order, &returned)], at(3_000));
+    assert_eq!(level(&store), each(9), "the second return, with the same refund, didn't apply");
+    let other = id::<Order>(0x7400);
+    append(
+        &mut store,
+        vec![
+            order_draft(other, &created()),
+            order_draft(other, &line_added(0x20, 450)),
+            order_draft(other, &OrderEvent::Closed),
+        ],
+        at(4_000),
+    );
+    assert_eq!(level(&store), each(8));
+    let reopened = OrderEvent::Reopened { reason: reason("mistake") };
+    let void = OrderEvent::Voided { reason: reason("mistake") };
+    append(&mut store, vec![order_draft(other, &reopened), order_draft(other, &void)], at(5_000));
+    assert_eq!(level(&store), each(9), "voided: what it took is back");
+}
+
+/// A sale in another unit than the stock's counts for nothing, and is reported (ADR-0036,
+/// decision 2): found in review, nothing said so.
+#[test]
+fn what_is_left_out_of_the_levels_is_reported() {
+    use keel_domain::refs::Variant;
+    use keel_domain::stock::{Movement, StockEvent, StockMoved};
+    let dir = TempDir::new();
+    let mut store = open(&dir.db());
+    let flat_white: Id<Variant> = id(0x400);
+    let moved = |quantity| {
+        StockEvent::Moved(StockMoved { movement: Movement::Received, quantity, reason: None })
+    };
+    let kilos = Quantity::from_micros(1_000_000, Unit::Kilogram);
+    append(
+        &mut store,
+        vec![
+            domain_draft(flat_white.cast(), &moved(Quantity::from_micros(5_000_000, Unit::Each))),
+            domain_draft(flat_white.cast(), &moved(kilos)),
+        ],
+        at(0),
+    );
+    let levels = store.stock_levels(flat_white).unwrap().unwrap();
+    assert_eq!(
+        (levels.levels.on_hand, levels.conflicts),
+        (Quantity::from_micros(5_000_000, Unit::Each), 1)
+    );
+    store.rebuild_projections().unwrap();
+    assert_eq!(store.stock_levels(flat_white).unwrap().unwrap().conflicts, 1);
 }

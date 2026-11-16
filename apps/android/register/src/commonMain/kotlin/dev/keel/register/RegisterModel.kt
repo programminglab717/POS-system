@@ -387,7 +387,16 @@ class RegisterModel(
     /** No approval: the intent stays refused. */
     fun cancelApproval() {
         pendingRetry = null
-        mutable.update { it.copy(approval = null, error = null) }
+        // What was held for the approval is let go: found in review, a second tap while the
+        // approved retry ran recorded stock twice.
+        mutable.update {
+            it.copy(
+                approval = null,
+                error = null,
+                stock = it.stock?.copy(working = false),
+                returning = it.returning?.copy(refunding = false),
+            )
+        }
     }
 
     /** The intent refused for want of an approval, to try again once one is given. */
@@ -1434,19 +1443,21 @@ class RegisterModel(
                 }
             } catch (refused: TillException) {
                 // What is left may have changed, as another register returned some of it: read it
-                // again, and keep only what can still be picked. Found in review.
+                // again, and keep only what can still be picked. Found in review. Refused for an
+                // approval, it stays refunding until the approval is given or not.
                 val returnable = if (refused.approval == null) till.returnable(order) else null
                 mutable.update { state ->
                     val now = state.returning ?: return@update state
                     val read = returnable ?: now.returnable
-                    state.copy(returning = now.copy(returnable = read, picks = clamp(now.picks, read), refunding = false))
+                    state.copy(returning = now.copy(returnable = read, picks = clamp(now.picks, read), refunding = refused.approval != null))
                 }
                 throw refused
             }
             // The refund is shown, and its picks gone, before anything else can fail: found in
-            // review, a failed refresh left them for a second tap.
+            // review, a failed refresh left them for a second tap. What comes next goes back to
+            // stock unless the cashier says again: found in review.
             mutable.update { state ->
-                state.copy(refund = refund, returning = state.returning?.copy(picks = emptyMap(), refunding = false))
+                state.copy(refund = refund, returning = state.returning?.copy(picks = emptyMap(), refunding = false, restock = true))
             }
             val returnable = till.returnable(order)
             val jobs = till.printJobs()
@@ -1602,8 +1613,13 @@ class RegisterModel(
         mutable.update { it.copy(screen = Screen.STOCK, stock = StockSheet(items)) }
     }
 
-    /** Chooses [item], to see what moved it and move or count it. */
-    fun selectStock(item: StockItem) = perform {
+    /** Chooses [item], to see what moved it and move or count it; not while one is recorded. */
+    fun selectStock(item: StockItem) {
+        if (current.stock?.working == true) return
+        selectStockNow(item)
+    }
+
+    private fun selectStockNow(item: StockItem) = perform {
         val history = till.stockHistory(item.variant)
         mutable.update { state ->
             state.copy(stock = state.stock?.copy(selected = item, history = history, entry = null, choosing = false))
@@ -1613,14 +1629,28 @@ class RegisterModel(
     /** Lists the menu, to start tracking an item not yet tracked. */
     fun chooseStockItem() = mutable.update { state -> state.copy(stock = state.stock?.copy(choosing = true)) }
 
-    /** Starts tracking [button]'s item: chosen, with nothing on hand until it is received or counted. */
-    fun trackStock(button: MenuButton) = mutable.update { state ->
-        val sheet = state.stock ?: return@update state
+    /**
+     * Starts tracking [button]'s item: chosen, with nothing on hand until it is received or
+     * counted, in `each`, as the register rings it. One already tracked is chosen, with its
+     * history: found in review, it showed none.
+     */
+    fun trackStock(button: MenuButton) {
+        val sheet = current.stock ?: return
+        if (sheet.working) return
         val tracked = sheet.items.firstOrNull { it.variant == button.variant }
+        if (tracked != null) {
+            selectStock(tracked)
+            return
+        }
         val zero = StockAmount(0, "each", "0")
-        val item = tracked ?: StockItem(button.variant, button.name, zero, zero, zero)
-        state.copy(stock = sheet.copy(selected = item, history = emptyList(), choosing = false, entry = null))
+        val item = StockItem(button.variant, button.name, zero, zero, zero)
+        mutable.update { state ->
+            state.copy(stock = state.stock?.copy(selected = item, history = emptyList(), choosing = false, entry = null))
+        }
     }
+
+    /** Stops choosing an item to track. */
+    fun stopChoosingStock() = mutable.update { state -> state.copy(stock = state.stock?.copy(choosing = false)) }
 
     /** Begins typing a movement of the chosen item, or a count when [movement] is null. */
     fun startStockEntry(movement: StockMovement?) = mutable.update { state ->
@@ -1688,18 +1718,27 @@ class RegisterModel(
         mutable.update { it.copy(stock = it.stock?.copy(working = true), error = null) }
         val retry: () -> Unit = {
             try {
+                mutable.update { state -> state.copy(stock = state.stock?.copy(working = true)) }
                 val now = if (entry.movement == null) {
                     till.countStock(item.variant, micros, unit)
                 } else {
                     till.moveStock(item.variant, entry.movement, micros, unit, entry.reason)
                 }
+                // Recorded: the entry is gone before anything else can fail. Found in review, a
+                // failed refresh left it for a second tap, which recorded it twice.
+                mutable.update { state ->
+                    state.copy(stock = state.stock?.copy(selected = now, entry = null))
+                }
                 val items = till.stock()
                 val history = till.stockHistory(item.variant)
                 mutable.update { state ->
-                    state.copy(stock = state.stock?.copy(items = items, selected = now, history = history, entry = null, working = false))
+                    val sheet = state.stock ?: return@update state
+                    state.copy(stock = sheet.copy(items = items, history = history, working = false))
                 }
             } catch (failed: Exception) {
-                mutable.update { state -> state.copy(stock = state.stock?.copy(working = false)) }
+                // Refused for an approval, it stays working until the approval is given or not.
+                val waiting = failed is TillException && failed.approval != null
+                mutable.update { state -> state.copy(stock = state.stock?.copy(working = waiting)) }
                 throw failed
             }
         }
@@ -1757,7 +1796,7 @@ class RegisterModel(
         /** The most a cashier may type, in minor units: ten digits. */
         const val MAX_TYPED = 9_999_999_999L
 
-        /** The most a stock quantity typed may be: a million of its unit, or of thousandths. */
+        /** The most a stock quantity typed may be: about a billion each, or a million of a measure. */
         const val MAX_STOCK = 999_999_999L
 
         /** The most of an item the sheet rings at once. */

@@ -3731,4 +3731,16 @@ BUGS = [
         "    if since(4) {\n        FORMAT_STOCK",
     ),
 
+    (
+        "stock: too much at once isn't refused",
+        "src/stock/commands.rs",
+        "        if event.quantity().micros().unsigned_abs() > MAX_QUANTITY {",
+        "        if event.quantity().micros().unsigned_abs() > MAX_QUANTITY.saturating_mul(1_000) {",
+    ),
+    (
+        "stock: a shared count order ignores the event",
+        "src/stock/state.rs",
+        "        (Some(first), Some(second)) => count_order(&first, a.hlc, &second, b.hlc) == Ordering::Less,",
+        "        (Some(first), Some(second)) => first.as_of < second.as_of,",
+    ),
 ]

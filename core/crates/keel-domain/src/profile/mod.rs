@@ -314,9 +314,9 @@ impl Profile {
         {
             return Err(ProfileError::Format(format));
         }
-        // Format 2 has roles, and format 1 none: its key 12 is unknown. Formats 3 and 4 have them
+        // Format 2 has roles, and format 1 none: its key 12 is unknown. Formats 3 to 5 have them
         // or not, and a kitchen or not; keys 12 and 13 are unknown before them, and key 14,
-        // tipping, before format 4.
+        // tipping, before format 4. Format 5 adds nothing but that a role may adjust stock.
         let roles = match format {
             FORMAT_ROLES => {
                 let roles: Vec<Role> = fields.required(key::ROLES, "roles")?;
@@ -363,8 +363,8 @@ impl Profile {
         };
         fields.finish()?;
         // A profile has one encoding: the earliest format that holds it. Allergens need format 3
-        // or later, and a role that may resolve a payment format 4, which older kernels refuse
-        // whole rather than misread.
+        // or later, a role that may resolve a payment format 4, and one that may adjust stock
+        // format 5, which older kernels refuse whole rather than misread.
         if format != format_of(&data) {
             return Err(ProfileError::Invalid(
                 "a profile not in the earliest format that holds it",

@@ -1195,14 +1195,17 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
                 )
             }
         }
-        // Back to stock, unless it can't be sold again: then it is wasted (ADR-0036).
+        // Back to stock, unless it can't be sold again: then it is wasted (ADR-0036). It changes
+        // nothing for an item whose stock isn't tracked.
         Row(verticalAlignment = Alignment.CenterVertically) {
             FilterChip(
                 selected = sheet.restock,
                 onClick = { model.returnToStock(!sheet.restock) },
-                label = { Text(if (sheet.restock) "Goes back to stock" else "Doesn't go back to stock") },
+                // The chip reads the same chosen or not; its tick says which. Found in review.
+                label = { Text("Back to stock") },
                 modifier = Modifier.testTag("return:restock"),
             )
+            if (!sheet.restock) Text("  Not back to stock: recorded wasted", style = MaterialTheme.typography.bodySmall)
         }
         Button(
             onClick = model::confirmReturn,

@@ -11,6 +11,10 @@ use super::state::Stock;
 use crate::codec::PayloadError;
 use crate::schema::{SchemaError, Unrecordable, check_recordable};
 
+/// The most a movement or count may record, in millionths of its unit: a billion of it. Found in
+/// review: a barcode scanned as a quantity, received twice, overflowed every level of the item.
+pub const MAX_QUANTITY: u64 = 1_000_000_000_000_000;
+
 /// What a device asks to record of an item's stock.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StockCommand {
@@ -36,6 +40,9 @@ pub enum StockError {
     /// A count as of a time after it is made.
     #[error("a count is as of a time no later than now")]
     CountedLater,
+    /// More than [`MAX_QUANTITY`] of the unit, as a barcode scanned into the quantity would be.
+    #[error("more than a billion at once")]
+    TooMuch,
     /// The event wouldn't satisfy its schema, such as a quantity of zero.
     #[error("invalid event: {0}")]
     Invalid(PayloadError),
@@ -70,6 +77,9 @@ impl Stock {
             StockCommand::Count(counted) => StockEvent::Counted(counted),
         };
         event.validate().map_err(StockError::Invalid)?;
+        if event.quantity().micros().unsigned_abs() > MAX_QUANTITY {
+            return Err(StockError::TooMuch);
+        }
         if self.location().is_some_and(|known| known != location) {
             return Err(StockError::WrongLocation);
         }

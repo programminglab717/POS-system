@@ -69,6 +69,9 @@ pub struct StockItem {
     pub available: StockQuantity,
     /// When it was last counted, microseconds since the Unix epoch, if it was.
     pub counted_at: Option<i64>,
+    /// What a person should look at: records of its stock that didn't count, as one in another
+    /// unit.
+    pub conflicts: u64,
 }
 
 fn quantity(quantity: keel_types::Quantity, text: String) -> StockQuantity {
@@ -84,6 +87,7 @@ impl From<&runtime::StockView> for StockItem {
             reserved: quantity(view.reserved, view.reserved_text.clone()),
             available: quantity(view.available, view.available_text.clone()),
             counted_at: view.counted_at.map(keel_types::Timestamp::as_micros),
+            conflicts: view.conflicts,
         }
     }
 }

@@ -7,7 +7,8 @@ use keel_domain::order::Reason;
 use keel_domain::refs::Variant;
 use keel_domain::staff::{Action, Request};
 use keel_domain::stock::{
-    Entry, EntryKind, Flow, Movement, Stock, StockCommand, StockCounted, StockMoved, levels,
+    Entry, EntryKind, Flow, Movement, Stock, StockCommand, StockCounted, StockMoved,
+    count_precedes, levels, time_of,
 };
 use keel_events::keys::Signer;
 use keel_types::{BusinessDate, Clock, Entropy, Id, Quantity, Timestamp, Unit};
@@ -38,6 +39,10 @@ pub struct StockView {
     pub available_text: String,
     /// When it was last counted, if it was.
     pub counted_at: Option<Timestamp>,
+    /// What a person should look at: its stock's events that didn't apply, as one in another
+    /// unit, and sales or returns in another unit, which count for nothing (ADR-0036). Found in
+    /// review: nothing said so.
+    pub conflicts: u64,
 }
 
 /// What moved an item's stock: a movement, a count, a sale or a return.
@@ -137,9 +142,18 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         as_of: Option<Timestamp>,
         note: Option<Note>,
     ) -> Result<StockView, RuntimeError> {
-        let as_of = as_of.unwrap_or_else(|| self.clock.now());
+        // As of when it is recorded, by the clock its event is stamped with, which sales are
+        // timed by too: found in review, a device's clock behind the log's took a sale twice.
+        let as_of = as_of.unwrap_or_else(|| self.recorded_now());
         let command = StockCommand::Count(StockCounted { quantity, as_of, note });
         self.record_stock(variant, command, true)
+    }
+
+    /// Now, by the clock the next event is stamped with: the device's, or the log's latest HLC
+    /// if that is ahead, as after hearing from a device whose clock is fast.
+    fn recorded_now(&self) -> Timestamp {
+        let now = self.clock.now();
+        time_of(self.store.clock()).map_or(now, |logged| logged.max(now))
     }
 
     fn record_stock(
@@ -154,8 +168,10 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         }
         let id: Id<Stock> = variant.cast();
         let location = self.location();
-        // The stock's own rules come before an approval is asked for what they would refuse.
-        self.store.load(Stock::new(id))?.decide(location, meta.now, command.clone())?;
+        // The stock's own rules come before an approval is asked for what they would refuse. A
+        // count is as of no later than its event's time, by the log's clock.
+        let now = self.recorded_now().max(meta.now);
+        self.store.load(Stock::new(id))?.decide(location, now, command.clone())?;
         let granted = if gated {
             self.gate(Request::of(Action::StockAdjust), Some(id.cast()))?
         } else {
@@ -164,7 +180,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         let stream = self.approval_stream(granted.as_ref())?;
         self.store.write(|w| -> Result<(), RuntimeError> {
             let meta = crate::staff::approved(w, granted.as_ref(), stream, &meta)?;
-            let event = w.load(Stock::new(id))?.decide(location, meta.now, command)?;
+            let event = w.load(Stock::new(id))?.decide(location, now, command)?;
             append(w, id.cast(), &event, &meta)?;
             Ok(())
         })?;
@@ -179,7 +195,12 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     pub fn stock(&self) -> Result<Vec<StockView>, RuntimeError> {
         let mut views = Vec::new();
         for variant in self.store.tracked_stock()? {
-            views.extend(self.stock_view(variant)?);
+            // An item whose levels overflow is left out, not every item: found in review.
+            match self.stock_view(variant) {
+                Ok(view) => views.extend(view),
+                Err(RuntimeError::Store(keel_store::StoreError::OutOfRange(_))) => {}
+                Err(error) => return Err(error),
+            }
         }
         views.sort_by(|a, b| {
             b.on_hand.is_negative().cmp(&a.on_hand.is_negative()).then_with(|| a.name.cmp(&b.name))
@@ -192,7 +213,11 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// # Errors
     /// [`RuntimeError::Store`] if the store can't be read.
     pub fn stock_view(&self, variant: Id<Variant>) -> Result<Option<StockView>, RuntimeError> {
-        let Some((unit, levels)) = self.store.stock_levels(variant)? else { return Ok(None) };
+        let Some(keel_store::StockLevels { unit, levels, conflicts }) =
+            self.store.stock_levels(variant)?
+        else {
+            return Ok(None);
+        };
         let name = self
             .profile
             .variant_name(variant)
@@ -209,6 +234,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             reserved_text: text(levels.reserved),
             available_text: text(levels.available),
             counted_at: levels.counted.map(|count| count.as_of),
+            conflicts,
         }))
     }
 
@@ -284,18 +310,22 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 .variant_name(variant)
                 .map_or_else(|| variant.to_string(), ToString::to_string);
             let flows = self.store.stock_flows(variant)?;
-            let mut waste = Quantity::zero(unit);
+            // What overflows is left out of the report, not the whole report: found in review.
+            let mut waste = Some(Quantity::zero(unit));
             for entry in &entries {
                 if day.business_date_of(entry.at)? != date {
                     continue;
                 }
                 match entry.kind {
                     EntryKind::Moved(Movement::Wasted, quantity) if quantity.unit() == unit => {
-                        waste = waste.checked_add(quantity)?;
+                        waste = waste.and_then(|waste| waste.checked_add(quantity).ok());
                     }
                     EntryKind::Counted { quantity, as_of } if quantity.unit() == unit => {
-                        let expected = expected_at(unit, &entries, &flows, entry, as_of)?;
-                        let variance = quantity.checked_sub(expected)?;
+                        let Some(expected) = expected_at(unit, &entries, &flows, entry, as_of)
+                        else {
+                            continue;
+                        };
+                        let Ok(variance) = quantity.checked_sub(expected) else { continue };
                         let texts = [quantity, expected, variance].map(|q| self.locale.quantity(q));
                         counts.push(CountVariance {
                             variant,
@@ -309,7 +339,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                     _ => {}
                 }
             }
-            if waste.is_positive() {
+            if let Some(waste) = waste.filter(|waste| waste.is_positive()) {
                 let quantity_text = self.locale.quantity(waste);
                 wasted.push(Wasted { variant, name, quantity: waste, quantity_text });
             }
@@ -319,25 +349,26 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
 }
 
 /// What was expected on hand at `as_of`, the time of the count `count`: the levels of what was
-/// recorded by then, the counts as of an earlier time among them, and what sold up to then.
+/// recorded by then, the counts before it in the order the levels take them among them, and
+/// what sold up to then; `None` if a level overflows.
 fn expected_at(
     unit: Unit,
     entries: &[Entry],
     flows: &[Flow],
     count: &Entry,
     as_of: Timestamp,
-) -> Result<Quantity, RuntimeError> {
+) -> Option<Quantity> {
     let before: Vec<Entry> = entries
         .iter()
         .filter(|entry| entry.event != count.event)
         .filter(|entry| match entry.kind {
-            EntryKind::Counted { as_of: other, .. } => {
-                other < as_of || (other == as_of && entry.hlc < count.hlc)
-            }
+            // As the levels order counts: found in review, two counts with one HLC each left
+            // the other out.
+            EntryKind::Counted { .. } => count_precedes(entry, count),
             EntryKind::Moved(..) => entry.at <= as_of,
         })
         .cloned()
         .collect();
     let flows: Vec<Flow> = flows.iter().filter(|flow| flow.at <= as_of).copied().collect();
-    Ok(levels(unit, &before, &flows)?.on_hand)
+    levels(unit, &before, &flows).ok().map(|levels| levels.on_hand)
 }

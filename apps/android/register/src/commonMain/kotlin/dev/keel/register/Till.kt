@@ -654,6 +654,8 @@ data class StockItem(
     val available: StockAmount,
     /** When it was last counted, microseconds since the epoch, if it was. */
     val countedAt: Long? = null,
+    /** Records of its stock that didn't count, as one in another unit: for a person to look at. */
+    val conflicts: Long = 0,
 )
 
 /** One thing that moved an item's stock: when, what in words, and how much. */

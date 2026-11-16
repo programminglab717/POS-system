@@ -1354,3 +1354,38 @@ fn a_status_query_crosses_as_one() {
     assert!(crossed.status);
     assert_eq!(crossed.key, "0192f0c1-0000-7000-8000-0000000000b1");
 }
+
+/// Stock through the register (ADR-0036): a note goes with a reason, never alone, and the item
+/// shows what didn't count. Found in review: a note alone was dropped.
+#[test]
+fn stock_moves_through_the_register_and_a_note_needs_a_reason() {
+    let scratch = Scratch::new();
+    let register: Arc<Register> = Register::open(config(&scratch)).unwrap();
+    register.sign_in(demo_id(0x501), "1234".into()).unwrap();
+    let item = register
+        .move_stock(demo_id(0x401), StockMovement::Received, 3_000_000, "each".into(), None, None)
+        .unwrap();
+    assert_eq!((item.on_hand.micros, item.conflicts), (3_000_000, 0));
+    assert!(matches!(
+        register.move_stock(
+            demo_id(0x401),
+            StockMovement::Wasted,
+            1_000_000,
+            "each".into(),
+            None,
+            Some("dropped".into()),
+        ),
+        Err(KeelError::InvalidArgument { .. })
+    ));
+    let item = register
+        .move_stock(
+            demo_id(0x401),
+            StockMovement::Wasted,
+            1_000_000,
+            "each".into(),
+            Some("broken".into()),
+            Some("dropped".into()),
+        )
+        .unwrap();
+    assert_eq!(item.on_hand.micros, 2_000_000);
+}

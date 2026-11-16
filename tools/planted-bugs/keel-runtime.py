@@ -1487,7 +1487,19 @@ BUGS = [
     (
         "stock: a return not put back wastes an untracked item",
         "src/returns.rs",
-        "            if tracked.is_some_and(|(unit, _)| unit == each.quantity.unit()) {",
-        "            if tracked.is_none_or(|(unit, _)| unit == each.quantity.unit()) {",
+        "            if self.store.stock_unit(variant)? == Some(each.quantity.unit()) {",
+        "            if self.store.stock_unit(variant)?.is_none_or(|unit| unit == each.quantity.unit()) {",
+    ),
+    (
+        "stock: a count is as of the device's clock",
+        "src/stock.rs",
+        "        let as_of = as_of.unwrap_or_else(|| self.recorded_now());",
+        "        let as_of = as_of.unwrap_or_else(|| self.clock.now());",
+    ),
+    (
+        "stock: two counts as of one time leave each other out",
+        "src/stock.rs",
+        "            EntryKind::Counted { .. } => count_precedes(entry, count),",
+        "            EntryKind::Counted { as_of: other, .. } => other < as_of,",
     ),
 ]
