@@ -302,7 +302,8 @@ designed in an ADR of its own when it begins, built in slices, and reviewed:
    against a simulated terminal until gate G2 chooses the processor (I-01, I-02, I-05, I-07).
    *Status: designed in [ADR-0035](./adr/0035-card-payments.md); done 2026-11-15, reviewed; its
    emulator test waits for CI's minutes, and its connector for gate G2.*
-8. **Inventory**: the movement ledger (K-01).
+8. **Inventory**: the movement ledger (K-01). *Status: designed in
+   [ADR-0036](./adr/0036-inventory.md); being built.*
 9. **The back office**: staff and roles, settings, the dashboard, export (O-01, V-07).
 10. **Training mode, and Spanish** (B-10, B-12, X-01).
 

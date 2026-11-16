@@ -41,5 +41,6 @@ supersedes the old one.
 | [0033](./0033-availability.md) | Availability: an 86 as an event per item, the latest by HLC winning, in-store within 10 s | Accepted |
 | [0034](./0034-the-kitchen.md) | The kitchen: tickets per station, routed by the profile, shown on a KDS and printed when it isn't | Accepted |
 | [0035](./0035-card-payments.md) | Card payments: a sale through a semi-integrated terminal, as an effect, resolved before any retry | Accepted |
+| [0036](./0036-inventory.md) | Inventory: a movement ledger per item, sales read from orders, counts as of a time | Proposed |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

@@ -97,7 +97,18 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
-The MVP's step 8, inventory: the movement ledger (K-01). Next: its design.
+The MVP's step 8, inventory: the movement ledger (K-01), and putting returned stock back, designed
+in [ADR-0036](./adr/0036-inventory.md) (proposed). Its slices:
+
+1. **The domain and the store**: the stock aggregate (`stock.moved`, `stock.counted`), the
+   `stock.adjust` action with profile format 5 and `approval.granted` v3, the projections of
+   movements and of what orders sold and returned, and the levels' query.
+2. **The register**: receiving, adjusting, wasting, counting, reserving and releasing; returns
+   that don't go back to stock; the levels, an item's movements and the day's waste and variance;
+   the bindings.
+3. **The shell**: the Android register's stock screen, and the return's choice.
+
+Next: slice 1.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
 three of step 2 the scrolling ticket pane should mend.
