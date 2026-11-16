@@ -1708,7 +1708,7 @@ pub(crate) fn hlc(bytes: &[u8]) -> Result<Hlc, StoreError> {
         "stock: a return the fold didn't apply puts stock back",
         "src/stock.rs",
         "                    Some(before) => after.checked_sub(before),",
-        "                    Some(_) => Ok(after),",
+        "                    Some(_) => after.checked_sub(Quantity::zero(after.unit())),",
     ),
     (
         "stock: a close takes again what an earlier close took",
