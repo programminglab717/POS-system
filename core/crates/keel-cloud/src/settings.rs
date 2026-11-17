@@ -560,6 +560,17 @@ mod tests {
         assert_eq!((data.business_day.cutoff_hour, data.business_day.cutoff_minute), (5, 30));
         assert_eq!(view(&written, version(&written)).settings.taxes[0].rate, "9.25");
         assert!(data.tipping.is_none());
+        // Asked on the terminal, it reads back so: found by a planted bug.
+        let mut terminal = changed.clone();
+        terminal.settings.tipping =
+            Some(TippingJson { presets: vec![1_500, 2_000], prompt: "terminal".to_owned() });
+        let written = apply(&profile, &terminal).unwrap();
+        assert_eq!(
+            written.data().tipping.as_ref().map(|tipping| tipping.prompt),
+            Some(TipPrompt::Terminal)
+        );
+        let read = view(&written, version(&written)).settings.tipping.unwrap();
+        assert_eq!((read.presets, read.prompt.as_str()), (vec![1_500, 2_000], "terminal"));
         assert_eq!(data.catalog, profile.data().catalog);
         assert_eq!((&data.team, &data.roles), (&profile.data().team, &profile.data().roles));
     }
