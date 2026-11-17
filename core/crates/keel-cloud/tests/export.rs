@@ -217,10 +217,14 @@ fn what_isnt_an_export_is_refused_with_its_line() {
             .contains("keel.export")
     );
     assert!(
-        refused("{\"type\":\"manifest\",\"format\":\"keel.export\",\"version\":1}\nnot json\n")
+        refused("{\"type\":\"manifest\",\"format\":\"keel.export\",\"version\":1,\"events\":0}\nnot json\n")
             .contains("line 2")
     );
-    let forged = "{\"type\":\"manifest\",\"format\":\"keel.export\",\"version\":1}\n{\"type\":\"event\",\"signed\":\"AAAA\"}\n";
+    // No manifest, or cut short, is refused: found in review, each imported as if whole.
+    assert!(refused("").contains("no manifest"));
+    let short = "{\"type\":\"manifest\",\"format\":\"keel.export\",\"version\":1,\"events\":2}\n{\"type\":\"event\",\"signed\":\"AAAA\"}\n";
+    assert!(refused(short).contains("cut short"));
+    let forged = "{\"type\":\"manifest\",\"format\":\"keel.export\",\"version\":1,\"events\":1}\n{\"type\":\"event\",\"signed\":\"AAAA\"}\n";
     let imported = import(&mut fresh, &registry, Cursor::new(forged.as_bytes().to_vec())).unwrap();
     assert_eq!(
         (imported.stored, imported.quarantined),
@@ -255,9 +259,23 @@ fn escrow_writes_the_day_once_and_keeps_seven() {
         None,
         "written once a day"
     );
+    // Taken away by the escrow agent, it isn't written again: found in review, it was, every
+    // ten minutes. And a partial file left by a failed day goes.
+    std::fs::rename(&written, escrow_dir.0.join("taken.jsonl")).unwrap();
+    std::fs::write(held.join("2026-01-09.jsonl.partial"), "half").unwrap();
+    assert_eq!(
+        keel_cloud::export::escrow(&location, &escrow_dir.0).unwrap(),
+        None,
+        "the agent took it"
+    );
+    assert!(!held.join("2026-01-09.jsonl.partial").exists());
+    std::fs::rename(escrow_dir.0.join("taken.jsonl"), &written).unwrap();
     let mut kept: Vec<String> = std::fs::read_dir(&held)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| {
+            std::path::Path::new(name).extension().is_some_and(|extension| extension == "jsonl")
+        })
         .collect();
     kept.sort();
     assert_eq!(kept.len(), keel_cloud::export::ESCROW_KEPT, "{kept:?}");
@@ -309,4 +327,48 @@ fn the_dashboard_has_the_day_and_a_week_on_has_it_as_the_week_before() {
     let later = keel_cloud::dashboard::dashboard(&register, week_on, now).unwrap();
     assert_eq!((later.day.orders, later.week_before.orders), (0, 3));
     assert_eq!(later.week_before.total, report.total.money.minor());
+}
+
+/// The independent reader folds a payment as the kernel does (ADR-0037, decision 4): the first
+/// capture after the first initiation stands, whatever follows; a capture after a failure still
+/// applies; nothing before an initiation does. Found in review: it took the last of each.
+#[test]
+fn the_reader_folds_payments_as_the_kernel_does() {
+    let event = |payment: &str, seq: u64, schema: &str, payload: Value| {
+        serde_json::json!({
+            "type": "event", "stream": { "kind": "payment", "id": payment }, "device": "d1",
+            "seq": seq, "hlc": { "wallMs": seq, "logical": 0 }, "businessDate": "2026-11-13",
+            "schema": { "name": schema, "version": 1 }, "payload": payload,
+        })
+    };
+    let initiated = |tender: u64| serde_json::json!({ "tender": tender, "amount": [500, "USD"] });
+    let captured = |minor: i64| serde_json::json!({ "amount": [minor, "USD"] });
+    let reason = serde_json::json!({ "reason": "declined" });
+    let lines = [
+        serde_json::json!({ "type": "manifest", "format": "keel.export", "version": 1, "location": "l", "events": 0 }),
+        // Captured, then voided and captured again: the first capture stands.
+        event("p1", 1, "payment.initiated", initiated(0)),
+        event("p1", 2, "payment.captured", captured(500)),
+        event("p1", 3, "payment.voided", reason.clone()),
+        event("p1", 4, "payment.captured", captured(900)),
+        event("p1", 5, "payment.initiated", initiated(1)),
+        // Failed, then captured: charged after all.
+        event("p2", 6, "payment.initiated", initiated(1)),
+        event("p2", 7, "payment.failed", reason),
+        event("p2", 8, "payment.captured", captured(300)),
+        // A capture before any initiation is nothing.
+        event("p3", 9, "payment.captured", captured(700)),
+        event("p3", 10, "payment.initiated", initiated(0)),
+    ];
+    let text: String = lines.iter().map(|line| line.to_string() + "\n").collect();
+    let dir = dir("reader");
+    let path = dir.0.join("export.jsonl");
+    std::fs::write(&path, text).unwrap();
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tools/export/read.py");
+    let output =
+        std::process::Command::new("python3").arg("-I").arg(script).arg(&path).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let read: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let day = &read["days"]["2026-11-13"];
+    assert_eq!(*day, serde_json::json!({ "cash": [1, 500], "card": [1, 300] }), "{read}");
 }

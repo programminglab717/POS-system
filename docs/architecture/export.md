@@ -15,7 +15,7 @@ JSON Lines: UTF-8, one JSON object per line, each with a `type`.
    {"type": "manifest", "format": "keel.export", "version": 1, "location": "…",
     "exportedAt": 1794560400000000, "events": 1234,
     "schemas": [{"name": "payment.captured", "version": 2,
-                 "fields": [{"key": 1, "name": "amount", "doc": "…"}, …]}, …]}
+                 "fields": [{"key": 1, "name": "amount"}, …]}, …]}
    ```
 
    `exportedAt` is microseconds since the Unix epoch. `schemas` lists every schema version the
@@ -28,7 +28,11 @@ JSON Lines: UTF-8, one JSON object per line, each with a `type`.
    {"type": "profile", "version": "…", "settings": {…}, "catalog": {…}, "staff": {…}}
    ```
 
-3. **Every event**, after, by device and then by its sequence on the device:
+3. **Every event**, after, by device and then by its sequence on the device, but the
+   profile's publications (`profile.chunk`, `profile.published`): their chunks hold the team's
+   PIN hashes and salts, in their payload and in the bytes their device signed alike, so they
+   can't be redacted and are left out. The profile line is the profile, without them. Only the
+   cloud publishes, and its log holds nothing else, so leaving them out leaves no log with a gap.
 
    ```json
    {"type": "event", "id": "…", "stream": {"kind": "payment", "id": "…"},
@@ -57,7 +61,7 @@ them:
 |---|---|
 | An integer | A JSON number. Integers can be beyond 2^53: read them as 64-bit. |
 | Text, a boolean, nothing | A string, a boolean, `null`. |
-| 16 bytes, an identifier | Its text, lowercase and hyphenated, as identifiers are written everywhere in the export; 16 bytes that aren't an identifier, as hex. |
+| 16 bytes, an identifier | Its text, lowercase and hyphenated, as identifiers are written everywhere in the export; 16 bytes that aren't an identifier, as hex. Every field of 16 bytes an exported schema has is an identifier. |
 | Other bytes | Lowercase hex. |
 | An amount of money | `[minor units, "ISO 4217 code"]`: `[450, "USD"]` is $4.50. |
 | A quantity | `[millionths, "unit code"]`: `[1500000, "kg"]` is 1.5 kg. |
@@ -67,6 +71,13 @@ them:
 
 A field that is absent from a payload is absent from the export: optional fields are left out,
 never written as `null`.
+
+## Importing one
+
+An import reads the manifest first, then each event's `signed` bytes, a line at a time, each
+verified as sync verifies an event from another device and stored if it is the next of its
+device's log. A file with no manifest, or with fewer or more events than its manifest says, as
+one cut short, is refused, after storing what it held.
 
 ## Reading one
 

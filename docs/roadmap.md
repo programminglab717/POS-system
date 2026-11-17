@@ -306,7 +306,7 @@ designed in an ADR of its own when it begins, built in slices, and reviewed:
    [ADR-0036](./adr/0036-inventory.md); done 2026-11-16, reviewed; its emulator test waits for
    CI's minutes.*
 9. **The back office**: staff and roles, settings, the dashboard, export (O-01, V-07). *Status:
-   designed in [ADR-0037](./adr/0037-the-back-office.md); being built.*
+   designed in [ADR-0037](./adr/0037-the-back-office.md); done 2026-11-17, reviewed.*
 10. **Training mode, and Spanish** (B-10, B-12, X-01).
 
 ## 9. Decision gates

@@ -30,10 +30,26 @@ const ORDER_MODES: [string, string][] = [
   ["delivery", "Delivery"],
   ["drive_thru", "Drive-thru"],
   ["curbside", "Curbside"],
+  // Every mode the server knows: found in review, a route for these showed nothing ticked.
+  ["ship", "Shipping"],
+  ["service", "Service"],
 ];
 
 function message(failed: unknown): string {
   return failed instanceof Error ? failed.message : String(failed);
+}
+
+/** Minutes typed, as "1.5", in whole seconds: found in review, a fraction was dropped. */
+function seconds(text: string): number {
+  const minutes = Number(text.trim());
+  return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60) : 0;
+}
+
+/** Percentages typed, as "15, 18, 20", in basis points; `null` if one isn't a percentage. */
+function presets(text: string): number[] | null {
+  const parts = text.split(",").map((part) => part.trim()).filter((part) => part !== "");
+  const points = parts.map((part) => (/^\d+(\.\d{1,2})?$/.test(part) ? Math.round(Number(part) * 100) : NaN));
+  return points.every((point) => Number.isInteger(point) && point > 0 && point <= 10_000) ? points : null;
 }
 
 function body(settings: Settings): SettingsBody {
@@ -99,16 +115,28 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
   const [changed, setChanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  // The tip percentages as typed: parsed as they're left, so a comma or a decimal point can be
+  // typed. Found in review: each key was parsed, and "12." or "15," undone.
+  const [tips, setTips] = useState("");
+  // Counts the reads, so inputs left to the browser start again from what was read.
+  const [loads, setLoads] = useState(0);
 
+  /** Reads the settings again: `true` if it could. */
   const load = () =>
     Promise.all([api.settings(location), api.catalog(location)])
       .then(([found, items]) => {
         setRead(found);
         setSettings(body(found));
         setCatalog(items);
+        setTips(found.tipping?.presets.map((preset) => preset / 100).join(", ") ?? "");
         setChanged(false);
+        setLoads((n) => n + 1);
+        return true;
       })
-      .catch((failed: unknown) => setStatus({ kind: "error", text: message(failed) }));
+      .catch((failed: unknown) => {
+        setStatus({ kind: "error", text: message(failed) });
+        return false;
+      });
   useEffect(() => {
     void load();
   }, [location]);
@@ -121,7 +149,13 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
   };
   const kitchen = (change: (kitchen: KitchenSetting) => KitchenSetting) =>
     update((s) => (s.kitchen ? { ...s, kitchen: change(s.kitchen) } : s));
-  const edit = (): SettingsEdit => ({ base: read.version, ...settings });
+  // Blank address lines are none: found in review, a cleared address was refused.
+  const edit = (): SettingsEdit => ({
+    base: read.version,
+    ...settings,
+    address: settings.address.map((line) => line.trim()).filter((line) => line !== ""),
+  });
+  const badTips = settings.tipping !== undefined && presets(tips) === null;
   const run = async (publish: boolean) => {
     setBusy(true);
     try {
@@ -144,7 +178,16 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
     }
   };
   const categories = catalog?.taxCategories.map((category) => category.id) ?? [];
+  // A tax category in words: the items in it. Found in review: it read as its identifier's end.
+  const categoryWords = (category: string) => {
+    const names = (catalog?.items ?? []).filter((item) => item.taxCategory === category).map((item) => item.name);
+    return names.length === 0 ? "(no item)" : names.length > 3 ? `${names.slice(0, 3).join(", ")}…` : names.join(", ");
+  };
   const items = catalog?.items ?? [];
+  // Every modifier, once: found in review, a route's modifiers weren't shown at all.
+  const modifiers = (catalog?.groups ?? [])
+    .flatMap((group) => group.modifiers)
+    .filter((modifier, at, all) => all.findIndex((known) => known.id === modifier.id) === at);
 
   return (
     <div className="editor">
@@ -157,23 +200,28 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
           {changed && <span className="badge">Unpublished changes</span>}
         </div>
         <div className="actions">
-          <button disabled={busy || !changed} onClick={() => void load().then(() => setStatus(null))}>
+          {/* A reload that fails keeps its error: found in review, Discard seemed to do nothing. */}
+          <button disabled={busy || !changed} onClick={() => void load().then((ok) => ok && setStatus(null))}>
             Discard
           </button>
-          <button disabled={busy} onClick={() => void run(false)}>
+          <button disabled={busy || badTips} onClick={() => void run(false)}>
             Check
           </button>
-          <button className="primary" disabled={busy || !changed} onClick={() => void run(true)}>
+          <button className="primary" disabled={busy || !changed || badTips} onClick={() => void run(true)}>
             Publish
           </button>
         </div>
       </div>
+      {badTips && <p className="error banner">Tip percentages are one to four, from 0.01 to 100, with commas between.</p>}
       {status && (
         <p role="status" className={status.kind === "error" ? "error banner" : "ok banner"}>
           {status.text}
         </p>
       )}
 
+      {/* Nothing is typed while it is checked or published: found in review, the reload after
+          publishing overwrote what was. */}
+      <fieldset className="plain" disabled={busy} key={loads}>
       <section className="card" aria-label="The location">
         <div className="heading">
           <h2>The location</h2>
@@ -216,6 +264,7 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
             Add tax
           </button>
         </div>
+        <div className="scroll">
         <table aria-label="Taxes">
           <thead>
             <tr>
@@ -233,7 +282,7 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
               return (
                 <tr key={tax.id}>
                   <td>
-                    <input aria-label="Tax name" value={tax.name} onChange={(event) => change({ ...tax, name: event.target.value })} />
+                    <input aria-label={`Name of tax ${index + 1}`} value={tax.name} onChange={(event) => change({ ...tax, name: event.target.value })} />
                   </td>
                   <td>
                     <input
@@ -259,7 +308,7 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
                             })
                           }
                         />
-                        {category.slice(-6)}
+                        {categoryWords(category)}
                       </label>
                     ))}
                   </td>
@@ -292,6 +341,7 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
             })}
           </tbody>
         </table>
+        </div>
         <div className="row">
           <label>
             Tax is rounded
@@ -363,6 +413,7 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
               onChange={(event) =>
                 update((s) => {
                   const { tipping: _tipping, ...rest } = s;
+                  if (event.target.checked) setTips("15, 18, 20");
                   return event.target.checked ? { ...rest, tipping: { presets: [1500, 1800, 2000], prompt: "screen" } } : rest;
                 })
               }
@@ -376,13 +427,13 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
               Percentages offered, lowest first
               <input
                 aria-label="Tip percentages"
-                value={settings.tipping.presets.map((preset) => preset / 100).join(", ")}
+                aria-invalid={badTips}
+                value={tips}
                 onChange={(event) => {
-                  const presets = event.target.value
-                    .split(",")
-                    .map((part) => Math.round(Number(part.trim()) * 100))
-                    .filter((preset) => Number.isFinite(preset) && preset > 0);
-                  update((s) => (s.tipping ? { ...s, tipping: { ...s.tipping, presets } } : s));
+                  const text = event.target.value;
+                  setTips(text);
+                  const points = presets(text);
+                  update((s) => (s.tipping && points ? { ...s, tipping: { ...s.tipping, presets: points } } : s));
                 }}
               />
             </label>
@@ -434,6 +485,7 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
                 Add station
               </button>
             </div>
+            <div className="scroll">
             <table aria-label="Stations">
               <thead>
                 <tr>
@@ -451,10 +503,20 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
                   return (
                     <tr key={station.id}>
                       <td>
-                        <input aria-label="Station name" value={station.name} onChange={(event) => change({ ...station, name: event.target.value })} />
+                        <input aria-label={`Name of station ${index + 1}`} value={station.name} onChange={(event) => change({ ...station, name: event.target.value })} />
                       </td>
                       <td>
-                        <input type="checkbox" aria-label={`${station.name} is expo`} checked={station.expo} onChange={(event) => change({ ...station, expo: event.target.checked })} />
+                        <input type="checkbox" aria-label={`${station.name} is expo`} checked={station.expo} onChange={(event) => {
+                            // An expo station gets every line: it is no default, and no route's.
+                            // Found in review: one kept as the default was refused unseen.
+                            const expo = event.target.checked;
+                            kitchen((k) => {
+                              const stations = k.stations.map((s, at) => (at === index ? { ...station, expo } : s));
+                              const { defaultStation, ...rest } = k;
+                              const kept = { ...rest, stations };
+                              return defaultStation && !(expo && defaultStation === station.id) ? { ...kept, defaultStation } : kept;
+                            });
+                          }} />
                       </td>
                       <td>
                         <input type="checkbox" aria-label={`${station.name} has a screen`} checked={station.screen} onChange={(event) => change({ ...station, screen: event.target.checked })} />
@@ -473,13 +535,16 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
                         <button
                           className="quiet"
                           aria-label={`Remove ${station.name}`}
-                          onClick={() =>
+                          onClick={() => {
+                            const routed = settings.kitchen?.routes.filter((route) => route.station === station.id).length ?? 0;
+                            // Its routes go with it: said first. Found in review.
+                            if (routed > 0 && !window.confirm(`${station.name} has ${routed} route${routed === 1 ? "" : "s"}, which go too. Remove it?`)) return;
                             kitchen((k) => {
                               const { defaultStation, ...rest } = k;
                               const kept = { ...rest, stations: k.stations.filter((_, at) => at !== index), routes: k.routes.filter((route) => route.station !== station.id) };
                               return defaultStation && defaultStation !== station.id ? { ...kept, defaultStation } : kept;
-                            })
-                          }
+                            });
+                          }}
                         >
                           ×
                         </button>
@@ -489,6 +554,7 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
                 })}
               </tbody>
             </table>
+            </div>
             <div className="row">
               <label>
                 What no route names goes to
@@ -515,18 +581,18 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
                 Late-ish after (minutes)
                 <input
                   className="count"
-                  inputMode="numeric"
-                  value={settings.kitchen.lateIshSeconds / 60}
-                  onChange={(event) => kitchen((k) => ({ ...k, lateIshSeconds: (Number(event.target.value.replace(/\D/g, "")) || 0) * 60 }))}
+                  inputMode="decimal"
+                  defaultValue={settings.kitchen.lateIshSeconds / 60}
+                  onBlur={(event) => kitchen((k) => ({ ...k, lateIshSeconds: seconds(event.target.value) }))}
                 />
               </label>
               <label>
                 Late after (minutes)
                 <input
                   className="count"
-                  inputMode="numeric"
-                  value={settings.kitchen.lateSeconds / 60}
-                  onChange={(event) => kitchen((k) => ({ ...k, lateSeconds: (Number(event.target.value.replace(/\D/g, "")) || 0) * 60 }))}
+                  inputMode="decimal"
+                  defaultValue={settings.kitchen.lateSeconds / 60}
+                  onBlur={(event) => kitchen((k) => ({ ...k, lateSeconds: seconds(event.target.value) }))}
                 />
               </label>
               <label>
@@ -546,9 +612,9 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
             <div className="heading">
               <h3>Routes</h3>
               <button
-                disabled={settings.kitchen.stations.length === 0}
+                disabled={!settings.kitchen.stations.some((station) => !station.expo)}
                 onClick={() =>
-                  kitchen((k) => ({ ...k, routes: [...k.routes, { station: k.stations[0]?.id ?? "", items: [], modifiers: [], modes: [] }] }))
+                  kitchen((k) => ({ ...k, routes: [...k.routes, { station: k.stations.find((station) => !station.expo)?.id ?? "", items: [], modifiers: [], modes: [] }] }))
                 }
               >
                 Add route
@@ -558,12 +624,13 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
               const change = (next: typeof route) => kitchen((k) => ({ ...k, routes: k.routes.map((r, at) => (at === index ? next : r)) }));
               const toggle = (list: string[], value: string, on: boolean) => (on ? [...list, value] : list.filter((known) => known !== value));
               return (
-                <div key={index} className="card" aria-label={`Route ${index + 1}`}>
+                <div key={index} className="card" role="group" aria-label={`Route ${index + 1}`}>
                   <div className="heading">
                     <label className="inline">
                       Station
                       <select value={route.station} onChange={(event) => change({ ...route, station: event.target.value })}>
-                        {settings.kitchen?.stations.map((station) => (
+                        {/* No expo station: it gets every line already, and the kernel refuses it. */}
+                        {settings.kitchen?.stations.filter((station) => !station.expo || station.id === route.station).map((station) => (
                           <option key={station.id} value={station.id}>
                             {station.name}
                           </option>
@@ -590,6 +657,21 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
                       </label>
                     ))}
                   </div>
+                  {modifiers.length > 0 && (
+                    <div className="buttons">
+                      <span className="muted">Modifiers it makes on their own:</span>
+                      {modifiers.map((modifier) => (
+                        <label key={modifier.id} className="check">
+                          <input
+                            type="checkbox"
+                            checked={route.modifiers.includes(modifier.id)}
+                            onChange={(event) => change({ ...route, modifiers: toggle(route.modifiers, modifier.id, event.target.checked) })}
+                          />
+                          {modifier.name}
+                        </label>
+                      ))}
+                    </div>
+                  )}
                   <div className="buttons">
                     <span className="muted">Only for:</span>
                     {ORDER_MODES.map(([mode, words]) => (
@@ -610,6 +692,7 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
           </>
         )}
       </section>
+      </fieldset>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Api, ApiError, type LocationInfo } from "./api";
 import { CatalogEditor } from "./CatalogEditor";
 import { Dashboard } from "./Dashboard";
@@ -94,8 +94,10 @@ export function App() {
     };
   }, [token]);
 
+  // One client per token: found in review, a new one each render made the dashboard ask again.
+  const api = useMemo(() => new Api(token ?? ""), [token]);
+  const [exporting, setExporting] = useState(false);
   if (!token) return <SignIn onSignedIn={setToken} refused={refused} />;
-  const api = new Api(token);
   const current = locations?.find((found) => found.id === location);
   return (
     <div className="shell">
@@ -130,22 +132,28 @@ export function App() {
           <button
             className="quiet"
             title="Everything the location's devices wrote, in an open format"
+            disabled={exporting}
             onClick={() => {
               setError(null);
+              setExporting(true);
               api
                 .export(current.id)
                 .then((blob) => {
                   const link = document.createElement("a");
                   link.href = URL.createObjectURL(blob);
-                  link.download = `keel-${current.name.replace(/[^A-Za-z0-9]+/g, "-")}-${new Date().toISOString().slice(0, 10)}.jsonl`;
+                  // The local date: found in review, an evening's export had tomorrow's.
+                  const now = new Date();
+                  const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+                  link.download = `keel-${current.name.replace(/[^A-Za-z0-9]+/g, "-")}-${day}.jsonl`;
                   link.click();
                   // Let go of it once the browser has started saving it.
                   setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
                 })
-                .catch((failed: unknown) => setError(failed instanceof Error ? failed.message : String(failed)));
+                .catch((failed: unknown) => setError(failed instanceof Error ? failed.message : String(failed)))
+                .finally(() => setExporting(false));
             }}
           >
-            Export
+            {exporting ? "Exporting…" : "Export"}
           </button>
         )}
         <button

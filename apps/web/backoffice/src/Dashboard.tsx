@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, DashboardData, DayFigures, Device } from "./api";
 import { format } from "./money";
 
@@ -13,9 +13,10 @@ function minutes(seconds: number | null): string {
 
 /** How `now` compares with `then`, as a week before: "+12%", or nothing to compare. */
 function change(now: number, then: number): string {
-  if (then === 0) return now === 0 ? "same as a week before" : "none a week before";
+  // Against the whole of that day, so a day not over reads low: said so. Found in review.
+  if (then === 0) return now === 0 ? "none a week before either" : "none a week before";
   const percent = Math.round(((now - then) / Math.abs(then)) * 100);
-  return `${percent >= 0 ? "+" : ""}${percent}% on a week before`;
+  return `${percent >= 0 ? "+" : ""}${percent}% on all of a week before`;
 }
 
 function Stat({ label, value, compare }: { label: string; value: string; compare?: string | undefined }) {
@@ -55,14 +56,21 @@ export function Dashboard({ api, location }: { api: Api; location: string }) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [date, setDate] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Only the latest request's answer is shown: found in review, one for today answering after
+  // one for the day picked showed today's under the other's date.
+  const latest = useRef(0);
   const load = useCallback(() => {
+    const asked = ++latest.current;
     Promise.all([api.dashboard(location, date || undefined), api.replication(location)])
       .then(([found, replication]) => {
+        if (asked !== latest.current) return;
         setData(found);
         setDevices(replication.devices);
         setError(null);
       })
-      .catch((failed: unknown) => setError(failed instanceof Error ? failed.message : String(failed)));
+      .catch((failed: unknown) => {
+        if (asked === latest.current) setError(failed instanceof Error ? failed.message : String(failed));
+      });
   }, [api, location, date]);
   useEffect(() => {
     load();

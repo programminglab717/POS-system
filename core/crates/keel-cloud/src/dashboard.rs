@@ -35,7 +35,8 @@ pub struct Dashboard {
     pub day: DayFigures,
     /// The same weekday a week before, to compare.
     pub week_before: DayFigures,
-    /// The orders closed in each hour of the location's local time, the hours with none left out.
+    /// The orders closed in each hour of the location's local time, the hours with none left out,
+    /// from the hour its business day begins: with a cutoff at 4:00, 3:00 comes last.
     pub hours: Vec<HourSales>,
     /// The items that sold the most by amount, at most [`TOP_ITEMS`].
     pub top_items: Vec<ItemSales>,
@@ -145,6 +146,23 @@ fn closed_at(runtime: &CloudRuntime, id: Id<Order>) -> Result<Option<Timestamp>,
     Ok(closed)
 }
 
+/// Puts `hours` in the order of a business day that begins at `cutoff`: its hour first, the hours
+/// before it, after midnight, last.
+fn in_day_order(hours: &mut [HourSales], cutoff: u8) {
+    hours.sort_by_key(|sales| (sales.hour < cutoff, sales.hour));
+}
+
+/// The median of `sorted`, whose middle index is `middle`: the mean of the two middle ones of an
+/// even number, rounded down.
+fn median(sorted: &[u64], middle: usize) -> Option<u64> {
+    let upper = *sorted.get(middle)?;
+    if sorted.len() % 2 == 1 {
+        return Some(upper);
+    }
+    let lower = *sorted.get(middle.checked_sub(1)?)?;
+    lower.checked_add(upper.saturating_sub(lower).checked_div(2)?)
+}
+
 fn seconds_between(later: Timestamp, earlier: Timestamp) -> Option<u64> {
     later.duration_since(earlier).map(|duration| duration.as_secs())
 }
@@ -209,10 +227,16 @@ pub fn dashboard(
         minor_units: currency.minor_units(),
         day: figures(&report)?,
         week_before: figures(&before)?,
-        hours: hours
-            .into_iter()
-            .map(|(hour, (orders, total))| HourSales { hour, orders, total: total.minor() })
-            .collect(),
+        hours: {
+            // In the day's order: found in review, the hours after midnight came first.
+            let cutoff = profile.data().business_day.cutoff_hour;
+            let mut hours: Vec<HourSales> = hours
+                .into_iter()
+                .map(|(hour, (orders, total))| HourSales { hour, orders, total: total.minor() })
+                .collect();
+            in_day_order(&mut hours, cutoff);
+            hours
+        },
         top_items,
         tenders: sales.tenders,
         open_orders: u64::try_from(open.len()).unwrap_or(u64::MAX),
@@ -220,7 +244,8 @@ pub fn dashboard(
         kitchen: KitchenFigures {
             waiting: u64::try_from(waiting.len()).unwrap_or(u64::MAX),
             bumped: u64::try_from(took.len()).unwrap_or(u64::MAX),
-            median_seconds: took.get(middle).copied(),
+            // Of an even number, the two middle ones' mean: found in review, the upper one.
+            median_seconds: median(&took, middle),
             longest_seconds: took.last().copied(),
         },
         sold_out: runtime
@@ -234,4 +259,31 @@ pub fn dashboard(
             .map(|view| StockFigure { name: view.name, on_hand: view.on_hand_text })
             .collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HourSales, in_day_order, median};
+
+    #[test]
+    fn a_day_from_a_4_am_cutoff_ends_after_midnight() {
+        let mut hours: Vec<HourSales> = [0, 3, 4, 12, 23]
+            .into_iter()
+            .map(|hour| HourSales { hour, orders: 1, total: 1 })
+            .collect();
+        in_day_order(&mut hours, 4);
+        assert_eq!(hours.iter().map(|sales| sales.hour).collect::<Vec<_>>(), [4, 12, 23, 0, 3]);
+        in_day_order(&mut hours, 0);
+        assert_eq!(hours.iter().map(|sales| sales.hour).collect::<Vec<_>>(), [0, 3, 4, 12, 23]);
+    }
+
+    #[test]
+    fn the_median_of_an_even_number_is_the_middle_twos_mean() {
+        assert_eq!(median(&[], 0), None);
+        assert_eq!(median(&[7], 0), Some(7));
+        assert_eq!(median(&[10, 20], 1), Some(15));
+        assert_eq!(median(&[10, 20, 31], 1), Some(20));
+        assert_eq!(median(&[1, 2, 3, 6], 2), Some(2));
+        assert_eq!(median(&[u64::MAX - 1, u64::MAX], 1), Some(u64::MAX - 1));
+    }
 }

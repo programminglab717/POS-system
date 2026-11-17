@@ -12,6 +12,9 @@
 //! | `GET /api/locations/{id}/staff` | The roles and the team ([`StaffView`]); no PIN is ever read back. |
 //! | `POST /api/locations/{id}/staff/check`, `PUT /api/locations/{id}/staff` | Checks or publishes staff ([`StaffEdit`]), as the catalog's: a new PIN is hashed with a salt the cell draws. |
 //! | `GET /api/locations/{id}/reports/sales?from=&to=` | Sales over business days ([`SalesReport`](crate::reports::SalesReport)), today's by default. |
+//! | `GET /api/locations/{id}/settings`, `POST …/settings/check`, `PUT …/settings` | The location's settings ([`SettingsView`], [`SettingsEdit`]), read, checked or published as the catalog is (ADR-0037). |
+//! | `GET /api/locations/{id}/dashboard?date=` | A business day's dashboard ([`Dashboard`](crate::dashboard::Dashboard)), today's by default. |
+//! | `GET /api/locations/{id}/export` | Everything the location wrote, as JSON Lines (`docs/architecture/export.md`). |
 //!
 //! Anything else is the back office's single-page app, from the directory the cell is given,
 //! its `index.html` for any path it doesn't hold.
@@ -455,6 +458,20 @@ async fn read_dashboard(
     Ok(Json(found))
 }
 
+/// Removes an export's file when the request that made it ends, however it ends; and says so to
+/// the job writing it, which removes it itself if it finishes after.
+struct Remove {
+    path: PathBuf,
+    gone: Arc<core::sync::atomic::AtomicBool>,
+}
+
+impl Drop for Remove {
+    fn drop(&mut self) {
+        self.gone.store(true, core::sync::atomic::Ordering::SeqCst);
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// The location's export (ADR-0037, decision 3): written to a file only the cell can read, on
 /// the location's thread, then streamed from it, so it never sits whole in memory; the file is
 /// gone once the response has it open.
@@ -471,24 +488,39 @@ async fn read_export(
     let nonce = keel_types::Entropy::next_u64(&mut OsEntropy)
         .map_err(|error| ApiError::Failed(error.to_string()))?;
     let path = dir.join(format!("keel-export-{id}-{nonce:016x}.jsonl"));
+    // A HEAD builds no export: found in review, each did.
+    if request.method() == axum::http::Method::HEAD {
+        let mut response = Response::new(axum::body::Body::empty());
+        response
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/x-ndjson"));
+        return Ok(response);
+    }
+    // The file goes however this ends, a download cancelled while it is written among them: the
+    // job, which runs on, removes it itself once it finds the request gone. Found in review.
+    let gone = Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let _guard = Remove { path: path.clone(), gone: Arc::clone(&gone) };
     let written = path.clone();
     let made = on(&cell, index, move |runtime| {
-        let file = export::create_private(&written)?;
-        let mut out = std::io::BufWriter::new(file);
-        export::export(runtime, &devices, runtime.clock().now(), &mut out).map(|_| ())
+        let made = (|| {
+            let file = export::create_private(&written)?;
+            let mut out = std::io::BufWriter::new(file);
+            export::export(runtime, &devices, runtime.clock().now(), &mut out).map(|_| ())
+        })();
+        if gone.load(core::sync::atomic::Ordering::SeqCst) {
+            let _ = std::fs::remove_file(&written);
+        }
+        made
     })
     .await?;
-    if let Err(error) = made {
-        let _ = std::fs::remove_file(&path);
-        return Err(ApiError::Failed(error.to_string()));
-    }
+    made.map_err(|error| ApiError::Failed(error.to_string()))?;
     let served = ServeFile::new(&path).try_call(request).await;
-    // Open in the response, or not: the file itself goes either way.
-    let _ = std::fs::remove_file(&path);
     let mut response =
         served.map_err(|error| ApiError::Failed(error.to_string()))?.map(axum::body::Body::new);
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/x-ndjson"));
+    // Everything the location wrote: kept by no cache.
+    headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
     let disposition = format!("attachment; filename=\"keel-{id}.jsonl\"");
     if let Ok(value) = header::HeaderValue::from_str(&disposition) {
         headers.insert(header::CONTENT_DISPOSITION, value);

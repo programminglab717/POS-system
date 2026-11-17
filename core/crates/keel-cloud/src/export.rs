@@ -65,7 +65,17 @@ pub struct Exported {
     pub events: u64,
 }
 
-/// Calls `each` on every event of `devices`' logs, in order, device by device.
+/// Whether `event` is left out of an export: a profile's publication, whose chunks hold its
+/// team's PIN hashes and salts, in its payload and in the bytes its device signed alike, so it
+/// can't be redacted. Found in review: every export held them. The profile line holds the
+/// profile without them. Only the cloud publishes, and its log holds nothing else, so leaving
+/// them out leaves no device's log with a gap.
+fn left_out(event: &SignedEvent) -> bool {
+    event.body().stream.kind.as_str() == keel_domain::publication::STREAM
+}
+
+/// Calls `each` on every event of `devices`' logs but those [`left_out`], in order, device by
+/// device.
 fn each_event<S: Signer, E: Entropy, C: Clock, I: Entropy>(
     runtime: &Runtime<S, E, C, I>,
     devices: &[Id<Device>],
@@ -76,7 +86,9 @@ fn each_event<S: Signer, E: Entropy, C: Clock, I: Entropy>(
         loop {
             let page = runtime.store().log(*device, after, PAGE)?;
             for event in &page {
-                each(event)?;
+                if !left_out(event) {
+                    each(event)?;
+                }
                 after = event.body().origin_seq.get();
             }
             if page.len() < usize::try_from(PAGE).unwrap_or(usize::MAX) {
@@ -282,43 +294,67 @@ pub fn export<S: Signer, E: Entropy, C: Clock, I: Entropy>(
     Ok(Exported { events })
 }
 
-/// Reads the export `input` into `runtime`'s store, its events verified with `registry`.
+/// Reads the export `input` into `runtime`'s store, its events verified with `registry`, a
+/// line at a time.
 ///
 /// # Errors
 /// [`ExportError::Format`] for a line that isn't what the format says, as a manifest of another
-/// format; [`ExportError`] if `input` can't be read or the store written.
+/// format, or an export with no manifest, or fewer or more events than it says: one cut short is
+/// imported as far as it goes, and refused. [`ExportError`] if `input` can't be read or the store
+/// written.
 pub fn import<S: Signer, E: Entropy, C: Clock, I: Entropy>(
     runtime: &mut Runtime<S, E, C, I>,
     registry: &DeviceRegistry,
     input: impl BufRead,
 ) -> Result<Imported, ExportError> {
-    let mut signed: Vec<Vec<u8>> = Vec::new();
-    let mut manifest = false;
+    let mut imported = Imported::default();
+    let (mut expected, mut read, mut lines) = (None, 0_u64, 0_u64);
     for (number, text) in input.lines().enumerate() {
         let number = u64::try_from(number).unwrap_or(u64::MAX).saturating_add(1);
+        lines = number;
         let bad = |what: &str| ExportError::Format { line: number, what: what.to_owned() };
         let record: Json = serde_json::from_str(&text?).map_err(|error| bad(&error.to_string()))?;
         match record.get("type").and_then(Json::as_str) {
-            Some("manifest") => {
+            Some("manifest") if expected.is_none() => {
                 let format = record.get("format").and_then(Json::as_str);
                 let version = record.get("version").and_then(Json::as_u64);
                 if format != Some(FORMAT) || version != Some(u64::from(VERSION)) {
                     return Err(bad("not a keel.export of version 1"));
                 }
-                manifest = true;
+                let events = record.get("events").and_then(Json::as_u64);
+                expected =
+                    Some(events.ok_or_else(|| bad("a manifest that doesn't say how many events"))?);
             }
-            Some("event") if manifest => {
+            Some("event") if expected.is_some() => {
                 let text = record
                     .get("signed")
                     .and_then(Json::as_str)
                     .ok_or_else(|| bad("an event with no signed bytes"))?;
-                signed.push(unbase64(text).ok_or_else(|| bad("signed bytes that aren't base64"))?);
+                let bytes = unbase64(text).ok_or_else(|| bad("signed bytes that aren't base64"))?;
+                // One at a time, never the whole export in memory: found in review.
+                let one = runtime.import(registry, [bytes.as_slice()])?;
+                imported = Imported {
+                    stored: imported.stored.saturating_add(one.stored),
+                    duplicates: imported.duplicates.saturating_add(one.duplicates),
+                    gaps: imported.gaps.saturating_add(one.gaps),
+                    quarantined: imported.quarantined.saturating_add(one.quarantined),
+                };
+                read = read.saturating_add(1);
             }
-            Some("profile") if manifest => {}
+            Some("profile") if expected.is_some() => {}
             _ => return Err(bad("not a manifest, a profile or an event, or before the manifest")),
         }
     }
-    Ok(runtime.import(registry, signed.iter().map(Vec::as_slice))?)
+    // An export cut short, or with no manifest at all, is refused: found in review, either
+    // imported as if whole.
+    let bad = |what: String| ExportError::Format { line: lines, what };
+    match expected {
+        None => Err(bad("no manifest: not an export".to_owned())),
+        Some(expected) if expected != read => {
+            Err(bad(format!("{read} events of the {expected} the manifest says: cut short")))
+        }
+        Some(_) => Ok(imported),
+    }
 }
 
 /// A new file at `path` that only this user can read: an export holds everything a location
@@ -340,6 +376,9 @@ pub fn create_private(path: &Path) -> Result<File, ExportError> {
 /// How many escrow exports the cell keeps of each location (ADR-0037, decision 5).
 pub const ESCROW_KEPT: usize = 7;
 
+/// The file in a location's escrow directory that names the last business day written.
+pub const LAST: &str = "last-written";
+
 /// Writes `location`'s export to `dir`, in a directory of its own, for the business day that
 /// ended last, unless one is there (ADR-0037, decision 5); keeps the [`ESCROW_KEPT`] latest.
 /// Written whole under another name, then renamed, so the escrow agent never takes half a file.
@@ -359,22 +398,46 @@ pub fn escrow(location: &Location, dir: &Path) -> Result<Option<PathBuf>, Export
             let today = runtime.profile().business_day().business_date_of(now).map_err(day)?;
             let ended = today.previous().map_err(day)?;
             let target = job_dir.join(format!("{ended}.jsonl"));
-            if target.exists() {
+            // The day last written, kept apart from the files: the escrow agent may take them
+            // away, and the day isn't written again. Found in review.
+            let marker = job_dir.join(LAST);
+            let last = std::fs::read_to_string(&marker).ok();
+            if target.exists() || last.as_deref().map(str::trim) >= Some(ended.to_string().as_str())
+            {
                 return Ok(None);
             }
             let partial = job_dir.join(format!("{ended}.jsonl.partial"));
             let _ = std::fs::remove_file(&partial);
-            let mut out = std::io::BufWriter::new(create_private(&partial)?);
-            export(runtime, &devices, now, &mut out)?;
-            out.into_inner().map_err(std::io::IntoInnerError::into_error)?.sync_all()?;
-            std::fs::rename(&partial, &target)?;
-            Ok(Some(target))
+            let written = (|| -> Result<(), ExportError> {
+                let mut out = std::io::BufWriter::new(create_private(&partial)?);
+                export(runtime, &devices, now, &mut out)?;
+                out.into_inner().map_err(std::io::IntoInnerError::into_error)?.sync_all()?;
+                std::fs::rename(&partial, &target)?;
+                std::fs::write(&marker, ended.to_string())?;
+                // The rename itself, durable.
+                File::open(&job_dir)?.sync_all()?;
+                Ok(())
+            })();
+            if written.is_err() {
+                // What failed part way goes: found in review, it stayed for good.
+                let _ = std::fs::remove_file(&partial);
+            }
+            written.map(|()| Some(target))
         })
         .map_err(|error| ExportError::Io(std::io::Error::other(error.to_string())))??;
     // The latest kept: their names are their days, which sort as they come.
-    let mut kept: Vec<PathBuf> = std::fs::read_dir(&dir)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+    let entries: Vec<PathBuf> =
+        std::fs::read_dir(&dir)?.filter_map(Result::ok).map(|entry| entry.path()).collect();
+    // A partial file is never one a job is writing: they run on the location's thread, one at a
+    // time, and this one has ended.
+    for partial in entries
+        .iter()
+        .filter(|path| path.extension().is_some_and(|extension| extension == "partial"))
+    {
+        let _ = std::fs::remove_file(partial);
+    }
+    let mut kept: Vec<PathBuf> = entries
+        .into_iter()
         .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
         .collect();
     kept.sort();

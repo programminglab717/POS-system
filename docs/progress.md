@@ -2,11 +2,11 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-11-16.
+> Last updated: 2026-11-17.
 
 ## Where we are
 
-**The MVP, steps 1 to 8 of 10, are done.** Step 1, staff, roles and approvals
+**The MVP, steps 1 to 9 of 10, are done.** Step 1, staff, roles and approvals
 ([ADR-0029](./adr/0029-staff-roles-and-approvals.md)); step 2, selling at the register
 ([ADR-0030](./adr/0030-selling-at-the-register.md)): discounts with reasons and limits, prices
 set by hand, line notes, split checks and partial cash payments, and orders parked on one
@@ -26,7 +26,9 @@ after its review): a processor-agnostic connector to a semi-integrated terminal,
 refunds, against a simulated terminal until gate G2. Each in the kernel, the bindings and the
 Android register; step 8, inventory ([ADR-0036](./adr/0036-inventory.md), accepted after its
 review): a movement ledger per item, sales read from orders, counts as of a time, and returns
-kept out of stock. Step 9, the back office, is being built.
+kept out of stock; step 9, the back office ([ADR-0037](./adr/0037-the-back-office.md), accepted
+after its review): a location's settings, a dashboard, and a full export with escrow. Step 10,
+training mode and Spanish, is next.
 
 **CI is out of minutes for the month**: the work since is verified here as CI would verify it,
 but for the app's instrumented tests, which need an emulator. Step 3 changed them, and fixed
@@ -101,8 +103,17 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
+The MVP's step 10, training mode and Spanish (B-10, B-12, X-01), is next: not yet designed.
+
+Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
+three of step 2 the scrolling ticket pane should mend.
+
+## Completed
+
+### The back office: MVP step 9 (2026-11-17)
+
 The MVP's step 9, the back office: a location's settings, a dashboard and a full export
-with escrow, designed in [ADR-0037](./adr/0037-the-back-office.md) (proposed). Slices 1, settings,
+with escrow, designed in [ADR-0037](./adr/0037-the-back-office.md), accepted after its review. Slices 1, settings,
 and 2, the dashboard, built 2026-11-16: the settings' JSON, API and checks, and a settings page;
 the dashboard's query of a day against the same weekday a week before, and its page, asked again
 every 10 s. Verified by the cell's unit and API tests, both clippy runs, the docs and the back
@@ -114,12 +125,11 @@ and written by it to an escrow directory once a day, the latest seven kept; an i
 fresh store; and a reader in Python that needs nothing of Keel's. Verified by the workspace's
 tests with the exhaustive sweeps (the round trip giving the same events, report and stock, and
 the reader agreeing with the kernel's report), both clippy runs, the docs, the wasm build and the
-back office's browser tests (10). Next: the planted bugs, then the review.
-
-Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
-three of step 2 the scrolling ticket pane should mend.
-
-## Completed
+back office's browser tests (10). The planted bugs: 49 for the back office, across the cell,
+the kernel's field names and the import, each caught. Reviewed 2026-11-17, the cell and kernel,
+and the web app; the findings fixed (ADR-0037's As built lists them), the worst that every
+export held the team's PIN hashes in the profile's publications, which are now left out.
+Verified again as above, the browser tests at 11.
 
 ### Inventory: MVP step 8 (2026-11-16)
 

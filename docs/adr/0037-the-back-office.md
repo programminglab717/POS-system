@@ -1,6 +1,6 @@
 # ADR-0037: The back office: a location's settings, a live dashboard, and a full export with escrow
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-16
 
 ## Context
@@ -79,6 +79,48 @@ is built shapes it:
    decision 7); recording stock from the back office, which waits for receiving with purchase
    orders and costs (K-04, K-06); tables for a warehouse (O-08); importing from other systems
    (V-02).
+
+## As built
+
+Built in three slices on 2026-11-16 and 17, each verified as it landed, then reviewed: the
+cell and kernel, and the web app, each by a reviewer who hadn't built them. The field names
+aren't a table: the kernel's decoders record the names they ask for as they decode, so a schema
+is named by being decodable at all, and a test runs every kind of event through them and checks
+every key of every schema is named. The fields aren't described, only named (decision 3 said
+"named and described"). The export's reference is generated, and checked current. What the
+review found, and what was done:
+
+- **Every export held the team's PIN hashes and salts**, in the profile's publication chunks,
+  in their payloads and in the bytes the cloud signed: the profile's publications are left out
+  of the export, the profile line standing for them. Its test now publishes staff first.
+- **A cancelled download left its export in the temp directory**: the file goes when the
+  request ends, however it ends, and the job writing it removes it itself if it finishes after.
+  A HEAD builds no export, and no cache keeps one.
+- **The reader didn't fold a payment as the kernel does**: the first initiation and the first
+  capture after it stand, as the kernel's fold has it; a test runs it on conflicting payments.
+- **An empty export, or one cut short, imported as if whole**: both are refused, after storing
+  what they held, and an import reads a line at a time.
+- **Escrow wrote a day again each time the escrow agent had taken it**, and left a failed day's
+  partial file for good: the last day written is kept apart, partial files go, and the
+  directory is synced after the rename.
+- **The dashboard**: hours after midnight came before the day's first; an even number of
+  tickets' median was the upper one; a late answer could overwrite a newer one, and every
+  render of the app asked again.
+- **The settings page**: tip percentages couldn't be typed; a default or a route could be an
+  expo station unseen; two order modes and every route's modifiers weren't shown; a station
+  went with its routes unasked; a cleared address was refused; Discard hid a failed reload; a
+  kitchen time not in whole minutes lost its fraction; and inputs stayed live while publishing.
+- **At phone width** the tabs ran off the page, and the tables with them.
+
+Gaps that remain:
+
+- **The dashboard's comparison is with the whole of the day a week before**, which a day not
+  over reads low against: said so on the page, not yet as of the same time.
+- **The devices' replication** shows what the durable copy holds of each log, not how far
+  behind it is: the cell knows a device's head only while it is connected.
+- **An export runs on the location's thread**, so replication waits for it; and the back
+  office downloads it whole into the browser before saving it.
+- **An hour that a time zone repeats** in the autumn is one hour on the dashboard.
 
 ## Consequences
 

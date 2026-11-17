@@ -565,7 +565,22 @@ async fn the_export_is_downloaded_as_json_lines() {
     let provisioned = location(7446, port);
     let dir = dir("export");
     let app = cell(&provisioned, listener, &dir);
+    // A PIN set through the back office publishes the profile, PIN hashes and all: none of it
+    // may be in the export. Found in review: the publication's chunks held them.
+    let staff = format!("/api/locations/{}/staff", provisioned.roster.data().location);
+    let (_, read) = get(&app, &staff).await;
+    let team: Vec<Value> = read["team"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| json!({ "id": member["id"], "name": member["name"], "role": member["role"], "pin": "8642" }))
+        .collect();
+    tokio::time::sleep(keel_runtime::ISLAND_AFTER).await;
+    let edit = json!({ "base": read["version"], "roles": read["roles"], "team": team });
+    let (status, published) = call(&app, Method::PUT, &staff, Some(TOKEN), Some(edit)).await;
+    assert_eq!(status, StatusCode::OK, "{published}");
     let path = format!("/api/locations/{}/export", provisioned.roster.data().location);
+    let before = exports(&provisioned);
     let request = Request::builder()
         .uri(&path)
         .header("Authorization", format!("Bearer {TOKEN}"))
@@ -585,15 +600,37 @@ async fn the_export_is_downloaded_as_json_lines() {
     assert_eq!(lines[0]["location"], json!(provisioned.roster.data().location.to_string()));
     assert_eq!(lines[1]["type"], json!("profile"));
     assert!(!text.contains("salt"), "no PIN, nor anything of one");
+    assert!(
+        lines.iter().all(|line| line["stream"]["kind"] != json!("profile")),
+        "no publication, whose chunks hold the PINs' hashes"
+    );
+    assert!(response_cache_control_is_no_store(&app, &path).await);
     assert_eq!(lines.len() - 2, usize::try_from(lines[0]["events"].as_u64().unwrap()).unwrap());
-    // The file it was written to is gone.
-    let left =
-        std::fs::read_dir(std::env::temp_dir()).unwrap().filter_map(Result::ok).any(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(&format!("keel-export-{}", provisioned.roster.data().location))
-        });
-    assert!(!left, "the export's file is removed once served");
+    // The files it was written to are gone: none left of this test's downloads, whatever other
+    // runs left in the shared directory.
+    assert_eq!(exports(&provisioned), before, "the export's file is removed once served");
     assert_eq!(call(&app, Method::GET, &path, None, None).await.0, StatusCode::UNAUTHORIZED);
+}
+
+async fn response_cache_control_is_no_store(app: &Router, path: &str) -> bool {
+    let request = Request::builder()
+        .uri(path)
+        .header("Authorization", format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    response.headers().get("cache-control").is_some_and(|value| value == "no-store")
+}
+
+/// The export files of `provisioned`'s location in the temporary directory.
+fn exports(provisioned: &Provisioned) -> Vec<String> {
+    let prefix = format!("keel-export-{}", provisioned.roster.data().location);
+    let mut names: Vec<String> = std::fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(&prefix))
+        .collect();
+    names.sort();
+    names
 }

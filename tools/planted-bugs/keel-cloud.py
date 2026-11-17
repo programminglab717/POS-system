@@ -218,16 +218,59 @@ BUGS = [
         "    let surplus = kept.len().saturating_sub(ESCROW_KEPT);",
         "    let surplus = 0_usize;",
     ),
+    # Review fixes (ADR-0037).
+    (
+        "export: a profile's publication is exported, PIN hashes and all",
+        "src/export.rs",
+        "    event.body().stream.kind.as_str() == keel_domain::publication::STREAM",
+        "    event.body().stream.kind.as_str() == \"nothing\"",
+    ),
+    (
+        "import: an export cut short is taken as whole",
+        "src/export.rs",
+        "        Some(expected) if expected != read => {",
+        "        Some(expected) if expected != read && false => {",
+    ),
+    (
+        "import: no manifest is an empty export",
+        "src/export.rs",
+        "        None => Err(bad(\"no manifest: not an export\".to_owned())),",
+        "        None => Ok(imported),",
+    ),
+    (
+        "escrow: a partial file stays",
+        "src/export.rs",
+        "        let _ = std::fs::remove_file(partial);",
+        "        let _ = partial;",
+    ),
+    (
+        "export: a download may be cached",
+        "src/api.rs",
+        "    headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static(\"no-store\"));",
+        "",
+    ),
+    (
+        "dashboard: hours start at midnight",
+        "src/dashboard.rs",
+        "    hours.sort_by_key(|sales| (sales.hour < cutoff, sales.hour));",
+        "    hours.sort_by_key(|sales| sales.hour);",
+    ),
+    (
+        "dashboard: an even median is the upper middle",
+        "src/dashboard.rs",
+        "    if sorted.len() % 2 == 1 {",
+        "    if sorted.len() % 2 != 2 {",
+    ),
     (
         "escrow: the day is written again each time",
         "src/export.rs",
-        "            if target.exists() {",
-        "            if target.exists() && false {",
+        "                return Ok(None);\n            }\n            let partial",
+        "            }\n            let partial",
     ),
     (
         "export: the file served is left behind",
         "src/api.rs",
-        "    // Open in the response, or not: the file itself goes either way.\n    let _ = std::fs::remove_file(&path);",
+        "        let _ = std::fs::remove_file(&self.path);",
         "",
     ),
 ]

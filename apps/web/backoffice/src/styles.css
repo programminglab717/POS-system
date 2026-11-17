@@ -391,9 +391,16 @@ th {
     padding: 12px;
   }
 
+  /* Six tabs don't fit a phone: they scroll, not the page. Found in review. */
   .tabs {
     order: 3;
     flex-basis: 100%;
+    overflow-x: auto;
+    min-width: 0;
+  }
+
+  .tab {
+    flex: none;
   }
 
   .variants input:not(.price) {
@@ -431,4 +438,19 @@ th {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 12px;
+}
+
+/* A fieldset that only disables what it holds. */
+fieldset.plain {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+/* A table wider than a phone scrolls inside its card, not the page. */
+.scroll {
+  overflow-x: auto;
 }

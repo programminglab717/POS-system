@@ -42,6 +42,6 @@ supersedes the old one.
 | [0034](./0034-the-kitchen.md) | The kitchen: tickets per station, routed by the profile, shown on a KDS and printed when it isn't | Accepted |
 | [0035](./0035-card-payments.md) | Card payments: a sale through a semi-integrated terminal, as an effect, resolved before any retry | Accepted |
 | [0036](./0036-inventory.md) | Inventory: a movement ledger per item, sales read from orders, counts as of a time | Accepted |
-| [0037](./0037-the-back-office.md) | The back office: a location's settings, a live dashboard, and a full export with escrow | Proposed |
+| [0037](./0037-the-back-office.md) | The back office: a location's settings, a live dashboard, and a full export with escrow | Accepted |
 
 Template: *Status · Date · Context · Decision · Consequences · Alternatives considered · References*.

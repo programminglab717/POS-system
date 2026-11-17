@@ -225,6 +225,32 @@ test("settings are checked by the kernel and refused in its words", async ({ pag
   await expect(page.getByRole("status")).toContainText("time zone");
   await page.getByRole("button", { name: "Discard" }).click();
   await expect(name).not.toHaveValue("Corner Café");
+  // Tip percentages are typed as they are said, commas and decimals and all: found in review,
+  // each key was parsed and undone.
+  const tips = page.getByLabel("Tip percentages");
+  if ((await tips.count()) === 0) await page.getByLabel("Ask for tips").check();
+  await tips.fill("");
+  await tips.pressSequentially("12.5, 18, 22");
+  await expect(tips).toHaveValue("12.5, 18, 22");
+  await page.getByRole("button", { name: "Check" }).click();
+  await expect(page.getByRole("status")).toHaveText("The settings pass every check.");
+  await tips.fill("18, 12");
+  await page.getByRole("button", { name: "Check" }).click();
+  await expect(page.getByRole("status")).toContainText("order");
+  await tips.fill("15, abc");
+  await expect(page.getByRole("button", { name: "Check" })).toBeDisabled();
+  await page.getByRole("button", { name: "Discard" }).click();
+});
+
+test("at phone width the tabs scroll and the dashboard doesn't overflow the page", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 740 });
+  await signIn(page);
+  await page.getByRole("tab", { name: "Dashboard" }).click();
+  await expect(page.getByLabel("The day's figures")).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+  await page.getByRole("tab", { name: "Devices" }).click();
+  await expect(page.getByRole("tab", { name: "Devices" })).toHaveAttribute("aria-selected", "true");
 });
 
 test("the export downloads everything the location wrote, as JSON Lines", async ({ page }) => {
@@ -237,6 +263,12 @@ test("the export downloads everything the location wrote, as JSON Lines", async 
   const lines = text.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
   expect(lines[0]).toMatchObject({ type: "manifest", format: "keel.export", version: 1 });
   expect(lines[1]).toMatchObject({ type: "profile" });
+  // No PIN, nor anything of one: a member says only whether they have one.
+  const team = ((lines[1]?.["staff"] as { team?: Record<string, unknown>[] } | undefined)?.team ?? []);
+  expect(team.length).toBeGreaterThan(0);
+  for (const member of team) expect(Object.keys(member).sort()).toEqual(["hasPin", "id", "name", "role"]);
+  expect(JSON.stringify(lines[1])).not.toMatch(/"(salt|pinHash|pin)"/);
+  expect(lines.some((line) => (line["stream"] as { kind?: string } | undefined)?.kind === "profile")).toBe(false);
   expect(lines.length - 2).toBe(lines[0]?.["events"]);
   // The register's sales are in it, their payments named.
   const captured = lines.find((line) => (line["schema"] as { name?: string } | undefined)?.name === "payment.captured");
