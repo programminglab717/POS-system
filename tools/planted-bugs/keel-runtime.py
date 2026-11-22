@@ -1232,8 +1232,8 @@ BUGS = [
     (
         "kitchen: a kitchen job waits for the register's own printer",
         "src/runtime.rs",
-        "                    .is_some_and(|(_, kind)| kind == JobKind::Kitchen || own.is_some())",
-        "                    .is_some_and(|_| own.is_some())",
+        "                    (kind == JobKind::Kitchen && !self.training) || own.is_some()",
+        "                    (kind == JobKind::Kitchen && false) || own.is_some()",
     ),
     (
         "kitchen: a void slips every line of the ticket",
@@ -1519,20 +1519,8 @@ BUGS = [
     (
         "training: a register that syncs starts training",
         "src/training.rs",
-        "        if self.sync.is_some() {",
-        "        if self.sync.is_some() && false {",
-    ),
-    (
-        "training: a training register prints as if real",
-        "src/training.rs",
-        "    if !training {\n        return doc;\n    }",
-        "    if training || !training {\n        return doc;\n    }",
-    ),
-    (
-        "training: a training register kicks the drawer",
-        "src/training.rs",
-        "    let kept: Vec<Block> =\n        doc.blocks().iter().filter(|block| !matches!(block, Block::DrawerKick)).cloned().collect();\n    let alone",
-        "    let kept: Vec<Block> = doc.blocks().to_vec();\n    let alone",
+        "        if self.sync.is_some() || !empty {",
+        "        if (self.sync.is_some() && false) || !empty {",
     ),
     (
         "languages: the member's language is the register's",
@@ -1551,5 +1539,41 @@ BUGS = [
         "src/kitchen.rs",
         "                    words.allergen_names.get(index).copied().unwrap_or_else(|| allergen.name())",
         "                    Some(allergen.name()).filter(|_| index < 99).unwrap_or_default()",
+    ),
+    (
+        "training: a training register prints as if real",
+        "src/training.rs",
+        "    if !training {\n        return doc;\n    }",
+        "    if training || !training {\n        return doc;\n    }",
+    ),
+    (
+        "training: a training register kicks the drawer",
+        "src/runtime.rs",
+        "            if self.training && kind == JobKind::Drawer {",
+        "            if self.training && kind == JobKind::Drawer && false {",
+    ),
+    (
+        "training: the lower banner prints after the cut",
+        "src/training.rs",
+        "    while matches!(kept.last(), Some(Block::Feed(_) | Block::Cut)) {",
+        "    while matches!(kept.last(), Some(Block::Feed(_) | Block::Cut)) && false {",
+    ),
+    (
+        "training: a store that holds something trains",
+        "src/training.rs",
+        "        if self.sync.is_some() || !empty {",
+        "        if self.sync.is_some() || (!empty && false) {",
+    ),
+    (
+        "training: kitchen tickets print in the kitchen",
+        "src/runtime.rs",
+        "            let to = if self.training { None } else { to };",
+        "            let to = to;",
+    ),
+    (
+        "training: a kitchen ticket's banner says not a receipt",
+        "src/runtime.rs",
+        "            let banner = if kind == JobKind::Kitchen {",
+        "            let banner = if kind == JobKind::Kitchen && false {",
     ),
 ]

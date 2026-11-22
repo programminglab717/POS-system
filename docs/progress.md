@@ -2,11 +2,11 @@
 
 > A living record of the build: where it stands, what each step delivered and how it was
 > verified, and what is waiting on a decision. Updated as each piece of work lands.
-> Last updated: 2026-11-17.
+> Last updated: 2026-11-22.
 
 ## Where we are
 
-**The MVP, steps 1 to 9 of 10, are done.** Step 1, staff, roles and approvals
+**The MVP, all ten steps, is done.** Step 1, staff, roles and approvals
 ([ADR-0029](./adr/0029-staff-roles-and-approvals.md)); step 2, selling at the register
 ([ADR-0030](./adr/0030-selling-at-the-register.md)): discounts with reasons and limits, prices
 set by hand, line notes, split checks and partial cash payments, and orders parked on one
@@ -27,8 +27,10 @@ refunds, against a simulated terminal until gate G2. Each in the kernel, the bin
 Android register; step 8, inventory ([ADR-0036](./adr/0036-inventory.md), accepted after its
 review): a movement ledger per item, sales read from orders, counts as of a time, and returns
 kept out of stock; step 9, the back office ([ADR-0037](./adr/0037-the-back-office.md), accepted
-after its review): a location's settings, a dashboard, and a full export with escrow. Step 10,
-training mode and Spanish, is next.
+after its review): a location's settings, a dashboard, and a full export with escrow; step 10, training mode and
+Spanish ([ADR-0038](./adr/0038-training-and-spanish.md), accepted after its review): training on
+a register over a store and identity of its own, and each member's and kitchen station's
+language.
 
 **CI is out of minutes for the month**: the work since is verified here as CI would verify it,
 but for the app's instrumented tests, which need an emulator. Step 3 changed them, and fixed
@@ -103,8 +105,19 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
+**The MVP is built: all ten steps**, each designed, built in slices, reviewed and accepted. What
+waits is what the steps' As built sections list, gate G2's payment connector, and the reference
+device.
+
+Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
+three of step 2 the scrolling ticket pane should mend.
+
+## Completed
+
+### Training mode and Spanish: MVP step 10 (2026-11-22)
+
 The MVP's step 10, training mode and Spanish (B-10, B-12, X-01), designed in
-[ADR-0038](./adr/0038-training-and-spanish.md) (proposed). Slices 1, the kernel, and 2, the back
+[ADR-0038](./adr/0038-training-and-spanish.md), accepted after its review. Slices 1, the kernel, and 2, the back
 office, built 2026-11-22: profile format 6, a team member's and a kitchen station's language;
 kitchen tickets in their station's language; the signed-in member's language through the
 bindings; a training register, which never syncs, prints its banner on everything and kicks no
@@ -115,12 +128,11 @@ a test checking every word the screens ask for has its Spanish; and training, a 
 new store of its own with a simulated terminal, a banner on every screen, started from the
 sign-in screen and ended from the banner. Verified by `:register:jvmTest`,
 `:kernel:testDebugUnitTest`, `:app:testDebugUnitTest`, the app's build and the Kotlin bindings'
-tests. Next: the planted bugs, then the review.
-
-Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
-three of step 2 the scrolling ticket pane should mend.
-
-## Completed
+tests. Reviewed 2026-11-22, the kernel and back office, and the Android register; the
+findings fixed (ADR-0038's As built lists them), the worst that a training register's events
+were the real device's, and its kitchen tickets printed in the live kitchen. Verified again:
+the workspace's tests with the exhaustive sweeps, both clippy runs, the docs, the wasm build,
+the Kotlin bindings' tests, the Android register's tests and builds.
 
 ### The back office: MVP step 9 (2026-11-17)
 

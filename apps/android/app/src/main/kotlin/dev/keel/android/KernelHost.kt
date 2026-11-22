@@ -125,20 +125,39 @@ class KernelHost(private val application: Application) {
      * what it prints says so.
      */
     fun openTraining(): KernelTill {
-        val files = DeviceFiles.load(dir, KeyVault(), kit)
+        // The profile the real register rings from now, its latest publication: found in review,
+        // the one provisioning wrote had none of the team or prices since.
+        val real = till.open() as KernelTill
+        val profile = real.profile()
+        // An identity of its own, which no roster has: nothing it signs could be taken as the real
+        // device's, nor fork its log. Found in review.
+        val identity = dev.keel.kernel.newDevice()
         val training = File(dir, "training").apply { mkdirs() }
         training.listFiles()?.forEach { it.deleteRecursively() }
         return KernelTill.open(
             RegisterConfig(
                 path = File(training, "store-${System.currentTimeMillis()}.db").path,
-                storeKey = files.storeKey,
-                device = files.device,
-                signingKey = files.signingKey,
-                profile = files.profile,
+                storeKey = identity.storeKey,
+                device = identity.device,
+                signingKey = identity.signingKey,
+                profile = profile,
                 locale = "en-US",
                 training = true,
             ),
         )
+    }
+
+    /** Closes a training register on the kernel's thread, once its loops are stopped. */
+    fun closeTraining(till: KernelTill) {
+        scope.launch {
+            withContext(kernel) {
+                try {
+                    till.close()
+                } catch (_: Exception) {
+                    // Closed or not, its store is deleted when the next training opens.
+                }
+            }
+        }
     }
 
     /** Runs a training register's print driver and payment loop, until the job is cancelled. */

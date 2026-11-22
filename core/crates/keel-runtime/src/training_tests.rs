@@ -32,14 +32,56 @@ fn a_training_register_prints_its_banner_kicks_no_drawer_and_never_syncs() {
         runtime.print_outcome(job.job, keel_print::Outcome::Printed { paper_low: false }).unwrap();
         printed.push(job);
     }
-    assert!(printed.iter().any(|job| job.kind == JobKind::Receipt), "the receipt prints");
+    // The drawer's job is done with nothing printed; the receipt alone prints. Found in review:
+    // the kick printed a slip of banners.
+    assert_eq!(printed.iter().map(|job| job.kind).collect::<Vec<_>>(), [JobKind::Receipt]);
     for job in &printed {
         let text = String::from_utf8_lossy(&job.bytes);
-        assert!(text.matches("TRAINING - NOT A RECEIPT").count() >= 2, "{text}");
+        assert_eq!(text.matches("TRAINING - NOT A RECEIPT").count(), 2, "{text}");
         assert!(!job.bytes.windows(DRAWER_KICK.len()).any(|bytes| bytes == DRAWER_KICK), "no kick");
+        // Both banners above the feed and cut that end the slip: found in review, the lower one
+        // printed on the next slip.
+        let last = text.rfind("TRAINING - NOT A RECEIPT").unwrap();
+        let total = text.find("Thank you!").unwrap();
+        assert!(last > total, "the lower banner after the receipt's last words:\n{text}");
+        assert!(
+            text[last..].trim_end_matches(|c: char| c.is_whitespace() || c.is_control()).len() < 80,
+            "and nothing after it but the feed and cut:\n{text}"
+        );
     }
     let roster = crate::publication_tests::roster();
     assert!(matches!(runtime.start_sync(roster), Err(RuntimeError::Training)));
+}
+
+/// Only a store that holds nothing trains: found in review, a real store opened for training
+/// put a trainee's sales in the real log.
+#[test]
+fn a_store_that_holds_anything_doesnt_train() {
+    let scratch = Scratch::new();
+    let mut runtime = register(&scratch, demo().unwrap());
+    runtime.sign_in(id(0x501), "1234").unwrap();
+    runtime.start_order(Mode::Takeout).unwrap();
+    assert!(matches!(runtime.start_training(), Err(RuntimeError::Training)));
+    assert!(!runtime.is_training());
+}
+
+/// A training register's kitchen tickets print on its own printer, marked not to be made: never
+/// the kitchen's. Found in review.
+#[test]
+fn a_training_registers_kitchen_tickets_print_on_its_own_printer() {
+    let scratch = Scratch::new();
+    let mut runtime = register(&scratch, printed_profile());
+    runtime.start_training().unwrap();
+    runtime.sign_in(id(0x502), "2468").unwrap();
+    let order = runtime.start_order(Mode::DineIn).unwrap().order;
+    runtime.add_item(order, id(0x407), &bagel(), NonZeroU32::MIN).unwrap();
+    runtime.send(order).unwrap();
+    assert_eq!(runtime.next_print_job().unwrap(), None, "nowhere to print but its own printer");
+    runtime.set_printer(PRINTER);
+    let job = runtime.next_print_job().unwrap().unwrap();
+    assert_eq!((job.kind, job.to.clone()), (JobKind::Kitchen, None));
+    let text = String::from_utf8_lossy(&job.bytes);
+    assert_eq!(text.matches("TRAINING - DO NOT MAKE").count(), 2, "{text}");
 }
 
 #[test]

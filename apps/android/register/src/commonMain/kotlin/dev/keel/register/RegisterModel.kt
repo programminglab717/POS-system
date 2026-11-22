@@ -323,6 +323,9 @@ class RegisterModel(
 ) {
     private val mutable = MutableStateFlow(RegisterState())
 
+    /** Shows [message] as the register's error, as when the shell can't do what was asked. */
+    fun tell(message: String) = mutable.update { it.copy(error = message) }
+
     /** What the screens show now. */
     val state: StateFlow<RegisterState> = mutable.asStateFlow()
 
@@ -1595,14 +1598,17 @@ class RegisterModel(
                 RegisterState(
                     loading = false, team = team, printer = it.printer, ticket = it.ticket,
                     sync = it.sync, profileVersion = version, device = it.device, stations = stations,
+                    training = it.training,
                 )
             }
             return@perform
         }
         val pages = if (member != null) till.menu() else current.pages
+        // A language changed in the back office takes effect at once: found in review.
+        val language = if (member != null) till.language() else null
         mutable.update {
             it.copy(
-                team = team, pages = pages, page = it.page.coerceIn(0, (pages.size - 1).coerceAtLeast(0)),
+                language = language, team = team, pages = pages, page = it.page.coerceIn(0, (pages.size - 1).coerceAtLeast(0)),
                 profileVersion = version, stations = stations,
                 kds = if (it.kds != null) kds else null,
                 screen = if (it.screen == Screen.KITCHEN && kds == null) Screen.SIGN_IN else it.screen,

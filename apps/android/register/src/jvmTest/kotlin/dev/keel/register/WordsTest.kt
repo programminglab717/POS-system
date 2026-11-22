@@ -21,8 +21,19 @@ class WordsTest {
         val missing = asked.filter { it !in SPANISH }
         assertEquals(emptyList(), missing, "words with no Spanish")
         // And the reasons the register offers.
-        val reasons = (CASH_REASONS + DISCOUNT_REASONS + PRICE_REASONS + RETURN_REASONS + STOCK_REASONS).map { it.words }
+        val reasons = (CASH_REASONS + DISCOUNT_REASONS + PRICE_REASONS + RETURN_REASONS + STOCK_REASONS + VOID_REASONS).map { it.words }
         assertEquals(emptyList(), reasons.filter { it !in SPANISH }, "reasons with no Spanish")
+    }
+
+    /** No word is left out of [SPANISH] by being shown without asking for it: found in review. */
+    @Test
+    fun theScreensShowNoWordWithoutAskingForIt() {
+        val screens = File("../app/src/main/kotlin/dev/keel/android")
+        val shown = listOf("RegisterScreen.kt", "StockScreen.kt", "KitchenScreen.kt").flatMap { name ->
+            File(screens, name).readLines().filterNot { it.trim().startsWith("//") || it.trim().startsWith("*") || it.trim().startsWith("import") }
+                .flatMap { line -> Regex("""(?<!t\()(?<!testTag\()"([A-Z][^"$]{1,})"""").findAll(line).map { it.groupValues[1] }.toList() }
+        }
+        assertEquals(emptyList(), shown, "words shown without asking for them in the member's language")
     }
 
     @Test

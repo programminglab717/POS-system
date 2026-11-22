@@ -1,6 +1,6 @@
 # ADR-0038: Training mode in a store of its own, and each member's and station's language
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-22
 
 ## Context
@@ -25,11 +25,13 @@ it:
 ## Decision
 
 1. **Training is a register over a store of its own**, which the shell opens apart from the
-   real one and deletes to start again. Its kernel knows it is training:
+   real one, with an identity of its own, and deletes to start again. Its kernel knows it is
+   training, and trains only over a store that holds nothing:
    - it refuses to start sync, so nothing it records reaches the hub, the cloud, a report or
      an export: no fiscal, payment or stock effect, by construction;
    - every document it prints carries a banner above and below, "TRAINING - NOT A RECEIPT" in
-     its language, and no drawer is kicked;
+     its language ("DO NOT MAKE" on a kitchen ticket), on its own printer, and no drawer is
+     kicked;
    - card payments go to the simulated terminal, the shell's: never a real one.
    Everything else is the real register: the same profile, the same intents, the same rules.
 
@@ -58,6 +60,45 @@ it:
 
 7. **Out of scope**: guided training exercises; a receipt in the guest's language, chosen at
    checkout; languages beyond English and Spanish; the kernel's messages translated.
+
+## As built
+
+Built in three slices on 2026-11-22, each verified as it landed, then reviewed: the kernel and
+back office, and the Android register, each by a reviewer who hadn't built them. A test reads
+the app's screens and checks every word they show goes through the table and has its Spanish.
+What the reviews found, and what was done:
+
+- **A training register's events were the real device's**, signed with its key, in its log's
+  sequence, so if they ever synced its log would fork; and nothing but memory said a store was
+  training. The shell gives a training register an identity of its own, which no roster has,
+  and the kernel trains only over a store that holds nothing.
+- **Its kitchen tickets printed in the live kitchen**, marked "not a receipt": they print on
+  the register's own printer, marked "do not make".
+- **The lower banner printed after the cut**, on the next slip: both banners go above the feed
+  and cut that end a document. A drawer's kick printed a slip of banners: it is done, unprinted.
+- **Joining the network** started before the kernel refused a training register: the bindings
+  refuse first.
+- **The training register rang from the profile provisioning wrote**, without the team and
+  prices published since: it opens with the profile the real register rings from now.
+- **What a trainee saved changed the real register**: the printer and the kitchen screen's
+  stations are kept apart in training. Starting twice opened two training registers, and one's
+  loops ran on for good; training outlived its screen; and a failed start said nothing. Each is
+  fixed: one at a time, ended with the screen, closed when it ends, and its failure said.
+- **Many of the screens' words weren't asked for in the member's language**: every literal the
+  screens show is, which the words test now checks; and the Spanish a cashier might misread is
+  plainer ("práctica", not "entrenamiento"; a safe drop is a "depósito").
+
+Gaps that remain:
+
+- **Sentences with numbers in them** ("Pay $4.50", "Check 2 (paid)") and what the kernel says in
+  refusing stay in English, as does a dynamic text such as an alert.
+- **The kitchen display** shows English: no member signs in to it. Its printed tickets are in
+  the station's language.
+- **A training banner** is in the register's language, a kitchen ticket's too.
+- **Format 6 has no pin against an independent encoder**, as the earlier formats have; its
+  tests are its round trip, its format byte, and the profile properties, which now draw
+  languages.
+- **Training is ended by the trainee**: nothing ends it after a while.
 
 ## Consequences
 

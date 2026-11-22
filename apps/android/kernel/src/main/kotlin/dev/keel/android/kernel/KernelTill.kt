@@ -470,6 +470,9 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
 
     override fun isTraining(): Boolean = register.isTraining()
 
+    /** The profile this register rings from, encoded: what a training register opens with (ADR-0038). */
+    fun profile(): ByteArray = register.profile()
+
     override fun ordersToday(): List<Ticket> = call { register.ordersToday().map { it.toTicket() } }
 
     override fun openOrders(): List<Ticket> = call { register.openOrders().map { it.toTicket() } }

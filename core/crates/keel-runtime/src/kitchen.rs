@@ -483,13 +483,13 @@ pub(crate) fn ticket_doc(
     Ok(Doc::new(blocks)?)
 }
 
-/// How an order's mode reads on a ticket.
 /// How an order's mode reads on a ticket, in `words`' language.
 fn mode_in(mode: Mode, words: &TicketWords) -> &'static str {
     let at = usize::try_from(mode.code()).unwrap_or(usize::MAX);
     words.modes.get(at).copied().unwrap_or_else(|| mode_words(mode))
 }
 
+/// How an order's mode reads on a ticket in English.
 pub(crate) const fn mode_words(mode: Mode) -> &'static str {
     match mode {
         Mode::DineIn => "DINE IN",

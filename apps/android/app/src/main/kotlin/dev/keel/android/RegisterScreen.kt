@@ -98,7 +98,7 @@ fun RegisterScreen(model: RegisterModel, training: Training? = null) {
 }
 
 /** How the screen starts and ends training (ADR-0038). */
-class Training(val start: () -> Unit, val end: () -> Unit)
+class Training(val start: () -> Unit, val end: () -> Unit, val active: Boolean = false)
 
 /** Training's controls, where the screen offers them. */
 val LocalTraining = staticCompositionLocalOf<Training?> { null }
@@ -115,7 +115,9 @@ private fun RegisterContent(state: RegisterState, model: RegisterModel) {
     Scaffold { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             // Nothing a trainee does is real, and the screen never lets them forget (ADR-0038).
-            if (state.training) {
+            // Shown while the screen holds a training register, whatever its own state says: found in
+            // review, a training register that failed to start showed neither banner nor way out.
+            if (state.training || LocalTraining.current?.active == true) {
                 Row(
                     Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.tertiaryContainer).padding(8.dp).testTag("training"),
                     verticalAlignment = Alignment.CenterVertically,
@@ -192,7 +194,7 @@ private fun SignIn(state: RegisterState, model: RegisterModel) {
         }
         // Training on this register, apart from its real store (ADR-0038).
         val training = LocalTraining.current
-        if (!state.training && training != null) {
+        if (!state.training && training != null && !training.active) {
             Spacer(Modifier.height(24.dp))
             OutlinedButton(onClick = training.start, modifier = Modifier.testTag("training:start")) { Text(t("Practise in training")) }
         }
@@ -209,16 +211,16 @@ private fun Register(state: RegisterState, model: RegisterModel) {
                     // Settled first: until it is, the register refuses every sale, whatever it hears.
                     // Found in review: "Synced" showed while sales were refused.
                     val words = when {
-                        !sync.settled -> "Joining…"
-                        sync.serving -> "Store hub"
-                        sync.hubReachable -> "Synced"
-                        else -> "Offline"
+                        !sync.settled -> t("Joining…")
+                        sync.serving -> t("Store hub")
+                        sync.hubReachable -> t("Synced")
+                        else -> t("Offline")
                     }
                     Text(words, style = MaterialTheme.typography.labelLarge, modifier = Modifier.testTag("sync"))
                 }
                 // 86: a tap on the menu marks its item out, or puts it back (ADR-0033).
                 TextButton(onClick = model::toggleMarking, modifier = Modifier.testTag("mark")) {
-                    Text(if (state.marking) "Done marking" else "86")
+                    Text(if (state.marking) t("Done marking") else "86")
                 }
                 TextButton(onClick = model::showOrders, modifier = Modifier.testTag("orders")) { Text(t("Today's orders")) }
                 TextButton(onClick = model::showDrawer, modifier = Modifier.testTag("drawer")) { Text(t("Drawer")) }
@@ -240,7 +242,7 @@ private fun Register(state: RegisterState, model: RegisterModel) {
             }
             if (state.marking) {
                 Text(
-                    "Tap an item to 86 it, or to put it back.",
+                    t("Tap an item to 86 it, or to put it back."),
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
@@ -268,7 +270,7 @@ private fun Register(state: RegisterState, model: RegisterModel) {
             }
             if (state.soldOut.isNotEmpty()) {
                 Text(
-                    "Sold out: " + state.soldOut.joinToString { "${it.name} (${backWords(it.backAt)})" },
+                    t("Sold out: ") + state.soldOut.joinToString { "${it.name} (${backWords(it.backAt)})" },
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp).testTag("sold-out"),
@@ -333,7 +335,7 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                         // Sent to the kitchen: it is voided, not changed (ADR-0034).
                         if (line.sent) {
                             Text(
-                                "Sent",
+                                t("Sent"),
                                 style = MaterialTheme.typography.labelSmall,
                                 modifier = Modifier.padding(horizontal = 6.dp).testTag("sent:${line.line}"),
                             )
@@ -341,7 +343,7 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                         Text(line.amount)
                     }
                     for (words in line.modifiers) Text(words, style = MaterialTheme.typography.bodySmall)
-                    line.repriced?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("repriced:${line.line}")) }
+                    line.repriced?.let { Text(t(it), style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("repriced:${line.line}")) }
                     line.notes?.let { Text("“$it”", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("notes:${line.line}")) }
                     for (discount in line.discounts) DiscountRow(discount, model)
                     // Wrapped, so every button stays reachable on a narrow pane. Found in review:
@@ -352,7 +354,7 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
                             TextButton(onClick = { model.more(line) }, modifier = Modifier.testTag("more:${line.line}")) { Text("+") }
                         }
                         TextButton(onClick = { model.remove(line) }, modifier = Modifier.testTag("remove:${line.line}")) {
-                            Text(if (line.sent) "Void" else "Remove")
+                            Text(if (line.sent) t("Void") else t("Remove"))
                         }
                         TextButton(onClick = { model.openDiscount(line) }, modifier = Modifier.testTag("discount:${line.line}")) { Text(t("Discount")) }
                         TextButton(onClick = { model.openPrice(line) }, modifier = Modifier.testTag("price:${line.line}")) { Text(t("Price")) }
@@ -379,7 +381,7 @@ private fun TicketPane(state: RegisterState, model: RegisterModel, modifier: Mod
         if (ticket != null) {
             HorizontalDivider()
             for (discount in ticket.discounts) DiscountRow(discount, model)
-            ticket.tax?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            ticket.tax?.let { Text(t(it), style = MaterialTheme.typography.bodySmall) }
             Text("Total ${ticket.total}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("total"))
             // A split order is paid check by check.
             for (check in ticket.checks) {
@@ -462,12 +464,12 @@ private fun OpenDrawerBanner(model: RegisterModel) {
 @Composable
 private fun CashDialog(entry: CashEntry, error: String?, model: RegisterModel) {
     val title = when (entry.purpose) {
-        CashPurpose.FLOAT -> "Float"
-        CashPurpose.PAID_IN -> "Pay in"
-        CashPurpose.PAID_OUT -> "Pay out"
-        CashPurpose.DROP -> "Drop to the safe"
-        CashPurpose.COUNT -> "Count the drawer"
-        CashPurpose.NO_SALE -> "Open with no sale"
+        CashPurpose.FLOAT -> t("Float")
+        CashPurpose.PAID_IN -> t("Pay in")
+        CashPurpose.PAID_OUT -> t("Pay out")
+        CashPurpose.DROP -> t("Drop to the safe")
+        CashPurpose.COUNT -> t("Count the drawer")
+        CashPurpose.NO_SALE -> t("Open with no sale")
     }
     val noSale = entry.purpose == CashPurpose.NO_SALE
     val moving = entry.purpose.moves || noSale
@@ -495,7 +497,7 @@ private fun CashDialog(entry: CashEntry, error: String?, model: RegisterModel) {
                 }
                 if (!noSale) {
                     Spacer(Modifier.height(8.dp))
-                    Text(entry.typed?.text ?: "Type an amount", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.testTag("cash:typed"))
+                    Text(entry.typed?.text ?: t("Type an amount"), style = MaterialTheme.typography.headlineSmall, modifier = Modifier.testTag("cash:typed"))
                     for (row in listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9))) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             for (digit in row) Key(digit.toString(), "cash:digit:$digit") { model.typeCashDigit(digit) }
@@ -510,16 +512,16 @@ private fun CashDialog(entry: CashEntry, error: String?, model: RegisterModel) {
                         }
                     }
                 }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("cash:error")) }
+                error?.let { Text(t(it), color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("cash:error")) }
             }
         },
         confirmButton = {
             Button(onClick = model::confirmCash, modifier = Modifier.testTag("cash:confirm")) {
                 Text(
                     when (entry.purpose) {
-                        CashPurpose.COUNT -> "Close the drawer"
-                        CashPurpose.NO_SALE -> "Open the drawer"
-                        else -> "Done"
+                        CashPurpose.COUNT -> t("Close the drawer")
+                        CashPurpose.NO_SALE -> t("Open the drawer")
+                        else -> t("Done")
                     },
                 )
             }
@@ -564,15 +566,15 @@ private fun DrawerPage(state: RegisterState, model: RegisterModel) {
         }
         state.report?.let { report ->
             Text(if (report.z) "Z report, ${report.date}" else "X report, ${report.date}", style = MaterialTheme.typography.titleSmall)
-            ReportRow("Orders", report.orders.toString())
-            ReportRow("Gross", report.gross)
-            ReportRow("Discounts", report.discounts)
-            ReportRow("Comps", report.comps)
-            ReportRow("Net", report.net)
-            ReportRow("Tax", report.tax)
-            ReportRow("Total", report.total, Modifier.testTag("report:total"))
+            ReportRow(t("Orders"), report.orders.toString())
+            ReportRow(t("Gross"), report.gross)
+            ReportRow(t("Discounts"), report.discounts)
+            ReportRow(t("Comps"), report.comps)
+            ReportRow(t("Net"), report.net)
+            ReportRow(t("Tax"), report.tax)
+            ReportRow(t("Total"), report.total, Modifier.testTag("report:total"))
             for ((tender, amount) in report.tenders) ReportRow(tender, amount)
-            ReportRow("Voided orders", report.voided.toString())
+            ReportRow(t("Voided orders"), report.voided.toString())
             report.withoutDrawer?.let { (words, amount) -> ReportRow(words, amount) }
             for ((words, amount) in report.refunds) ReportRow(words, amount)
             report.refundedWithoutDrawer?.let { (words, amount) -> ReportRow(words, amount) }
@@ -604,16 +606,16 @@ private fun DrawerPage(state: RegisterState, model: RegisterModel) {
 @Composable
 private fun DrawerFigures(drawer: Drawer) {
     // Blind while open: what moved through it shows once it is counted (ADR-0031).
-    ReportRow("Float", drawer.float)
-    drawer.taken?.let { ReportRow("Cash sales", it, Modifier.testTag("closed:taken")) }
-    drawer.paidIn?.let { ReportRow("Paid in", it) }
-    drawer.paidOut?.let { ReportRow("Paid out", it) }
-    drawer.dropped?.let { ReportRow("Dropped", it) }
-    drawer.refunded?.let { ReportRow("Refunds", it) }
-    ReportRow("No sales", drawer.noSales.toString())
-    drawer.expected?.let { ReportRow("Expected", it) }
-    drawer.counted?.let { ReportRow("Counted", it) }
-    drawer.variance?.let { ReportRow("Over/short", it, Modifier.testTag("closed:variance")) }
+    ReportRow(t("Float"), drawer.float)
+    drawer.taken?.let { ReportRow(t("Cash sales"), it, Modifier.testTag("closed:taken")) }
+    drawer.paidIn?.let { ReportRow(t("Paid in"), it) }
+    drawer.paidOut?.let { ReportRow(t("Paid out"), it) }
+    drawer.dropped?.let { ReportRow(t("Dropped"), it) }
+    drawer.refunded?.let { ReportRow(t("Refunds"), it) }
+    ReportRow(t("No sales"), drawer.noSales.toString())
+    drawer.expected?.let { ReportRow(t("Expected"), it) }
+    drawer.counted?.let { ReportRow(t("Counted"), it) }
+    drawer.variance?.let { ReportRow(t("Over/short"), it, Modifier.testTag("closed:variance")) }
 }
 
 @Composable
@@ -645,7 +647,7 @@ private fun PriceDialog(sheet: PriceSheet, error: String?, model: RegisterModel)
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    sheet.typed?.text ?: "Type the price of one",
+                    sheet.typed?.text ?: t("Type the price of one"),
                     style = MaterialTheme.typography.headlineSmall,
                     modifier = Modifier.testTag("price:typed"),
                 )
@@ -658,12 +660,12 @@ private fun PriceDialog(sheet: PriceSheet, error: String?, model: RegisterModel)
                     Key("⌫", "price:erase") { model.erasePriceDigit() }
                     Key("0", "price:digit:0") { model.typePriceDigit(0) }
                 }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("price:error")) }
+                error?.let { Text(t(it), color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("price:error")) }
             }
         },
         confirmButton = {
             Button(onClick = model::setPrice, modifier = Modifier.testTag("price:set")) {
-                Text(sheet.typed?.let { "Sell at ${it.text}" } ?: "Sell free")
+                Text(sheet.typed?.let { "Sell at ${it.text}" } ?: t("Sell free"))
             }
         },
         dismissButton = { TextButton(onClick = model::closePrice, modifier = Modifier.testTag("price:cancel")) { Text(t("Cancel")) } },
@@ -712,7 +714,7 @@ private fun DiscountRow(discount: TicketDiscount, model: RegisterModel) {
 private fun DiscountDialog(sheet: DiscountSheet, error: String?, model: RegisterModel) {
     AlertDialog(
         onDismissRequest = model::closeDiscount,
-        title = { Text(sheet.line?.let { "Discount: ${it.name}" } ?: "Discount the order") },
+        title = { Text(sheet.line?.let { "Discount: ${it.name}" } ?: t("Discount the order")) },
         text = {
             Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
                 Text(t("Why"), style = MaterialTheme.typography.titleSmall)
@@ -738,7 +740,7 @@ private fun DiscountDialog(sheet: DiscountSheet, error: String?, model: Register
                 if (sheet.line != null) {
                     Spacer(Modifier.height(16.dp))
                     Text(
-                        sheet.typed?.text ?: "Or type an amount off",
+                        sheet.typed?.text ?: t("Or type an amount off"),
                         style = MaterialTheme.typography.headlineSmall,
                         modifier = Modifier.testTag("discount:typed"),
                     )
@@ -752,7 +754,7 @@ private fun DiscountDialog(sheet: DiscountSheet, error: String?, model: Register
                         Key("0", "discount:digit:0") { model.typeDiscountDigit(0) }
                     }
                 }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("discount:error")) }
+                error?.let { Text(t(it), color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("discount:error")) }
             }
         },
         confirmButton = {
@@ -804,7 +806,7 @@ private fun SheetDialog(sheet: ModifierSheet, error: String?, model: RegisterMod
                     }
                 }
                 // Its refusals show on it, not behind it. Found in review.
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp).testTag("sheet:error")) }
+                error?.let { Text(t(it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp).testTag("sheet:error")) }
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 12.dp)) {
                     Text(t("How many"), Modifier.weight(1f))
                     TextButton(onClick = { model.sheetQuantity(sheet.quantity - 1) }) { Text("−") }
@@ -856,7 +858,7 @@ private fun MarkDialog(sheet: MarkSheet, error: String?, model: RegisterModel) {
                 for (option in sheet.modifiers) {
                     MarkRow(option.modifier, option.name, true, option.soldOut, option.backAt, sheet.working, model)
                 }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp).testTag("mark:error")) }
+                error?.let { Text(t(it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp).testTag("mark:error")) }
             }
         },
         confirmButton = { TextButton(onClick = model::closeMark, modifier = Modifier.testTag("mark:done")) { Text(t("Done")) } },
@@ -897,11 +899,11 @@ private fun PinDialog(title: String, error: String?, onEnter: (String) -> Unit, 
         text = {
             Column {
                 Text(
-                    "●".repeat(typed.length).ifEmpty { "Type the PIN" },
+                    "●".repeat(typed.length).ifEmpty { t("Type the PIN") },
                     style = MaterialTheme.typography.headlineSmall,
                     modifier = Modifier.testTag("pin:typed"),
                 )
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("pin:error")) }
+                error?.let { Text(t(it), color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("pin:error")) }
                 Spacer(Modifier.height(16.dp))
                 for (row in listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9))) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -961,7 +963,7 @@ private fun ApprovalDialog(approval: Approval, error: String?, model: RegisterMo
 private fun TenderDialog(tender: Tender, model: RegisterModel) {
     AlertDialog(
         onDismissRequest = model::closeTender,
-        title = { Text((tender.check?.let { "Check ${it.number}, cash: " } ?: "Cash: ") + "${tender.due.text} due") },
+        title = { Text((tender.check?.let { "Check ${it.number}, cash: " } ?: t("Cash: ")) + "${tender.due.text} due") },
         text = {
             Column {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -971,7 +973,7 @@ private fun TenderDialog(tender: Tender, model: RegisterModel) {
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    tender.typed?.text ?: "Type an amount",
+                    tender.typed?.text ?: t("Type an amount"),
                     style = MaterialTheme.typography.headlineSmall,
                     modifier = Modifier.testTag("typed"),
                 )
@@ -1018,11 +1020,11 @@ private fun CardDialog(sheet: CardSheet, error: String?, model: RegisterModel) {
     val payment = sheet.payment
     AlertDialog(
         onDismissRequest = {},
-        title = { Text((sheet.check?.let { "Check ${it.number}, card" } ?: "Card")) },
+        title = { Text((sheet.check?.let { "Check ${it.number}, card" } ?: t("Card"))) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Refusals show here, above the dialog's scrim. Found in review.
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("card:error")) }
+                error?.let { Text(t(it), color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("card:error")) }
                 when {
                     sheet.asksTip && sheet.custom -> CustomTip(sheet, model)
                     sheet.asksTip -> {
@@ -1067,7 +1069,7 @@ private fun CardDialog(sheet: CardSheet, error: String?, model: RegisterModel) {
 
 @Composable
 private fun CustomTip(sheet: CardSheet, model: RegisterModel) {
-    Text(sheet.typed?.text ?: "Type the tip", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.testTag("tip:typed"))
+    Text(sheet.typed?.text ?: t("Type the tip"), style = MaterialTheme.typography.headlineSmall, modifier = Modifier.testTag("tip:typed"))
     for (row in listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9))) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (digit in row) Key(digit.toString(), "tip:digit:$digit") { model.typeTipDigit(digit) }
@@ -1096,10 +1098,10 @@ private fun CardPaymentState(payment: CardPayment, model: RegisterModel) {
                     Text(t("Simulated terminal"), style = MaterialTheme.typography.labelLarge)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         for ((answer, words) in listOf(
-                            SimulatedAnswer.APPROVE to "Approve",
-                            SimulatedAnswer.APPROVE_PART to "Approve half",
-                            SimulatedAnswer.DECLINE to "Decline",
-                            SimulatedAnswer.NO_ANSWER to "No answer",
+                            SimulatedAnswer.APPROVE to t("Approve"),
+                            SimulatedAnswer.APPROVE_PART to t("Approve half"),
+                            SimulatedAnswer.DECLINE to t("Decline"),
+                            SimulatedAnswer.NO_ANSWER to t("No answer"),
                         )) {
                             OutlinedButton(onClick = { simulated.answer(answer) }, modifier = Modifier.testTag("terminal:${answer.name}")) { Text(words) }
                         }
@@ -1216,7 +1218,7 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
                     FilterChip(
                         selected = sheet.toCard == card.payment,
                         onClick = { model.refundTo(card.payment) },
-                        label = { Text("${card.card ?: "Card"} (up to ${card.left.text})") },
+                        label = { Text("${card.card ?: t("Card")} (up to ${card.left.text})") },
                         modifier = Modifier.testTag("refund-to:${card.payment}"),
                     )
                 }
@@ -1254,11 +1256,11 @@ private fun ReturnPage(state: RegisterState, model: RegisterModel) {
             onClick = model::confirmReturn,
             enabled = sheet.picks.isNotEmpty() && sheet.reason != null && refundable && !sheet.refunding,
             modifier = Modifier.fillMaxWidth().testTag("return:refund"),
-        ) { Text(if (sheet.toCard != null) "Refund to the card" else "Refund in cash") }
+        ) { Text(if (sheet.toCard != null) t("Refund to the card") else t("Refund in cash")) }
         state.refund?.let { refund ->
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             for ((what, amount) in refund.lines) ReportRow(what, amount)
-            ReportRow("Refunded", refund.amount, Modifier.testTag("return:amount"))
+            ReportRow(t("Refunded"), refund.amount, Modifier.testTag("return:amount"))
             if (refund.toCard) {
                 Text("Sent to ${refund.card ?: "the card"}: the terminal refunds it", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("return:card"))
             } else {
@@ -1279,7 +1281,7 @@ private fun ReturnRow(line: ReturnableLine, picked: Long?, isPicked: Boolean, pi
         Text(
             when {
                 !isPicked -> "0"
-                picked == null -> "All"
+                picked == null -> t("All")
                 else -> picked.toString()
             },
             modifier = Modifier.testTag("return-picked:${line.line}"),
@@ -1300,13 +1302,13 @@ private fun OrderRow(
     onTakeOver: () -> Unit,
 ) {
     val state = if (order.state == OrderState.OPEN && elsewhere) {
-        if (asked) "Asked for" else "On another register"
+        if (asked) t("Asked for") else t("On another register")
     } else {
         when (order.state) {
-            OrderState.OPEN -> "Open"
-            OrderState.CLOSED -> "Paid"
-            OrderState.VOIDED -> "Voided"
-            OrderState.ABANDONED -> "Dropped"
+            OrderState.OPEN -> t("Open")
+            OrderState.CLOSED -> t("Paid")
+            OrderState.VOIDED -> t("Voided")
+            OrderState.ABANDONED -> t("Dropped")
         }
     }
     Row(
@@ -1317,7 +1319,7 @@ private fun OrderRow(
             .testTag("order:${order.order}"),
     ) {
         Text(state, Modifier.width(96.dp))
-        Text(order.lines.joinToString { "${it.quantity} × ${it.name}" }.ifEmpty { "Nothing on it" }, Modifier.weight(1f))
+        Text(order.lines.joinToString { "${it.quantity} × ${it.name}" }.ifEmpty { t("Nothing on it") }, Modifier.weight(1f))
         Text(order.total)
         if (order.state == OrderState.CLOSED) {
             TextButton(onClick = onReprint, modifier = Modifier.testTag("reprint:${order.order}")) { Text(t("Reprint")) }
@@ -1358,14 +1360,14 @@ private fun PrinterPage(state: RegisterState, model: RegisterModel) {
             items(state.jobs, key = { it.job }) { job ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     val kind = when (job.kind) {
-                        JobKind.RECEIPT -> "Receipt"
-                        JobKind.DRAWER -> "Cash drawer"
-                        JobKind.KITCHEN -> "Kitchen ticket"
+                        JobKind.RECEIPT -> t("Receipt")
+                        JobKind.DRAWER -> t("Cash drawer")
+                        JobKind.KITCHEN -> t("Kitchen ticket")
                     }
                     val where = when (job.state) {
-                        JobState.QUEUED -> if (job.attempts == 0) "Waiting" else "Waiting, tried ${job.attempts}×"
-                        JobState.SENDING -> "Printing"
-                        JobState.UNCONFIRMED -> "Did it print?"
+                        JobState.QUEUED -> if (job.attempts == 0) t("Waiting") else "Waiting, tried ${job.attempts}×"
+                        JobState.SENDING -> t("Printing")
+                        JobState.UNCONFIRMED -> t("Did it print?")
                     }
                     Text("$kind: $where", Modifier.weight(1f))
                     if (job.state == JobState.UNCONFIRMED) {

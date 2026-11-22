@@ -209,6 +209,12 @@ impl Register {
         }))
     }
 
+    /// The profile the register rings from, encoded: the one it was opened with, or the latest
+    /// publication it took. A training register opens with it (ADR-0038).
+    pub fn profile(&self) -> Vec<u8> {
+        self.with(|runtime| Ok(runtime.profile().encode())).unwrap_or_default()
+    }
+
     /// Whether this is a training register (ADR-0038).
     pub fn is_training(&self) -> bool {
         self.with(|runtime| Ok(runtime.is_training())).unwrap_or(false)
@@ -940,6 +946,11 @@ impl Register {
     /// or doesn't have it, the register syncs already, or the credentials aren't usable;
     /// [`KeelError::Device`] if the store can't be read or the network can't start.
     pub fn start_sync(&self, kit: SyncKit) -> Result<(), KeelError> {
+        // Before anything touches the network: a training register never dials the hub, even
+        // for the kernel to refuse it. Found in review.
+        if self.is_training() {
+            return Err(KeelError::Refused { reason: "a training register doesn't sync".into() });
+        }
         let roster = Roster::decode(&kit.roster).map_err(KeelError::invalid)?;
         let mut net = self.net.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if net.is_some() {

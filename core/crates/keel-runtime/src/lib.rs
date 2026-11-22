@@ -90,7 +90,7 @@ pub use runtime::{CASH_OFFERS, Identity, MOST_CHECKS, Runtime};
 pub use staff::{APPROVAL_LIFE, FIRST_LOCK, LONGEST_LOCK, PIN_TRIES, QUIET};
 pub use stock::{CountVariance, StockChange, StockLine, StockView, Wasted};
 pub use sync::{ISLAND_AFTER, SyncStatus};
-pub use training::banner as training_banner;
+pub use training::{banner as training_banner, kitchen_banner as training_kitchen_banner};
 pub use views::{
     Amount, CashPaid, DrawerView, GroupView, ItemView, MenuButton, MenuPage, MenuView,
     ModifierView, SoldOutUntil, Ticket, TicketCheck, TicketDiscount, TicketLine, TicketModifier,

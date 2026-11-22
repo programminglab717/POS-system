@@ -3,6 +3,7 @@ package dev.keel.android
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.keel.android.kernel.KernelTill
 import dev.keel.register.RegisterModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -20,34 +21,56 @@ class RegisterViewModel(application: Application) : AndroidViewModel(application
 
     /** The training register, while one is open (ADR-0038): the screen shows it in the real one's place. */
     val training = MutableStateFlow<RegisterModel?>(null)
+    private var trainingTill: KernelTill? = null
     private var trainingLoops: Job? = null
+    private var starting = false
 
     /** The register on the screen: training, or the real one. */
     private fun active(): RegisterModel = training.value ?: model
 
-    /** Opens a training register, over a new store of its own, and shows it. */
+    /**
+     * Opens a training register, over a new store of its own, and shows it. Once: a second tap while
+     * it opens does nothing. Found in review: two opened, and the first's loops ran on for good.
+     */
     fun startTraining() {
-        if (training.value != null) return
+        if (training.value != null || starting) return
+        starting = true
         viewModelScope.launch {
-            val till = try {
-                withContext(host.kernel) { host.openTraining() }
+            try {
+                val till = withContext(host.kernel) { host.openTraining() }
+                trainingTill = till
+                val practice = RegisterModel(
+                    till, viewModelScope, host.kernel, FrozenPrinter(host.printer),
+                    FrozenStations(StoredStations(getApplication())), host.trainingTerminal,
+                )
+                practice.start()
+                trainingLoops = host.runTraining(till)
+                training.value = practice
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Exception) {
-                return@launch
+            } catch (failed: Exception) {
+                // Said, not swallowed: found in review, the button did nothing.
+                model.tell("Training couldn't start: ${failed.message ?: failed::class.simpleName}")
+            } finally {
+                starting = false
             }
-            val practice = RegisterModel(till, viewModelScope, host.kernel, host.printer, StoredStations(getApplication()), host.trainingTerminal)
-            practice.start()
-            trainingLoops = host.runTraining(till)
-            training.value = practice
         }
     }
 
-    /** Ends training: the real register again. What was done in training stays in its store, until the next. */
+    /** Ends training: the real register again, the training register's loops stopped and its store closed. */
     fun endTraining() {
         trainingLoops?.cancel()
         trainingLoops = null
         training.value = null
+        val till = trainingTill ?: return
+        trainingTill = null
+        host.closeTraining(till)
+    }
+
+    override fun onCleared() {
+        // Training doesn't outlive its screen: found in review, its loops ran on in the process.
+        endTraining()
+        super.onCleared()
     }
 
     init {

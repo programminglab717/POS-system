@@ -1404,4 +1404,9 @@ fn a_training_register_says_so_and_a_member_has_their_language() {
     assert_eq!(register.language().as_deref(), Some("en-US"), "the register's");
     let other = Scratch::new();
     assert!(!Register::open(config(&other)).unwrap().is_training());
+    // Refused before the kit is even read, so nothing touches the network: found in review.
+    let kit = SyncKit { roster: vec![0xff], ca: vec![], certificate: vec![], tls_key: vec![] };
+    assert!(matches!(register.start_sync(kit), Err(KeelError::Refused { .. })));
+    // It rings from the profile the real register rings from.
+    assert_eq!(register.profile(), demo_profile());
 }

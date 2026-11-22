@@ -308,7 +308,7 @@ designed in an ADR of its own when it begins, built in slices, and reviewed:
 9. **The back office**: staff and roles, settings, the dashboard, export (O-01, V-07). *Status:
    designed in [ADR-0037](./adr/0037-the-back-office.md); done 2026-11-17, reviewed.*
 10. **Training mode, and Spanish** (B-10, B-12, X-01). *Status: designed in
-    [ADR-0038](./adr/0038-training-and-spanish.md); being built.*
+    [ADR-0038](./adr/0038-training-and-spanish.md); done 2026-11-22, reviewed.*
 
 ## 9. Decision gates
 

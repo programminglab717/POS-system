@@ -322,9 +322,10 @@ impl Profile {
         {
             return Err(ProfileError::Format(format));
         }
-        // Format 2 has roles, and format 1 none: its key 12 is unknown. Formats 3 to 5 have them
+        // Format 2 has roles, and format 1 none: its key 12 is unknown. Formats 3 to 6 have them
         // or not, and a kitchen or not; keys 12 and 13 are unknown before them, and key 14,
-        // tipping, before format 4. Format 5 adds nothing but that a role may adjust stock.
+        // tipping, before format 4. Format 5 adds nothing but that a role may adjust stock, and format 6
+        // that a member or a station may have a language.
         let roles = match format {
             FORMAT_ROLES => {
                 let roles: Vec<Role> = fields.required(key::ROLES, "roles")?;

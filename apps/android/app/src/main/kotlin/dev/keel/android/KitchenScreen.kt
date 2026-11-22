@@ -97,7 +97,7 @@ fun KitchenPage(state: RegisterState, model: RegisterModel) {
         }
         if (kds.stale) {
             Text(
-                "Can't read the tickets: their ages are standing still. Trying again.",
+                t("Can't read the tickets: their ages are standing still. Trying again."),
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.testTag("kitchen:stale"),
             )
@@ -196,11 +196,11 @@ private fun ItemRows(item: KdsItem) {
         for (modifier in item.modifiers) {
             // "No" and "Extra" read in words and in weight, as well as in colour.
             val (prefix, colour) = when (modifier.prefix) {
-                ModifierPrefix.NO -> "NO " to scheme.error
-                ModifierPrefix.EXTRA -> "EXTRA " to scheme.primary
-                ModifierPrefix.LIGHT -> "LIGHT " to scheme.secondary
-                ModifierPrefix.SIDE -> "SIDE " to scheme.onSurface
-                ModifierPrefix.SUB -> "SUB " to scheme.onSurface
+                ModifierPrefix.NO -> t("NO ") to scheme.error
+                ModifierPrefix.EXTRA -> t("EXTRA ") to scheme.primary
+                ModifierPrefix.LIGHT -> t("LIGHT ") to scheme.secondary
+                ModifierPrefix.SIDE -> t("SIDE ") to scheme.onSurface
+                ModifierPrefix.SUB -> t("SUB ") to scheme.onSurface
                 ModifierPrefix.PLAIN -> "" to scheme.onSurface
             }
             val count = if (modifier.quantity > 1) "${modifier.quantity} x " else ""

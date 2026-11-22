@@ -12,50 +12,61 @@ use crate::runtime::Runtime;
 /// The banner a training register's documents carry, in `locale`'s language.
 pub fn banner(locale: Locale) -> &'static str {
     if locale.tag().starts_with("es") {
-        "ENTRENAMIENTO - NO ES UN RECIBO"
+        "PRÁCTICA - NO ES UN RECIBO"
     } else {
         "TRAINING - NOT A RECEIPT"
     }
 }
 
-/// `doc` as a register prints it: as it is, or, `training`, with [`banner`] above and below and
-/// no drawer's kick. A document that can't take the banner, at a document's limits, prints the
-/// banner alone: never as if it were real.
-pub(crate) fn printed(doc: Doc, training: bool, locale: Locale) -> Doc {
+/// The banner a training register's kitchen tickets carry: a cook reads "not a receipt" as
+/// nothing to do with them (ADR-0038). Found in review.
+pub fn kitchen_banner(locale: Locale) -> &'static str {
+    if locale.tag().starts_with("es") {
+        "PRÁCTICA - NO PREPARAR"
+    } else {
+        "TRAINING - DO NOT MAKE"
+    }
+}
+
+/// `doc` as a register prints it: as it is, or, `training`, with `banner` above it and below
+/// it, above the feed and cut that end it, so the slip torn off carries both: found in review,
+/// the lower banner landed on the next slip. No drawer's kick. A document that can't take the
+/// banners, at a document's limits, prints the banner alone: never as if it were real.
+pub(crate) fn printed(doc: Doc, training: bool, banner: &str) -> Doc {
     if !training {
         return doc;
     }
-    let mark = || {
-        Block::text(banner(locale), Align::Center, Style { bold: true, wide: false, tall: true })
-    };
-    let kept: Vec<Block> =
+    let mark = || Block::text(banner, Align::Center, Style { bold: true, wide: false, tall: true });
+    let mut kept: Vec<Block> =
         doc.blocks().iter().filter(|block| !matches!(block, Block::DrawerKick)).cloned().collect();
-    let alone = || Doc::new(vec![mark(), Block::Feed(2), Block::Cut]);
-    let with = |blocks: Vec<Block>| -> Option<Doc> {
-        let mut all = vec![mark(), Block::Rule];
-        all.extend(blocks);
-        all.push(mark());
-        Doc::new(all).ok()
-    };
-    with(kept).or_else(|| alone().ok()).unwrap_or(doc_without_kick(doc))
-}
-
-/// `doc` with no drawer's kick: what's left when even the banner can't be made, which a
-/// document of one block always can.
-fn doc_without_kick(doc: Doc) -> Doc {
-    let kept: Vec<Block> =
-        doc.blocks().iter().filter(|block| !matches!(block, Block::DrawerKick)).cloned().collect();
-    Doc::new(kept).unwrap_or(doc)
+    // The feed and cut that end it go after the lower banner.
+    let mut end = Vec::new();
+    while matches!(kept.last(), Some(Block::Feed(_) | Block::Cut)) {
+        if let Some(block) = kept.pop() {
+            end.insert(0, block);
+        }
+    }
+    let mut all = vec![mark(), Block::Rule];
+    all.extend(kept);
+    all.push(Block::Rule);
+    all.push(mark());
+    all.extend(end);
+    Doc::new(all).or_else(|_| Doc::new(vec![mark(), Block::Feed(2), Block::Cut])).unwrap_or(doc)
 }
 
 impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
     /// Makes this a training register (ADR-0038), for good: it never syncs, and what it prints
-    /// says so. Called on a register over a store of its own, before anything else.
+    /// says so. Called on a register over a new store of its own, before anything else; the
+    /// shell gives it an identity of its own too, which no location's roster has.
     ///
     /// # Errors
-    /// [`RuntimeError::Training`] if it is syncing already.
+    /// [`RuntimeError::Training`] if it is syncing already, or its store holds anything.
     pub fn start_training(&mut self) -> Result<(), RuntimeError> {
-        if self.sync.is_some() {
+        // Only over a store that holds nothing: a real store opened for training would put a
+        // trainee's sales in the real log, to sync at its next real open. Found in review.
+        let empty =
+            self.store.head(self.device)?.seq() == 0 && self.store.clock() == keel_types::Hlc::ZERO;
+        if self.sync.is_some() || !empty {
             return Err(RuntimeError::Training);
         }
         self.training = true;

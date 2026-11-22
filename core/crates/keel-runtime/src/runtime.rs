@@ -1175,8 +1175,10 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             .filter(|(_, queued)| queued.state == keel_store::EffectState::Pending)
             .filter(|(_, queued)| queued.due <= now || queued.due > latest)
             .filter(|(_, queued)| {
-                print::job_of(queued)
-                    .is_some_and(|(_, kind)| kind == JobKind::Kitchen || own.is_some())
+                // A training register prints everything on its own printer: never the kitchen's.
+                print::job_of(queued).is_some_and(|(_, kind)| {
+                    (kind == JobKind::Kitchen && !self.training) || own.is_some()
+                })
             })
             .collect();
         // The earliest due first, then the earliest enqueued; those the clock left behind, now.
@@ -1195,13 +1197,31 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
                 })?;
                 continue;
             };
+            // A training register kicks no drawer: its job is done, with nothing printed, not a
+            // slip of banners. Found in review.
+            if self.training && kind == JobKind::Drawer {
+                self.store.write(|w| -> Result<(), RuntimeError> {
+                    w.start(&key, now)?;
+                    w.finish(&key)?;
+                    Ok(())
+                })?;
+                continue;
+            }
             let started = self.store.write(|w| w.start(&key, now))?;
             self.sending = Some(job);
+            // A training register's kitchen tickets print on its own printer, marked not to be
+            // made: found in review, they printed in the live kitchen.
+            let to = if self.training { None } else { to };
             let printer = if to.is_some() { kitchen_printer } else { printer };
+            let banner = if kind == JobKind::Kitchen {
+                crate::training::kitchen_banner(self.locale)
+            } else {
+                crate::training::banner(self.locale)
+            };
             return Ok(Some(PrintJob {
                 job,
                 kind,
-                bytes: render(&crate::training::printed(doc, self.training, self.locale), &printer),
+                bytes: render(&crate::training::printed(doc, self.training, banner), &printer),
                 confirm: printer.confirm,
                 process_id: process_id(print::process_number(job, started.attempts)),
                 to,

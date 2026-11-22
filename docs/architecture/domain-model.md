@@ -856,7 +856,9 @@ proceed (and conflict) independently.
   (expo or not, shown on a screen or not, with a printer or not), routes by item and modifier and
   order mode, an optional default station, aging thresholds and a fallback printer; and the
   catalog's allergens, from a fixed list of fourteen. Routing is a function of the profile:
-  dayparts, revenue centres, course holds and cook-time sequencing are not built yet.
+  dayparts, revenue centres, course holds and cook-time sequencing are not built yet. Since
+  ADR-0038, a station may have a language, `en-US` or `es-US` (profile format 6), which its
+  printed tickets are in.
 
 ---
 
@@ -1022,7 +1024,8 @@ One state machine covers goods that are **in someone else's custody**:
     `ApprovalGranted` event tied to the action.
   - Everything works offline because the policies are evaluated locally.
 - **As built: staff and roles v0** ([ADR-0029](../adr/0029-staff-roles-and-approvals.md)). Roles,
-  and each member's role and PIN, are part of the location's profile, in its format 2, published
+  and each member's role and PIN, are part of the location's profile, in its format 2 (and since
+  ADR-0038, each member's language, in format 6), published
   as the catalog is. A permission is one of ten actions (`order.void`, `line.remove`,
   `discount.apply`, `price.override`, `refund.issue`, `drawer.no_sale`, `drawer.variance`,
   `drawer.paid_out`, `receipt.reprint`, `item.availability`), or since card payments an

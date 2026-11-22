@@ -106,8 +106,12 @@ change, and US prepared food.
 
 ### 4.2 Fiscal orchestrator and provider SPI
 
+*As built (ADR-0038):* training produces no fiscal event at all. A training register runs over
+a store of its own, with an identity no roster has, and never syncs, so nothing it records
+reaches the orchestrator.
+
 ```text
-Kernel ──FiscalEvent (SaleCompleted, Void, Refund, Tip, Deposit, NoSale, Training,
+Kernel ──FiscalEvent (SaleCompleted, Void, Refund, Tip, Deposit, NoSale,
                      ProvisionalBill, DayClose, DeviceChange, TaxRateChange …)──►
 Fiscal Orchestrator (per location: jurisdiction resolver, policy, outbox, retries)
   ├─ Provider SPI: register() · sign(event) → FiscalProof · render(proof) → receipt blocks

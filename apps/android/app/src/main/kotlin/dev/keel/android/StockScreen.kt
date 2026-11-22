@@ -111,11 +111,11 @@ private fun StockDetail(item: StockItem, sheet: StockSheet, model: RegisterModel
     if (entry == null) {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
             for ((movement, words) in listOf(
-                StockMovement.RECEIVED to "Receive",
-                StockMovement.WASTED to "Waste",
-                StockMovement.ADJUSTED to "Adjust",
-                StockMovement.RESERVED to "Set aside",
-                StockMovement.RELEASED to "Release",
+                StockMovement.RECEIVED to t("Receive"),
+                StockMovement.WASTED to t("Waste"),
+                StockMovement.ADJUSTED to t("Adjust"),
+                StockMovement.RESERVED to t("Set aside"),
+                StockMovement.RELEASED to t("Release"),
             )) {
                 OutlinedButton(onClick = { model.startStockEntry(movement) }, modifier = Modifier.testTag("stock-move:${movement.name}")) { Text(words) }
             }
@@ -123,12 +123,12 @@ private fun StockDetail(item: StockItem, sheet: StockSheet, model: RegisterModel
         }
     } else {
         val what = when (entry.movement) {
-            StockMovement.RECEIVED -> "Received"
-            StockMovement.WASTED -> "Wasted"
-            StockMovement.ADJUSTED -> if (entry.down) "Take off" else "Add"
-            StockMovement.RESERVED -> "Set aside"
-            StockMovement.RELEASED -> "Release"
-            null -> "Counted: on hand now"
+            StockMovement.RECEIVED -> t("Received")
+            StockMovement.WASTED -> t("Wasted")
+            StockMovement.ADJUSTED -> if (entry.down) t("Take off") else t("Add")
+            StockMovement.RESERVED -> t("Set aside")
+            StockMovement.RELEASED -> t("Release")
+            null -> t("Counted: on hand now")
         }
         val unit = if (item.onHand.unit == "each") "" else " (thousandths of ${item.onHand.unit})"
         Text("$what: ${entry.typed}$unit", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.testTag("stock:typed"))

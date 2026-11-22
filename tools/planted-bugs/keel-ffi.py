@@ -366,4 +366,10 @@ BUGS = [
         "        if config.training {",
         "        if config.training && false {",
     ),
+    (
+        "training: a training register's sync reaches the network",
+        "src/register.rs",
+        "        if self.is_training() {\n            return Err(KeelError::Refused { reason: \"a training register doesn't sync\".into() });\n        }",
+        "",
+    ),
 ]

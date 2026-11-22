@@ -19,7 +19,7 @@ class MainActivity : ComponentActivity() {
                 val training by register.training.collectAsState()
                 RegisterScreen(
                     training ?: register.model,
-                    Training(start = register::startTraining, end = register::endTraining),
+                    Training(start = register::startTraining, end = register::endTraining, active = training != null),
                 )
             }
         }
