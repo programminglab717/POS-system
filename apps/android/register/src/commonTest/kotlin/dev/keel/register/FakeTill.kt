@@ -399,6 +399,16 @@ class FakeTill : Till {
 
     override fun deviceId() = device
 
+    /** Each member's language, by their identifier (ADR-0038). */
+    val languages = mutableMapOf<String, String>()
+
+    /** Whether the fake is a training register. */
+    var training = false
+
+    override fun language(): String? = signedIn?.let { languages[it] ?: "en-US" }
+
+    override fun isTraining(): Boolean = training
+
     override fun recall(order: String): Ticket {
         if (owners[order] == device) return ticket(order)
         if (hubAnswers) owners[order] = device else askers.getOrPut(order) { mutableListOf() } += device

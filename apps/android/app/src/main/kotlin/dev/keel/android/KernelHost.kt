@@ -116,6 +116,39 @@ class KernelHost(private val application: Application) {
         }
     }
 
+    /** The training register's card terminal: always simulated, never a real one (ADR-0038). */
+    val trainingTerminal = dev.keel.register.SimulatedTerminal()
+
+    /**
+     * Opens a training register over a store of its own, on the kernel's thread (ADR-0038): a new
+     * one each time, the last session's gone, so training starts from nothing. It never syncs, and
+     * what it prints says so.
+     */
+    fun openTraining(): KernelTill {
+        val files = DeviceFiles.load(dir, KeyVault(), kit)
+        val training = File(dir, "training").apply { mkdirs() }
+        training.listFiles()?.forEach { it.deleteRecursively() }
+        return KernelTill.open(
+            RegisterConfig(
+                path = File(training, "store-${System.currentTimeMillis()}.db").path,
+                storeKey = files.storeKey,
+                device = files.device,
+                signingKey = files.signingKey,
+                profile = files.profile,
+                locale = "en-US",
+                training = true,
+            ),
+        )
+    }
+
+    /** Runs a training register's print driver and payment loop, until the job is cancelled. */
+    fun runTraining(till: KernelTill): Job = scope.launch {
+        supervisorScope {
+            launch { till.printLoop(kernel) { printer.load() }.run() }
+            launch { till.paymentLoop(kernel, trainingTerminal).run() }
+        }
+    }
+
     /** Opens the kernel, on the kernel's thread: its identity, imported from a kit the first time. */
     private fun open(): KernelTill {
         // Kept out of backups, as the store and the keys must be. A provisioned kit, pushed to the

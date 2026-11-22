@@ -183,6 +183,12 @@ interface Till {
     /** This register's device: the owner a ticket names when this register owns it. */
     fun deviceId(): String = ""
 
+    /** The language the register speaks to the member signed in, a locale's tag; null for none (ADR-0038). */
+    fun language(): String? = null
+
+    /** Whether this is a training register, over a store of its own (ADR-0038). */
+    fun isTraining(): Boolean = false
+
     /** The orders begun today, whatever became of them, oldest first. */
     fun ordersToday(): List<Ticket>
 

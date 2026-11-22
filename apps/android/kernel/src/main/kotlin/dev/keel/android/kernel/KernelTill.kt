@@ -466,6 +466,10 @@ class KernelTill(private val register: Register) : Till, AutoCloseable {
 
     override fun deviceId(): String = register.deviceId()
 
+    override fun language(): String? = register.language()
+
+    override fun isTraining(): Boolean = register.isTraining()
+
     override fun ordersToday(): List<Ticket> = call { register.ordersToday().map { it.toTicket() } }
 
     override fun openOrders(): List<Ticket> = call { register.openOrders().map { it.toTicket() } }

@@ -225,6 +225,10 @@ data class RegisterState(
     val loading: Boolean = true,
     val team: List<Member> = emptyList(),
     val member: Member? = null,
+    /** The language the register speaks to [member] in, a locale's tag (ADR-0038). */
+    val language: String? = null,
+    /** Whether this is a training register: nothing here is real (ADR-0038). */
+    val training: Boolean = false,
     val pages: List<MenuPage> = emptyList(),
     val page: Int = 0,
     val ticket: Ticket? = null,
@@ -331,8 +335,12 @@ class RegisterModel(
         val printer = settings?.load()
         val device = till.deviceId().ifEmpty { null }
         val stations = till.kitchenStations()
+        val training = till.isTraining()
         mutable.update {
-            it.copy(loading = false, team = team, printer = printer, profileVersion = version, device = device, stations = stations)
+            it.copy(
+                loading = false, team = team, printer = printer, profileVersion = version, device = device,
+                stations = stations, training = training,
+            )
         }
     }
 
@@ -413,9 +421,10 @@ class RegisterModel(
         val soldOut = till.soldOut()
         // Once someone signs in, the register asks to open the drawer if none is open (ADR-0031).
         val drawer = till.drawer()
+        val language = till.language()
         mutable.update {
             it.copy(
-                screen = Screen.REGISTER, member = member, pages = pages, page = 0,
+                screen = Screen.REGISTER, member = member, language = language, pages = pages, page = 0,
                 profileVersion = version, pinFor = null, drawer = drawer, askDrawer = drawer == null,
                 soldOut = soldOut, availabilityVersion = availability,
             )
@@ -622,6 +631,7 @@ class RegisterModel(
             RegisterState(
                 loading = false, team = it.team, printer = it.printer, ticket = it.ticket, sync = it.sync,
                 profileVersion = it.profileVersion, device = it.device, stations = it.stations,
+                training = it.training,
             )
         }
     }

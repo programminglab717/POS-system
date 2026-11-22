@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 
 /** The register's one activity. */
 class MainActivity : ComponentActivity() {
@@ -14,7 +16,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
-                RegisterScreen(register.model)
+                val training by register.training.collectAsState()
+                RegisterScreen(
+                    training ?: register.model,
+                    Training(start = register::startTraining, end = register::endTraining),
+                )
             }
         }
     }

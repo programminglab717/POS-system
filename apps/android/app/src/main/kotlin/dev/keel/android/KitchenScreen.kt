@@ -79,9 +79,9 @@ fun KitchenPage(state: RegisterState, model: RegisterModel) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             val names = state.stations.filter { it.station in kds.stations }.joinToString { it.name }
             Text("Kitchen: $names", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-            TextButton(onClick = model::chooseStations, modifier = Modifier.testTag("kitchen:stations")) { Text("Stations") }
-            TextButton(onClick = model::recallLast, modifier = Modifier.testTag("kitchen:recall")) { Text("Recall last") }
-            TextButton(onClick = model::closeKitchen, modifier = Modifier.testTag("kitchen:exit")) { Text("Exit") }
+            TextButton(onClick = model::chooseStations, modifier = Modifier.testTag("kitchen:stations")) { Text(t("Stations")) }
+            TextButton(onClick = model::recallLast, modifier = Modifier.testTag("kitchen:recall")) { Text(t("Recall last")) }
+            TextButton(onClick = model::closeKitchen, modifier = Modifier.testTag("kitchen:exit")) { Text(t("Exit")) }
         }
         if (kds.choosing) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -104,7 +104,7 @@ fun KitchenPage(state: RegisterState, model: RegisterModel) {
         }
         // Tickets no screen showed in time, which every device tells its staff (ADR-0034).
         for (alert in state.alerts) {
-            Text(alert.words, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelLarge)
+            Text(t(alert.words), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelLarge)
         }
         // Each station's day so far: how many it bumped, and its average time.
         Text(
@@ -116,7 +116,7 @@ fun KitchenPage(state: RegisterState, model: RegisterModel) {
             modifier = Modifier.padding(vertical = 4.dp).testTag("kitchen:times"),
         )
         if (kds.view.tickets.isEmpty()) {
-            Text("No tickets.", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(24.dp).testTag("kitchen:empty"))
+            Text(t("No tickets."), style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(24.dp).testTag("kitchen:empty"))
         }
         LazyVerticalGrid(
             columns = GridCells.Adaptive(minSize = 240.dp),
@@ -164,14 +164,14 @@ private fun TicketCard(ticket: KdsTicket, selected: Boolean, showStation: Boolea
                 style = MaterialTheme.typography.labelLarge,
             )
             if (ticket.rerouted) {
-                Text("Printed: no screen showed it in time", color = scheme.error, style = MaterialTheme.typography.labelMedium)
+                Text(t("Printed: no screen showed it in time"), color = scheme.error, style = MaterialTheme.typography.labelMedium)
             }
             for (item in ticket.items) ItemRows(item)
             Button(
                 onClick = { model.bump(ticket) },
                 enabled = !bumping,
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("bump:${ticket.ticket}"),
-            ) { Text("Bump") }
+            ) { Text(t("Bump")) }
         }
     }
 }
@@ -189,7 +189,7 @@ private fun ItemRows(item: KdsItem) {
                 fontWeight = FontWeight.Bold,
                 textDecoration = struck,
             )
-            if (item.void) Text("VOID", color = scheme.error, fontWeight = FontWeight.Bold, modifier = Modifier.testTag("voided:${item.line}"))
+            if (item.void) Text(t("VOID"), color = scheme.error, fontWeight = FontWeight.Bold, modifier = Modifier.testTag("voided:${item.line}"))
             item.ready?.let { made -> Text(if (made) "✓ made" else "waiting", style = MaterialTheme.typography.labelMedium) }
         }
         item.componentOf?.let { Text("for $it", style = MaterialTheme.typography.labelMedium) }

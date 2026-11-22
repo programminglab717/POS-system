@@ -73,6 +73,8 @@ class OpeningTill(open: () -> Till) : Till {
     override fun countStock(variant: String, micros: Long, unit: String) = till.countStock(variant, micros, unit)
     override fun takeOver(order: String) = till.takeOver(order)
     override fun deviceId() = till.deviceId()
+    override fun language() = till.language()
+    override fun isTraining() = till.isTraining()
     override fun abandon(order: String) = till.abandon(order)
     override fun cashOffers(order: String) = till.cashOffers(order)
     override fun amount(minor: Long) = till.amount(minor)

@@ -48,15 +48,15 @@ fun StockPage(state: RegisterState, model: RegisterModel) {
     Row(Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Stock", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                TextButton(onClick = model::chooseStockItem, modifier = Modifier.testTag("stock:track")) { Text("Track an item") }
-                TextButton(onClick = model::closeStock, modifier = Modifier.testTag("back")) { Text("Back") }
+                Text(t("Stock"), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                TextButton(onClick = model::chooseStockItem, modifier = Modifier.testTag("stock:track")) { Text(t("Track an item")) }
+                TextButton(onClick = model::closeStock, modifier = Modifier.testTag("back")) { Text(t("Back")) }
             }
             // The error is shown above every screen already: found in review, it showed twice.
             if (sheet.choosing) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Choose an item to track", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-                    TextButton(onClick = model::stopChoosingStock, modifier = Modifier.testTag("stock:stop-choosing")) { Text("Done") }
+                    Text(t("Choose an item to track"), Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                    TextButton(onClick = model::stopChoosingStock, modifier = Modifier.testTag("stock:stop-choosing")) { Text(t("Done")) }
                 }
                 // At most half the height, scrolled: found in review, a large menu hid the list.
                 FlowRow(
@@ -70,7 +70,7 @@ fun StockPage(state: RegisterState, model: RegisterModel) {
                     }
                 }
             }
-            if (sheet.items.isEmpty()) Text("No item's stock is tracked yet.", modifier = Modifier.padding(vertical = 8.dp))
+            if (sheet.items.isEmpty()) Text(t("No item's stock is tracked yet."), modifier = Modifier.padding(vertical = 8.dp))
             LazyColumn(Modifier.weight(1f)) {
                 items(sheet.items, key = { it.variant }) { item -> StockRow(item, item.variant == sheet.selected?.variant, model) }
             }
@@ -102,7 +102,7 @@ private fun StockDetail(item: StockItem, sheet: StockSheet, model: RegisterModel
     Text(item.name, style = MaterialTheme.typography.titleLarge)
     Text("On hand ${item.onHand.text} · set aside ${item.reserved.text} · available ${item.available.text}")
     item.countedAt?.let { Text("Last counted ${timeOf(it)}", style = MaterialTheme.typography.bodySmall) }
-    if (item.onHand.negative) Text("More sold than was there: count it.", color = MaterialTheme.colorScheme.error)
+    if (item.onHand.negative) Text(t("More sold than was there: count it."), color = MaterialTheme.colorScheme.error)
     if (item.conflicts > 0) {
         val records = if (item.conflicts == 1L) "1 record" else "${item.conflicts} records"
         Text("$records of its stock didn't count, as in another unit: look at its history.", color = MaterialTheme.colorScheme.error)
@@ -119,7 +119,7 @@ private fun StockDetail(item: StockItem, sheet: StockSheet, model: RegisterModel
             )) {
                 OutlinedButton(onClick = { model.startStockEntry(movement) }, modifier = Modifier.testTag("stock-move:${movement.name}")) { Text(words) }
             }
-            OutlinedButton(onClick = { model.startStockEntry(null) }, modifier = Modifier.testTag("stock-count")) { Text("Count") }
+            OutlinedButton(onClick = { model.startStockEntry(null) }, modifier = Modifier.testTag("stock-count")) { Text(t("Count")) }
         }
     } else {
         val what = when (entry.movement) {
@@ -134,14 +134,14 @@ private fun StockDetail(item: StockItem, sheet: StockSheet, model: RegisterModel
         Text("$what: ${entry.typed}$unit", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.testTag("stock:typed"))
         if (entry.movement == StockMovement.ADJUSTED) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = !entry.down, onClick = { model.stockDown(false) }, label = { Text("Add") })
-                FilterChip(selected = entry.down, onClick = { model.stockDown(true) }, label = { Text("Take off") })
+                FilterChip(selected = !entry.down, onClick = { model.stockDown(false) }, label = { Text(t("Add")) })
+                FilterChip(selected = entry.down, onClick = { model.stockDown(true) }, label = { Text(t("Take off")) })
             }
         }
         if (entry.movement != null) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 for (reason in STOCK_REASONS) {
-                    FilterChip(selected = entry.reason == reason.code, onClick = { model.stockReason(reason.code) }, label = { Text(reason.words) })
+                    FilterChip(selected = entry.reason == reason.code, onClick = { model.stockReason(reason.code) }, label = { Text(t(reason.words)) })
                 }
             }
         }
@@ -161,13 +161,13 @@ private fun StockDetail(item: StockItem, sheet: StockSheet, model: RegisterModel
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = model::cancelStockEntry, modifier = Modifier.weight(1f)) { Text("Cancel") }
-                Button(onClick = model::confirmStockEntry, enabled = !sheet.working, modifier = Modifier.weight(1f).testTag("stock:confirm")) { Text("Record") }
+                TextButton(onClick = model::cancelStockEntry, modifier = Modifier.weight(1f)) { Text(t("Cancel")) }
+                Button(onClick = model::confirmStockEntry, enabled = !sheet.working, modifier = Modifier.weight(1f).testTag("stock:confirm")) { Text(t("Record")) }
             }
         }
     }
-    Text("Since the last count", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
-    if (sheet.history.isEmpty()) Text("Nothing yet.", style = MaterialTheme.typography.bodySmall)
+    Text(t("Since the last count"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 12.dp))
+    if (sheet.history.isEmpty()) Text(t("Nothing yet."), style = MaterialTheme.typography.bodySmall)
     for (line in sheet.history) {
         Row(Modifier.fillMaxWidth()) {
             Text(timeOf(line.at), Modifier.padding(end = 8.dp), style = MaterialTheme.typography.bodySmall)

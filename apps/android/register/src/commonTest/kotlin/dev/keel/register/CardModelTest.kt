@@ -516,3 +516,37 @@ class StockModelTest {
         assertNull(model.state.value.error)
     }
 }
+
+/** The register's language follows the member signed in, and a training register says so (ADR-0038). */
+class LanguageModelTest {
+    @Test
+    fun the_language_is_the_members_while_they_are_signed_in() = runTest {
+        val till = FakeTill()
+        val model = RegisterModel(till, this, StandardTestDispatcher(testScheduler))
+        model.start()
+        testScheduler.advanceUntilIdle()
+        val team = model.state.value.team
+        till.languages[team[0].id] = "es-US"
+        model.signIn(team[0])
+        testScheduler.advanceUntilIdle()
+        assertEquals("es-US", model.state.value.language)
+        model.signOut()
+        testScheduler.advanceUntilIdle()
+        assertNull(model.state.value.language, "no one signed in")
+        assertEquals(false, model.state.value.training)
+    }
+
+    @Test
+    fun a_training_register_says_so_and_stays_so_when_signed_out() = runTest {
+        val till = FakeTill().apply { training = true }
+        val model = RegisterModel(till, this, StandardTestDispatcher(testScheduler))
+        model.start()
+        testScheduler.advanceUntilIdle()
+        assertTrue(model.state.value.training)
+        model.signIn(model.state.value.team.first())
+        testScheduler.advanceUntilIdle()
+        model.signOut()
+        testScheduler.advanceUntilIdle()
+        assertTrue(model.state.value.training)
+    }
+}

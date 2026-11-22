@@ -109,8 +109,13 @@ office, built 2026-11-22: profile format 6, a team member's and a kitchen statio
 kitchen tickets in their station's language; the signed-in member's language through the
 bindings; a training register, which never syncs, prints its banner on everything and kicks no
 drawer; the languages in the back office's staff and settings pages. Verified by the
-workspace's tests, both clippy runs, and the back office's browser tests (11). Next: slice 3,
-the Android register in Spanish and in training.
+workspace's tests, both clippy runs, and the back office's browser tests (11). Slice 3, the
+Android register, built 2026-11-22: its words in English and Spanish, by the member signed in,
+a test checking every word the screens ask for has its Spanish; and training, a register over a
+new store of its own with a simulated terminal, a banner on every screen, started from the
+sign-in screen and ended from the banner. Verified by `:register:jvmTest`,
+`:kernel:testDebugUnitTest`, `:app:testDebugUnitTest`, the app's build and the Kotlin bindings'
+tests. Next: the planted bugs, then the review.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
 three of step 2 the scrolling ticket pane should mend.
