@@ -187,12 +187,14 @@ pub fn demo() -> Result<Profile, ProfileError> {
                 name: name("Alex")?,
                 role: Some(id(0x601)?),
                 pin: Some(PinHash::from_parts(*b"keel-demo-alex-1", ALEX_PIN)),
+                language: None,
             },
             Member {
                 id: id(0x502)?,
                 name: name("Sam")?,
                 role: Some(id(0x602)?),
                 pin: Some(PinHash::from_parts(*b"keel-demo-sam--2", SAM_PIN)),
+                language: None,
             },
         ],
         roles: roles()?,
@@ -213,7 +215,14 @@ pub fn demo() -> Result<Profile, ProfileError> {
 /// The demo's kitchen: the bar and the kitchen, each with its items, and expo.
 fn kitchen() -> Result<Kitchen, ProfileError> {
     let station = |n: u64, title: &str, expo: bool| -> Result<Station, ProfileError> {
-        Ok(Station { id: id(n)?, name: name(title)?, expo, screen: true, printer: None })
+        Ok(Station {
+            id: id(n)?,
+            name: name(title)?,
+            expo,
+            screen: true,
+            printer: None,
+            language: None,
+        })
     };
     let route = |station: u64, items: &[u64]| -> Result<Route, ProfileError> {
         Ok(Route {

@@ -195,12 +195,31 @@ impl Register {
             RuntimeError::Store(store) => KeelError::from(store),
             other => KeelError::Device { reason: other.to_string() },
         })?;
+        let mut runtime = runtime;
+        if config.training {
+            runtime
+                .start_training()
+                .map_err(|error| KeelError::Device { reason: error.to_string() })?;
+        }
         Ok(Arc::new(Register {
             runtime: Mutex::new(runtime),
             locale,
             device,
             net: Mutex::new(None),
         }))
+    }
+
+    /// Whether this is a training register (ADR-0038).
+    pub fn is_training(&self) -> bool {
+        self.with(|runtime| Ok(runtime.is_training())).unwrap_or(false)
+    }
+
+    /// The language the register speaks to the member signed in, its tag such as `es-US`: theirs,
+    /// or else the register's; `None` when no one is signed in (ADR-0038).
+    pub fn language(&self) -> Option<String> {
+        self.with(|runtime| Ok(runtime.language().map(|locale| locale.tag().to_owned())))
+            .ok()
+            .flatten()
     }
 
     /// Signs `member` in with their PIN: every event from now on records them. In a profile

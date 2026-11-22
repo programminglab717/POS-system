@@ -240,6 +240,19 @@ test("settings are checked by the kernel and refused in its words", async ({ pag
   await tips.fill("15, abc");
   await expect(page.getByRole("button", { name: "Check" })).toBeDisabled();
   await page.getByRole("button", { name: "Discard" }).click();
+  await expect(page.getByText("Unpublished changes")).toHaveCount(0);
+  // A station's tickets in Spanish (ADR-0038).
+  await page.getByLabel(/^Language of .*'s tickets$/).first().selectOption("es-US");
+  await page.getByRole("button", { name: "Check" }).click();
+  await expect(page.getByRole("status")).toHaveText("The settings pass every check.");
+  await page.getByRole("button", { name: "Discard" }).click();
+  await expect(page.getByText("Unpublished changes")).toHaveCount(0);
+  // And a member who reads the register in Spanish.
+  await page.getByRole("tab", { name: "Staff" }).click();
+  await page.getByLabel(/^Language of /).first().selectOption("es-US");
+  await page.getByRole("button", { name: "Check" }).click();
+  await expect(page.getByRole("status")).toHaveText("The staff pass every check.");
+  await page.getByRole("button", { name: "Discard" }).click();
 });
 
 test("at phone width the tabs scroll and the dashboard doesn't overflow the page", async ({ page }) => {

@@ -178,6 +178,10 @@ pub enum RuntimeError {
     /// The runtime isn't replicating: start it first.
     #[error("the runtime isn't replicating")]
     NotSyncing,
+    /// A training register never syncs, and a register that has synced doesn't become one
+    /// (ADR-0038).
+    #[error("a training register doesn't sync, and a register that syncs doesn't train")]
+    Training,
     /// Only the location's cloud publishes its profile (ADR-0028).
     #[error("this device isn't its location's cloud")]
     NotCloud,

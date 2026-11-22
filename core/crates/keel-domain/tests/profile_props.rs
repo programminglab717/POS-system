@@ -576,6 +576,12 @@ fn any_profile() -> impl Strategy<Value = ProfileData> {
                         // With roles, each member has one, and a PIN, its hash's bytes drawn.
                         role: (!roles.is_empty()).then(|| role.get(&roles).id),
                         pin: (!roles.is_empty()).then(|| PinHash::from_parts(salt, hash)),
+                        // A language now and then, from bytes already drawn (ADR-0038).
+                        language: match salt[0] % 5 {
+                            0 => Some(keel_types::Locale::ES_US),
+                            1 => Some(keel_types::Locale::EN_US),
+                            _ => None,
+                        },
                     })
                     .collect(),
                 roles,
@@ -681,6 +687,7 @@ fn kitchen_of(catalog: &Catalog, picks: &KitchenPicks) -> Kitchen {
             expo: expo && at > 0,
             screen,
             printer: printed.map(printer).or_else(|| (!screen).then(|| printer(0))),
+            language: (at % 3 == 1).then_some(keel_types::Locale::ES_US),
         })
         .collect();
     let makers: Vec<Id<StationRef>> =

@@ -90,6 +90,8 @@ export interface StaffMember {
   name: string;
   role?: string;
   hasPin: boolean;
+  /** Their language, `en-US` or `es-US`; absent for the register's (ADR-0038). */
+  language?: string;
 }
 
 export interface Staff {
@@ -103,7 +105,7 @@ export interface StaffEdit {
   base?: string;
   roles: Role[];
   /** A member's new PIN, its digits; absent to keep the one they have. */
-  team: { id: string; name: string; role?: string; pin?: string }[];
+  team: { id: string; name: string; role?: string; pin?: string; language?: string }[];
 }
 
 export interface PrinterSetting {
@@ -126,6 +128,8 @@ export interface StationSetting {
   expo: boolean;
   screen: boolean;
   printer?: PrinterSetting;
+  /** The language its tickets print in; absent for the register's (ADR-0038). */
+  language?: string;
 }
 
 export interface RouteSetting {

@@ -20,7 +20,7 @@ use keel_domain::refs::Station;
 use keel_events::envelope::{Actor, Component, Device};
 use keel_events::keys::Signer;
 use keel_store::{KitchenSummary, Writing};
-use keel_types::{Clock, Entropy, Id, LocalTime, Quantity, Timestamp};
+use keel_types::{Clock, Entropy, Id, LocalTime, Locale, Quantity, Timestamp};
 
 use crate::error::RuntimeError;
 use crate::print::{self, Job};
@@ -259,26 +259,22 @@ pub fn how_many(quantity: Quantity) -> String {
 }
 
 /// A modifier as a kitchen ticket prints it: "NO onion", "EXTRA shot", "2 x Vanilla".
-fn modifier_words(modifier: &KitchenModifier) -> String {
-    let prefix = match modifier.prefix {
-        Prefix::Plain => "",
-        Prefix::No => "NO ",
-        Prefix::Extra => "EXTRA ",
-        Prefix::Light => "LIGHT ",
-        Prefix::Side => "SIDE ",
-        Prefix::Sub => "SUB ",
+fn modifier_words(modifier: &KitchenModifier, words: &TicketWords) -> String {
+    let at = match modifier.prefix {
+        Prefix::Plain => 0,
+        Prefix::No => 1,
+        Prefix::Extra => 2,
+        Prefix::Light => 3,
+        Prefix::Side => 4,
+        Prefix::Sub => 5,
     };
+    let prefix = words.prefixes.get(at).copied().unwrap_or_default();
     let count = if modifier.quantity.get() > 1 {
         format!("{} x ", modifier.quantity)
     } else {
         String::new()
     };
     format!("{prefix}{count}{}", modifier.name)
-}
-
-/// The allergens of an item, as a ticket names them.
-pub(crate) fn allergen_words(allergens: &BTreeSet<Allergen>) -> String {
-    allergens.iter().map(|allergen| allergen.name()).collect::<Vec<_>>().join(", ")
 }
 
 /// A kitchen ticket's document: its station, its order's code and mode and when it was sent,
@@ -301,40 +297,147 @@ fn clip(text: &str) -> String {
     format!("{kept}...")
 }
 
+/// What a kitchen ticket is marked with, above its station's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mark {
+    /// Printed as its station's screen didn't show it.
+    Rerouted,
+    /// Its lines were voided.
+    Void,
+}
+
+/// A kitchen ticket's words, in a language (ADR-0038).
+struct TicketWords {
+    order: &'static str,
+    modes: [&'static str; 8],
+    prefixes: [&'static str; 6],
+    note: &'static str,
+    allergens: &'static str,
+    allergen_names: [&'static str; 14],
+    for_line: &'static str,
+    /// "... and {n} more: see the screen", around the number.
+    more: (&'static str, &'static str),
+    /// "REROUTED: {station}'s screen didn't show it", around the station's name.
+    rerouted: (&'static str, &'static str),
+    void: &'static str,
+}
+
+const TICKET_ENGLISH: TicketWords = TicketWords {
+    order: "Order",
+    modes: ["DINE IN", "TO GO", "PICKUP", "DELIVERY", "SHIP", "SERVICE", "DRIVE-THRU", "CURBSIDE"],
+    prefixes: ["", "NO ", "EXTRA ", "LIGHT ", "SIDE ", "SUB "],
+    note: "NOTE",
+    allergens: "ALLERGENS",
+    allergen_names: [
+        "gluten",
+        "crustaceans",
+        "eggs",
+        "fish",
+        "peanuts",
+        "soy",
+        "milk",
+        "tree nuts",
+        "celery",
+        "mustard",
+        "sesame",
+        "sulphites",
+        "lupin",
+        "molluscs",
+    ],
+    for_line: "for",
+    more: ("... and ", " more: see the screen"),
+    rerouted: ("REROUTED: ", "'s screen didn't show it"),
+    void: "VOID",
+};
+
+const TICKET_SPANISH: TicketWords = TicketWords {
+    order: "Orden",
+    modes: [
+        "PARA COMER AQUÍ",
+        "PARA LLEVAR",
+        "RECOGER",
+        "A DOMICILIO",
+        "ENVÍO",
+        "SERVICIO",
+        "AUTOSERVICIO",
+        "EN LA ACERA",
+    ],
+    prefixes: ["", "SIN ", "EXTRA ", "POCO ", "APARTE ", "CAMBIO A "],
+    note: "NOTA",
+    allergens: "ALÉRGENOS",
+    allergen_names: [
+        "gluten",
+        "crustáceos",
+        "huevos",
+        "pescado",
+        "maní",
+        "soya",
+        "leche",
+        "nueces",
+        "apio",
+        "mostaza",
+        "ajonjolí",
+        "sulfitos",
+        "altramuces",
+        "moluscos",
+    ],
+    for_line: "para",
+    more: ("... y ", " más: vea la pantalla"),
+    rerouted: ("REDIRIGIDO: la pantalla de ", " no lo mostró"),
+    void: "ANULADO",
+};
+
+fn ticket_words(locale: Locale) -> &'static TicketWords {
+    if locale.tag().starts_with("es") { &TICKET_SPANISH } else { &TICKET_ENGLISH }
+}
+
+/// The language `station`'s tickets print in: its own, or else the register's (ADR-0038).
+pub(crate) fn station_locale(station: &StationConfig, register: Locale) -> Locale {
+    station.language.unwrap_or(register)
+}
+
 pub(crate) fn ticket_doc(
     station: &StationConfig,
     sent: &TicketSent,
     at: LocalTime,
-    mark: Option<&str>,
+    mark: Option<Mark>,
+    locale: Locale,
 ) -> Result<Doc, RuntimeError> {
+    let words = ticket_words(locale);
     let large = Style { bold: true, wide: true, tall: true };
     let bold = Style { bold: true, wide: false, tall: false };
     let mut blocks = Vec::new();
     // Tall and bold, but not wide: a reroute's reason fits a line.
     if let Some(mark) = mark {
+        let mark = match mark {
+            Mark::Rerouted => format!("{}{}{}", words.rerouted.0, station.name, words.rerouted.1),
+            Mark::Void => words.void.to_owned(),
+        };
         blocks.push(Block::text(
-            clip(mark),
+            clip(&mark),
             Align::Center,
             Style { bold: true, wide: false, tall: true },
         ));
     }
     blocks.push(Block::text(clip(station.name.as_str()), Align::Center, large));
-    blocks.push(Block::row(format!("Order {}", code(sent.order)), at.to_string()));
-    blocks.push(Block::text(mode_words(sent.mode), Align::Left, bold));
+    blocks.push(Block::row(format!("{} {}", words.order, code(sent.order)), at.to_string()));
+    blocks.push(Block::text(mode_in(sent.mode, words), Align::Left, bold));
     blocks.push(Block::Rule);
     let before = blocks.len();
     for (at, item) in sent.items.iter().enumerate() {
         if blocks.len().saturating_sub(before) > MOST_ITEM_BLOCKS {
             let more = sent.items.len().saturating_sub(at);
             blocks.push(Block::text(
-                format!("... and {more} more: see the screen"),
+                format!("{}{more}{}", words.more.0, words.more.1),
                 Align::Left,
                 bold,
             ));
             break;
         }
         let name = match &item.component_of {
-            Some(line) => format!("{} {} (for {line})", how_many(item.quantity), item.name),
+            Some(line) => {
+                format!("{} {} ({} {line})", how_many(item.quantity), item.name, words.for_line)
+            }
             None => format!("{} {}", how_many(item.quantity), item.name),
         };
         blocks.push(Block::Row {
@@ -347,7 +450,7 @@ pub(crate) fn ticket_doc(
             let indent = modifier.depth.get().saturating_mul(2);
             let style = if modifier.prefix == Prefix::Plain { Style::default() } else { bold };
             blocks.push(Block::Row {
-                left: clip(&modifier_words(modifier)),
+                left: clip(&modifier_words(modifier, words)),
                 right: String::new(),
                 indent,
                 style,
@@ -355,15 +458,23 @@ pub(crate) fn ticket_doc(
         }
         if let Some(notes) = &item.notes {
             blocks.push(Block::Row {
-                left: clip(&format!("NOTE: {notes}")),
+                left: clip(&format!("{}: {notes}", words.note)),
                 right: String::new(),
                 indent: 2,
                 style: bold,
             });
         }
         if !item.allergens.is_empty() {
-            let words = format!("ALLERGENS: {}", allergen_words(&item.allergens));
-            blocks.push(Block::Row { left: words, right: String::new(), indent: 2, style: bold });
+            let names: Vec<&str> = item
+                .allergens
+                .iter()
+                .map(|allergen| {
+                    let index = usize::try_from(allergen.code()).unwrap_or(usize::MAX);
+                    words.allergen_names.get(index).copied().unwrap_or_else(|| allergen.name())
+                })
+                .collect();
+            let line = format!("{}: {}", words.allergens, names.join(", "));
+            blocks.push(Block::Row { left: line, right: String::new(), indent: 2, style: bold });
         }
     }
     blocks.push(Block::Rule);
@@ -373,6 +484,12 @@ pub(crate) fn ticket_doc(
 }
 
 /// How an order's mode reads on a ticket.
+/// How an order's mode reads on a ticket, in `words`' language.
+fn mode_in(mode: Mode, words: &TicketWords) -> &'static str {
+    let at = usize::try_from(mode.code()).unwrap_or(usize::MAX);
+    words.modes.get(at).copied().unwrap_or_else(|| mode_words(mode))
+}
+
 pub(crate) const fn mode_words(mode: Mode) -> &'static str {
     match mode {
         Mode::DineIn => "DINE IN",
@@ -430,7 +547,8 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             let print = match (&station.screen, &station.printer) {
                 (false, Some(printer)) => {
                     let job = self.ids.generate(now)?;
-                    Some((job, printer.clone(), ticket_doc(station, &sent, at, None)?))
+                    let locale = station_locale(station, self.locale);
+                    Some((job, printer.clone(), ticket_doc(station, &sent, at, None, locale)?))
                 }
                 _ => None,
             };
@@ -773,14 +891,19 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             };
             let at =
                 self.profile.business_day().local_time(moment.at().ok_or(RuntimeError::Time)?)?;
-            let mark = format!("REROUTED: {}'s screen didn't show it", station.name);
             let print = match printer {
                 Some(printer) => {
                     let printing = TicketSent { items: live, ..sent.clone() };
                     Some((
                         self.ids.generate(now)?,
                         printer,
-                        ticket_doc(station, &printing, at, Some(&mark))?,
+                        ticket_doc(
+                            station,
+                            &printing,
+                            at,
+                            Some(Mark::Rerouted),
+                            station_locale(station, self.locale),
+                        )?,
                     ))
                 }
                 None => None,
@@ -839,7 +962,13 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             slips.push((
                 self.ids.generate(now)?,
                 printer,
-                ticket_doc(station, &slip, at, Some("VOID"))?,
+                ticket_doc(
+                    station,
+                    &slip,
+                    at,
+                    Some(Mark::Void),
+                    station_locale(station, self.locale),
+                )?,
             ));
         }
         Ok(slips)

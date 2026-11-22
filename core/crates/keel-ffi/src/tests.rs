@@ -58,6 +58,7 @@ fn config(scratch: &Scratch) -> RegisterConfig {
         signing_key: vec![7; 32],
         profile: demo_profile(),
         locale: "en-US".to_owned(),
+        training: false,
     }
 }
 
@@ -871,6 +872,7 @@ fn kit_register(kit: &keel_provision::Kit, scratch: &Scratch) -> Arc<Register> {
         signing_key: kit.signing_key.to_vec(),
         profile: kit.profile.clone(),
         locale: "en-US".to_owned(),
+        training: false,
     })
     .unwrap()
 }
@@ -1388,4 +1390,18 @@ fn stock_moves_through_the_register_and_a_note_needs_a_reason() {
         )
         .unwrap();
     assert_eq!(item.on_hand.micros, 2_000_000);
+}
+
+/// Training and the member's language through the register (ADR-0038).
+#[test]
+fn a_training_register_says_so_and_a_member_has_their_language() {
+    let scratch = Scratch::new();
+    let register: Arc<Register> =
+        Register::open(RegisterConfig { training: true, ..config(&scratch) }).unwrap();
+    assert!(register.is_training());
+    assert_eq!(register.language(), None, "no one signed in");
+    register.sign_in(demo_id(0x501), "1234".into()).unwrap();
+    assert_eq!(register.language().as_deref(), Some("en-US"), "the register's");
+    let other = Scratch::new();
+    assert!(!Register::open(config(&other)).unwrap().is_training());
 }

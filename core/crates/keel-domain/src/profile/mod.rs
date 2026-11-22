@@ -77,7 +77,7 @@ use keel_events::cbor::{self, CborError, Value};
 use keel_events::envelope::{Location, TeamMember};
 use keel_events::hash::sha256;
 use keel_pricing::Rules;
-use keel_types::{BusinessDayPolicy, Currency, Id, RoundingRule};
+use keel_types::{BusinessDayPolicy, Currency, Id, Locale, RoundingRule};
 
 pub use catalog::{
     Catalog, CatalogGroup, CatalogItem, CatalogModifier, CatalogVariant, Choice, RingError, Rung,
@@ -113,6 +113,10 @@ pub const FORMAT_PAYMENTS: u64 = 4;
 /// The profile format of a profile with a role that may adjust stock, and everything format 4
 /// holds or none (ADR-0036).
 pub const FORMAT_STOCK: u64 = 5;
+
+/// The profile format of a profile where a team member or a kitchen station has a language, and
+/// everything format 5 holds or none (ADR-0038).
+pub const FORMAT_LANGUAGES: u64 = 6;
 
 /// The most roles a profile has.
 pub const MAX_ROLES: usize = 100;
@@ -182,6 +186,9 @@ pub struct Member {
     pub role: Option<Id<RoleRef>>,
     /// Their PIN; `None` in a profile without roles.
     pub pin: Option<PinHash>,
+    /// The language the register speaks to them in, while they are signed in; `None` for the
+    /// register's own (ADR-0038). Profile format 6.
+    pub language: Option<Locale>,
 }
 
 /// A location profile's contents, unchecked: [`Profile::new`] checks them.
@@ -310,7 +317,8 @@ impl Profile {
         let value = cbor::decode(bytes)?;
         let mut fields = Fields::read(&value)?;
         let format: u64 = fields.required(key::FORMAT, "profile format")?;
-        if ![FORMAT, FORMAT_ROLES, FORMAT_KITCHEN, FORMAT_PAYMENTS, FORMAT_STOCK].contains(&format)
+        if ![FORMAT, FORMAT_ROLES, FORMAT_KITCHEN, FORMAT_PAYMENTS, FORMAT_STOCK, FORMAT_LANGUAGES]
+            .contains(&format)
         {
             return Err(ProfileError::Format(format));
         }
@@ -325,7 +333,7 @@ impl Profile {
                 }
                 roles
             }
-            FORMAT_KITCHEN | FORMAT_PAYMENTS | FORMAT_STOCK => {
+            FORMAT_KITCHEN | FORMAT_PAYMENTS | FORMAT_STOCK | FORMAT_LANGUAGES => {
                 let roles: Option<Vec<Role>> = fields.optional(key::ROLES, "roles")?;
                 if roles.as_ref().is_some_and(Vec::is_empty) {
                     return Err(ProfileError::Invalid("a profile's roles, written and empty"));
@@ -756,7 +764,13 @@ fn format_of(data: &ProfileData) -> u64 {
             .flat_map(|role| &role.permissions)
             .any(|permission| permission.action.approval_version() >= version)
     };
-    if since(3) {
+    let languages = data.team.iter().any(|member| member.language.is_some())
+        || data.kitchen.as_ref().is_some_and(|kitchen| {
+            kitchen.stations.iter().any(|station| station.language.is_some())
+        });
+    if languages {
+        FORMAT_LANGUAGES
+    } else if since(3) {
         FORMAT_STOCK
     } else if data.tipping.is_some() || since(2) {
         FORMAT_PAYMENTS
@@ -1058,6 +1072,7 @@ impl Field for Member {
             .field(2, &self.name)
             .optional(3, self.role.as_ref())
             .optional(4, self.pin.as_ref())
+            .optional(5, self.language.as_ref())
             .build()
     }
 
@@ -1068,6 +1083,7 @@ impl Field for Member {
             name: fields.required(2, "team member name").ok()?,
             role: fields.optional(3, "role").ok()?,
             pin: fields.optional(4, "PIN").ok()?,
+            language: fields.optional(5, "language").ok()?,
         };
         fields.finish().ok()?;
         Some(member)

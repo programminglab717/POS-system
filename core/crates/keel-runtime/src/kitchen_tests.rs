@@ -43,7 +43,7 @@ fn cashier(scratch: &Scratch, profile: keel_domain::profile::Profile) -> TestRun
 }
 
 /// A bagel with cream cheese, toasted.
-fn bagel() -> Vec<Choice> {
+pub(crate) fn bagel() -> Vec<Choice> {
     vec![Choice::of(id(0x20a)), Choice::of(id(0x213))]
 }
 
@@ -73,7 +73,7 @@ fn tickets(runtime: &TestRuntime, order: Id<Order>) -> Vec<(Id<StationRef>, Vec<
 }
 
 /// The documents of the kitchen's print jobs queued, each with the printer it goes to.
-fn kitchen_jobs(runtime: &TestRuntime) -> Vec<(String, String)> {
+pub(crate) fn kitchen_jobs(runtime: &TestRuntime) -> Vec<(String, String)> {
     runtime
         .print_jobs()
         .unwrap()
@@ -231,7 +231,7 @@ fn a_sent_line_is_voided_for_a_reason_and_struck_through() {
 
 /// The demo's kitchen, its kitchen station printed and shown on no screen, and the bar printed
 /// as well as shown.
-fn printed() -> keel_domain::profile::Profile {
+pub(crate) fn printed_profile() -> keel_domain::profile::Profile {
     demo_with(|data: &mut ProfileData| {
         let kitchen = data.kitchen.as_mut().unwrap();
         kitchen.stations[0].printer = Some(printer("10.0.0.21"));
@@ -243,7 +243,7 @@ fn printed() -> keel_domain::profile::Profile {
 #[test]
 fn a_station_no_screen_shows_prints_and_a_void_slips_where_it_printed() {
     let scratch = Scratch::new();
-    let mut runtime = cashier(&scratch, printed());
+    let mut runtime = cashier(&scratch, printed_profile());
     let order = breakfast(&mut runtime, Mode::DineIn);
     let bagel = runtime.ticket(order).unwrap().lines[1].line;
     let sandwich = vec![Choice::of(id(0x20d))];
@@ -276,7 +276,7 @@ fn a_station_no_screen_shows_prints_and_a_void_slips_where_it_printed() {
 #[test]
 fn a_ticket_no_screen_shows_in_10_seconds_prints_rerouted_and_every_device_is_told() {
     let scratch = Scratch::new();
-    let mut runtime = cashier(&scratch, printed());
+    let mut runtime = cashier(&scratch, printed_profile());
     let order = breakfast(&mut runtime, Mode::Takeout);
     runtime.send(order).unwrap();
     // Expo's screen shows its ticket; the bar's shows none. Nothing reroutes before 10 s.
@@ -347,6 +347,7 @@ fn a_modifier_routed_on_its_own_goes_as_a_component() {
             expo: false,
             screen: true,
             printer: None,
+            language: None,
         });
         kitchen.routes.push(Route {
             station: id(0x704),
@@ -412,6 +413,7 @@ fn a_modifier_left_out_adds_no_allergens_and_a_component_counts_its_applications
             expo: false,
             screen: true,
             printer: None,
+            language: None,
         });
         kitchen.routes.push(Route {
             station: id(0x704),
@@ -440,7 +442,7 @@ fn a_modifier_left_out_adds_no_allergens_and_a_component_counts_its_applications
 #[test]
 fn a_long_note_neither_refuses_a_payment_nor_jams_the_print_loop() {
     let scratch = Scratch::new();
-    let mut runtime = cashier(&scratch, printed());
+    let mut runtime = cashier(&scratch, printed_profile());
     let order = breakfast(&mut runtime, Mode::DineIn);
     let lines: Vec<_> = runtime.ticket(order).unwrap().lines.iter().map(|line| line.line).collect();
     let long = keel_domain::codec::Note::new(&"日".repeat(500)).unwrap();
@@ -466,7 +468,7 @@ fn a_long_note_neither_refuses_a_payment_nor_jams_the_print_loop() {
 #[test]
 fn a_reroute_leaves_out_what_was_voided_since() {
     let scratch = Scratch::new();
-    let mut runtime = cashier(&scratch, printed());
+    let mut runtime = cashier(&scratch, printed_profile());
     let order = breakfast(&mut runtime, Mode::DineIn);
     let latte = runtime.ticket(order).unwrap().lines[0].line;
     runtime.send(order).unwrap();
@@ -503,7 +505,7 @@ fn lines_no_station_makes_are_sent_all_the_same() {
 #[test]
 fn a_kitchen_ticket_printed_again_keeps_its_printer_and_says_so_and_slips_follow_reroutes() {
     let scratch = Scratch::new();
-    let mut runtime = cashier(&scratch, printed());
+    let mut runtime = cashier(&scratch, printed_profile());
     let order = breakfast(&mut runtime, Mode::DineIn);
     let lines: Vec<_> = runtime.ticket(order).unwrap().lines.iter().map(|line| line.line).collect();
     runtime.send(order).unwrap();

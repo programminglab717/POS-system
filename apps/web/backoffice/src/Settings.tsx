@@ -9,6 +9,7 @@ import {
   type SettingsBody,
   type SettingsEdit,
 } from "./api";
+import { LanguageSelect } from "./languages";
 import { newId } from "./money";
 
 type Status = { kind: "error" | "ok"; text: string } | null;
@@ -493,6 +494,7 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
                   <th>Expo</th>
                   <th>Screen</th>
                   <th>Printer</th>
+                  <th>Tickets in</th>
                   <th />
                 </tr>
               </thead>
@@ -528,6 +530,16 @@ export function SettingsEditor({ api, location }: { api: Api; location: string }
                           onChange={(printer) => {
                             const { printer: _printer, ...rest } = station;
                             change(printer ? { ...rest, printer } : rest);
+                          }}
+                        />
+                      </td>
+                      <td>
+                        <LanguageSelect
+                          label={`Language of ${station.name}'s tickets`}
+                          value={station.language}
+                          onChange={(language) => {
+                            const { language: _language, ...rest } = station;
+                            change(language ? { ...rest, language } : rest);
                           }}
                         />
                       </td>

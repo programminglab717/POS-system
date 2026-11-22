@@ -92,6 +92,11 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         roster: Roster,
         may_host: bool,
     ) -> Result<Vec<Outgoing>, RuntimeError> {
+        // A training register syncs with nothing: what it records stays in its store
+        // (ADR-0038).
+        if self.training {
+            return Err(RuntimeError::Training);
+        }
         let device = self.device;
         let me = roster.device(device).ok_or(RuntimeError::RosterMismatch)?;
         if roster.data().location != self.profile.data().location || me.key != self.key {

@@ -318,8 +318,8 @@ fn entry(entries: &mut [(Value, Value)], key: u64) -> &mut Value {
 #[test]
 fn encodings_other_than_the_profiles_own_are_refused() {
     assert_eq!(
-        decode_changed(|e| *entry(e, 1) = Value::Unsigned(6)).map(|_| ()),
-        Err(ProfileError::Format(6))
+        decode_changed(|e| *entry(e, 1) = Value::Unsigned(7)).map(|_| ()),
+        Err(ProfileError::Format(7))
     );
     assert_eq!(
         decode_changed(|e| e.push((Value::Unsigned(15), Value::Null))).map(|_| ()),
@@ -849,9 +849,9 @@ fn golden_bakery() -> Profile {
             ],
         },
         team: vec![
-            Member { id: id(0x511), name: name("Camille"), role: None, pin: None },
-            Member { id: id(0x512), name: name("Jo"), role: None, pin: None },
-            Member { id: id(0x513), name: name("Noor"), role: None, pin: None },
+            Member { id: id(0x511), name: name("Camille"), role: None, pin: None, language: None },
+            Member { id: id(0x512), name: name("Jo"), role: None, pin: None, language: None },
+            Member { id: id(0x513), name: name("Noor"), role: None, pin: None, language: None },
         ],
         roles: Vec::new(),
         kitchen: None,
@@ -1017,6 +1017,7 @@ fn with_fry_and_pickup() -> Profile {
             expo: false,
             screen: true,
             printer: None,
+            language: None,
         });
     }
     kitchen.routes.push(Route {
@@ -1212,4 +1213,42 @@ fn tipping_keeps_its_rules() {
         Err(ProfileError::Invalid("tip presets out of order, or repeated"))
     );
     assert_eq!(with(&[10_001]), Err(ProfileError::Invalid("a tip preset above 100%")));
+}
+
+/// A member's or a station's language makes the profile format 6, which round-trips; format 5
+/// with one is refused, and a tag that isn't exactly one of Keel's locales doesn't decode
+/// (ADR-0038).
+#[test]
+fn format_6_is_written_for_a_language_alone() {
+    let format = |data: &ProfileData| {
+        Profile::new(data.clone()).unwrap().encode().get(1..3).map(<[u8]>::to_vec)
+    };
+    let before = demo().unwrap().data().clone();
+    assert_eq!(format(&before), Some(vec![0x01, 0x05]), "the demo's format, as before");
+    let mut member = before.clone();
+    member.team[1].language = Some(Locale::ES_US);
+    let mut station = before.clone();
+    station.kitchen.as_mut().unwrap().stations[0].language = Some(Locale::ES_US);
+    for data in [member, station] {
+        assert_eq!(format(&data), Some(vec![0x01, 0x06]));
+        let bytes = Profile::new(data.clone()).unwrap().encode();
+        assert_eq!(Profile::decode(&bytes).unwrap().data(), &data, "round-trips");
+        // Written as format 5, it is refused.
+        let mut value = cbor::decode(&bytes).unwrap();
+        let Value::Map(map) = &mut value else { panic!("a profile is a map") };
+        let mut entries = map.clone().into_entries();
+        entries.iter_mut().find(|(k, _)| *k == Value::Unsigned(1)).unwrap().1 = Value::Unsigned(5);
+        assert!(
+            Profile::decode(&Value::Map(Map::from_entries(entries).unwrap()).encode()).is_err()
+        );
+        // A tag in another case, or of a locale Keel doesn't know, doesn't decode.
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(text.contains("es-US"));
+        for other in [&b"ES-US"[..], b"fr-FR"] {
+            let mut changed = bytes.clone();
+            let at = changed.windows(5).position(|window| window == b"es-US").unwrap();
+            changed[at..at + 5].copy_from_slice(other);
+            assert!(Profile::decode(&changed).is_err(), "{}", String::from_utf8_lossy(other));
+        }
+    }
 }

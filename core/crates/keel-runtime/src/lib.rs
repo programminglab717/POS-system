@@ -42,6 +42,7 @@ mod staff;
 mod stock;
 mod sync;
 mod ticket;
+mod training;
 mod views;
 
 #[cfg(test)]
@@ -68,6 +69,8 @@ mod staff_tests;
 mod stock_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod training_tests;
 
 pub use availability::{ItemRef, SoldOut, Until};
 pub use card::{
@@ -87,6 +90,7 @@ pub use runtime::{CASH_OFFERS, Identity, MOST_CHECKS, Runtime};
 pub use staff::{APPROVAL_LIFE, FIRST_LOCK, LONGEST_LOCK, PIN_TRIES, QUIET};
 pub use stock::{CountVariance, StockChange, StockLine, StockView, Wasted};
 pub use sync::{ISLAND_AFTER, SyncStatus};
+pub use training::banner as training_banner;
 pub use views::{
     Amount, CashPaid, DrawerView, GroupView, ItemView, MenuButton, MenuPage, MenuView,
     ModifierView, SoldOutUntil, Ticket, TicketCheck, TicketDiscount, TicketLine, TicketModifier,

@@ -77,6 +77,9 @@ pub struct MemberView {
     pub role: Option<String>,
     /// Whether they have a PIN.
     pub has_pin: bool,
+    /// Their language, a locale's tag such as `es-US`; absent for the register's (ADR-0038).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Staff to write.
@@ -107,6 +110,9 @@ pub struct MemberEdit {
     /// A new PIN, its 4 to 8 digits; absent to keep the one they have.
     #[serde(default)]
     pub pin: Option<String>,
+    /// Their language, a locale's tag such as `es-US`; absent for the register's (ADR-0038).
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 impl core::fmt::Debug for MemberEdit {
@@ -116,6 +122,7 @@ impl core::fmt::Debug for MemberEdit {
             .field("name", &self.name)
             .field("role", &self.role)
             .field("pin", &self.pin.as_ref().map(|_| ".."))
+            .field("language", &self.language)
             .finish()
     }
 }
@@ -158,6 +165,7 @@ pub fn view(profile: &Profile, version: ProfileVersion) -> StaffView {
                 name: member.name.to_string(),
                 role: member.role.map(|role| role.to_string()),
                 has_pin: member.pin.is_some(),
+                language: member.language.map(|locale| locale.tag().to_owned()),
             })
             .collect(),
     }
@@ -253,6 +261,20 @@ pub fn apply(
             name: name(&member.name, "team member's name")?,
             role,
             pin,
+            language: member
+                .language
+                .as_deref()
+                .map(|tag| {
+                    keel_types::Locale::ALL
+                        .into_iter()
+                        .find(|locale| locale.tag() == tag)
+                        .ok_or_else(|| {
+                            StaffError::Field(format!(
+                                "{tag:?} isn't a language Keel speaks: en-US or es-US"
+                            ))
+                        })
+                })
+                .transpose()?,
         });
     }
     data.roles = roles;
@@ -280,6 +302,7 @@ mod tests {
                     name: member.name.clone(),
                     role: member.role.clone(),
                     pin: None,
+                    language: None,
                 })
                 .collect(),
         }
@@ -316,6 +339,7 @@ mod tests {
             name: "Kim".into(),
             role: Some(read.roles[1].id.clone()),
             pin: None,
+            language: None,
         });
         let refused = apply(&profile, &joined, &mut SeededEntropy::new(1));
         assert_eq!(
@@ -366,6 +390,7 @@ mod tests {
             name: "Sam".into(),
             role: None,
             pin: Some("8642".into()),
+            language: None,
         };
         let shown =
             format!("{:?}", StaffEdit { base: None, roles: Vec::new(), team: vec![member] });
@@ -387,5 +412,22 @@ mod tests {
         let view = view(&written, version(&written));
         assert!(view.roles.is_empty());
         assert!(view.team.iter().all(|member| !member.has_pin && member.role.is_none()));
+    }
+
+    /// A member's language is written and read back, kept when the member is written again
+    /// without a new PIN, and one Keel doesn't speak is refused (ADR-0038).
+    #[test]
+    fn a_members_language_is_written_and_read_back() {
+        let profile = demo().unwrap();
+        let read = view(&profile, version(&profile));
+        let mut changed = edit(&read);
+        changed.team[1].language = Some("es-US".to_owned());
+        let written = apply(&profile, &changed, &mut SeededEntropy::new(1)).unwrap();
+        assert_eq!(written.data().team[1].language, Some(keel_types::Locale::ES_US));
+        let again = view(&written, version(&written));
+        assert_eq!(again.team[1].language.as_deref(), Some("es-US"));
+        assert_eq!(again.team[0].language, None);
+        changed.team[1].language = Some("de-DE".to_owned());
+        assert!(apply(&profile, &changed, &mut SeededEntropy::new(1)).is_err());
     }
 }

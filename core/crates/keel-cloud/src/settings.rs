@@ -148,6 +148,10 @@ pub struct StationJson {
     /// Its printer, if it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub printer: Option<PrinterJson>,
+    /// The language its tickets print in, a locale's tag such as `es-US`; absent for the
+    /// register's (ADR-0038).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// A route.
@@ -254,6 +258,13 @@ fn name(text: &str, what: &str) -> Result<Name, SettingsError> {
     Name::new(text).map_err(|_| SettingsError::Field(format!("{what} {text:?} isn't a name")))
 }
 
+/// The locale `tag` names: one Keel formats for, exactly as written.
+fn language(tag: &str) -> Result<keel_types::Locale, SettingsError> {
+    keel_types::Locale::ALL.into_iter().find(|locale| locale.tag() == tag).ok_or_else(|| {
+        SettingsError::Field(format!("{tag:?} isn't a language Keel speaks: en-US or es-US"))
+    })
+}
+
 fn printer_json(printer: &Printer) -> PrinterJson {
     PrinterJson { host: printer.host.clone(), port: printer.port.get() }
 }
@@ -332,6 +343,7 @@ pub fn view(profile: &Profile, version: ProfileVersion) -> SettingsView {
                         expo: station.expo,
                         screen: station.screen,
                         printer: station.printer.as_ref().map(printer_json),
+                        language: station.language.map(|locale| locale.tag().to_owned()),
                     })
                     .collect(),
                 routes: kitchen
@@ -415,6 +427,7 @@ fn kitchen(json: &KitchenJson) -> Result<Kitchen, SettingsError> {
                     expo: station.expo,
                     screen: station.screen,
                     printer: station.printer.as_ref().map(printer).transpose()?,
+                    language: station.language.as_deref().map(language).transpose()?,
                 })
             })
             .collect::<Result<_, SettingsError>>()?,
@@ -610,5 +623,26 @@ mod tests {
                 Some(TippingJson { presets: vec![2_000, 1_500], prompt: "screen".to_owned() }))
             .contains("order")
         );
+    }
+
+    /// A station's language is written and read back, and one Keel doesn't speak, or in
+    /// another case, is refused (ADR-0038).
+    #[test]
+    fn a_stations_language_is_written_and_read_back() {
+        let profile = demo().unwrap();
+        let mut changed = edit(&view(&profile, version(&profile)));
+        changed.settings.kitchen.as_mut().unwrap().stations[0].language = Some("es-US".to_owned());
+        let written = apply(&profile, &changed).unwrap();
+        let station = &written.data().kitchen.as_ref().unwrap().stations[0];
+        assert_eq!(station.language, Some(keel_types::Locale::ES_US));
+        let read = view(&written, version(&written));
+        assert_eq!(read.settings.kitchen.unwrap().stations[0].language.as_deref(), Some("es-US"));
+        for bad in ["ES-US", "fr-FR"] {
+            changed.settings.kitchen.as_mut().unwrap().stations[0].language = Some(bad.to_owned());
+            assert!(
+                apply(&profile, &changed).unwrap_err().to_string().contains("language"),
+                "{bad}"
+            );
+        }
     }
 }

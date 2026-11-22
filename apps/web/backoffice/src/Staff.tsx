@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { type Api, ApiError, type Permission, type Role, type Staff, type StaffEdit } from "./api";
+import { LanguageSelect } from "./languages";
 import { format, newId, parse } from "./money";
 
 type Status = { kind: "error" | "ok"; text: string } | null;
@@ -27,6 +28,8 @@ interface MemberRow {
   hasPin: boolean;
   /** A new PIN typed, if one is. */
   pin: string;
+  /** Their language; absent for the register's (ADR-0038). */
+  language?: string;
 }
 
 /**
@@ -80,6 +83,7 @@ export function StaffEditor({ api, location }: { api: Api; location: string }) {
       const row: StaffEdit["team"][number] = { id: member.id, name: member.name };
       if (member.role) row.role = member.role;
       if (member.pin) row.pin = member.pin;
+      if (member.language) row.language = member.language;
       return row;
     }),
   });
@@ -166,6 +170,7 @@ export function StaffEditor({ api, location }: { api: Api; location: string }) {
               <th>Name</th>
               <th>Role</th>
               <th>PIN</th>
+              <th>Language</th>
               <th />
             </tr>
           </thead>
@@ -215,6 +220,18 @@ export function StaffEditor({ api, location }: { api: Api; location: string }) {
                       }
                     />
                   )}
+                </td>
+                <td>
+                  <LanguageSelect
+                    label={`Language of ${member.name}`}
+                    value={member.language}
+                    onChange={(language) =>
+                      updateMember(index, (m) => {
+                        const { language: _language, ...rest } = m;
+                        return language ? { ...rest, language } : rest;
+                      })
+                    }
+                  />
                 </td>
                 <td>
                   <button

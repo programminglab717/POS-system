@@ -267,6 +267,19 @@ impl Field for Money {
     }
 }
 
+/// A language: its locale's BCP 47 tag, one Keel formats for (ADR-0038).
+impl Field for keel_types::Locale {
+    fn to_value(&self) -> Value {
+        Value::from(self.tag())
+    }
+
+    fn from_value(value: &Value) -> Option<keel_types::Locale> {
+        // Exactly as Keel writes it: one encoding, so "ES-US" isn't one.
+        let text = value.as_text()?;
+        keel_types::Locale::from_tag(text).ok().filter(|locale| locale.tag() == text)
+    }
+}
+
 impl Field for Currency {
     fn to_value(&self) -> Value {
         Value::from(self.code())

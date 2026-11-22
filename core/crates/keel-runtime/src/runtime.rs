@@ -78,6 +78,9 @@ pub struct Runtime<S, E, C, I> {
     pub(crate) key: keel_events::keys::PublicKey,
     pub(crate) locale: Locale,
     pub(crate) member: Option<Id<TeamMember>>,
+    /// Whether it is a training register: it never syncs, and what it prints says so
+    /// (ADR-0038).
+    pub(crate) training: bool,
     /// Wrong PINs, and the lock they put on PIN entry.
     pub(crate) pins: crate::staff::PinGuard,
     /// An approval waiting for the intent it is for.
@@ -162,6 +165,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             device: identity.device,
             locale,
             member: None,
+            training: false,
             pins: crate::staff::PinGuard::default(),
             pending: None,
             asked: None,
@@ -1197,7 +1201,7 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
             return Ok(Some(PrintJob {
                 job,
                 kind,
-                bytes: render(&doc, &printer),
+                bytes: render(&crate::training::printed(doc, self.training, self.locale), &printer),
                 confirm: printer.confirm,
                 process_id: process_id(print::process_number(job, started.attempts)),
                 to,

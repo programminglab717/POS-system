@@ -16,7 +16,7 @@ use crate::runtime::{Meta, append};
 use crate::tests::{Scratch, TestRuntime, demo_with, id, register};
 
 /// The demo café's roster, the runtime's device (0xd1) its cloud, beside a hub.
-fn roster() -> Roster {
+pub(crate) fn roster() -> Roster {
     let key = |seed: u8| {
         SoftwareSigner::from_secret(SignatureAlgorithm::EdDsa, &[seed; 32])
             .unwrap()

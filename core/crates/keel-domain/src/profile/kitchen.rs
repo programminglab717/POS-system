@@ -16,7 +16,7 @@ use core::num::{NonZeroU16, NonZeroU32};
 use std::collections::BTreeSet;
 
 use keel_events::cbor::Value;
-use keel_types::Id;
+use keel_types::{Id, Locale};
 
 use super::ProfileError;
 use super::catalog::{Catalog, Index};
@@ -119,6 +119,8 @@ pub struct Station {
     pub screen: bool,
     /// Its printer, where its tickets print when no screen shows them.
     pub printer: Option<Printer>,
+    /// The language its tickets print in; `None` for the register's (ADR-0038). Profile format 6.
+    pub language: Option<Locale>,
 }
 
 /// A route: the station that makes some items, or some modifiers, in some order modes.
@@ -311,6 +313,7 @@ mod key {
     pub(super) const EXPO: u64 = 3;
     pub(super) const SCREEN: u64 = 4;
     pub(super) const PRINTER: u64 = 5;
+    pub(super) const LANGUAGE: u64 = 6;
 
     pub(super) const STATION: u64 = 1;
     pub(super) const ITEMS: u64 = 2;
@@ -354,6 +357,7 @@ impl Field for Station {
             .field(key::EXPO, &self.expo)
             .field(key::SCREEN, &self.screen)
             .optional(key::PRINTER, self.printer.as_ref())
+            .optional(key::LANGUAGE, self.language.as_ref())
             .build()
     }
 
@@ -365,6 +369,7 @@ impl Field for Station {
             expo: fields.required(key::EXPO, "expo").ok()?,
             screen: fields.required(key::SCREEN, "screen").ok()?,
             printer: fields.optional(key::PRINTER, "printer").ok()?,
+            language: fields.optional(key::LANGUAGE, "language").ok()?,
         };
         fields.finish().ok()?;
         Some(station)

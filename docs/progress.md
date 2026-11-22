@@ -103,7 +103,14 @@ Step 6 was built in four slices, each ending with a review
 
 ## Current slice
 
-The MVP's step 10, training mode and Spanish (B-10, B-12, X-01), is next: not yet designed.
+The MVP's step 10, training mode and Spanish (B-10, B-12, X-01), designed in
+[ADR-0038](./adr/0038-training-and-spanish.md) (proposed). Slices 1, the kernel, and 2, the back
+office, built 2026-11-22: profile format 6, a team member's and a kitchen station's language;
+kitchen tickets in their station's language; the signed-in member's language through the
+bindings; a training register, which never syncs, prints its banner on everything and kicks no
+drawer; the languages in the back office's staff and settings pages. Verified by the
+workspace's tests, both clippy runs, and the back office's browser tests (11). Next: slice 3,
+the Android register in Spanish and in training.
 
 Waiting on CI's minutes: the Android app's instrumented tests, steps 3 to 7's among them, and the
 three of step 2 the scrolling ticket pane should mend.

@@ -1024,6 +1024,10 @@ pub struct RegisterConfig {
     pub profile: Vec<u8>,
     /// The locale amounts are shown in, such as `en-US`.
     pub locale: String,
+    /// Whether it is a training register, over a store of its own (ADR-0038): it never syncs,
+    /// and what it prints says so.
+    #[uniffi(default = false)]
+    pub training: bool,
 }
 
 /// A new device's identity, which a shell keeps, its keys wrapped by the platform's keystore,
