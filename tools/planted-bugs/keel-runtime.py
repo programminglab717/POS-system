@@ -1509,4 +1509,47 @@ BUGS = [
         "                Received::Duplicate => &mut imported.duplicates,",
         "                Received::Duplicate => &mut imported.stored,",
     ),
+    # Training and languages (ADR-0038).
+    (
+        "training: a training register syncs",
+        "src/sync.rs",
+        "        if self.training {\n            return Err(RuntimeError::Training);\n        }",
+        "",
+    ),
+    (
+        "training: a register that syncs starts training",
+        "src/training.rs",
+        "        if self.sync.is_some() {",
+        "        if self.sync.is_some() && false {",
+    ),
+    (
+        "training: a training register prints as if real",
+        "src/training.rs",
+        "    if !training {\n        return doc;\n    }",
+        "    if training || !training {\n        return doc;\n    }",
+    ),
+    (
+        "training: a training register kicks the drawer",
+        "src/training.rs",
+        "    let kept: Vec<Block> =\n        doc.blocks().iter().filter(|block| !matches!(block, Block::DrawerKick)).cloned().collect();\n    let alone",
+        "    let kept: Vec<Block> = doc.blocks().to_vec();\n    let alone",
+    ),
+    (
+        "languages: the member's language is the register's",
+        "src/training.rs",
+        "        Some(member.language.unwrap_or(self.locale))",
+        "        Some(self.locale).filter(|_| member.id == member.id)",
+    ),
+    (
+        "languages: a station's tickets are in the register's language",
+        "src/kitchen.rs",
+        "    station.language.unwrap_or(register)",
+        "    register",
+    ),
+    (
+        "languages: an allergen keeps its English name",
+        "src/kitchen.rs",
+        "                    words.allergen_names.get(index).copied().unwrap_or_else(|| allergen.name())",
+        "                    Some(allergen.name()).filter(|_| index < 99).unwrap_or_default()",
+    ),
 ]

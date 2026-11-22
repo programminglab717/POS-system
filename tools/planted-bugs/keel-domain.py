@@ -3727,8 +3727,8 @@ BUGS = [
     (
         "profile: a role that may adjust stock is written as format 4",
         "src/profile/mod.rs",
-        "    if since(3) {\n        FORMAT_STOCK",
-        "    if since(4) {\n        FORMAT_STOCK",
+        "    } else if since(3) {\n        FORMAT_STOCK",
+        "    } else if since(4) {\n        FORMAT_STOCK",
     ),
 
     (
@@ -3767,5 +3767,30 @@ BUGS = [
         "src/fields.rs",
         "    (knows::<StockEvent>, decoded::<StockEvent>),",
         "    (knows::<StockEvent>, decoded::<DrawerEvent>),",
+    ),
+    # Languages (ADR-0038).
+    (
+        "languages: a member's language makes no format 6",
+        "src/profile/mod.rs",
+        "    let languages = data.team.iter().any(|member| member.language.is_some())",
+        "    let languages = data.team.iter().any(|member| member.language.is_some() && false)",
+    ),
+    (
+        "languages: a station's language makes no format 6",
+        "src/profile/mod.rs",
+        "            kitchen.stations.iter().any(|station| station.language.is_some())",
+        "            kitchen.stations.iter().any(|station| station.language.is_some() && false)",
+    ),
+    (
+        "languages: a tag in another case is taken",
+        "src/codec.rs",
+        "        keel_types::Locale::from_tag(text).ok().filter(|locale| locale.tag() == text)",
+        "        keel_types::Locale::from_tag(text).ok()",
+    ),
+    (
+        "languages: a member's language isn't written",
+        "src/profile/mod.rs",
+        "            .optional(5, self.language.as_ref())",
+        "            .optional(5, None::<&Locale>)",
     ),
 ]

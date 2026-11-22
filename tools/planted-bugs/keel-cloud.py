@@ -273,4 +273,10 @@ BUGS = [
         "        let _ = std::fs::remove_file(&self.path);",
         "",
     ),
+    (
+        "languages: a station's language isn't written",
+        "src/settings.rs",
+        "                    language: station.language.as_deref().map(language).transpose()?,",
+        "                    language: None,",
+    ),
 ]

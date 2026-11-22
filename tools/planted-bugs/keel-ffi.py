@@ -360,4 +360,10 @@ BUGS = [
         "            (None, Some(_)) => return Err(KeelError::invalid(\"a note needs a reason code\")),",
         "            (None, Some(_)) => None,",
     ),
+    (
+        "training: the config's training is ignored",
+        "src/register.rs",
+        "        if config.training {",
+        "        if config.training && false {",
+    ),
 ]
