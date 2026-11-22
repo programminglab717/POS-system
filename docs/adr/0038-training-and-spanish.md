@@ -84,6 +84,8 @@ What the reviews found, and what was done:
   stations are kept apart in training. Starting twice opened two training registers, and one's
   loops ran on for good; training outlived its screen; and a failed start said nothing. Each is
   fixed: one at a time, ended with the screen, closed when it ends, and its failure said.
+- **Planted bugs**: 14 for training and languages across the kernel, bindings and cell, each
+  caught; one, the lower banner after the cut, by a test written when the first missed it.
 - **Many of the screens' words weren't asked for in the member's language**: every literal the
   screens show is, which the words test now checks; and the Spanish a cashier might misread is
   plainer ("práctica", not "entrenamiento"; a safe drop is a "depósito").

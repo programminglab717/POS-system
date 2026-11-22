@@ -85,3 +85,30 @@ impl<S: Signer, E: Entropy, C: Clock, I: Entropy> Runtime<S, E, C, I> {
         Some(member.language.unwrap_or(self.locale))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use keel_doc::{Align, Block, Doc, Style};
+
+    use super::printed;
+
+    /// Both banners above the feed and cut that end a document, and no kick: found in review,
+    /// the lower banner printed after the cut, on the next slip.
+    #[test]
+    fn the_banners_are_above_the_feed_and_cut_and_the_kick_is_gone() {
+        let line = || Block::text("Thank you!", Align::Center, Style::default());
+        let doc = Doc::new(vec![Block::DrawerKick, line(), Block::Feed(2), Block::Cut]).unwrap();
+        let out = printed(doc.clone(), true, "TRAINING");
+        let blocks = out.blocks();
+        assert!(!blocks.contains(&Block::DrawerKick));
+        let banner =
+            |block: &Block| matches!(block, Block::Text { text, .. } if text == "TRAINING");
+        assert!(banner(&blocks[0]), "{blocks:?}");
+        assert_eq!(blocks[blocks.len() - 2..], [Block::Feed(2), Block::Cut], "{blocks:?}");
+        assert!(
+            banner(&blocks[blocks.len() - 3]),
+            "the lower banner just above the feed: {blocks:?}"
+        );
+        assert_eq!(printed(doc.clone(), false, "TRAINING"), doc, "a real register's, as it is");
+    }
+}
